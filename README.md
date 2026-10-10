@@ -271,7 +271,7 @@ Open the URL the engine printed at startup (bridge port + 1; `http://localhost:9
 
 **[Chat]** — Send prompts directly from the browser. Full tool output with expandable details, visible thinking tokens, streaming model text. Slash commands (`/plan`, `/tdd`, `/debug`) for workflows. Enter to send, Shift+Enter for newlines.
 
-**Generative UI in the chat.** The model can draw structured UI in the chat pane with one tool call, `RenderUI`: cards, tables, plans with per-step status, key facts, metrics, inline-SVG charts, forms (inputs, selects, radios, checkboxes, sliders), buttons and follow-up chips, plus coding-agent report blocks (file changes, a command and its output, test results). A surface draws progressively while the call streams, a click on a button sends the action name and every input value on the surface back to the model as its next message, follow-up chips send their text as a user message, and the model can re-render a surface in place by reusing its id. Assistant prose is rendered as markdown (headings, lists, tables, code fences, links). The tool is always offered in a project chat and loadable with `load_tools` in a coding session. In a project chat, a message that asks to see options, designs, a comparison or a table is answered with a surface: its model calls go out with `tool_choice: required` until one draws (the prompt alone let the model answer such a request in prose, F171), and every reply carries a "Show as UI" link that redraws it; the component catalog, validator and prompt section live in `engine/genui/` (see `engine/genui/CLAUDE.md`). The format and vocabulary were adopted from json-render, A2UI and OpenUI (credits in `CREDITS.md`); the renderer is hand-written vanilla DOM, so the page stays a single file with no build step.
+**Generative UI in the chat.** The model can draw structured UI in the chat pane with one tool call, `RenderUI`: cards, tables, plans with per-step status, key facts, metrics, inline-SVG charts, forms (inputs, selects, radios, checkboxes, sliders), buttons and follow-up chips, plus coding-agent report blocks (file changes, a command and its output, test results). A surface draws progressively while the call streams, a click on a button sends the action name and every input value on the surface back to the model as its next message, follow-up chips send their text as a user message, and the model can re-render a surface in place by reusing its id. Assistant prose is rendered as markdown (headings, lists, tables, code fences, links). The tool is always offered in a project chat and loadable with `load_tools` in a coding session. In a project chat, a message that asks to see options, designs, pictures, a comparison or a table is answered with a surface: its model calls go out with `tool_choice: required` until one draws (the prompt alone let the model answer such a request in prose, F171), and every reply carries a "Show as UI" link that redraws it; the component catalog, validator and prompt section live in `engine/genui/` (see `engine/genui/CLAUDE.md`). An Image can carry a `prompt` instead of a URL: in a project chat the engine paints it on your ComfyUI server (`LOCALCODE_COMFYUI_*`), the card shows a placeholder at once and the picture fills in when ready, and it is kept in the project's `images/` folder with how it was made (see `engine/imagegen/CLAUDE.md`). Check the setup with `bun engine/imagegen/check.ts`. The format and vocabulary were adopted from json-render, A2UI and OpenUI (credits in `CREDITS.md`); the renderer is hand-written vanilla DOM, so the page stays a single file with no build step.
 
 **[Governance]** — Real-time VSM monitoring:
 - **Tool Activity** — stacked bar chart + live feed with latency
@@ -297,13 +297,14 @@ coding workspace above. It lists your projects, opens one to its knowledge,
 artifacts, chats and journal, and opens a chat that answers from the project's
 own material (with numbered citations) alongside the open web.
 
-Each project is one plain folder, five pieces:
+Each project is one plain folder, five pieces (six once a chat has painted a picture):
 
 - `project.json` / `instructions.md` — the project's name, description, tags, and your standing instructions for every chat in it.
 - `knowledge/` — the sources you've gathered, each indexed for search.
 - `chats/` — one JSONL transcript per conversation.
 - `artifacts/` — the things CynCo has produced for you (specs, plans, drafts), promotable into `knowledge/`.
 - `journal.md` — an append-only record of what happened, plus an invisible git history underneath the whole folder (no git command ever shown to you).
+- `images/` — the pictures a chat's cards asked for, painted on your ComfyUI server (see Generative UI above), each beside a JSON record of how it was made; the records are in the git history, the pictures are not.
 
 Tool calls inside a project chat are graded, not approved by tier: a file write
 or read stays inside the project folder or is refused outright; a Bash command
@@ -533,6 +534,8 @@ Setting a variable overrides the profile for that one field and nothing else.
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | Where projects-mode project folders live (see [Projects](#projects)). |
 | `LOCALCODE_PROJECTS_EMBED_MODEL` | `nomic-embed-text` | Prose embedding model for project knowledge, artifacts and chats. Changing it rebuilds each project's store on its next write (journaled `index.rebuilt`). |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | Share of the context window given to a project chat's per-turn `[Project knowledge]` block (clamped to 0.02–0.5). |
+| `LOCALCODE_COMFYUI_URL` | — | ComfyUI server that paints RenderUI Image prompts in project chats (e.g. `http://192.168.1.50:8188`; start ComfyUI with `--listen`) |
+| `LOCALCODE_COMFYUI_CHECKPOINT` | — | ComfyUI checkpoint to use; unset picks an SDXL one (Juggernaut first) and logs the pick |
 
 ### Full inventory
 

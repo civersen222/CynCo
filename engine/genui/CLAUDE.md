@@ -6,7 +6,7 @@ Generative UI for the 9161 dashboard: the model draws tables, plans, charts, key
 ## Key files
 | File | Role |
 |---|---|
-| `catalog.ts` | `GENUI_CATALOG`: 42 components in seven groups with typed props, children policy, description and example — the single source the validator, the prompt and the dashboard tests read. |
+| `catalog.ts` | `GENUI_CATALOG`: 42 components in seven groups with typed props, children policy, description and example — the single source the validator, the prompt and the dashboard tests read. An `Image` takes a `prompt` the engine paints (`engine/imagegen`, F174) or a real URL in `src`; 3D is left for imagegen's later image → 3D step. |
 | `spec.ts` | `validateSpec`: name resolution, field relocation, shape coercion, limits, reachability, Button/Form and Tabs rules; lenient `partial` mode for streaming frames. |
 | `prompt.ts` | `genuiPromptSection`: the static `<RENDER_UI>` section (when the surface IS the answer, shapes, arguments, eleven rules, an options example and a plan example, grouped signatures), built once from the catalog. |
 | `partial.ts` | `parsePartialSpec`: jsonrepair + partial validation over the streaming tool-call buffer; `PARTIAL_FRAME_INTERVAL_MS`. |
