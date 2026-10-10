@@ -294,7 +294,7 @@ describe('validateSpec: Image prompt or src', () => {
       expect(r.errors, src).toEqual([
         `i.src: "${src}" ${HINT}`,
         'i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
-        'c.children: "i" is not an element id',
+        'c.children: "i" is not an element id — nothing was drawn for it (the element was dropped)',
       ])
     }
     const num = one('Image', { src: 42, alt: 'a' })
@@ -321,6 +321,41 @@ describe('validateSpec: Image prompt or src', () => {
     const tiny = one('Image', { prompt: ' a ', src: 'https://example.com/t.jpg', alt: 'a' })
     expect(tiny.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'a' })
     expect(tiny.errors).toEqual([])
+  })
+
+  // Review of stage B: coerceProps and the element-level relocation accept a
+  // prop name in any letter case, so "Src" and "Prompt" skipped every check
+  // above — a fake path was kept unreported, both survived, the prompt was
+  // never bounded, and validating the output again gave a different answer.
+  it('a prop name in any letter case meets the same checks, and validating the output again changes nothing', () => {
+    const fake = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { Src: 'aliens/a.png', alt: 'Alien' } } } })
+    expect(fake.spec?.elements.i).toBeUndefined()
+    expect(fake.errors.slice(0, 2)).toEqual([
+      `i.src: "aliens/a.png" ${HINT}`,
+      'i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+    ])
+    expect(one('Image', { SRC: 'javascript:alert(1)', alt: 'a' }).errors[0]).toBe(`x.src: "javascript:alert(1)" ${HINT}`)
+    const both = one('Image', { prompt: 'a tall green alien', Src: 'https://e.com/a.png', alt: 'A' })
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(both.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    const long = one('Image', { Prompt: 'walnut '.repeat(200), alt: 'a' })
+    expect((long.spec?.elements.x.props?.prompt as string).length).toBeLessThanOrEqual(1000)
+    expect(long.errors).toEqual(['x.prompt: cut to 1000 characters'])
+    expect(one('Image', { Prompt: '  a ', alt: 'a' }).spec).toBeNull()
+    // an element-level "Prompt" beside a made-up props.src: the prompt counts as given
+    const lifted = one('Image', { src: 'aliens/a.png', alt: 'A' }, { Prompt: 'a tall green alien' })
+    expect(lifted.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(lifted.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    // two spellings of one prop: the exact name wins and the other is reported
+    const twice = one('Image', { Src: 'aliens/a.png', src: 'https://e.com/a.png', alt: 'A' })
+    expect(twice.spec?.elements.x.props).toEqual({ src: 'https://e.com/a.png', alt: 'A' })
+    expect(twice.errors).toEqual(['x: "Src" repeats "src" and was dropped'])
+    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.png', alt: 'A' }]) {
+      const first = one('Image', props)
+      const again = validateSpec(first.spec)
+      expect(again.errors, JSON.stringify(props).slice(0, 60)).toEqual([])
+      expect(again.spec).toEqual(first.spec)
+    }
   })
 
   it('an element-level "image" is the engine\'s alone: the model\'s is reported and dropped', () => {

@@ -168,8 +168,9 @@ describe('generative-UI forcing on the live loop (F171)', () => {
 
   // F174 latency evidence: each model call's log line says how long it took and
   // whether it was sent forced, so a slow forced answer can be read off the log.
-  // "requested": callModel may still send auto (sticky server fallback, simulated
-  // mode); its own [callModel] line says so.
+  // "requested": the call may still go out as auto — simulated mode, where the
+  // [callModel] line says NOT SENT, or a server that refused required earlier,
+  // where the provider's [llama-cpp] line does (provider.test.ts).
   it('the message_stop log line carries the call\'s elapsed time and whether forcing was requested', async () => {
     const lines: string[] = []
     vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })

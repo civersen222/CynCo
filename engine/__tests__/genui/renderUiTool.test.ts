@@ -81,8 +81,36 @@ describe('RenderUI tool', () => {
       '- a: an Image takes "prompt" or "src", not both — the prompt was kept',
       '- b.src: "aliens/b.png" is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it',
       '- b (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
-      '- c.children: "b" is not an element id',
+      '- c.children: "b" is not an element id — nothing was drawn for it (the element was dropped)',
     ])
+  })
+
+  // Review of stage B: the header sends the model back only for "an element
+  // that was dropped", so every note for something not drawn must say so in
+  // those words. A bad id, a non-object, an unknown component and a child
+  // naming no element used not to, and the old "use a name from the catalog"
+  // read as a note to tidy.
+  it('every note for an element that is not drawn says it was dropped', async () => {
+    const r = await renderUiTool.execute({ surface: 'aliens', spec: { root: 'g', elements: {
+      g: { type: 'Grid', children: ['a', 'b', 'c', 'd'] },
+      a: { type: 'Card', props: { title: 'A' }, children: ['a img'] },
+      'a img': { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
+      b: { type: 'Card', props: { title: 'B' }, children: ['b-img'] },
+      'b-img': { type: 'Picture', props: { prompt: 'a small grey alien', alt: 'B' } },
+      c: { type: 'Card', props: { title: 'C' }, children: ['c-img'] },
+      d: 'a blue alien',
+    } } }, '/tmp')
+    expect(r.isError).toBe(false)
+    const notes = r.output.split('\n').filter(l => l.startsWith('- '))
+    expect(notes).toEqual([
+      '- element id "a img" must match /^[A-Za-z0-9_-]{1,40}$/ and not be a reserved name — the element was dropped',
+      '- b-img: unknown component "Picture" — the element was dropped and an error box shows in its place; use a name from the catalog',
+      '- d: not an object — the element was dropped',
+      '- g.children: "d" is not an element id — nothing was drawn for it (the element was dropped)',
+      '- a.children: "a img" is not an element id — nothing was drawn for it (the element was dropped)',
+      '- c.children: "c-img" is not an element id — nothing was drawn for it (the element was dropped)',
+    ])
+    for (const n of notes) expect(n).toMatch(/the element was dropped/)
   })
 })
 

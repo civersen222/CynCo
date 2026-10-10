@@ -297,6 +297,38 @@ describe('LlamaCppProvider', () => {
     }
   })
 
+  // Review of stage B: after the refusal every forced call silently went out
+  // as 'auto' while the loop's lines still said tool_choice=required and
+  // forced=requested; each such call now says on its own line that it was not sent.
+  it('says on every forced call after a refusal that required was not sent', async () => {
+    const lines: string[] = []
+    const realLog = console.log
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')) }
+    const realFetch = globalThis.fetch
+    const sse = 'data: {"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async (_url: any, init: any) => {
+      if (JSON.parse(init.body).tool_choice === 'required') {
+        return new Response(JSON.stringify({ error: { code: 400, message: 'tool_choice "required" is not supported' } }), { status: 400 })
+      }
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp' })
+      const tools = [{ name: 'RenderUI', description: 'draw', input_schema: { type: 'object', properties: {} } }]
+      const req = { model: 'qwen3.6', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools, tool_choice: 'required' } as any
+      for await (const _e of provider.stream(req)) { /* drain: refused, retried with auto */ }
+      lines.length = 0
+      for await (const _e of provider.stream(req)) { /* drain: sent auto from the start */ }
+      expect(lines.filter(l => l.startsWith('[llama-cpp] tool_choice=required NOT SENT'))).toHaveLength(1)
+      lines.length = 0
+      for await (const _e of provider.stream({ ...req, tool_choice: undefined })) { /* drain: never asked */ }
+      expect(lines.some(l => l.includes('NOT SENT'))).toBe(false)
+    } finally {
+      globalThis.fetch = realFetch
+      console.log = realLog
+    }
+  })
+
   it('a 400 that is not about tool_choice still throws when forcing', async () => {
     const realFetch = globalThis.fetch
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: { code: 400, message: 'context overflow' } }), { status: 400 })) as any

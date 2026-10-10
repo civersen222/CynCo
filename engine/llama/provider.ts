@@ -326,6 +326,9 @@ export class LlamaCppProvider implements Provider {
     if (request.tools?.length) {
       body.tools = toOpenAITools(request.tools)
       body.tool_choice = request.tool_choice === 'required' && !this.toolChoiceUnsupported ? 'required' : 'auto'
+      // Per call, not just once: the loop's own lines still say the call was
+      // forced, and only this one knows the server refused it.
+      if (request.tool_choice === 'required' && this.toolChoiceUnsupported) console.log(`[llama-cpp] tool_choice=required NOT SENT (this server refused it earlier this session) — sent auto`)
     }
     if (request.grammar) {
       body.grammar = request.grammar

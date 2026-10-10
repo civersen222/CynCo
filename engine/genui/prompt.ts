@@ -87,7 +87,7 @@ const OPTIONS_EXAMPLE = {
  */
 const OPENING = {
   project: `You can draw UI right in this chat with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. When your answer offers options, designs, ideas, a comparison or a choice — or lays out figures or steps the user will act on — the surface IS the answer: call RenderUI first, with at most one sentence of prose before it, and put the details, your recommendation and your question inside the surface. Never also write the same options out as prose. Plain prose is for a short direct answer, a single open question, or a draft the user asked to read. One surface per answer.`,
-  session: `You can draw UI in the user's dashboard with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. Use it when structure helps — options to choose from, a comparison, a plan, figures. In a coding session the user may be in a terminal, which draws no surface: write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files.`,
+  session: `You can draw UI in the user's dashboard with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. Use it when structure helps — options to choose from, a comparison, a plan, figures. In a coding session the user may be in a terminal, which draws no surface: write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files. Pictures (an Image "prompt") are painted in project chats only; leave them out here.`,
 }
 
 export type GenuiPromptMode = keyof typeof OPENING

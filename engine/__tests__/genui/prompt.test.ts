@@ -2,7 +2,7 @@
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
  * every catalog component exactly once, stay under its budget (12k chars,
  * ~3k tokens — raised from 10k for the options example, F171; the picture
- * wording of F174 fits under it: 11,920 project, 11,739 session), and be
+ * wording of F174 fits under it: 11,920 project, 11,824 session), and be
  * byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
@@ -97,6 +97,14 @@ describe('genui prompt section', () => {
     expect(session).not.toMatch(/the surface IS the answer/)
     expect(session).not.toMatch(/at most one sentence of prose/)
     expect(session.slice(opening.length)).toBe(text.slice(text.split('\n\n')[0].length))
+  })
+
+  // Review of stage B: the shared Shapes line gives each design a prompted
+  // picture, but pictures are painted in project chats only — a coding session
+  // that followed it drew a "not generated" box in every card on every call.
+  it('tells a coding session to leave prompted pictures out, and only a coding session', () => {
+    expect(session.split('\n\n')[0]).toMatch(/Pictures \(an Image "prompt"\) are painted in project chats only; leave them out here\./)
+    expect(text).not.toMatch(/painted in project chats only/)
   })
 
   it('never shows the call as text the model could copy into its reply', () => {

@@ -352,6 +352,15 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     // F174: "prompt" describes a picture the engine paints (engine/imagegen);
     // "src" is only ever a real URL. A made-up path is dropped, never turned
     // into a prompt — "aliens/a.png" describes nothing.
+    // coerceProps and the relocation above take any letter case, so "Src"
+    // and "Prompt" must meet these checks too; the exact name wins a tie.
+    for (const k of Object.keys(p)) {
+      const canon = k.toLowerCase()
+      if ((canon !== 'prompt' && canon !== 'src') || k === canon) continue
+      if (p[canon] === undefined || p[canon] === null) p[canon] = p[k]
+      else report(ctx, `${at}: "${k}" repeats "${canon}" and was dropped`)
+      delete p[k]
+    }
     const prompt = toStr(p.prompt)
     if (prompt !== undefined) {
       const norm = prompt.replace(/\s+/g, ' ').trim()
@@ -450,15 +459,15 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
   for (const [rawId, el] of Object.entries(elementsRaw)) {
     if (kept >= LIMITS.elements) { report(ctx, `only the first ${LIMITS.elements} elements were kept`); break }
     const id = String(rawId).trim()
-    if (!LIMITS.idPattern.test(id) || RESERVED_KEYS.has(id)) { report(ctx, `element id "${rawId}" must match ${LIMITS.idPattern} and not be a reserved name`); continue }
-    if (!isObj(el)) { report(ctx, `${id}: not an object`); continue }
+    if (!LIMITS.idPattern.test(id) || RESERVED_KEYS.has(id)) { report(ctx, `element id "${rawId}" must match ${LIMITS.idPattern} and not be a reserved name — the element was dropped`); continue }
+    if (!isObj(el)) { report(ctx, `${id}: not an object — the element was dropped`); continue }
     const at = id
     const type = resolveComponentName(el.type)
     let def: ComponentDef | undefined = type ? GENUI_CATALOG[type] : undefined
     let typeName = type
     if (!typeName || !def) {
       if (ctx.partial) continue
-      report(ctx, `${id}: unknown component "${String(el.type)}" — it was replaced by an error note; use a name from the catalog`)
+      report(ctx, `${id}: unknown component "${String(el.type)}" — the element was dropped and an error box shows in its place; use a name from the catalog`)
       typeName = 'Callout'; def = GENUI_CATALOG.Callout
       normalised[id] = { type: 'Callout', props: { type: 'error', title: UNKNOWN_COMPONENT_TITLE, message: `"${String(el.type)}" is not in the catalog` } }
       kept++
@@ -551,7 +560,7 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     if (depth >= LIMITS.depth) { report(ctx, `${id}: nesting deeper than ${LIMITS.depth} was cut`); el.children = []; continue }
     const kids: string[] = []
     for (const c of el.children) {
-      if (!Object.hasOwn(normalised, c)) { report(ctx, `${id}.children: "${c}" is not an element id`); continue }
+      if (!Object.hasOwn(normalised, c)) { report(ctx, `${id}.children: "${c}" is not an element id — nothing was drawn for it (the element was dropped)`); continue }
       // Anything already placed — the root included — is never placed again,
       // so parentOf stays a tree and the ancestor walks below terminate.
       if (seen.has(c)) { report(ctx, `${id}.children: "${c}" is already placed (a cycle or a second parent) and was skipped`); continue }
