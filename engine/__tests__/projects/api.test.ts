@@ -9,9 +9,12 @@ import {
   listChatsApi, getChatApi, renameChatApi, rescanApi,
   UPLOAD_MAX_BYTES, type ProjectsDeps,
 } from '../../projects/api.js'
-import { readFileIndex } from '../../projects/layout.js'
+import { createProject, readFileIndex } from '../../projects/layout.js'
+import { withValidatedSurfaces } from '../../projects/api.js'
+import { INTERRUPTED_REASON, NOT_GENERATED_REASON, originKey, pngPath, recordOrigins, RUN_ID, writeSidecar, type ImageSidecar } from '../../imagegen/store.js'
+import { PNG_1X1 } from '../imagegen/mockComfy.js'
 import { ingestFile, type IngestEvent } from '../../projects/ingest.js'
-import { appendTranscript, newChatFile } from '../../projects/chat.js'
+import { appendTranscript, newChatFile, readTranscript } from '../../projects/chat.js'
 import { pdfWithPages } from './fixtures.js'
 import type { EmbedClient } from '../../index/embedClient.js'
 
@@ -254,6 +257,89 @@ describe('chats: list/rename', () => {
     const slug = ((await createProjectApi(d, { name: 'Diorama' })).body as { slug: string }).slug
     const r = await renameChatApi(d, slug, 'ghost.jsonl', { title: 'x' })
     expect(r.status).toBe(404)
+  })
+})
+
+// F174: a reloaded chat's prompted Images get the picture state they have
+// now, found through images/index.json by "<chatFile>#<toolId>#<elementId>".
+describe('chats: generated pictures on reload', () => {
+  const DONE = 'a'.repeat(32), QUEUED = 'b'.repeat(32), STALE = 'c'.repeat(32), GONE = 'd'.repeat(32)
+  const sidecar = (key: string, over: Partial<ImageSidecar> = {}): ImageSidecar => ({
+    schema: 1, key, status: 'done', runId: RUN_ID, prompt: 'p', negative: 'n', alt: 'A', seed: 1, width: 1024, height: 768, steps: 40, cfg: 6,
+    sampler: 'dpmpp_2m', scheduler: 'karras', checkpoint: 'auto', workflow: { source: 'builtin', sha256: 'builtin-1' }, apiPrompt: null,
+    comfy: { host: 'pc:8188', promptId: 'x', outputs: [] }, queuedAt: '2026-10-10T00:00:00.000Z',
+    origin: { chatFile: 'c.jsonl', toolId: 'toolu_1', elementId: 'a-img', surfaceId: 'paths' }, ...over,
+  })
+  const img = (prompt: string, extra: Record<string, unknown> = {}) => ({ type: 'Image', props: { prompt, alt: prompt }, ...extra })
+  const raw = { root: 'g', elements: {
+    g: { type: 'Grid', props: { columns: 3 }, children: ['a-img', 'b-img', 'c-img', 'd-img', 'e-img', 'f-img'] },
+    'a-img': img('stone path'),
+    'b-img': img('timber path'),
+    'c-img': img('gravel path'),
+    // the model cannot write the annotation itself: validateSpec drops it, and no origin names this one
+    'd-img': img('brick path', { image: { status: 'done', key: DONE, slug: 'x', w: 1, h: 1 } }),
+    'e-img': { type: 'Image', props: { src: 'https://example.com/t.jpg', alt: 'URL picture' } },
+    'f-img': img('moss path'),
+  } }
+
+  function setup() {
+    const slug = createProject(home, { name: 'Garden' }).slug
+    const dir = join(home, slug)
+    const { file } = newChatFile(dir, 'Show me some path designs')
+    appendTranscript(dir, file, { role: 'user', content: [{ type: 'text', text: 'Show me some path designs' }] })
+    appendTranscript(dir, file, { role: 'assistant', content: [
+      { type: 'tool_use', id: 'toolu_1', name: 'RenderUI', input: { surface: 'paths', spec: raw } },
+      { type: 'tool_use', id: 'toolu_2', name: 'RenderUI', input: { surface: 'paths', spec: raw } },
+    ] })
+    writeSidecar(dir, sidecar(DONE))
+    writeFileSync(pngPath(dir, DONE), PNG_1X1)
+    writeSidecar(dir, sidecar(QUEUED, { status: 'queued' }))
+    writeSidecar(dir, sidecar(STALE, { status: 'running', runId: 'an-engine-that-stopped' }))
+    writeSidecar(dir, sidecar(GONE))   // done, but its PNG was deleted
+    const o = (elementId: string) => originKey({ chatFile: file, toolId: 'toolu_1', elementId })
+    recordOrigins(dir, [[o('a-img'), DONE], [o('b-img'), QUEUED], [o('c-img'), STALE], [o('f-img'), GONE]])
+    return { slug, dir, file }
+  }
+  const imagesOf = (body: unknown, call: number) => {
+    const els = ((body as any).messages[1].content[call].input.spec.elements) as Record<string, { image?: unknown }>
+    return Object.fromEntries(Object.entries(els).map(([id, el]) => [id, el.image]))
+  }
+
+  it('getChatApi serves each prompted Image with its stored state: done, queued, interrupted, not generated, PNG missing', () => {
+    const { slug, dir, file } = setup()
+    const before = readFileSync(join(dir, 'chats', file), 'utf8')
+    const r = getChatApi(deps(), slug, file)
+    expect(r.status).toBe(200)
+    const base = { slug, w: 1024, h: 768 }
+    expect(imagesOf(r.body, 0)).toEqual({
+      g: undefined,
+      'a-img': { status: 'done', key: DONE, ...base },
+      'b-img': { status: 'queued', key: QUEUED, ...base },
+      'c-img': { status: 'failed', key: STALE, ...base, reason: INTERRUPTED_REASON },
+      'd-img': { status: 'off', reason: NOT_GENERATED_REASON },
+      'e-img': undefined,
+      'f-img': { status: 'failed', key: GONE, ...base, reason: `images/${GONE}.png is missing` },
+    })
+    // the origin names the call: the same element ids in another call were never generated
+    expect(Object.values(imagesOf(r.body, 1)).filter(Boolean)).toEqual(Array(5).fill({ status: 'off', reason: NOT_GENERATED_REASON }))
+    expect(readFileSync(join(dir, 'chats', file), 'utf8')).toBe(before)
+  })
+
+  it('the one-argument call is unchanged: no picture state at all, even with records on disk', () => {
+    const { dir, file } = setup()
+    const one = withValidatedSurfaces(readTranscript(dir, file)!) as any
+    const els = Object.values(one.messages[1].content[0].input.spec.elements) as Record<string, unknown>[]
+    expect(els.length).toBe(7)
+    expect(els.some(el => 'image' in el)).toBe(false)
+  })
+
+  it('an unreadable index reads as "not generated" for every picture, never a throw', () => {
+    const { slug, dir, file } = setup()
+    writeFileSync(join(dir, 'images', 'index.json'), '{ not json', 'utf8')
+    const r = getChatApi(deps(), slug, file)
+    expect(r.status).toBe(200)
+    const states = Object.values(imagesOf(r.body, 0)).filter(Boolean)
+    expect(states).toEqual(Array(5).fill({ status: 'off', reason: NOT_GENERATED_REASON }))
   })
 })
 

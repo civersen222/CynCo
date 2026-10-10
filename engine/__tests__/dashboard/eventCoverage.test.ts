@@ -32,6 +32,8 @@ const MUST_RENDER = [
   'context.status',
   // A RenderUI surface (engine/genui): with no arm the model's cards, forms and charts never reach the pane.
   'ui.render',
+  // A generated picture's state (engine/imagegen, F174): with no arm a painted picture never replaces its placeholder.
+  'ui.image',
 ]
 
 describe('dashboard event coverage', () => {

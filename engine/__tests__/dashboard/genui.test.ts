@@ -196,15 +196,22 @@ function matchChain(n: Node, chain: string[]): boolean {
 
 function makeDocument() {
   const body = new Node('body')
+  const listeners: Record<string, Listener[]> = {}
   return {
     body,
+    listeners,
     createElement: (tag: string) => new Node(tag),
     createElementNS: (ns: string, tag: string) => new Node(tag, ns),
     getElementById: (id: string) => body.descendants().find(n => n.id === id) ?? null,
     querySelector: (sel: string) => body.querySelector(sel),
     querySelectorAll: (sel: string) => body.querySelectorAll(sel),
+    addEventListener: (type: string, fn: Listener) => { (listeners[type] = listeners[type] ?? []).push(fn) },
+    removeEventListener: (type: string, fn: Listener) => { listeners[type] = (listeners[type] ?? []).filter(f => f !== fn) },
+    fire: (type: string, ev: unknown) => { for (const fn of [...(listeners[type] ?? [])]) fn(ev) },
   }
 }
+
+type ImageEntry = { status: string; reason: string; slug: string; url: string; loading: boolean }
 
 type Page = {
   renderUiSpec: (spec: unknown, el: Node, ctx?: Record<string, unknown>) => Record<string, any>
@@ -213,27 +220,56 @@ type Page = {
   finalizeGenuiSurfaces: () => void
   GENUI_RENDERERS: Record<string, unknown>
   genuiToolRows: Record<string, string>
+  applyUiImage: (event: Record<string, unknown>) => void
+  genuiImages: Record<string, ImageEntry>
+  genuiRecheckImages: () => void
+  genuiForgetImages: () => void
 }
 
-/** The page's genui section running against the stub document and a recording socket. */
-function harness(opts: { wsOpen?: boolean; project?: boolean; cwd?: string | null } = {}) {
+/** A fetch reply the way the page reads one: ok/status, a content-type header, blob() or json(). */
+type FakeReply = { ok: boolean; status: number; headers: { get: (k: string) => string | null }; blob: () => Promise<unknown>; json: () => Promise<unknown> }
+function reply(status: number, type: string | null, body: unknown = 'png-bytes'): FakeReply {
+  return {
+    ok: status >= 200 && status < 300, status,
+    headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? type : null) },
+    blob: () => Promise.resolve({ blob: body }),
+    json: () => Promise.resolve(body),
+  }
+}
+
+/**
+ * The page's genui section running against the stub document, a recording
+ * socket, a recording fetch (by default it never answers) and a URL stub
+ * that names blob URLs `blob:page/<n>`.
+ */
+function harness(opts: { wsOpen?: boolean; project?: boolean; cwd?: string | null; fetch?: (url: string) => Promise<FakeReply> } = {}) {
   const document = makeDocument()
   const msgs = new Node('div'); msgs.id = 'chatMessages'; document.body.appendChild(msgs)
   if (opts.cwd !== null) { const box = new Node('input'); box.id = 'chatCwd'; box.value = opts.cwd ?? ''; document.body.appendChild(box) }
   const sent: Record<string, unknown>[] = []
   const said: [string, string][] = []
-  const make = new Function('document', 'ws', 'appendChatMsg', 'brainViz', 'projectsState',
+  const fetched: string[] = []
+  const blobs = { created: [] as unknown[], revoked: [] as string[] }
+  const fetchFn = (url: string) => { fetched.push(url); return opts.fetch ? opts.fetch(url) : new Promise<FakeReply>(() => {}) }
+  const urlStub = {
+    createObjectURL: (b: unknown) => { blobs.created.push(b); return 'blob:page/' + blobs.created.length },
+    revokeObjectURL: (u: string) => { blobs.revoked.push(u) },
+  }
+  const make = new Function('document', 'ws', 'appendChatMsg', 'brainViz', 'projectsState', 'fetch', 'URL',
     fnSource('escHtml') + '\n' + genuiSection() +
     '\nreturn { renderUiSpec: renderUiSpec, upsertSurface: upsertSurface, sendUiAction: sendUiAction,' +
-    ' finalizeGenuiSurfaces: finalizeGenuiSurfaces, GENUI_RENDERERS: GENUI_RENDERERS, genuiToolRows: genuiToolRows };')
+    ' finalizeGenuiSurfaces: finalizeGenuiSurfaces, GENUI_RENDERERS: GENUI_RENDERERS, genuiToolRows: genuiToolRows,' +
+    ' applyUiImage: applyUiImage, genuiImages: genuiImages, genuiRecheckImages: genuiRecheckImages, genuiForgetImages: genuiForgetImages };')
   const page = make(
     document,
     { readyState: opts.wsOpen === false ? 3 : 1, send: (s: string) => sent.push(JSON.parse(s)) },
     (role: string, text: string) => said.push([role, text]),
     { setActive: () => {} },
     { active: opts.project ? { slug: 'p', chat: 'c' } : null },
+    fetchFn,
+    urlStub,
   ) as Page
-  return { page, document, msgs, sent, said }
+  return { page, document, msgs, sent, said, fetched, blobs }
 }
 
 /** A surface element the way upsertSurface would label it. */
@@ -946,5 +982,305 @@ describe('dashboard genui: "Show as UI" and "Save as artifact" under a project r
     expect(src).toContain('onclick="showReplyAsUi(')
     expect(fnSource('sendChatMessage')).toContain('clearChatCitations()')
     expect(fnSource('sendUiAction')).toContain('clearChatCitations()')
+  })
+})
+
+// ═══ 4. generated pictures (F174) ═════════════════════════
+// An Image with a "prompt" is painted by the engine; the final frame carries
+// the engine's annotation (`el.image`) and `ui.image` events keyed on the
+// image key fill it in. The page builds the URL from a checked key and slug
+// and fetches it with the token into a blob URL — never a bare <img src>.
+
+const KEY = 'a'.repeat(32)
+const KEY2 = 'b'.repeat(32)
+const PROMPT = 'curving path of weathered grey flagstones through low ferns, morning light, photo'
+
+/** One Image in a Card; `image` is the engine's annotation (omitted = none). */
+function picSpec(image?: unknown, extra: Record<string, unknown> = {}) {
+  const img: Record<string, unknown> = { type: 'Image', props: { prompt: PROMPT, alt: 'Stone path', caption: 'Option A', ...extra } }
+  if (image !== undefined) img.image = image
+  return { root: 'c', elements: { c: { type: 'Card', props: { title: 'A' }, children: ['img'] }, img } }
+}
+const done = (key = KEY, extra: Record<string, unknown> = {}) => ({ status: 'done', key, slug: 'p', w: 1024, h: 768, ...extra })
+/** A final frame for `surface`, drawn through upsertSurface so the figure sits in the document. */
+function drawPic(page: Page, surface: string, image?: unknown, partial = false) {
+  return page.upsertSurface({ type: 'ui.render', toolId: 't-' + surface, surfaceId: surface, partial, spec: picSpec(image) })!
+}
+const fig = (el: Node) => el.querySelector('figure.genui-image-gen')!
+const boxText = (el: Node) => el.querySelector('.genui-image-box')!.textContent
+const tick = () => new Promise(r => setTimeout(r, 0))
+
+describe('dashboard genui: generated pictures — wiring', () => {
+  const js = scripts()
+
+  it('handles ui.image next to ui.render, rechecks on reconnect, forgets on a cleared pane', () => {
+    const arm = js.slice(js.indexOf("case 'ui.image'"), js.indexOf('break;', js.indexOf("case 'ui.image'")))
+    expect(arm).toContain('applyUiImage(event)')
+    expect(js.indexOf("case 'ui.image'")).toBeGreaterThan(js.indexOf("case 'ui.render'"))
+    expect(js.indexOf("case 'ui.image'") - js.indexOf("case 'ui.render'")).toBeLessThan(400)
+    const onopen = js.slice(js.indexOf('ws.onopen = function()'), js.indexOf('ws.onclose'))
+    expect(onopen).toContain('genuiRecheckImages()')
+    expect(fnSource('clearChatPane')).toContain('genuiForgetImages()')
+  })
+
+  it('never points an <img> at the API: the picture comes through fetch and a blob URL', () => {
+    expect(js).not.toMatch(/setAttribute\(\s*['"]src['"]\s*,\s*['"]\/api\//)
+    expect(js).not.toMatch(/\.src\s*=\s*['"]\/api\//)
+    expect(fnSource('genuiLoadImage')).toContain("fetch('/api/projects/' + m.slug + '/images/' + key + '.png')")
+    expect(fnSource('genuiLoadImage')).toContain('URL.createObjectURL(blob)')
+    // the key and slug are checked against the engine's own patterns before any URL is built from them
+    expect(js).toContain('var GENUI_IMAGE_KEY_RE = /^[0-9a-f]{32}$/;')
+    expect(js).toContain('var GENUI_IMAGE_SLUG_RE = /^[a-z0-9-]{1,64}$/;')
+  })
+
+  it('styles: the box keeps the picture shape, the pulse honours reduced motion, a lightbox', () => {
+    expect(html).toContain('.genui-image-box {')
+    expect(html).toContain('aspect-ratio: 1 / 1')
+    expect(html).toContain('@keyframes genui-pulse')
+    expect(html).toContain('@media (prefers-reduced-motion: reduce) { .genui-image-pulse { animation: none; } }')
+    expect(html).toContain('.genui-lightbox {')
+  })
+})
+
+describe('dashboard genui: generated pictures — every state', () => {
+  it('a partial frame says the picture comes later: no fetch, no key, no pulse, never "image unavailable"', () => {
+    const { page, msgs, fetched } = harness()
+    const el = drawPic(page, 'opts', undefined, true)
+    expect(boxText(el)).toBe('Picture comes when the card is finished')
+    expect(fig(el).hasAttribute('data-image-key')).toBe(false)
+    expect(el.querySelector('.genui-image-box')!.classList.contains('genui-image-pulse')).toBe(false)
+    expect(msgs.textContent).not.toContain('image unavailable')
+    // even an annotation riding a partial frame starts nothing
+    const el2 = drawPic(page, 'opts2', done(), true)
+    expect(boxText(el2)).toBe('Picture comes when the card is finished')
+    expect(fetched).toEqual([])
+    expect(page.genuiImages).toEqual({})
+    expect(el.querySelector('.genui-image-alt')!.textContent).toBe('Stone path')
+    expect(el.querySelector('figcaption')!.textContent).toBe('Option A')
+  })
+
+  it('a final frame with no annotation (catalog demo, old transcript) says the picture was not generated', () => {
+    const { page, fetched } = harness()
+    const el = drawPic(page, 'opts')
+    expect(boxText(el)).toBe('Stone path — picture not generated')
+    // the box names the alt itself, so the alt line under it is hidden
+    expect(el.querySelector('.genui-image-alt')!.classList.contains('genui-hidden')).toBe(true)
+    expect(el.querySelector('.genui-image-box')!.style.aspectRatio).toBe('1 / 1')
+    expect(fetched).toEqual([])
+  })
+
+  it('off: the alt and the engine\'s reason', () => {
+    const { page } = harness()
+    const el = drawPic(page, 'opts', { status: 'off', reason: 'pictures are generated in project chats only' })
+    expect(boxText(el)).toBe('Stone path — pictures are generated in project chats only')
+    expect(fig(el).hasAttribute('data-image-key')).toBe(false)
+  })
+
+  it('queued and running pulse; failed names the reason; the box takes the picture\'s shape', () => {
+    const { page, fetched } = harness()
+    const q = drawPic(page, 'q', { status: 'queued', key: KEY, slug: 'p', w: 1024, h: 768 })
+    expect(boxText(q)).toBe('Picture queued…')
+    expect(q.querySelector('.genui-image-box')!.classList.contains('genui-image-pulse')).toBe(true)
+    expect(q.querySelector('.genui-image-box')!.style.aspectRatio).toBe('1024 / 768')
+    expect(fig(q).getAttribute('data-image-key')).toBe(KEY)
+    expect(q.querySelector('.genui-image-alt')!.classList.contains('genui-hidden')).toBe(false)
+    const r = drawPic(page, 'r', { status: 'running', key: KEY2, slug: 'p', w: 1024, h: 1024 })
+    expect(boxText(r)).toBe('Painting the picture…')
+    expect(r.querySelector('.genui-image-box')!.classList.contains('genui-image-pulse')).toBe(true)
+    const f = drawPic(page, 'f', { status: 'failed', key: 'c'.repeat(32), slug: 'p', w: 1024, h: 1024, reason: 'ComfyUI did not answer at http://pc:8188 (timeout)' })
+    expect(boxText(f)).toBe('Picture failed: ComfyUI did not answer at http://pc:8188 (timeout)')
+    expect(f.querySelector('.genui-image-box')!.classList.contains('genui-image-pulse')).toBe(false)
+    expect(f.querySelector('.genui-image-box')!.classList.contains('genui-image-failed')).toBe(true)
+    expect(fetched).toEqual([])
+  })
+
+  it('done: "Loading picture…", one fetch of /api/projects/p/images/<key>.png, then an <img> on the blob URL', async () => {
+    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/png') })
+    const el = drawPic(page, 'opts', done())
+    expect(boxText(el)).toBe('Loading picture…')
+    expect(fetched).toEqual([`/api/projects/p/images/${KEY}.png`])
+    await tick()
+    const img = el.querySelector('.genui-image-box img')!
+    expect(img.getAttribute('src')).toBe('blob:page/1')
+    expect(img.getAttribute('alt')).toBe('Stone path')
+    expect(blobs.created).toEqual([{ blob: 'png-bytes' }])
+    expect(page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/1', loading: false })
+    // a second surface showing the same key draws at once from the cached blob URL: no second fetch
+    const again = drawPic(page, 'other', done())
+    expect(again.querySelector('.genui-image-box img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(fetched).toHaveLength(1)
+  })
+
+  it('a refused or wrong-typed load marks the picture failed with the HTTP status', async () => {
+    const { page } = harness({ fetch: async (u) => (u.includes(KEY) ? reply(401, 'application/json') : reply(200, 'text/html')) })
+    const a = drawPic(page, 'a', done())
+    const b = drawPic(page, 'b', done(KEY2))
+    await tick()
+    expect(boxText(a)).toBe('Picture failed: could not load the picture (HTTP 401)')
+    expect(boxText(b)).toBe('Picture failed: could not load the picture (HTTP 200, text/html)')
+    expect(a.querySelector('img')).toBeNull()
+  })
+
+  it('an annotation with a bad key, slug or status draws as off: "bad picture reference"', () => {
+    const { page, fetched } = harness()
+    for (const [i, im] of [
+      done('A'.repeat(32)), done('a'.repeat(31)), done('../../x'), { ...done(), slug: '../p' }, { ...done(), slug: 'P' },
+      { ...done(), status: 'painted' }, { ...done(), key: 7 }, { ...done(), status: '__proto__' },
+    ].entries()) {
+      const el = drawPic(page, 'bad' + i, im)
+      expect(boxText(el), JSON.stringify(im)).toBe('Stone path — bad picture reference')
+      expect(fig(el).hasAttribute('data-image-key')).toBe(false)
+    }
+    expect(fetched).toEqual([])
+    expect(page.genuiImages).toEqual({})
+  })
+
+  it('a URL Image while the call streams: the neutral placeholder, no "Load image from" button; the final frame draws it', () => {
+    const { page } = harness()
+    const spec = (src: string) => ({ root: 'i', elements: { i: { type: 'Image', props: { src, alt: 'River table' } } } })
+    const el = page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'ref', partial: true, spec: spec('https://exa') })!
+    expect(el.querySelector('.genui-image-ph')!.textContent).toBe('River table')
+    expect(el.querySelector('button')).toBeNull()
+    page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'ref', partial: false, spec: spec('https://example.com/t.jpg') })
+    expect(el.querySelector('button.genui-image-load')!.textContent).toBe('Load image from example.com')
+    expect(el.querySelector('img')).toBeNull()
+  })
+})
+
+describe('dashboard genui: generated pictures — ui.image and the map', () => {
+  it('applyUiImage fills every figure showing the key and leaves the others alone', async () => {
+    const { page, fetched } = harness({ fetch: async () => reply(200, 'image/png') })
+    const queued = { status: 'queued', key: KEY, slug: 'p', w: 1024, h: 1024 }
+    const a = drawPic(page, 'a', queued)
+    const b = drawPic(page, 'b', queued)
+    const c = drawPic(page, 'c', { ...queued, key: KEY2 })
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'running' })
+    expect([boxText(a), boxText(b), boxText(c)]).toEqual(['Painting the picture…', 'Painting the picture…', 'Picture queued…'])
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })
+    expect(fetched).toEqual([`/api/projects/p/images/${KEY}.png`])
+    await tick()
+    expect(a.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(b.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    page.applyUiImage({ type: 'ui.image', key: KEY2, slug: 'p', status: 'failed', reason: 'interrupted on the ComfyUI PC' })
+    expect(boxText(c)).toBe('Picture failed: interrupted on the ComfyUI PC')
+  })
+
+  it('a late event for a key no surface shows only updates the map; a malformed one is ignored', () => {
+    const { page, fetched } = harness()
+    expect(() => page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })).not.toThrow()
+    expect(page.genuiImages[KEY]).toMatchObject({ status: 'done', slug: 'p', url: '' })
+    expect(fetched).toEqual([]) // nothing shows it, so nothing is fetched
+    for (const bad of [
+      { key: 'x', slug: 'p', status: 'done' }, { key: KEY2, slug: '../p', status: 'done' }, { key: KEY2, slug: 'p', status: 'painted' },
+      { key: KEY2, slug: 'p' }, null, 'ui.image',
+    ]) expect(() => page.applyUiImage(bad as any)).not.toThrow()
+    expect(Object.keys(page.genuiImages)).toEqual([KEY])
+  })
+
+  it('merge: done never goes back; a fresh queued/running replaces a failure; otherwise the more advanced status wins', () => {
+    const { page } = harness()
+    const ev = (key: string, status: string, reason?: string) => page.applyUiImage({ type: 'ui.image', key, slug: 'p', status, reason })
+    ev(KEY, 'done')
+    ev(KEY, 'failed', 'late')
+    ev(KEY, 'running')
+    expect(page.genuiImages[KEY].status).toBe('done')
+    ev(KEY2, 'failed', 'ComfyUI did not finish within 300 s')
+    const el = drawPic(page, 'retry', { status: 'queued', key: KEY2, slug: 'p', w: 1024, h: 1024 })
+    expect(page.genuiImages[KEY2]).toMatchObject({ status: 'queued', reason: '' })
+    expect(boxText(el)).toBe('Picture queued…')
+    ev(KEY2, 'running')
+    drawPic(page, 'stale', { status: 'queued', key: KEY2, slug: 'p', w: 1024, h: 1024 })
+    expect(page.genuiImages[KEY2].status).toBe('running')
+    expect(boxText(el)).toBe('Painting the picture…')
+  })
+
+  it('the recheck after a reconnect asks the record of queued/running pictures only and applies it', async () => {
+    const answers: Record<string, unknown> = {
+      [`/api/projects/p/images/${KEY}.json`]: { status: 'done', w: 1024, h: 1024 },
+      [`/api/projects/p/images/${KEY2}.json`]: { status: 'failed', reason: 'interrupted — the engine stopped before this picture finished' },
+    }
+    const { page, fetched } = harness({ fetch: async (u) => (u.endsWith('.json') ? reply(200, 'application/json', answers[u]) : reply(200, 'image/png')) })
+    const a = drawPic(page, 'a', { status: 'running', key: KEY, slug: 'p', w: 1024, h: 1024 })
+    const b = drawPic(page, 'b', { status: 'queued', key: KEY2, slug: 'p', w: 1024, h: 1024 })
+    page.applyUiImage({ type: 'ui.image', key: 'd'.repeat(32), slug: 'p', status: 'failed', reason: 'x' })
+    page.applyUiImage({ type: 'ui.image', key: 'e'.repeat(32), slug: 'p', status: 'done' })
+    page.genuiRecheckImages()
+    expect(fetched.sort()).toEqual([`/api/projects/p/images/${KEY}.json`, `/api/projects/p/images/${KEY2}.json`])
+    await tick(); await tick()
+    expect(fetched).toContain(`/api/projects/p/images/${KEY}.png`)
+    await tick()
+    expect(a.querySelector('img')!.getAttribute('src')).toMatch(/^blob:page\//)
+    expect(boxText(b)).toBe('Picture failed: interrupted — the engine stopped before this picture finished')
+  })
+
+  it('a cleared pane frees every blob URL and empties the map in place', async () => {
+    const { page, blobs } = harness({ fetch: async () => reply(200, 'image/png') })
+    drawPic(page, 'a', done())
+    await tick()
+    const map = page.genuiImages
+    page.genuiForgetImages()
+    expect(blobs.revoked).toEqual(['blob:page/1'])
+    expect(map).toEqual({})
+  })
+})
+
+describe('dashboard genui: generated pictures — the lightbox', () => {
+  async function opened() {
+    const h = harness({ fetch: async () => reply(200, 'image/png') })
+    const el = drawPic(h.page, 'opts', done())
+    await tick()
+    el.querySelector('button.genui-image-open')!.fire('click')
+    return { ...h, el, box: h.document.body.querySelector('.genui-lightbox') }
+  }
+
+  it('a click on a done picture opens the picture with its alt, prompt and a Download link named after the alt', async () => {
+    const { box } = await opened()
+    expect(box).not.toBeNull()
+    expect(box!.getAttribute('role')).toBe('dialog')
+    expect(box!.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(box!.querySelector('.genui-lightbox-alt')!.textContent).toBe('Stone path')
+    expect(box!.querySelector('.genui-lightbox-prompt')!.textContent).toBe(PROMPT)
+    const dl = box!.querySelector('a')!
+    expect(dl.textContent).toBe('Download')
+    expect(dl.getAttribute('href')).toBe('blob:page/1')
+    expect(dl.getAttribute('download')).toBe(`stone-path-${KEY.slice(0, 8)}.png`)
+  })
+
+  it('Escape, the backdrop and Close each close it; a click inside the panel does not', async () => {
+    const esc = await opened()
+    esc.document.fire('keydown', { key: 'Enter' })
+    expect(esc.document.body.querySelector('.genui-lightbox')).not.toBeNull()
+    esc.document.fire('keydown', { key: 'Escape' })
+    expect(esc.document.body.querySelector('.genui-lightbox')).toBeNull()
+    expect(esc.document.listeners.keydown).toEqual([])
+
+    const back = await opened()
+    const panel = back.box!.querySelector('.genui-lightbox-panel')!
+    back.box!.fire('click', { target: panel })
+    expect(back.document.body.querySelector('.genui-lightbox')).not.toBeNull()
+    back.box!.fire('click', { target: back.box })
+    expect(back.document.body.querySelector('.genui-lightbox')).toBeNull()
+
+    const close = await opened()
+    close.box!.querySelector('button.genui-lightbox-btn')!.fire('click')
+    expect(close.document.body.querySelector('.genui-lightbox')).toBeNull()
+    // only one at a time
+    close.el.querySelector('button.genui-image-open')!.fire('click')
+    close.el.querySelector('button.genui-image-open')!.fire('click')
+    expect(close.document.body.querySelectorAll('.genui-lightbox')).toHaveLength(1)
+  })
+
+  it('the download name falls back to "picture" and caps the alt at 40 characters', async () => {
+    const h = harness({ fetch: async () => reply(200, 'image/png') })
+    const spec = (alt: string, key: string) => ({ root: 'i', elements: { i: { type: 'Image', props: { prompt: PROMPT, alt }, image: done(key) } } })
+    const a = h.page.upsertSurface({ type: 'ui.render', toolId: 'ta', surfaceId: 'a', partial: false, spec: spec('!!!', KEY) })!
+    const b = h.page.upsertSurface({ type: 'ui.render', toolId: 'tb', surfaceId: 'b', partial: false, spec: spec('A very long title for a walnut river table with a blue resin river', KEY2) })!
+    await tick()
+    a.querySelector('button.genui-image-open')!.fire('click')
+    expect(h.document.body.querySelector('.genui-lightbox a')!.getAttribute('download')).toBe(`picture-${KEY.slice(0, 8)}.png`)
+    b.querySelector('button.genui-image-open')!.fire('click')
+    const name = h.document.body.querySelector('.genui-lightbox a')!.getAttribute('download')!
+    expect(name).toBe(`a-very-long-title-for-a-walnut-river-tab-${KEY2.slice(0, 8)}.png`)
+    expect(name.length - `-${KEY2.slice(0, 8)}.png`.length).toBeLessThanOrEqual(40)
   })
 })

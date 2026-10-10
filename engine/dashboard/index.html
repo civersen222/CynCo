@@ -637,6 +637,31 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 .genui-image-load { display: block; margin: 8px auto 0; background: #264f78; color: #d4d4d4; border: none; border-radius: 4px;
   padding: 4px 10px; font-size: 11px; cursor: pointer; font-family: inherit; }
 .genui-image-load:disabled { opacity: .5; cursor: default; }
+/* A picture the engine paints (F174): the box takes the picture's shape from the first frame, so filling in never moves the card. */
+.genui-image-gen { max-width: 512px; }
+.genui-image-box { position: relative; width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  background: #1a1a2e; border: 1px dashed #444; border-radius: 4px; overflow: hidden; }
+.genui-image-box.genui-image-has { border: 1px solid #333; background: #141414; }
+.genui-image-msg { color: #808080; font-size: 12px; padding: 12px; text-align: center; overflow-wrap: anywhere; }
+.genui-image-failed .genui-image-msg { color: #f44747; }
+.genui-image-pulse { animation: genui-pulse 1.6s ease-in-out infinite; }
+@keyframes genui-pulse { 0%, 100% { background-color: #1a1a2e; } 50% { background-color: #262645; } }
+.genui-image-open { display: block; width: 100%; height: 100%; padding: 0; border: none; background: none; cursor: zoom-in; }
+.genui-image-open:focus-visible { outline: 2px solid #569cd6; outline-offset: -2px; }
+.genui-image-open .genui-img { width: 100%; height: 100%; object-fit: contain; border-radius: 0; }
+.genui-image-alt { color: #808080; font-size: 11px; margin-top: 4px; }
+.genui-lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, .82); display: flex; align-items: center;
+  justify-content: center; padding: 16px; }
+.genui-lightbox-panel { display: flex; flex-direction: column; gap: 6px; max-width: min(100%, 1100px); max-height: 100%;
+  background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 6px; padding: 10px; }
+.genui-lightbox-img { display: block; max-width: 100%; max-height: calc(100vh - 160px); object-fit: contain; margin: 0 auto; border-radius: 4px; }
+.genui-lightbox-alt { color: #d4d4d4; font-size: 13px; }
+.genui-lightbox-prompt { color: #808080; font-size: 11px; max-height: 4.8em; overflow-y: auto; overflow-wrap: anywhere; }
+.genui-lightbox-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.genui-lightbox-btn { background: #264f78; color: #d4d4d4; border: none; border-radius: 4px; padding: 4px 12px; font-size: 12px;
+  font-family: inherit; cursor: pointer; text-decoration: none; }
+.genui-lightbox-btn:hover { background: #2f5f8f; }
+@media (prefers-reduced-motion: reduce) { .genui-image-pulse { animation: none; } }
 /* data display */
 .genui-table-wrap { overflow-x: auto; max-width: 100%; }
 .genui-table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -1307,6 +1332,8 @@ function connectWS() {
     document.getElementById('reconnectBanner').classList.remove('visible');
     // Proactively check for active session on every connect (handles reload + late connect)
     fetchSessionState();
+    // A picture that finished while the socket was down sent its ui.image to nobody.
+    genuiRecheckImages();
     render();
   };
 
@@ -1616,6 +1643,12 @@ function handleEvent(event) {
     // one final frame per call, spec:null when the call was withdrawn.
     case 'ui.render':
       upsertSurface(event);
+      break;
+
+    // A generated picture changed state (engine/imagegen, F174): keyed on the
+    // image key, so every Image showing it fills in and no surface is touched.
+    case 'ui.image':
+      applyUiImage(event);
       break;
 
     // ── Projects mode ──
@@ -4090,6 +4123,250 @@ function genuiPlotRect(p) {
   return { W: W, H: H, x0: x0, y0: y0, w: W - x0 - 12, h: H - y0 - 30 };
 }
 
+// ── Generated pictures (engine/imagegen, F174) ──
+// An Image with a "prompt" is painted by the engine on the operator's
+// ComfyUI. Its final frame carries the engine's own annotation (`el.image`:
+// off with a reason, or queued/running/done/failed with a key, slug and
+// size), and `ui.image` events keyed on the image key — never on a surface —
+// say when that changes. `genuiImages` outlives every re-render of every
+// surface, so each key is fetched once. The URL is built here from a checked
+// key and slug, never taken from the spec, and fetched through the injected
+// fetch wrapper (it adds the token) into a blob URL: a bare
+// <img src="/api/…"> carries no token and would be refused.
+var GENUI_IMAGE_KEY_RE = /^[0-9a-f]{32}$/;
+var GENUI_IMAGE_SLUG_RE = /^[a-z0-9-]{1,64}$/;
+// queued < running < failed < done: a picture that exists outranks a failure.
+var GENUI_IMAGE_RANK = { queued: 1, running: 2, failed: 3, done: 4 };
+var genuiImages = {};   // image key → { status, reason, slug, url (blob), loading }
+
+/** The engine's annotation on an Image, checked: a replayed transcript spec is otherwise unvalidated here. */
+function genuiImageAnnotation(el) {
+  var im = el && el.image;
+  if (!im || typeof im !== 'object') return null;
+  if (im.status === 'off') return { status: 'off', reason: genuiStr(im.reason) || 'picture not generated' };
+  if (typeof im.status !== 'string' || !Object.prototype.hasOwnProperty.call(GENUI_IMAGE_RANK, im.status) ||
+      typeof im.key !== 'string' || !GENUI_IMAGE_KEY_RE.test(im.key) ||
+      typeof im.slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(im.slug)) return { status: 'off', reason: 'bad picture reference' };
+  var w = typeof im.w === 'number' && isFinite(im.w) && im.w > 0 ? im.w : 0;
+  var h = typeof im.h === 'number' && isFinite(im.h) && im.h > 0 ? im.h : 0;
+  return { status: im.status, key: im.key, slug: im.slug, reason: genuiStr(im.reason), w: w && h ? w : 1, h: w && h ? h : 1 };
+}
+
+/**
+ * Fold a picture state (an annotation, an event, a recheck) into genuiImages.
+ * done never goes back; a queued/running state over a failed one is a fresh
+ * attempt and replaces it; otherwise the more advanced status wins.
+ */
+function genuiMergeImage(key, slug, status, reason) {
+  var m = genuiImages[key];
+  if (!m) {
+    m = genuiImages[key] = { status: status, reason: reason || '', slug: slug, url: '', loading: false };
+    return m;
+  }
+  if (m.status === 'done') return m;
+  var retry = m.status === 'failed' && (status === 'queued' || status === 'running');
+  if (retry || GENUI_IMAGE_RANK[status] > GENUI_IMAGE_RANK[m.status]) {
+    m.status = status;
+    m.reason = reason || '';
+    m.slug = slug;
+  }
+  return m;
+}
+
+/** The Image renderer's generated branch: a box the shape of the picture, filled by genuiFillImage. */
+function genuiGeneratedImage(el, ctx) {
+  var p = el.props || {};
+  var alt = genuiStr(p.alt);
+  var fig = genuiEl('figure', 'genui-image genui-image-gen');
+  var box = genuiEl('div', 'genui-image-box');
+  var altLine = genuiEl('div', 'genui-image-alt', alt);
+  fig.appendChild(box);
+  fig.appendChild(altLine);
+  if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption));
+  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', note: '', named: false };
+  fig.__genuiImage = g;
+  var partial = !!(ctx && ctx.partial);
+  var a = partial ? null : genuiImageAnnotation(el);
+  var ratio = '1 / 1';
+  // No picture is ever started, fetched or promised from a partial frame.
+  if (partial) g.note = 'Picture comes when the card is finished';
+  else if (!a || a.status === 'off') {
+    g.note = (alt ? alt + ' — ' : '') + (a ? a.reason : 'picture not generated');
+    g.named = !!alt;
+  } else {
+    g.key = a.key;
+    ratio = a.w + ' / ' + a.h;
+    fig.setAttribute('data-image-key', a.key);
+    genuiMergeImage(a.key, a.slug, a.status, a.reason);
+  }
+  box.style.aspectRatio = ratio;
+  genuiFillImage(fig);
+  return fig;
+}
+
+/** Redraw one generated figure's box from genuiImages, or from its fixed note when it has no key. */
+function genuiFillImage(fig) {
+  var g = fig && fig.__genuiImage;
+  if (!g) return;
+  var box = g.box;
+  var m = g.key ? genuiImages[g.key] : null;
+  var status = m ? m.status : '';
+  genuiClear(box);
+  genuiToggleClass(box, 'genui-image-pulse', status === 'queued' || status === 'running');
+  genuiToggleClass(box, 'genui-image-failed', status === 'failed');
+  genuiToggleClass(box, 'genui-image-has', status === 'done' && !!m.url);
+  // A box that names the alt itself (why there is no picture) needs no second line saying it.
+  genuiToggleClass(g.altLine, 'genui-hidden', !g.alt || g.named);
+  var say = function(text) { box.appendChild(genuiEl('div', 'genui-image-msg', text)); };
+  if (!m) { say(g.note); return; }
+  if (status === 'done' && m.url) {
+    var open = genuiEl('button', 'genui-image-open');
+    open.type = 'button';
+    open.title = 'Enlarge';
+    var img = genuiEl('img', 'genui-img');
+    img.setAttribute('alt', g.alt);
+    img.addEventListener('error', function() { genuiClear(box); say('Picture failed: the picture could not be shown'); });
+    img.setAttribute('src', m.url);
+    open.appendChild(img);
+    open.addEventListener('click', function() { genuiOpenLightbox(g.key, g.alt, g.prompt); });
+    box.appendChild(open);
+  } else if (status === 'done') {
+    say('Loading picture…');
+    genuiLoadImage(g.key);
+  } else if (status === 'queued') say('Picture queued…');
+  else if (status === 'running') say('Painting the picture…');
+  else say('Picture failed: ' + (m.reason || 'no reason given'));
+}
+
+/** Every figure in the page showing `key` (validated hex, so safe in a selector). */
+function genuiFillImages(key) {
+  var nodes = document.querySelectorAll('[data-image-key="' + key + '"]');
+  for (var i = 0; i < nodes.length; i++) genuiFillImage(nodes[i]);
+}
+
+/**
+ * Fetch a done picture once per key. Same-origin, so the fetch wrapper adds
+ * the token; the reply must be 200 image/png; it is shown as a blob URL. Any
+ * failure marks the key failed with the HTTP status.
+ */
+function genuiLoadImage(key) {
+  var m = genuiImages[key];
+  if (!m || m.status !== 'done' || m.url || m.loading) return;
+  m.loading = true;
+  var failed = function(why) {
+    m.loading = false;
+    if (genuiImages[key] !== m) return;
+    m.status = 'failed';
+    m.reason = 'could not load the picture (' + why + ')';
+    genuiFillImages(key);
+  };
+  fetch('/api/projects/' + m.slug + '/images/' + key + '.png').then(function(res) {
+    var type = String((res.headers && res.headers.get && res.headers.get('content-type')) || '').split(';')[0].trim().toLowerCase();
+    if (!res.ok || type !== 'image/png') {
+      console.warn('[genui] picture ' + key.slice(0, 8) + ': HTTP ' + res.status + ' ' + (type || 'no content-type'));
+      failed('HTTP ' + res.status + (res.ok ? ', ' + (type || 'no content-type') : ''));
+      return null;
+    }
+    return res.blob().then(function(blob) {
+      m.loading = false;
+      if (genuiImages[key] !== m) return;   // the chat was cleared while it loaded
+      m.url = URL.createObjectURL(blob);
+      genuiFillImages(key);
+    });
+  }).catch(function(e) {
+    console.warn('[genui] loading picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
+    failed(e && e.message ? e.message : 'network error');
+  });
+}
+
+/** The `ui.image` arm: fold the event in and refill every figure showing that key; with none showing it, only the map changes. */
+function applyUiImage(event) {
+  if (!event || typeof event !== 'object') return;
+  var key = event.key, slug = event.slug, status = event.status;
+  if (typeof key !== 'string' || !GENUI_IMAGE_KEY_RE.test(key) || typeof slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(slug) ||
+      typeof status !== 'string' || !Object.prototype.hasOwnProperty.call(GENUI_IMAGE_RANK, status)) return;
+  genuiMergeImage(key, slug, status, typeof event.reason === 'string' ? event.reason : '');
+  genuiFillImages(key);
+}
+
+/**
+ * After a reconnect: a `ui.image` sent while the socket was down is gone (the
+ * engine keeps no replay), so ask the record of every picture still queued
+ * or running and apply what it says.
+ */
+function genuiRecheckImages() {
+  Object.keys(genuiImages).forEach(function(key) {
+    var m = genuiImages[key];
+    if (m.status !== 'queued' && m.status !== 'running') return;
+    fetch('/api/projects/' + m.slug + '/images/' + key + '.json').then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function(rec) {
+      if (rec && typeof rec === 'object') applyUiImage({ key: key, slug: m.slug, status: rec.status, reason: rec.reason });
+    }).catch(function(e) {
+      console.warn('[genui] rechecking picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
+    });
+  });
+}
+
+/** The chat pane was cleared: no figure shows these any more, so every blob URL is freed and the map emptied (in place). */
+function genuiForgetImages() {
+  genuiCloseLightbox();
+  Object.keys(genuiImages).forEach(function(key) {
+    var url = genuiImages[key].url;
+    if (url) {
+      try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
+    }
+    delete genuiImages[key];
+  });
+}
+
+/** The download name: the alt as a slug of at most 40 characters, then the key's first 8. */
+function genuiImageFileName(alt, key) {
+  var s = genuiStr(alt).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').slice(0, 40).replace(/-+$/, '');
+  return (s || 'picture') + '-' + key.slice(0, 8) + '.png';
+}
+
+/** A click on a done picture: one overlay with the full picture, its alt and prompt, Download and Close. Escape or the backdrop closes it. */
+function genuiOpenLightbox(key, alt, prompt) {
+  var m = genuiImages[key];
+  if (!m || !m.url) return null;
+  genuiCloseLightbox();
+  var back = genuiEl('div', 'genui-lightbox');
+  back.setAttribute('role', 'dialog');
+  back.setAttribute('aria-modal', 'true');
+  back.setAttribute('aria-label', alt || 'Picture');
+  var panel = genuiEl('div', 'genui-lightbox-panel');
+  var img = genuiEl('img', 'genui-lightbox-img');
+  img.setAttribute('alt', alt);
+  img.setAttribute('src', m.url);
+  panel.appendChild(img);
+  if (alt) panel.appendChild(genuiEl('div', 'genui-lightbox-alt', alt));
+  if (prompt) panel.appendChild(genuiEl('div', 'genui-lightbox-prompt', prompt));
+  var row = genuiEl('div', 'genui-lightbox-actions');
+  var dl = genuiEl('a', 'genui-lightbox-btn', 'Download');
+  dl.setAttribute('href', m.url);
+  dl.setAttribute('download', genuiImageFileName(alt, key));
+  var close = genuiEl('button', 'genui-lightbox-btn', 'Close');
+  close.type = 'button';
+  close.addEventListener('click', genuiCloseLightbox);
+  row.appendChild(dl);
+  row.appendChild(close);
+  panel.appendChild(row);
+  back.appendChild(panel);
+  back.addEventListener('click', function(ev) { if (ev && ev.target === back) genuiCloseLightbox(); });
+  document.body.appendChild(back);
+  document.addEventListener('keydown', genuiLightboxKey);
+  if (typeof close.focus === 'function') close.focus();
+  return back;
+}
+function genuiLightboxKey(ev) { if (ev && ev.key === 'Escape') genuiCloseLightbox(); }
+function genuiCloseLightbox() {
+  document.removeEventListener('keydown', genuiLightboxKey);
+  var open = document.querySelectorAll('.genui-lightbox');
+  for (var i = 0; i < open.length; i++) if (open[i].parentNode) open[i].parentNode.removeChild(open[i]);
+}
+
 var GENUI_RENDERERS = {
   // ── Layout ──
   Card: function(el, ctx, id, inh, depth) {
@@ -4254,13 +4531,17 @@ var GENUI_RENDERERS = {
     a.setAttribute('rel', 'noopener noreferrer');
     return a;
   },
+  // A "prompt" is a picture the engine paints (F174): genuiGeneratedImage
+  // draws it from the engine's own annotation and never reads `src`.
   // A remote image is fetched only after a click. The model chose the URL,
   // and a URL can carry anything the model has read (a prompt-injected page
   // asking it to put .env into a query string): loading it unasked would make
   // the dashboard the exfiltration channel. An inline data: image and a URL
-  // the user already loaded on this surface draw at once.
+  // the user already loaded on this surface draw at once. While the call
+  // streams, the URL may be half a host: a neutral placeholder, no button.
   Image: function(el, ctx) {
     var p = el.props || {};
+    if (typeof p.prompt === 'string' && p.prompt.trim()) return genuiGeneratedImage(el, ctx);
     var remote = safeUrl(p.src);
     var inline = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(genuiStr(p.src)) ? genuiStr(p.src) : '';
     var fig = genuiEl('figure', 'genui-image');
@@ -4281,6 +4562,11 @@ var GENUI_RENDERERS = {
       fig.appendChild(img);
       caption();
     };
+    if (ctx && ctx.partial) {
+      fig.appendChild(genuiEl('div', 'genui-image-ph', alt || 'image'));
+      caption();
+      return fig;
+    }
     if (inline) { load(inline); return fig; }
     if (!remote) { placeholder(); return fig; }
     if (ctx && ctx.loadedImages && ctx.loadedImages[remote]) { load(remote); return fig; }
@@ -5605,6 +5891,7 @@ function clearChatPane() {
   var msgs = document.getElementById('chatMessages');
   if (msgs) msgs.innerHTML = '';
   clearChatCitations();
+  genuiForgetImages();
 }
 
 /**

@@ -16,6 +16,7 @@ import { appendJournal, createProject, isReservedFileName, projectDir, readFileI
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
+import { originKey, promptedImages, readOrigins, storedImageState } from '../imagegen/store.js'
 
 export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number }
 export type ApiResult = { status: number; body: unknown }
@@ -146,21 +147,32 @@ export function listChatsApi(d: ProjectsDeps, slug: string): ApiResult {
 export function getChatApi(d: ProjectsDeps, slug: string, file: string): ApiResult {
   if (!SLUG_RE.test(slug)) return bad('bad slug')
   if (!readProject(d.home, slug)) return notFound('project')
-  const t = readTranscript(projectDir(d.home, slug), basename(file))
+  const dir = projectDir(d.home, slug)
+  const chatFile = basename(file)
+  const t = readTranscript(dir, chatFile)
   if (!t) return notFound('chat')
-  return { status: 200, body: withValidatedSurfaces(t) }
+  return { status: 200, body: withValidatedSurfaces(t, { dir, slug, chatFile }) }
 }
+
+/** Where a transcript lives, so its generated pictures can be found again. */
+export type SurfaceImagesAt = { dir: string; slug: string; chatFile: string }
 
 /**
  * The transcript stores the model's raw RenderUI input; the page drew what
  * `validateSpec` made of it. Serve the validated spec, so a reloaded chat
  * draws the surface it showed live (aliases, chart pairs and nested trees
  * resolved) and a spec with nothing drawable comes back as `spec: null`.
- * The stored history stays untouched.
+ * With `at`, each Image the engine paints (a `prompt`) gets the picture
+ * state it has now (F174), found through `images/index.json` by its origin
+ * `<chatFile>#<toolId>#<elementId>` — the exact picture shown live, even if
+ * the knobs changed since. A transcript block's id is the live toolId: the
+ * tool_use is appended before the tools run. index.json is read once, and
+ * only when a surface has such an Image. The stored history stays untouched.
  */
-export function withValidatedSurfaces<T>(t: T): T {
+export function withValidatedSurfaces<T>(t: T, at?: SurfaceImagesAt): T {
   const msgs = (t as { messages?: unknown }).messages
   if (!Array.isArray(msgs)) return t
+  let origins: Record<string, string> | null = null
   const messages = msgs.map((m: any) => {
     if (!m || m.role !== 'assistant' || !Array.isArray(m.content)) return m
     if (!m.content.some((b: any) => b?.type === 'tool_use' && b.name === 'RenderUI')) return m
@@ -169,7 +181,21 @@ export function withValidatedSurfaces<T>(t: T): T {
       content: m.content.map((b: any) => {
         if (b?.type !== 'tool_use' || b.name !== 'RenderUI' || !b.input || typeof b.input !== 'object') return b
         const raw = b.input.spec !== undefined ? b.input.spec : b.input
-        return { ...b, input: { surface: isSurfaceId(b.input.surface) ? b.input.surface : undefined, spec: validateSpec(raw).spec } }
+        const spec = validateSpec(raw).spec
+        if (spec && at) {
+          const toolId = typeof b.id === 'string' ? b.id : ''
+          for (const im of promptedImages(spec)) {
+            try {
+              origins ??= readOrigins(at.dir)
+              im.el.image = storedImageState(at.dir, at.slug, originKey({ chatFile: at.chatFile, toolId, elementId: im.id }), origins)
+            } catch (e) {
+              // Everything under images/ is untrusted; a reload must still draw the surface.
+              console.log(`[projects] picture state for ${at.chatFile} ${toolId}/${im.id} unreadable: ${e instanceof Error ? e.message : String(e)}`)
+              im.el.image = { status: 'off', reason: 'the record of this picture could not be read' }
+            }
+          }
+        }
+        return { ...b, input: { surface: isSurfaceId(b.input.surface) ? b.input.surface : undefined, spec } }
       }),
     }
   })

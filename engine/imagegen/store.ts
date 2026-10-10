@@ -21,7 +21,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { UiImageState } from '../bridge/protocol.js'
+import type { UiElement, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { projectDir, readProject, realInside, SLUG_RE, writeJsonAtomic } from '../projects/layout.js'
 import { DOWNLOAD_CAP_BYTES } from './config.js'
 
@@ -346,6 +346,33 @@ export function ensureImageIgnore(dir: string): string | null {
 }
 
 // ─── readers for the route and for reload ─────────────────────────────
+
+/**
+ * Every Image with a non-empty prompt, in draw order (depth-first from the
+ * root). The one definition of "a picture the engine paints": `annotate`
+ * queues these and a reloaded chat (`withValidatedSurfaces`) looks these up.
+ */
+export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string }> {
+  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string }> = []
+  const els = spec.elements
+  const seen = new Set<string>()
+  const stack: string[] = [spec.root]
+  while (stack.length && seen.size < 1000) {
+    const id = stack.pop()!
+    if (typeof id !== 'string' || seen.has(id) || !Object.hasOwn(els, id)) continue
+    seen.add(id)
+    const el = els[id]
+    if (!isObj(el)) continue
+    const props = isObj(el.props) ? el.props : null
+    if (el.type === 'Image' && props && typeof props.prompt === 'string') {
+      const prompt = normPrompt(props.prompt)
+      if (prompt) out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '' })
+    }
+    if (Array.isArray(el.children)) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i])
+  }
+  return out
+}
+
 
 /** What the page may see of a sidecar: no paths, hosts or graph. */
 export function publicSidecar(sc: ImageSidecar): Record<string, unknown> {

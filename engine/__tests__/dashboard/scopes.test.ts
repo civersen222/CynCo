@@ -66,6 +66,8 @@ const READ_ROUTES = [
   '/api/thinking/sessions',
   '/api/sessions/abc/measurements',
   '/api/sessions/abc/transcript',
+  // A generated picture's record (F174): a project route, gated before handleProjects.
+  `/api/projects/p/images/${'0'.repeat(32)}.json`,
 ]
 
 const WRITE_ROUTES = [

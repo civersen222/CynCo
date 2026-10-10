@@ -28,12 +28,12 @@
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { UiElement, UiImageEvent, UiImageState, UiSpec } from '../bridge/protocol.js'
+import type { UiImageEvent, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig } from './config.js'
-import { ensureImageIgnore, imageKey, imagesDir, normPrompt, originKey, partPath, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { ensureImageIgnore, imageKey, imagesDir, originKey, partPath, pngPath, promptedImages, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
 import { fillWorkflow } from './workflow.js'
 
 export type AnnotateAt = {
@@ -103,28 +103,6 @@ const noop = () => {}
 
 function notGeneratedNote(reason: string): string {
   return `Pictures: not generated — ${reason}. The cards show their alt text; tell the user if they want pictures.`
-}
-
-/** Every Image with a non-empty prompt, in draw order (depth-first from the root). */
-function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string }> {
-  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string }> = []
-  const els = spec.elements
-  const seen = new Set<string>()
-  const stack: string[] = [spec.root]
-  while (stack.length && seen.size < 1000) {
-    const id = stack.pop()!
-    if (typeof id !== 'string' || seen.has(id) || !Object.hasOwn(els, id)) continue
-    seen.add(id)
-    const el = els[id]
-    if (!isObj(el)) continue
-    const props = isObj(el.props) ? el.props : null
-    if (el.type === 'Image' && props && typeof props.prompt === 'string') {
-      const prompt = normPrompt(props.prompt)
-      if (prompt) out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '' })
-    }
-    if (Array.isArray(el.children)) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i])
-  }
-  return out
 }
 
 /** The ComfyUI-side failure in a finished history entry, or null when it succeeded. */

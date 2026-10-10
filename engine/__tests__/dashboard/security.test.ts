@@ -15,6 +15,8 @@ import { join } from 'path'
 import { describe, test, expect, beforeEach, afterEach, afterAll } from 'vitest'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
+import { createProject } from '../../projects/layout.js'
+import { PNG_1X1 } from '../imagegen/mockComfy.js'
 
 // Every route but GET / now requires a capability token (see
 // dashboard/scopes.test.ts). These suites are testing behaviour behind the gate,
@@ -197,6 +199,45 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
     const res = await authFetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/sess-1/transcript`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([{ role: 'user', content: 'hi' }])
+  })
+})
+
+/**
+ * The generated-picture route (F174) joins a project's images/ folder to a
+ * name taken from the URL. Every spelling of a way out — encoded separators,
+ * a backslash, an absolute path, a null byte — is refused as a bad name
+ * before any join, and a 400 is never the bytes of the file it aimed at.
+ */
+describe('the image route cannot walk out of a project', () => {
+  let server: DashboardServer
+  let home: string
+  let slug: string
+
+  beforeEach(async () => {
+    home = mkdtempSync(join(tmpdir(), 'cynco-dash-images-'))
+    slug = createProject(home, { name: 'Aliens' }).slug
+    writeFileSync(join(home, 'secret.png'), PNG_1X1)
+    server = new DashboardServer({ port: 0, deps: { projects: { home, embed: null, embedModel: 'stub', emit: () => {}, contextLength: 8192 } }, tokens: _tokens })
+    const deadline = Date.now() + 2000
+    while (server.getPort() === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+  })
+
+  afterEach(() => {
+    server?.stop()
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  test.each([
+    ['percent-encoded separators', '..%2f..%2fsecret.png'],
+    ['double-encoded separators', '..%252f..%252fsecret.png'],
+    ['a backslash separator', '..%5c..%5csecret.png'],
+    ['an absolute-looking name', 'C%3a%2fWindows%2fwin.ini'],
+    ['a null byte', `${'a'.repeat(32)}.png%00.svg`],
+    ['the project file', '..%2fproject.json'],
+  ])('refuses %s instead of reading a file', async (_name, file) => {
+    const res = await authFetch(`http://127.0.0.1:${server.getPort()}/api/projects/${slug}/images/${file}`)
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({ error: 'bad image name' })
   })
 })
 

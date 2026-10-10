@@ -47,6 +47,7 @@ import {
   UPLOAD_MAX_BYTES,
   SLUG_RE,
 } from '../projects/api.js'
+import { servedImage } from '../imagegen/store.js'
 import { cyncoHome } from '../paths.js'
 
 /** Phase 5 ruling 2: the pooled board is Task 2's one spelling
@@ -285,6 +286,32 @@ function jsonResponse(data: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+/**
+ * GET /api/projects/:slug/images/:name (F174) as a Response. The PNG is
+ * inert anywhere but an <img>: its type comes from the fixed extension and
+ * is never sniffed, a sandbox CSP covers a direct open, and there is no ACAO.
+ * A key names one generation request and the PNG exists only once it is
+ * done, so it caches as immutable; the record (`.json`) changes, so never.
+ */
+function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }): Response {
+  if (r.status === 200 && r.bytes) {
+    return new Response(r.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': 'image/png',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Content-Disposition': 'inline',
+        'Cache-Control': 'private, max-age=31536000, immutable',
+      },
+    })
+  }
+  if (r.status === 200) {
+    return new Response(JSON.stringify(r.json), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
+  }
+  return jsonResponse(r.json ?? { error: 'no such image' }, r.status)
 }
 
 function htmlResponse(body: string, status = 200): Response {
@@ -884,6 +911,21 @@ export class DashboardServer {
         return jsonResponse({ error: 'Method not allowed' }, 405)
       }
       return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    // A generated picture or its public record (F174): `<32 hex>.png|json`
+    // only, checked by `servedImage` after decoding, so `..%2f`, `%00` or any
+    // other name never reaches a path join. Same inference gate as every
+    // project route; the page fetches with the header and shows a blob URL.
+    if (area === 'images') {
+      if (parts.length !== 5) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      try {
+        return imageResponse(servedImage(d.home, slug, name!))
+      } catch (e) {
+        console.log(`[dashboard] serving images/${name!.slice(0, 80)} in ${slug} failed: ${e instanceof Error ? e.message : String(e)}`)
+        return jsonResponse({ error: 'the picture could not be read' }, 500)
+      }
     }
 
     if (area === 'chats') {
