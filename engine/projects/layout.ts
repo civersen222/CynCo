@@ -6,7 +6,7 @@
  * appended beside it. Nothing here reaches the engine loop: this module is
  * plain filesystem shape, so it can be tested against a temp dir alone.
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, realpathSync, lstatSync, readlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
@@ -131,8 +131,8 @@ export function isReservedFileName(name: string): boolean {
 }
 
 export function writeJsonAtomic(path: string, value: unknown): void {
-  const tmp = `${path}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8')
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}` // unguessable, and 'wx' never follows a link planted there
+  writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
   renameSync(tmp, path)
 }
 

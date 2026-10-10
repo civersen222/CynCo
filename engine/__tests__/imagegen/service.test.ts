@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -8,8 +8,10 @@ import { ensureHistory } from '../../projects/history.js'
 import { createProject, readJournal } from '../../projects/layout.js'
 import { UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
-import { INTERRUPTED_REASON, originKey, pngPath, readOrigins, readSidecar, storedImageState, writeSidecar } from '../../imagegen/store.js'
-import { closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
+import { INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, storedImageState, writeSidecar } from '../../imagegen/store.js'
+import { canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
+
+const CAN_SYMLINK_FILES = canSymlinkFiles()
 
 let home: string, dir: string, slug: string
 let mock: MockComfy | null = null
@@ -58,6 +60,7 @@ const at = (over: Partial<AnnotateAt> = {}): AnnotateAt => ({ project: { dir, sl
 const imageOf = (s: UiSpec, i: number) => s.elements[`img-${i}`].image!
 const keyOf = (s: UiSpec, i: number) => { const st = imageOf(s, i); if (st.status === 'off') throw new Error(`img-${i} is off: ${st.reason}`); return st.key }
 const posts = () => mock!.calls.filter(c => c.path === '/prompt')
+const cancels = () => mock!.calls.filter(c => c.path === '/interrupt' || c.path === '/queue').map(c => [c.path, c.body])
 const terminal = (key: string) => events.some(e => e.key === key && (e.status === 'done' || e.status === 'failed'))
 
 function filesUnder(root: string): string[] {
@@ -247,6 +250,8 @@ describe('ImageService: failures are named', () => {
 
   it('a refused workflow', async () => {
     expect(await failureOf({ refuse: { error: { message: 'Prompt outputs failed validation' }, node_errors: {} } })).toBe('ComfyUI refused the workflow: Prompt outputs failed validation')
+    // ComfyUI queued nothing, so there is nothing to cancel.
+    expect(cancels()).toEqual([])
   })
 
   it('no saved image', async () => {
@@ -407,5 +412,184 @@ describe('ImageService: lifecycle', () => {
     }), 'utf8')
     start({ env: { LOCALCODE_COMFYUI_URL: 'http://pc:8188', LOCALCODE_COMFYUI_WORKFLOW: wf, LOCALCODE_COMFYUI_CHECKPOINT: 'x.safetensors' } })
     expect(logs).toEqual([`[imagegen] LOCALCODE_COMFYUI_CHECKPOINT="x.safetensors" is ignored: the workflow at ${wf} has no {{checkpoint}}`])
+  })
+})
+
+describe('ImageService: nothing of ours is left on ComfyUI', () => {
+  it('three failed /history polls withdraw the prompt before the next job goes out', async () => {
+    mock = await startMockComfy({ pendingPolls: 5 })
+    let dropped = 0
+    const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+      // A LAN blip: the prompt is queued on the server, but three polls in a row get no answer.
+      if (String(url).includes('/history/') && dropped < 3) { dropped++; throw new TypeError('fetch failed') }
+      return fetch(url, init)
+    }) as typeof fetch
+    const svc = start({ fetchFn })
+    const s = spec(['alien one', 'alien two'])
+    svc.annotate(s, at()).start()
+    await until(() => terminal(keyOf(s, 0)) && terminal(keyOf(s, 1)), 'both jobs')
+    const first = (posts()[0].body as { prompt_id: string }).prompt_id
+    expect(events.find(e => e.key === keyOf(s, 0) && e.status !== 'running')).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^ComfyUI did not answer at .* \(fetch failed\)/) })
+    expect(cancels()).toEqual([['/interrupt', { prompt_id: first }], ['/queue', { delete: [first] }]])
+    expect(mock.maxInFlight).toBe(1)
+  })
+
+  it('a POST whose answer was lost withdraws the id it sent before the next job goes out', async () => {
+    mock = await startMockComfy({ pendingPolls: 5 })
+    let lost = false
+    const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+      const res = await fetch(url, init)
+      // ComfyUI queued the prompt, but its answer did not arrive in time.
+      if (String(url).endsWith('/prompt') && !lost) { lost = true; throw new DOMException('The operation timed out.', 'TimeoutError') }
+      return res
+    }) as typeof fetch
+    const svc = start({ fetchFn })
+    const s = spec(['alien one', 'alien two'])
+    svc.annotate(s, at()).start()
+    await until(() => terminal(keyOf(s, 0)) && terminal(keyOf(s, 1)), 'both jobs')
+    const first = (posts()[0].body as { prompt_id: string }).prompt_id
+    expect(events.find(e => e.key === keyOf(s, 0) && e.status !== 'running')).toMatchObject({ status: 'failed', reason: expect.stringMatching(/^ComfyUI did not answer at .* \(timeout\)/) })
+    expect(cancels()).toEqual([['/interrupt', { prompt_id: first }], ['/queue', { delete: [first] }]])
+    expect(mock.maxInFlight).toBe(1)
+    expect(events.find(e => e.key === keyOf(s, 1) && e.status !== 'running')?.status).toBe('done')
+  })
+
+  it('shutdown while a finished picture is committing cancels nothing', async () => {
+    mock = await startMockComfy({ pendingPolls: 0 })
+    let stopping: Promise<void> | null = null
+    const svc: ImageService = start({ emit: e => { events.push(e); if (e.status === 'done') stopping ??= svc.shutdown() } })
+    const s = spec(['alien'])
+    svc.annotate(s, at()).start()
+    await until(() => stopping !== null, 'the picture')
+    await stopping
+    expect(cancels()).toEqual([])
+    expect(readSidecar(dir, keyOf(s, 0))).toMatchObject({ status: 'done' })
+  })
+
+  it('shutdown while a refused job is committing cancels nothing: ComfyUI never took it', async () => {
+    mock = await startMockComfy({ refuse: { error: { message: 'bad' }, node_errors: {} } })
+    let stopping: Promise<void> | null = null
+    const svc: ImageService = start({ emit: e => { events.push(e); if (e.status === 'failed') stopping ??= svc.shutdown() } })
+    svc.annotate(spec(['alien']), at()).start()
+    await until(() => stopping !== null, 'the refusal')
+    await stopping
+    expect(cancels()).toEqual([])
+  })
+
+  it('shutdown during the POST waits for its answer, so the prompt is cancelled once it is there to cancel', async () => {
+    mock = await startMockComfy({ pendingPolls: 0, delay: { '/prompt': 200 } })
+    const svc = start()
+    const s = spec(['alien'])
+    svc.annotate(s, at()).start()
+    await until(() => posts().length === 1, 'the POST')
+    await svc.shutdown()
+    await svc.whenIdle() // the POST has been answered: the server holds the prompt unless it was cancelled after that
+    const id = (posts()[0].body as { prompt_id: string }).prompt_id
+    expect(cancels()).toEqual([['/interrupt', { prompt_id: id }], ['/queue', { delete: [id] }]])
+    // Cancelled after the server queued it: it never runs.
+    const history = await (await fetch(`${mock.url}/history/${id}`)).json()
+    expect(history).toEqual({})
+    expect(readSidecar(dir, keyOf(s, 0))).toMatchObject({ status: 'failed', reason: STOPPED_REASON })
+  })
+
+  it('shutdown during the POST to an older ComfyUI cancels the id the server answered with, not the one sent', async () => {
+    mock = await startMockComfy({ neverFinish: true, ignoreClientId: true, delay: { '/prompt': 200 } })
+    const svc = start()
+    const s = spec(['alien'])
+    svc.annotate(s, at()).start()
+    await until(() => posts().length === 1, 'the POST')
+    await svc.shutdown()
+    await svc.whenIdle()
+    const sent = (posts()[0].body as { prompt_id: string }).prompt_id
+    const sc = readSidecar(dir, keyOf(s, 0))!
+    expect(sc.comfy.promptId).not.toBe(sent)
+    expect(cancels()).toEqual([['/interrupt', { prompt_id: sc.comfy.promptId }], ['/queue', { delete: [sc.comfy.promptId] }]])
+  })
+})
+
+describe('ImageService: links and special files the model planted', () => {
+  // The model can write anywhere in a project, links included (gradeProjectCall). The engine's own writes stay in it.
+  let outside: string, victim: string
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'cynco-imagegen-outside-'))
+    victim = join(outside, 'victim.txt')
+    writeFileSync(victim, 'ORIGINAL\n', 'utf8')
+  })
+  afterEach(() => { rmSync(outside, { recursive: true, force: true }) })
+
+  it.skipIf(!CAN_SYMLINK_FILES)('a .gitignore linked out of the project: every picture off with the reason, the file it points at untouched', async () => {
+    mock = await startMockComfy()
+    rmSync(join(dir, '.gitignore'))
+    symlinkSync(victim, join(dir, '.gitignore'))
+    const s = spec(['alien'])
+    const pics = start().annotate(s, at())
+    expect(imageOf(s, 0)).toEqual({ status: 'off', reason: '.gitignore in the project is a link or not a regular file; the engine will not write through it — refused' })
+    pics.start()
+    expect(readFileSync(victim, 'utf8')).toBe('ORIGINAL\n')
+    expect(existsSync(join(dir, 'images'))).toBe(false)
+  })
+
+  it('an images folder linked out of the project: off with the reason, nothing written there', async () => {
+    mock = await startMockComfy()
+    symlinkSync(outside, join(dir, 'images'), 'junction')
+    const s = spec(['alien'])
+    const pics = start().annotate(s, at())
+    expect(imageOf(s, 0)).toEqual({ status: 'off', reason: 'images/ in the project is a link; pictures are written only into a real folder inside it — refused' })
+    expect(pics.note).toMatch(/^Pictures: not generated — images\/ in the project is a link/)
+    pics.start()
+    expect(readdirSync(outside)).toEqual(['victim.txt'])
+    expect(posts()).toHaveLength(0)
+  })
+
+  it('a .cynco/tmp folder linked out of the project: off with the reason, nothing written there', async () => {
+    mock = await startMockComfy()
+    mkdirSync(join(dir, '.cynco'), { recursive: true })
+    symlinkSync(outside, join(dir, '.cynco', 'tmp'), 'junction')
+    const s = spec(['alien'])
+    start().annotate(s, at()).start()
+    expect(imageOf(s, 0)).toEqual({ status: 'off', reason: '.cynco/tmp/ in the project is a link; pictures are written only into a real folder inside it — refused' })
+    expect(readdirSync(outside)).toEqual(['victim.txt'])
+  })
+
+  it.skipIf(!CAN_SYMLINK_FILES)('a link planted at the download\'s .part name is replaced, never written through', async () => {
+    mock = await startMockComfy()
+    const svc = start()
+    const s = spec(['alien'])
+    const pics = svc.annotate(s, at())
+    const key = keyOf(s, 0)
+    mkdirSync(join(dir, '.cynco', 'tmp'), { recursive: true })
+    symlinkSync(victim, partPath(dir, key))
+    pics.start()
+    await until(() => terminal(key), 'the job')
+    expect(events.at(-1)?.status).toBe('done')
+    expect(readFileSync(victim, 'utf8')).toBe('ORIGINAL\n')
+    expect(lstatSync(pngPath(dir, key)).isFile()).toBe(true)
+    expect(Buffer.from(readFileSync(pngPath(dir, key))).equals(PNG_1X1)).toBe(true)
+  })
+
+  it('an images folder swapped for a link while the job runs: the job fails with the reason, nothing lands outside', async () => {
+    mock = await startMockComfy({ pendingPolls: 10 })
+    const svc = start()
+    const s = spec(['alien'])
+    svc.annotate(s, at()).start()
+    const key = keyOf(s, 0)
+    await until(() => events.some(e => e.status === 'running'), 'running')
+    renameSync(join(dir, 'images'), join(dir, 'images-moved'))
+    symlinkSync(outside, join(dir, 'images'), 'junction')
+    await until(() => terminal(key), 'the job')
+    expect(events.at(-1)).toMatchObject({ status: 'failed', reason: 'images/ in the project is a link; pictures are written only into a real folder inside it — refused' })
+    await svc.whenIdle()
+    expect(readdirSync(outside)).toEqual(['victim.txt'])
+  })
+
+  it.skipIf(process.platform === 'win32')('a FIFO planted at images/index.json: annotate returns at once and the index is rewritten as a file', async () => {
+    mock = await startMockComfy()
+    mkdirSync(join(dir, 'images'), { recursive: true })
+    execFileSync('mkfifo', [join(dir, 'images', 'index.json')])
+    const s = spec(['alien'])
+    start().annotate(s, at())
+    expect(imageOf(s, 0)).toMatchObject({ status: 'queued' })
+    expect(lstatSync(join(dir, 'images', 'index.json')).isFile()).toBe(true)
+    expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-1', elementId: 'img-0' })]).toBe(keyOf(s, 0))
   })
 })

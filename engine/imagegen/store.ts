@@ -12,11 +12,14 @@
  * included — so keys are checked against KEY_RE, sidecar fields are
  * type-checked (a bad file reads as no record), origins land in a
  * null-prototype map, files are found by key only, and a served PNG must
- * start with the PNG signature. All writes are synchronous read-modify-write
- * on the one JS thread, so two of them cannot interleave.
+ * start with the PNG signature. A file is read only when it is a regular file
+ * under a size cap (`readSmallFile`): a planted FIFO or a link to /dev/zero
+ * would otherwise freeze the engine's one thread. Nothing is written through
+ * a link (`storeFault`). All writes are synchronous read-modify-write on the
+ * one JS thread, so two of them cannot interleave.
  */
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UiImageState } from '../bridge/protocol.js'
 import { projectDir, readProject, realInside, SLUG_RE, writeJsonAtomic } from '../projects/layout.js'
@@ -32,6 +35,10 @@ export const INTERRUPTED_REASON = 'interrupted — the engine stopped before thi
 export const NOT_GENERATED_REASON = 'this picture was not generated'
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+/** Read caps. A sidecar holds the filled graph, so it allows for a 1 MB workflow pretty-printed; the index for ORIGINS_CAP long origins. */
+const SIDECAR_CAP = 8 * 1024 * 1024
+const INDEX_CAP = 4 * 1024 * 1024
+const IGNORE_CAP = 1024 * 1024
 /** "<chatFile>#<toolId>#<elementId>": three '#'-free parts, the last an element id. */
 const ORIGIN_RE = /^[^#\s]{1,200}#[^#\s]{1,200}#[A-Za-z0-9_-]{1,40}$/
 
@@ -126,6 +133,96 @@ export function pngPath(dir: string, key: string): string { return join(dir, 'im
 export function partPath(dir: string, key: string): string { return join(dir, '.cynco', 'tmp', `${assertKey(key)}.part`) }
 export function originsPath(dir: string): string { return join(dir, 'images', 'index.json') }
 
+// ─── untrusted files ──────────────────────────────────────────────────
+
+/**
+ * A file the model may have planted, read only when it is a regular file of
+ * at most `cap` bytes. Opened non-blocking and checked on the open
+ * descriptor, so a FIFO (a plain read blocks until a writer comes), a device
+ * (a link to /dev/zero never ends) or a huge file is refused at once. null,
+ * logged, when refused or unreadable: the caller reads that as no record.
+ */
+function readSmallFile(p: string, cap: number, label: string): Buffer | null {
+  let fd: number
+  try {
+    fd = openSync(p, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+  } catch (e) {
+    console.log(`[imagegen] ${label} could not be opened: ${(e as Error).message}`)
+    return null
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) { console.log(`[imagegen] ${label} is not a regular file; not read`); return null }
+    if (st.size > cap) { console.log(`[imagegen] ${label} is ${st.size} bytes, over the ${cap}-byte cap; not read`); return null }
+    const buf = Buffer.alloc(st.size)
+    let n = 0
+    while (n < buf.length) {
+      const r = readSync(fd, buf, n, buf.length - n, n)
+      if (r === 0) break
+      n += r
+    }
+    return buf.subarray(0, n)
+  } catch (e) {
+    console.log(`[imagegen] reading ${label} failed: ${(e as Error).message}`)
+    return null
+  } finally {
+    try {
+      closeSync(fd)
+    } catch (e) {
+      console.log(`[imagegen] closing ${label} failed: ${(e as Error).message}`)
+    }
+  }
+}
+
+/** Why the engine must not write into `<dir>/<rel>/` (`rel` '/'-separated; join makes it native), or null: it must be a real folder (not a link or junction) inside the project, or not exist yet. */
+function folderFault(dir: string, rel: string): string | null {
+  const p = join(dir, rel)
+  try {
+    const st = lstatSync(p)
+    if (st.isSymbolicLink()) return `${rel}/ in the project is a link; pictures are written only into a real folder inside it — refused`
+    if (!st.isDirectory()) return `${rel} in the project is not a folder; refused`
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      console.log(`[imagegen] lstat ${p} failed: ${(e as Error).message}`)
+      return `${rel}/ in the project could not be checked (${code ?? (e as Error).message}); refused`
+    }
+  }
+  // A parent link (.cynco -> elsewhere) passes the lstat above; the real path does not.
+  const r = realInside(dir, p)
+  return r.inside ? null : `${rel}/ leads outside the project (to ${r.real}); refused`
+}
+
+const IGNORE_FAULT = '.gitignore in the project is a link or not a regular file; the engine will not write through it — refused'
+
+function ignoreFault(dir: string): string | null {
+  try {
+    return lstatSync(join(dir, '.gitignore')).isFile() ? null : IGNORE_FAULT
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null
+    console.log(`[imagegen] lstat .gitignore in ${dir} failed: ${(e as Error).message}`)
+    return IGNORE_FAULT
+  }
+}
+
+/**
+ * Why the engine must not store pictures in this project, or null. The model
+ * can write anywhere in a project, links included (`gradeProjectCall`), so
+ * `images/` and `.cynco/tmp/` must each be a real folder inside it (or not
+ * exist yet) and `.gitignore` a regular file (or absent). Checked when the
+ * pictures are annotated, when a job starts and again at its write, so a link
+ * planted while a job ran is caught before anything follows it.
+ */
+export function storeFault(dir: string): string | null {
+  return folderFault(dir, 'images') ?? folderFault(dir, '.cynco/tmp') ?? ignoreFault(dir)
+}
+
+function assertImagesFolder(dir: string): void {
+  const fault = folderFault(dir, 'images')
+  if (fault) throw new Error(fault)
+}
+
 // ─── sidecars ─────────────────────────────────────────────────────────
 
 const STATUSES: ReadonlySet<string> = new Set(['queued', 'running', 'done', 'failed'])
@@ -158,9 +255,11 @@ export function readSidecar(dir: string, key: string): ImageSidecar | null {
   if (!KEY_RE.test(key)) return null
   const p = sidecarPath(dir, key)
   if (!existsSync(p)) return null
+  const raw = readSmallFile(p, SIDECAR_CAP, `images/${key}.json`)
+  if (raw === null) return null
   let v: unknown
   try {
-    v = JSON.parse(readFileSync(p, 'utf8'))
+    v = JSON.parse(raw.toString('utf8'))
   } catch (e) {
     console.log(`[imagegen] images/${key}.json is unreadable; treated as no record: ${e instanceof Error ? e.message : String(e)}`)
     return null
@@ -170,7 +269,9 @@ export function readSidecar(dir: string, key: string): ImageSidecar | null {
   return v as ImageSidecar
 }
 
+/** Throws, naming the fault, when images/ is a link or leads outside the project. */
 export function writeSidecar(dir: string, sc: ImageSidecar): void {
+  assertImagesFolder(dir)
   mkdirSync(imagesDir(dir), { recursive: true })
   writeJsonAtomic(sidecarPath(dir, sc.key), sc)
 }
@@ -188,9 +289,11 @@ export function readOrigins(dir: string): Record<string, string> {
   const out: Record<string, string> = Object.create(null)
   const p = originsPath(dir)
   if (!existsSync(p)) return out
+  const raw = readSmallFile(p, INDEX_CAP, 'images/index.json')
+  if (raw === null) return out
   let v: unknown
   try {
-    v = JSON.parse(readFileSync(p, 'utf8'))
+    v = JSON.parse(raw.toString('utf8'))
   } catch (e) {
     console.log(`[imagegen] images/index.json is unreadable; no origins read: ${e instanceof Error ? e.message : String(e)}`)
     return out
@@ -204,8 +307,9 @@ export function readOrigins(dir: string): Record<string, string> {
   return out
 }
 
-/** Map each origin to its key (a re-mapped origin becomes the newest), keeping the newest ORIGINS_CAP. */
+/** Map each origin to its key (a re-mapped origin becomes the newest), keeping the newest ORIGINS_CAP. Throws like `writeSidecar`. */
 export function recordOrigins(dir: string, pairs: Array<[origin: string, key: string]>): void {
+  assertImagesFolder(dir)
   const map = readOrigins(dir)
   for (const [origin, key] of pairs) {
     if (!ORIGIN_RE.test(origin) || !KEY_RE.test(key)) { console.log(`[imagegen] origin "${origin.slice(0, 80)}" → ${key.slice(0, 40)} not recorded: not an origin/key pair`); continue }
@@ -218,12 +322,27 @@ export function recordOrigins(dir: string, pairs: Array<[origin: string, key: st
   writeJsonAtomic(originsPath(dir), { schema: 1, origins: map })
 }
 
-/** Append `images/*.png` to the project's .gitignore unless a line already says it. Idempotent. */
-export function ensureImageIgnore(dir: string): void {
+/**
+ * Append `images/*.png` to the project's .gitignore unless a line already says
+ * it. Idempotent. Returns why it refused — a .gitignore that is a link, a
+ * FIFO or too big — or null. Written to a fresh temp file and renamed over,
+ * so a link planted after the check is replaced, never written through.
+ */
+export function ensureImageIgnore(dir: string): string | null {
+  const fault = ignoreFault(dir)
+  if (fault) return fault
   const p = join(dir, '.gitignore')
-  const text = existsSync(p) ? readFileSync(p, 'utf8') : ''
-  if (text.split(/\r?\n/).some(l => l.trim() === 'images/*.png')) return
-  writeFileSync(p, text + (text && !text.endsWith('\n') ? '\n' : '') + 'images/*.png\n', 'utf8')
+  let text = ''
+  if (existsSync(p)) {
+    const raw = readSmallFile(p, IGNORE_CAP, '.gitignore')
+    if (raw === null) return IGNORE_FAULT
+    text = raw.toString('utf8')
+  }
+  if (text.split(/\r?\n/).some(l => l.trim() === 'images/*.png')) return null
+  const tmp = `${p}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
+  writeFileSync(tmp, text + (text && !text.endsWith('\n') ? '\n' : '') + 'images/*.png\n', { encoding: 'utf8', flag: 'wx' })
+  renameSync(tmp, p)
+  return null
 }
 
 // ─── readers for the route and for reload ─────────────────────────────
@@ -268,13 +387,9 @@ export function servedImage(home: string, slug: string, name: string): { status:
     const sc = readSidecar(dir, key)
     return sc ? { status: 200, json: publicSidecar(sc) } : missing
   }
-  let bytes: Uint8Array
-  try {
-    bytes = readFileSync(file)
-  } catch (e) {
-    console.log(`[imagegen] reading images/${name} in ${slug} failed: ${(e as Error).message}`)
-    return missing
-  }
+  // Re-checked on the open file: a FIFO swapped in since the stat must not hang the route.
+  const bytes = readSmallFile(file, DOWNLOAD_CAP_BYTES, `images/${name} in ${slug}`)
+  if (bytes === null) return missing
   if (!isPng(bytes)) return { status: 415, json: { error: `images/${key}.png is not a PNG; refused` } }
   return { status: 200, bytes }
 }

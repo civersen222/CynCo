@@ -14,19 +14,26 @@
  * failure becomes a named reason on the sidecar, in the journal, in a
  * `ui.image failed` event and in the log; nothing throws.
  *
+ * A job the worker gives up on after its POST may have reached ComfyUI (a
+ * lost answer, polls that stop answering, the deadline) is interrupted and
+ * dequeued by id before the next job goes out, so the engine never has two
+ * prompts on the server. Nothing is written through a link the model planted
+ * (`storeFault`, checked at annotate, at job start and at the write).
+ *
  * An abort, halt or project switch leaves jobs alone: each captured its
  * project at annotate time and finishes into it. `shutdown` interrupts the one
- * in flight (by prompt_id only) and marks it and every queued job failed.
+ * in flight (by prompt_id only, and only while ComfyUI may still hold it) and
+ * marks it and every queued job failed.
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { UiElement, UiImageEvent, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig } from './config.js'
-import { ensureImageIgnore, imageKey, imagesDir, normPrompt, originKey, partPath, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { ensureImageIgnore, imageKey, imagesDir, normPrompt, originKey, partPath, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
 import { fillWorkflow } from './workflow.js'
 
 export type AnnotateAt = {
@@ -75,8 +82,14 @@ type Job = {
   sidecar: ImageSidecar
   queuedAt: number
   status: 'queued' | 'running'
-  /** Set once the POST has gone out: only then is there anything on the server to interrupt. */
-  submitting: boolean
+  /**
+   * Set when the POST goes out: resolves to the id of the prompt ComfyUI may
+   * hold for this job (the server's once it answers, else the one sent), or
+   * null when it holds nothing (a 400 refusal). Cleared once the history
+   * entry arrives or the worker withdraws the prompt itself, so shutdown only
+   * ever cancels a prompt of ours that may still be pending or running.
+   */
+  onServer: Promise<string | null> | null
   settled: boolean
 }
 
@@ -286,6 +299,9 @@ export class ImageService implements ImageAnnotator {
     if (this.stopped) return offAll(STOPPING_REASON)
     const cfg = this.config.cfg
     const { dir, slug, chatFile } = at.project
+    // A link or special file the model planted where the store goes: nothing is read or written through it.
+    const fault = storeFault(dir)
+    if (fault) return offAll(fault)
 
     // Decide every element first; nothing is written or queued until all are decided.
     const decided = new Map<string, UiImageState>()
@@ -329,7 +345,8 @@ export class ImageService implements ImageAnnotator {
     }
 
     if (origins.length) {
-      ensureImageIgnore(dir)
+      const refused = ensureImageIgnore(dir)
+      if (refused) return offAll(refused)
       mkdirSync(imagesDir(dir), { recursive: true })
       for (const j of newJobs) writeSidecar(dir, j.sidecar)
       recordOrigins(dir, origins)
@@ -380,7 +397,7 @@ export class ImageService implements ImageAnnotator {
       queuedAt: iso(queuedAt),
       origin: { chatFile: p.chatFile, ...o },
     }
-    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', submitting: false, settled: false }
+    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', onServer: null, settled: false }
   }
 
   // ─── worker ─────────────────────────────────────────────────────────
@@ -411,7 +428,12 @@ export class ImageService implements ImageAnnotator {
           await this.runJob(job)
         } catch (e) {
           this.log(`[imagegen] ${job.key.slice(0, 8)}: the worker threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
-          if (!this.stopped) await this.finish(job, { status: 'failed', reason: reasonOf(e) })
+          if (!this.stopped) {
+            // A throw after the POST must not leave our prompt on the server beside the next job's.
+            const held = job.onServer ? await job.onServer : null
+            if (held && this.client && !this.stopped) await this.withdraw(this.client, job, held)
+            await this.finish(job, { status: 'failed', reason: reasonOf(e) })
+          }
         } finally {
           this.running = null
           // A re-request after a failure may already hold this id with a new job.
@@ -429,6 +451,9 @@ export class ImageService implements ImageAnnotator {
     const ready = await this.ensureReady(cfg)
     if (this.stopped) return
     if (!ready.ok) return this.finish(job, { status: 'failed', reason: ready.reason })
+    // Minutes may have passed since annotate: a link planted since fails the job before anything is written.
+    const fault = storeFault(job.dir)
+    if (fault) return this.finish(job, { status: 'failed', reason: fault })
 
     const graph = fillWorkflow(cfg.workflow.graph, {
       prompt: sc.prompt, negative: sc.negative, seed: sc.seed, width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg,
@@ -442,13 +467,17 @@ export class ImageService implements ImageAnnotator {
     job.status = 'running'
     // Before the POST: a crash from here on leaves a record naming the prompt id.
     writeSidecar(job.dir, sc)
-    job.submitting = true
+    const sent = sc.comfy.promptId
+    const submission = client.submit(graph, sent)
+    job.onServer = submission.then(id => id, e => (e instanceof ComfyError && e.refused ? null : sent))
     let id: string
     try {
-      id = await client.submit(graph, sc.comfy.promptId)
+      id = await submission
     } catch (e) {
       this.log(`[imagegen] ${job.key.slice(0, 8)}: submit failed: ${reasonOf(e)}`)
       if (this.stopped) return
+      // Unless ComfyUI refused it, the POST may have been queued with its answer lost: withdraw it before the next job goes out.
+      if (!(e instanceof ComfyError && e.refused)) await this.withdraw(client, job, sent)
       return this.finish(job, { status: 'failed', reason: reasonOf(e) })
     }
     const submitAt = this.now()
@@ -465,17 +494,23 @@ export class ImageService implements ImageAnnotator {
       } catch (e) {
         misses++
         this.log(`[imagegen] ${job.key.slice(0, 8)}: history poll failed (${misses} of ${POLL_FAILURES_TOLERATED}): ${reasonOf(e)}`)
-        if (misses >= POLL_FAILURES_TOLERATED && !this.stopped) return this.finish(job, { status: 'failed', reason: reasonOf(e) })
+        if (misses >= POLL_FAILURES_TOLERATED && !this.stopped) {
+          // Our prompt may still be queued or running there: the next job must not make it two.
+          await this.withdraw(client, job, id)
+          return this.finish(job, { status: 'failed', reason: reasonOf(e) })
+        }
       }
       if (this.stopped) return
       if (entry) break
       if (this.now() - submitAt >= this.timeoutMs) {
-        await this.cancelOnServer(client, id)
+        await this.withdraw(client, job, id)
         return this.finish(job, { status: 'failed', reason: `ComfyUI did not finish within ${Math.round(this.timeoutMs / 1000)} s (it may be busy with other work)` })
       }
       await this.sleep(this.pollMs)
       if (this.stopped) return
     }
+    // The prompt has ended on the server: nothing of ours is left there to stop.
+    job.onServer = null
     sc.genMs = this.now() - submitAt
     const exec = execMsOf(entry)
     if (exec !== null) sc.execMs = exec
@@ -494,14 +529,29 @@ export class ImageService implements ImageAnnotator {
       return this.finish(job, { status: 'failed', reason: reasonOf(e) })
     }
     if (this.stopped) return
+    const late = storeFault(job.dir)
+    if (late) return this.finish(job, { status: 'failed', reason: late })
     // The local name comes from the key alone; the server's filename was only ever a query parameter.
     const part = partPath(job.dir, job.key)
-    mkdirSync(dirname(part), { recursive: true })
-    writeFileSync(part, bytes)
-    renameSync(part, pngPath(job.dir, job.key))
+    try {
+      mkdirSync(dirname(part), { recursive: true })
+      // A link planted at the .part name is removed, never followed: 'wx' creates a new file or fails.
+      rmSync(part, { force: true })
+      writeFileSync(part, bytes, { flag: 'wx' })
+      renameSync(part, pngPath(job.dir, job.key))
+    } catch (e) {
+      this.log(`[imagegen] ${job.key.slice(0, 8)}: writing the picture into ${job.dir} failed: ${errText(e)}`)
+      return this.finish(job, { status: 'failed', reason: `the picture could not be written into the project (${errText(e)})` })
+    }
     sc.sha256 = sha256Of(bytes)
     sc.bytes = bytes.byteLength
     await this.finish(job, { status: 'done' })
+  }
+
+  /** The worker gives up on a prompt ComfyUI may hold: it is the worker's to cancel now, not shutdown's. */
+  private async withdraw(client: ComfyClient, job: Job, id: string): Promise<void> {
+    job.onServer = null
+    await this.cancelOnServer(client, id)
   }
 
   /** Interrupt and dequeue one prompt by id. Each half is logged and never throws. */
@@ -592,15 +642,20 @@ export class ImageService implements ImageAnnotator {
 
   /**
    * Engine exit: interrupt and dequeue the job in flight (by its prompt_id
-   * only — never a global interrupt), mark it and every queued job failed,
-   * and commit. Bounded to 3 s; the sidecars are marked before any network
-   * or git call, so the bound never costs a record.
+   * only — never a global interrupt — and only while ComfyUI may still hold
+   * it), mark it and every queued job failed, and commit. A POST still in
+   * flight is waited for, so the cancel names the id the server answered with
+   * and arrives after the prompt is queued. Bounded to 3 s; the sidecars are
+   * marked before any network or git call, so the bound never costs a record.
    */
   async shutdown(): Promise<void> {
     if (this.stopped) return
     this.stopped = true
     this.wake?.()
     const running = this.running
+    // Taken before the jobs are recorded (that settles them): a job that already
+    // finished, was refused or was withdrawn has nothing on the server to cancel.
+    const onServer = running && !running.settled ? running.onServer : null
     const jobs = [...(running ? [running] : []), ...this.queue.splice(0)]
     if (jobs.length === 0) return
     const outcome: Outcome = { status: 'failed', reason: STOPPED_REASON }
@@ -609,10 +664,15 @@ export class ImageService implements ImageAnnotator {
       if (this.record(j, outcome) === null) continue
       byDir.set(j.dir, [...(byDir.get(j.dir) ?? []), j.key])
     }
-    const work = (async () => {
-      if (running?.submitting && this.client) await this.cancelOnServer(this.client, running.sidecar.comfy.promptId)
+    const cancel = async () => {
+      const id = onServer ? await onServer : null
+      if (id && this.client) await this.cancelOnServer(this.client, id)
+    }
+    const commits = async () => {
       for (const [dir, keys] of byDir) await this.commit(dir, keys, `images: ${keys.length} stopped with the engine`)
-    })()
+    }
+    // Side by side: a slow POST or a hung /interrupt must not hold the commits past the bound.
+    const work = Promise.all([cancel(), commits()])
     let timer: ReturnType<typeof setTimeout> | undefined
     const bound = new Promise<void>(resolve => { timer = setTimeout(() => { this.log('[imagegen] shutdown passed its 3 s bound; leaving the rest'); resolve() }, SHUTDOWN_BOUND_MS) })
     await Promise.race([work.catch(e => this.log(`[imagegen] shutdown work threw: ${errText(e)}`)), bound])

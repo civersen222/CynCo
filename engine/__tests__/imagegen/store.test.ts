@@ -1,28 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { createProject } from '../../projects/layout.js'
 import {
   canonicalJson, ensureImageIgnore, imageKey, INTERRUPTED_REASON, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
-  readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, sidecarPath, storedImageState, writeSidecar, type ImageSidecar, type KeyFields,
+  readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, sidecarPath, storeFault, storedImageState, writeSidecar, type ImageSidecar, type KeyFields,
 } from '../../imagegen/store.js'
-import { PNG_1X1 } from './mockComfy.js'
+import { canSymlinkFiles, PNG_1X1 } from './mockComfy.js'
 
-/** A file symlink needs a privilege on Windows; a directory junction does not. */
-function canSymlinkFiles(): boolean {
-  const d = mkdtempSync(join(tmpdir(), 'cynco-imagegen-link-'))
-  try {
-    writeFileSync(join(d, 'a'), '')
-    symlinkSync(join(d, 'a'), join(d, 'b'))
-    return true
-  } catch (e) {
-    console.log(`file symlinks need privileges here: ${(e as Error).message}`)
-    return false
-  } finally {
-    rmSync(d, { recursive: true, force: true })
-  }
-}
 const CAN_SYMLINK_FILES = canSymlinkFiles()
 
 let home: string, dir: string, slug: string
@@ -230,5 +217,79 @@ describe('storedImageState', () => {
     rmSync(sidecarPath(dir, k))
     expect(storedImageState(dir, slug, origin)).toMatchObject({ status: 'off' })
     expect(existsSync(join(dir, 'images', 'index.json'))).toBe(true)
+  })
+})
+
+describe('links and special files the model planted', () => {
+  // The model can write anywhere in a project, links included: the engine's own writes must never follow one out.
+  const origin = originKey({ chatFile: 'c.jsonl', toolId: 't1', elementId: 'img-a' })
+  let outside: string, victim: string
+  beforeEach(() => {
+    outside = mkdtempSync(join(tmpdir(), 'cynco-imagegen-outside-'))
+    victim = join(outside, 'victim.txt')
+    writeFileSync(victim, 'ORIGINAL\n', 'utf8')
+  })
+  afterEach(() => { rmSync(outside, { recursive: true, force: true }) })
+
+  it.skipIf(!CAN_SYMLINK_FILES)('a .gitignore linked out of the project is refused by name and the file it points at is untouched', () => {
+    rmSync(join(dir, '.gitignore'))
+    symlinkSync(victim, join(dir, '.gitignore'))
+    expect(ensureImageIgnore(dir)).toBe('.gitignore in the project is a link or not a regular file; the engine will not write through it — refused')
+    expect(storeFault(dir)).toBe(ensureImageIgnore(dir))
+    expect(readFileSync(victim, 'utf8')).toBe('ORIGINAL\n')
+  })
+
+  it.skipIf(!CAN_SYMLINK_FILES)('an atomic write never follows a link planted at its temp name', () => {
+    const k = imageKey(FIELDS)
+    mkdirSync(join(dir, 'images'), { recursive: true })
+    symlinkSync(victim, join(dir, 'images', `index.json.tmp-${process.pid}`))
+    recordOrigins(dir, [[origin, k]])
+    expect(readFileSync(victim, 'utf8')).toBe('ORIGINAL\n')
+    expect(lstatSync(join(dir, 'images', 'index.json')).isFile()).toBe(true)
+    expect(readOrigins(dir)[origin]).toBe(k)
+  })
+
+  it('an images folder that is a link is refused before any write, with the reason', () => {
+    const k = imageKey(FIELDS)
+    symlinkSync(outside, join(dir, 'images'), 'junction')
+    const reason = 'images/ in the project is a link; pictures are written only into a real folder inside it — refused'
+    expect(storeFault(dir)).toBe(reason)
+    expect(() => writeSidecar(dir, sidecar(k))).toThrow(reason)
+    expect(() => recordOrigins(dir, [[origin, k]])).toThrow(reason)
+    expect(readdirSync(outside)).toEqual(['victim.txt'])
+  })
+
+  it('a .cynco folder linked out of the project is refused: the download folder would land outside', () => {
+    mkdirSync(join(outside, 'cynco'))
+    rmSync(join(dir, '.cynco'), { recursive: true, force: true })
+    symlinkSync(join(outside, 'cynco'), join(dir, '.cynco'), 'junction')
+    expect(storeFault(dir)).toMatch(/^\.cynco\/tmp\/ leads outside the project \(to .*\); refused$/)
+  })
+
+  it('a record padded past its size cap is not read', () => {
+    const k = imageKey(FIELDS)
+    mkdirSync(join(dir, 'images'), { recursive: true })
+    writeFileSync(join(dir, 'images', 'index.json'), `{"schema":1,"origins":{"${origin}":"${k}"}}` + ' '.repeat(5 * 1024 * 1024), 'utf8')
+    expect(Object.keys(readOrigins(dir))).toEqual([])
+  })
+
+  // A plain read of a FIFO blocks until a writer comes, and /dev/zero never ends: either would freeze the engine's one thread.
+  it.skipIf(process.platform === 'win32')('a FIFO or a device where a record should be reads as no record, at once', () => {
+    const k = imageKey(FIELDS)
+    const index = join(dir, 'images', 'index.json')
+    mkdirSync(join(dir, 'images'), { recursive: true })
+    execFileSync('mkfifo', [index])
+    expect(Object.keys(readOrigins(dir))).toEqual([])
+    rmSync(index)
+    symlinkSync('/dev/zero', index)
+    expect(Object.keys(readOrigins(dir))).toEqual([])
+    rmSync(index)
+    recordOrigins(dir, [[origin, k]])
+    execFileSync('mkfifo', [sidecarPath(dir, k)])
+    expect(readSidecar(dir, k)).toBeNull()
+    expect(storedImageState(dir, slug, origin)).toEqual({ status: 'off', reason: `the record of this picture (images/${k}.json) is missing or unreadable` })
+    rmSync(join(dir, '.gitignore'))
+    execFileSync('mkfifo', [join(dir, '.gitignore')])
+    expect(ensureImageIgnore(dir)).toBe('.gitignore in the project is a link or not a regular file; the engine will not write through it — refused')
   })
 })

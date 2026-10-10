@@ -16,7 +16,8 @@ import { workflowClasses, type ComfyGraph } from './workflow.js'
 import { isPng, RUN_ID, type ImageRef } from './store.js'
 
 export class ComfyError extends Error {
-  constructor(readonly reason: string) {
+  /** `refused`: ComfyUI answered POST /prompt with a 400 and queued nothing, so there is nothing of ours on it to cancel. */
+  constructor(readonly reason: string, readonly refused = false) {
     super(reason)
     this.name = 'ComfyError'
   }
@@ -138,7 +139,7 @@ export class ComfyClient {
       } catch (e) {
         console.log(`[imagegen] /prompt 400 from ${this.host} is not JSON: ${netCause(e)}`)
       }
-      throw new ComfyError(refusalReason(body))
+      throw new ComfyError(refusalReason(body), true)
     }
     if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /prompt with HTTP ${res.status}`)
     const body = await this.json(res, '/prompt')

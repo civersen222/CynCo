@@ -10,6 +10,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 /** A real 1×1 PNG. */
 export const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')
@@ -194,5 +197,20 @@ export async function until(cond: () => boolean, what: string, ms = 5000): Promi
   while (!cond()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
     await new Promise(r => setTimeout(r, 10))
+  }
+}
+
+/** A file symlink needs a privilege on Windows; a directory junction does not. */
+export function canSymlinkFiles(): boolean {
+  const d = mkdtempSync(join(tmpdir(), 'cynco-imagegen-link-'))
+  try {
+    writeFileSync(join(d, 'a'), '')
+    symlinkSync(join(d, 'a'), join(d, 'b'))
+    return true
+  } catch (e) {
+    console.log(`file symlinks need privileges here: ${(e as Error).message}`)
+    return false
+  } finally {
+    rmSync(d, { recursive: true, force: true })
   }
 }
