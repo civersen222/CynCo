@@ -18,7 +18,7 @@ export type FileIndex = { files: Record<string, FileRecord> }
 export type JournalEvent =
   | 'created' | 'knowledge.added' | 'knowledge.removed' | 'knowledge.unindexed'
   | 'artifact.saved' | 'artifact.unindexed' | 'artifact.removed' | 'artifact.promoted' | 'chat.opened' | 'chat.renamed'
-  | 'index.rebuilt' | 'history.failed' | 'registry.rebuilt'
+  | 'index.rebuilt' | 'history.failed' | 'registry.rebuilt' | 'image.generated' | 'image.failed'
 
 export const INSTRUCTIONS_HINT = '<!-- Standing instructions for every chat in this project. Write them below this line. -->\n'
 export const PLAN_TEMPLATE = '# Plan\n\n<!-- One checkbox item per line: - [ ] item -->\n'
@@ -130,7 +130,7 @@ export function isReservedFileName(name: string): boolean {
   return basename(name).toLowerCase() === RESERVED_FILE_NAME
 }
 
-function writeJsonAtomic(path: string, value: unknown): void {
+export function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp-${process.pid}`
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8')
   renameSync(tmp, path)

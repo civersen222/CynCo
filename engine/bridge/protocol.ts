@@ -152,6 +152,8 @@ export type UiElement = {
   visible?: { name: string; eq?: unknown; neq?: unknown }
   /** Inside a Tabs container: the tab value this child belongs to. */
   tab?: string
+  /** On an Image with a "prompt": its generated picture (engine/imagegen). Set by the engine only. */
+  image?: UiImageState
 }
 
 /** A validated spec: a flat element map plus the id drawn first. */
@@ -175,6 +177,23 @@ export type UiRenderEvent = {
   partial: boolean
   spec: UiSpec | null
   errors?: string[]
+}
+
+/** A generated picture's state on an Image element. Engine-only: validateSpec drops an element-level "image" the model writes. */
+export type UiImageState =
+  | { status: 'off'; reason: string }
+  | { status: 'queued' | 'running' | 'done' | 'failed'; key: string; slug: string; w: number; h: number; reason?: string }
+
+/**
+ * A generated picture changed state (engine/imagegen). Keyed on the image key, never on a
+ * surface: every Image showing that key fills in, and a surface that no longer shows it is untouched.
+ */
+export type UiImageEvent = {
+  type: 'ui.image'
+  key: string
+  slug: string
+  status: 'running' | 'done' | 'failed'
+  reason?: string
 }
 
 export type ContextStatusEvent = {
