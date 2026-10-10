@@ -43,6 +43,11 @@ describe('uiRequestReason', () => {
     ['give me three options for the base as cards, no tables', 'give me three options'],
     ['i ripped the 2" strips already. show me a few options for the edge profile, maybe 1/4" roundover', 'show me a few options'],
     ['Show your previous reply as UI with RenderUI: the same content, no new facts.', 'as ui'],
+    // F174: pictures ask like designs do — a project chat's Image paints its prompt
+    ['show me some pictures of the aliens', 'show me some pictures'],
+    ['can you generate a few images of the base', 'generate a few images'],
+    ['draw a few illustrations for the chapter openers', 'draw a few illustrations'],
+    ['show me renders of the river table', 'show me renders'],
   ])('fires on %j', (text, reason) => {
     expect(uiRequestReason(text)).toBe(reason)
   })
@@ -88,6 +93,13 @@ describe('uiRequestReason', () => {
     "you don't have to give me options",
     "i don't want you to list options, pick one",
     'show me the options in words',
+    // F174: pictures that already exist, and "renders" the verb
+    'the images look too dark',
+    'save the images',
+    'what images did you use',
+    'i added some images of the wall',
+    "don't generate images, just describe them",
+    'show me how the page renders on my phone',
     '',
     '   ',
   ])('does not fire on %j', text => {

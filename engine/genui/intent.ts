@@ -35,7 +35,10 @@ const ASK_VERBS = String.raw`(?<=${ADDRESS})(?:${IMPERATIVES})|(?:show|give|draw
 // Weak nouns count only with a quantifier ("three directions", "a few looks"),
 // so "the directions for the bread" and "how it looks" do not; "names of",
 // "the main ideas" and "earlier versions" are facts about what exists.
-const OPTION_NOUNS = String.raw`options|optoins|(?<!(?:main|key|central|core|big|basic|underlying) )(?:ideas|concepts)|designs|desgins|desings|(?<!(?:earlier|previous|old|older|prior|saved|last) )versions|variants|variations|alternatives|approaches|choices|styles|possibilities|candidates|mock-?ups|layouts|schemes|palettes|(?<!(?:the|their|his|her|its|our|my|your) )names(?! of)|titles|taglines|slogans|sketches|suggestions|combos|combinations|trade-?offs|takes on|${QUANT} (?:\w+ ){0,2}(?:looks|directions|ways|plans)`
+// Pictures ask like designs do: a project chat's Image paints its prompt
+// (F174). "renders" is also a verb ("show me how the page renders"), so it
+// counts only after a quantifier or before "of".
+const OPTION_NOUNS = String.raw`options|optoins|(?<!(?:main|key|central|core|big|basic|underlying) )(?:ideas|concepts)|designs|desgins|desings|(?<!(?:earlier|previous|old|older|prior|saved|last) )versions|variants|variations|alternatives|approaches|choices|styles|possibilities|candidates|mock-?ups|layouts|schemes|palettes|(?<!(?:the|their|his|her|its|our|my|your) )names(?! of)|titles|taglines|slogans|sketches|suggestions|combos|combinations|trade-?offs|takes on|pictures|images|illustrations|renders(?= of\b)|${QUANT} (?:\w+ ){0,2}(?:looks|directions|ways|plans|renders)`
 const ASK_FOR_OPTIONS = new RegExp(String.raw`\b(?:${ASK_VERBS})\b[^.?!\n]{0,60}?\b(?:${OPTION_NOUNS})\b`)
 // The span names what the user already has: "my designs", "feedback on", "her options".
 const EXISTING = /\b(?:her|his|their|feedback|thoughts?|opinions?|critique|notes)\b|\b(?:my|our)\b(?! (?:options|choices|alternatives)\b)/
