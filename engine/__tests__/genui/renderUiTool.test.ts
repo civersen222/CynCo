@@ -49,7 +49,7 @@ describe('RenderUI tool', () => {
   it('reports issues without erroring, and errors only when nothing draws', async () => {
     const r = await renderUiTool.execute({ spec: { root: 'c', elements: { c: { type: 'Card', children: ['ghost'] } } }, surface: 'not valid!' }, '/tmp')
     expect(r.isError).toBe(false)
-    expect(r.output).toContain('Rendered 1 element.')
+    expect(r.output).toContain('Rendered 1 element.\nNotes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):')
     expect(r.output).toContain('"ghost" is not an element id')
     expect(r.output).toContain('surface "not valid!" must match')
     const bad = await renderUiTool.execute({ spec: { root: 'x', elements: { x: { type: 'Modal' } } } }, '/tmp')
@@ -63,7 +63,26 @@ describe('RenderUI tool', () => {
 
   it('renderUiResultText phrases singular and plural', () => {
     expect(renderUiResultText(1, [])).toBe('Rendered 1 element.')
-    expect(renderUiResultText(3, ['a'])).toBe('Rendered 3 elements.\nIssues (fix these in your next call rather than resending the same spec):\n- a')
+    expect(renderUiResultText(3, ['a'])).toBe('Rendered 3 elements.\nNotes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):\n- a')
+  })
+
+  // F174: every drop line ends "the element was dropped", so the header tells
+  // the model which notes are worth a second call and which are already done.
+  it('an invented image path is a note, and an Image with nothing to show is a dropped element', async () => {
+    const r = await renderUiTool.execute({ spec: { root: 'c', elements: {
+      c: { type: 'Card', props: { title: 'Aliens' }, children: ['a', 'b'] },
+      a: { type: 'Image', props: { prompt: 'a tall green alien in a silver suit, full body', src: 'aliens/a.png', alt: 'Tall alien' } },
+      b: { type: 'Image', props: { src: 'aliens/b.png', alt: 'Small alien' } },
+    } } }, '/tmp')
+    expect(r.isError).toBe(false)
+    expect(r.output.split('\n')).toEqual([
+      'Rendered 2 elements.',
+      'Notes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):',
+      '- a: an Image takes "prompt" or "src", not both — the prompt was kept',
+      '- b.src: "aliens/b.png" is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it',
+      '- b (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+      '- c.children: "b" is not an element id',
+    ])
   })
 })
 

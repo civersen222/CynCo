@@ -9,13 +9,19 @@
  * (a question the page never showed) in a new coat of paint.
  */
 import { describe, expect, it, afterAll, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import { globalContract } from '../../tools/contract.js'
-import { genuiExampleCall } from '../../genui/prompt.js'
+import { genuiExampleCall, genuiOptionsExampleCall } from '../../genui/prompt.js'
+import { createProject } from '../../projects/layout.js'
+import { openBinding } from '../../projects/binding.js'
+import { setProjectToolContext } from '../../projects/tools.js'
+import { makeLoop, type ScriptBlock } from '../projects/loopScaffold.js'
+import type { AnnotateAt, ImageAnnotator } from '../../imagegen/service.js'
+import type { UiSpec } from '../../bridge/protocol.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
@@ -360,4 +366,195 @@ describe('a click is never lost to a best-of-N candidate or to the re-dispatch w
     expect((loop as any).pendingUiActions).toEqual([])
     globalContract.clear()
   }, 60000)
+})
+
+// ── F174: pictures for prompted Images ──────────────────────────────────
+//
+// The loop hands each RenderUI call's one final, validated spec to the image
+// annotator (engine/imagegen) BEFORE the frame goes out, so the frame carries
+// each prompted Image's picture state (a placeholder the page draws at once),
+// appends its Pictures note to the tool result after "(surface: id)", and
+// starts the jobs only AFTER the frame that shows them. A partial frame, an
+// errored or empty call and a best-of-N candidate never reach it. Here the
+// annotator is a fake: what it is given, and when, is the contract.
+
+const QUEUED = { status: 'queued' as const, key: 'a'.repeat(32), slug: 'p', w: 1024, h: 1024 }
+const NOTE = 'Pictures: 2 generating on ComfyUI at pc:8188 — they appear in their cards by themselves; do not call RenderUI again for them.'
+
+function fakeImages(events: unknown[]) {
+  const calls: Array<{ spec: UiSpec; at: AnnotateAt }> = []
+  /** events.length each time a returned start() ran. */
+  const starts: number[] = []
+  const images: ImageAnnotator = {
+    annotate(spec, at) {
+      calls.push({ spec: JSON.parse(JSON.stringify(spec)), at })
+      for (const el of Object.values(spec.elements)) if (el.type === 'Image' && typeof el.props?.prompt === 'string') el.image = { ...QUEUED }
+      return { note: NOTE, start: () => { starts.push(events.length) } }
+    },
+  }
+  return { images, calls, starts }
+}
+
+/** Frames are copied as they are emitted, so a later mutation cannot pass for one made before the emit. */
+const snapshot = (events: any[]) => (e: any) => { events.push(JSON.parse(JSON.stringify(e))) }
+
+describe('RenderUI pictures on the live loop (F174)', () => {
+  it('the final frame carries each Image\'s picture state, the result has the Pictures note after the surface, and the jobs start after the frame', async () => {
+    globalContract.clear()
+    const events: any[] = []
+    const fake = fakeImages(events)
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-pics-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-pic', 'RenderUI', chunks(JSON.stringify(genuiOptionsExampleCall()), 60)), textResponse('drawn')]),
+      emit: snapshot(events),
+      images: fake.images,
+    })
+    await loop.handleUserMessage('draw')
+
+    const frames = uiFrames(events)
+    const partials = frames.filter(f => f.partial)
+    const finals = frames.filter(f => !f.partial)
+    // one call, on the final spec only — never on a partial frame
+    expect(partials.length).toBeGreaterThanOrEqual(1)
+    expect(fake.calls).toHaveLength(1)
+    expect(fake.calls[0].at).toEqual({ project: null, toolId: 'tu-pic', surfaceId: 'path-options', cutOff: false })
+    expect(fake.calls[0].spec.elements['a-img'].props?.prompt).toMatch(/weathered grey flagstones/)
+    for (const p of partials) for (const el of Object.values(p.spec?.elements ?? {}) as any[]) expect(el.image).toBeUndefined()
+    // the frame the page sees already carries the placeholder state
+    expect(finals).toHaveLength(1)
+    expect(finals[0].spec.elements['a-img'].image).toEqual(QUEUED)
+    expect(finals[0].spec.elements['b-img'].image).toEqual(QUEUED)
+    expect(finals[0].spec.elements['a-kv'].image).toBeUndefined()
+    // the note follows "(surface: id)" on its own line
+    const completeIdx = events.findIndex(e => e?.type === 'tool.complete' && e.toolId === 'tu-pic')
+    expect(events[completeIdx].result).toContain(`(surface: path-options)\n${NOTE}`)
+    expect(events[completeIdx].isError).toBe(false)
+    // start ran once: after the final frame, before tool.complete
+    expect(fake.starts).toHaveLength(1)
+    expect(fake.starts[0]).toBe(events.indexOf(finals[0]) + 1)
+    expect(fake.starts[0]).toBeLessThanOrEqual(completeIdx)
+    globalContract.clear()
+  }, 30000)
+
+  it('a project chat hands over the project it was made in; a cut-off spec says so', async () => {
+    globalContract.clear()
+    const home = tempDir('cynco-ui-pics-proj-')
+    const slug = createProject(home, { name: 'Alien Diorama', instructions: '' }).slug
+    const events: any[] = []
+    const fake = fakeImages(events)
+    const full = JSON.stringify(genuiOptionsExampleCall())
+    const draw: ScriptBlock = { type: 'tool_use', name: 'RenderUI', input: genuiOptionsExampleCall() as unknown as Record<string, unknown> }
+    const made = makeLoop({ script: [[draw], [{ type: 'text', text: 'Pick one.' }]], images: fake.images })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await made.loop.startProjectSession(b.binding, b.messages)
+    try {
+      await made.loop.handleUserMessage('show me two designs for the path')
+      expect(fake.calls).toHaveLength(1)
+      const chatFile = (made.loop as any).project.chatFile as string
+      expect(typeof chatFile).toBe('string')
+      expect(fake.calls[0].at.project).toEqual({ dir: b.binding.dir, slug, chatFile })
+      expect(realpathSync(fake.calls[0].at.project!.dir)).toBe(realpathSync(join(home, slug)))
+      expect(fake.calls[0].at.cutOff).toBe(false)
+      const final = made.events.find(e => e?.type === 'ui.render' && !e.partial)
+      expect(final?.spec?.elements?.['a-img']?.image).toEqual(QUEUED)
+    } finally {
+      setProjectToolContext(null)
+      globalContract.clear()
+    }
+    // A call whose arguments were cut off mid-stream is still drawn; the annotator is told, and turns its pictures off.
+    const cutEvents: any[] = []
+    const cutFake = fakeImages(cutEvents)
+    const cut = full.slice(0, full.indexOf('"ask"') - 2)
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-pics-cut-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-cutpic', 'RenderUI', chunks(cut, 80)), textResponse('drawn, all done.')]),
+      emit: snapshot(cutEvents),
+      images: cutFake.images,
+    })
+    await loop.handleUserMessage('draw')
+    expect(cutFake.calls).toHaveLength(1)
+    expect(cutFake.calls[0].at.cutOff).toBe(true)
+    globalContract.clear()
+  }, 60000)
+
+  it('an errored call, a spec that validates to nothing and a best-of-N candidate never reach the annotator', async () => {
+    globalContract.clear()
+    // errored: the tool itself refused the spec
+    const events: any[] = []
+    const fake = fakeImages(events)
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-pics-err-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-err', 'RenderUI', [JSON.stringify({ surface: 'aliens', spec: 'nope' })]), textResponse('ok, all done.')]),
+      emit: snapshot(events),
+      images: fake.images,
+    })
+    await loop.handleUserMessage('draw')
+    expect(uiFrames(events).filter(f => !f.partial)).toHaveLength(1)
+    expect(fake.calls).toEqual([])
+    expect(String(events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-err')?.result)).not.toContain('Pictures')
+    // a null spec on a result that did not error (the hook guards on the spec itself)
+    const out = { output: 'Rendered 0 elements.', isError: false }
+    ;(loop as any).emitFinalUiRender('tu-null', { spec: 'nope' }, out)
+    expect(fake.calls).toEqual([])
+    expect(out.output).toBe('Rendered 0 elements. (surface: tu-null)')
+    expect(fake.starts).toEqual([])
+    globalContract.clear()
+  }, 30000)
+
+  it('a best-of-N candidate\'s RenderUI call starts no picture', async () => {
+    const bonEnv = ['LOCALCODE_BEST_OF_N', 'LOCALCODE_BEST_OF_N_COUNT'] as const
+    const prev = Object.fromEntries(bonEnv.map(k => [k, process.env[k]]))
+    process.env.LOCALCODE_BEST_OF_N = 'true'
+    process.env.LOCALCODE_BEST_OF_N_COUNT = '1'
+    try {
+      globalContract.clear()
+      const cwd = tempDir('cynco-ui-pics-bon-')
+      writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'ui-pics-bon', private: true, scripts: { test: 'node -e "0"' } }))
+      writeFileSync(join(cwd, '.gitignore'), '.cynco*\n.cynco/\n')
+      const git = (args: string) => execSync(`git -c user.name=t -c user.email=t@t ${args}`, { cwd, stdio: 'pipe' })
+      git('init -q'); git('add -A'); git('commit -q -m base')
+      const events: any[] = []
+      const fake = fakeImages(events)
+      const provider = mockProvider([
+        loadRenderUi,
+        toolUse('tu-cand', 'RenderUI', [JSON.stringify(genuiOptionsExampleCall())]),
+        textResponse('candidate, all done.'),
+        textResponse('single pass, all done.'),
+        textResponse('single pass, all done.'),
+      ])
+      const loop = new ConversationLoop({ cwd, config: config(), provider, emit: snapshot(events), images: fake.images })
+      await loop.handleUserMessage('draw')
+      // the candidate did call RenderUI (its tool row is not muted), and drew nothing the page saw
+      expect(events.some(e => e?.type === 'tool.complete' && e.toolId === 'tu-cand')).toBe(true)
+      expect(uiFrames(events)).toEqual([])
+      expect(fake.calls).toEqual([])
+      expect(fake.starts).toEqual([])
+      expect((loop as any).inBestOfN).toBe(false)
+      globalContract.clear()
+    } finally {
+      for (const k of bonEnv) { if (prev[k] === undefined) delete process.env[k]; else process.env[k] = prev[k] }
+    }
+  }, 60000)
+
+  it('without an annotator the loop behaves exactly as before: one final frame, no picture state, no note', async () => {
+    globalContract.clear()
+    const events: any[] = []
+    const loop = new ConversationLoop({
+      cwd: tempDir('cynco-ui-nopics-'),
+      config: config(),
+      provider: mockProvider([loadRenderUi, toolUse('tu-np', 'RenderUI', chunks(JSON.stringify(genuiOptionsExampleCall()), 60)), textResponse('drawn')]),
+      emit: snapshot(events),
+    })
+    await loop.handleUserMessage('draw')
+    const finals = uiFrames(events).filter(f => !f.partial)
+    expect(finals).toHaveLength(1)
+    expect(finals[0].spec.elements['a-img'].props.prompt).toMatch(/flagstones/)
+    expect(finals[0].spec.elements['a-img'].image).toBeUndefined()
+    expect(events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-np')?.result).toBe('Rendered 12 elements. (surface: path-options)')
+    globalContract.clear()
+  }, 30000)
 })

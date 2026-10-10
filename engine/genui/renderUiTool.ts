@@ -53,7 +53,7 @@ export const RENDER_UI_INPUT_SCHEMA: ToolImpl['inputSchema'] = {
 export function renderUiResultText(count: number, errors: string[]): string {
   const head = count === 1 ? 'Rendered 1 element' : `Rendered ${count} elements`
   if (!errors.length) return `${head}.`
-  return `${head}.\nIssues (fix these in your next call rather than resending the same spec):\n${errors.map(e => `- ${e}`).join('\n')}`
+  return `${head}.\nNotes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):\n${errors.map(e => `- ${e}`).join('\n')}`
 }
 
 export const renderUiTool: ToolImpl = {

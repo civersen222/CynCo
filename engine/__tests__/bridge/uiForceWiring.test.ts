@@ -8,7 +8,7 @@
  * Before this, Qwen3.8-27B answered "show me a few different designs of the
  * aliens" with four markdown sections and no surface.
  */
-import { describe, expect, it, afterEach } from 'vitest'
+import { describe, expect, it, afterEach, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -22,6 +22,7 @@ import { UI_FORCE_MAX_CALLS } from '../../genui/intent.js'
 import { makeLoop, type ScriptBlock, type Hold } from '../projects/loopScaffold.js'
 
 afterEach(() => {
+  vi.restoreAllMocks()
   setProjectToolContext(null)
   globalContract.clear()
 })
@@ -163,6 +164,22 @@ describe('generative-UI forcing on the live loop (F171)', () => {
     const { loop, events } = await projectLoop([[cited], [{ type: 'text', text: 'ok' }]], 'qwen3.8', undefined, '# Resin\n\nEpoxy cures in a day.\n')
     await loop.handleUserMessage('show me a few options for epoxy finishes')
     expect(events.find(e => e?.type === 'project.citations')).toMatchObject({ citations: [{ n: 1, filePath: 'knowledge/a.md' }] })
+  }, 60000)
+
+  // F174 latency evidence: each model call's log line says how long it took and
+  // whether it was sent forced, so a slow forced answer can be read off the log.
+  // "requested": callModel may still send auto (sticky server fallback, simulated
+  // mode); its own [callModel] line says so.
+  it('the message_stop log line carries the call\'s elapsed time and whether forcing was requested', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) })
+    const { loop, calls } = await projectLoop([[draw], [{ type: 'text', text: 'Pick the one that feels right.' }]])
+    await loop.handleUserMessage(ALIENS)
+    expect(calls.map(c => c.toolChoice)).toEqual(['required', undefined])
+    const stops = lines.filter(l => l.startsWith('[loop] message_stop,'))
+    expect(stops).toHaveLength(2)
+    expect(stops[0]).toMatch(/, stop=\w+, elapsed=\d+\.\ds, forced=requested$/)
+    expect(stops[1]).toMatch(/, stop=\w+, elapsed=\d+\.\ds, forced=no$/)
   }, 60000)
 
   it('the page\'s "Show as UI" click (a followup ui.action) is forced when it arrives idle', async () => {

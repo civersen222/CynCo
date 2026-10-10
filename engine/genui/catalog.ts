@@ -13,8 +13,8 @@
  * json-render's shadcn + harness-chat catalogs and A2UI's basic catalog,
  * trimmed to what a chat pane can draw with vanilla DOM and inline SVG
  * (docs: scratchpad design §3; survey evidence in CREDITS.md). Overlays
- * (modals, drawers, popovers), carousels, video/audio and 3D are left out on
- * purpose.
+ * (modals, drawers, popovers), carousels and video/audio are left out on
+ * purpose; 3D is left for imagegen's later image→3D step.
  */
 
 export type PropType =
@@ -168,9 +168,9 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
   },
   Image: {
     group: 'Content', children: 'none',
-    description: 'An image by URL (http/https); a placeholder shows while it loads or if it fails.',
-    props: { src: str('image URL', { required: true }), alt: str('what it shows', { required: true }), caption: str('text under the image') },
-    example: { src: 'https://example.com/table.jpg', alt: 'River table', caption: 'Reference piece' },
+    description: 'A picture: "prompt" describes it and the engine paints it; "src" only for a real http(s) image URL. Give one, not both.',
+    props: { prompt: str('what the picture shows'), src: str('real image URL'), alt: str('what it shows', { required: true }), caption: str('text under the image') },
+    example: { prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' },
   },
 
   // ── Data display ───────────────────────────────────────────

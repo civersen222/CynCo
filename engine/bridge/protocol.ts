@@ -790,6 +790,7 @@ export type EngineEvent =
   | ProjectCitationsEvent
   | ProjectIngestEvent
   | UiRenderEvent
+  | UiImageEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 

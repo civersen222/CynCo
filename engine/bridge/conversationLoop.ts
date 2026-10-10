@@ -121,6 +121,7 @@ import { parsePartialSpec, PARTIAL_FRAME_INTERVAL_MS } from '../genui/partial.js
 import { genuiPromptSection } from '../genui/prompt.js'
 import { formatUiAction, uiActionEcho, isFollowUp } from '../genui/actions.js'
 import { uiRequestReason, UI_FORCE_MAX_CALLS } from '../genui/intent.js'
+import type { ImageAnnotator } from '../imagegen/service.js'
 import { filterTools } from '../engine/toolFilter.js'
 
 /**
@@ -295,6 +296,9 @@ export type ConversationLoopOptions = {
     layerConvergence: { n: number; meanAgree: number | null; meanDepth: number | null; byLayer: Record<string, number | null> } | null
     reset: () => void
   } | null
+  /** Paints RenderUI Image prompts on the operator's ComfyUI (engine/imagegen, F174).
+   *  Absent: no picture state and no Pictures note, exactly as before. */
+  images?: ImageAnnotator
 }
 
 /**
@@ -614,6 +618,14 @@ export class ConversationLoop {
    * calls, and when the turn ends.
    */
   private uiForce: { remaining: number; reason: string } | null = null
+  /** Turns a final RenderUI spec's Image prompts into picture jobs (engine/imagegen, F174); null when none is wired. */
+  private readonly images: ImageAnnotator | null
+  /**
+   * True while best-of-N candidates sample. A candidate's `ui.render` frames
+   * are muted (candidateEmit), so its Images must never start a picture: the
+   * user would never see the surface the GPU painted for.
+   */
+  private inBestOfN = false
   // Tool names actually offered to the model in the current iteration (after
   // S5 restrictions, demotions, routing). In one-shot runs this is enforced
   // at execution time too — see executeOneTool.
@@ -747,6 +759,7 @@ export class ConversationLoop {
     // Brain stream: thinking recorder uses same session id as the JSONL journal
     this.thinkingRecorder = new ThinkingRecorder(this.sessionId)
     this.dashboardBroadcast = opts.dashboardBroadcast ?? null
+    this.images = opts.images ?? null
 
     // Human-in-the-loop: surface AskUser questions to the TUI over the bridge.
     globalAskBroker.setEmitter(({ requestId, question, options }) => {
@@ -1008,7 +1021,15 @@ export class ConversationLoop {
       result.output += `\n- ${note}`
     }
     result.output += ` (surface: ${surfaceId})`
+    // F174: each prompted Image gets its picture state (a placeholder) on this
+    // frame, and its job starts only after the frame that shows it — never for
+    // a best-of-N candidate, whose frames nobody sees. The turn never waits.
+    const pics = this.images && v.spec && !this.inBestOfN
+      ? this.images.annotate(v.spec, { project: this.project?.chatFile ? { dir: this.project.dir, slug: this.project.slug, chatFile: this.project.chatFile } : null, toolId, surfaceId, cutOff: this.truncatedToolIds.has(toolId) })
+      : null
+    if (pics?.note) result.output += `\n${pics.note}`
     this.emitUiRender({ toolId, surfaceId, partial: false, spec: v.spec, errors })
+    pics?.start()
     if (this.uiForce && drawsContent(v.spec) && !this.truncatedToolIds.has(toolId)) {
       console.log('[genui] surface drawn — the rest of the turn uses tool_choice=auto')
       this.uiForce = null
@@ -2327,6 +2348,7 @@ export class ConversationLoop {
           // Mute each candidate's model text and its session_fidelity frame
           // (F158) — see candidateEmit.
           this.emit = candidateEmit(originalEmit)
+          this.inBestOfN = true
 
           const candidates: any[] = []
           const wtManager = new WorktreeManager(mainCwd)
@@ -2414,6 +2436,7 @@ export class ConversationLoop {
           } finally {
             // Restore state first (hygiene: a throwing cleanup cannot leave emit muted), then ALWAYS remove the worktrees
             this.emit = originalEmit
+            this.inBestOfN = false
             // A candidate's RenderUI frames were muted, so any surface it left
             // pending never reached the page; closing it under the real emit
             // would draw a withdrawn box out of nothing.
@@ -3507,7 +3530,7 @@ export class ConversationLoop {
               const thinkingTokensDerived = measuredDecode !== null && deltaCount > 0
                 ? Math.round(measuredDecode * (reasoningTokenCount / deltaCount))
                 : reasoningTokenCount
-              console.log(`[loop] message_stop, deltas=${tokenCount}+${reasoningTokenCount}r, decode=${measuredDecode ?? 'unmeasured'}, ${tokPerSec} tok/s, stop=${stopReason}`)
+              console.log(`[loop] message_stop, deltas=${tokenCount}+${reasoningTokenCount}r, decode=${measuredDecode ?? 'unmeasured'}, ${tokPerSec} tok/s, stop=${stopReason}, elapsed=${(modelCallElapsedMs / 1000).toFixed(1)}s, forced=${forceUi ? 'requested' : 'no'}`)
               this.lastTokPerSec = tokPerSec
               this.lastModelCallMs = modelCallElapsedMs
               // Supervision-economics ledger: sum what the server MEASURED.

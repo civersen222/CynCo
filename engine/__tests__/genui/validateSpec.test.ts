@@ -194,10 +194,10 @@ describe('validateSpec', () => {
     expect(r.errors).toEqual(['x: no "tab" set; shown under "a"'])
   })
 
-  it('missing required props: dropped when undrawable (Image without src), kept and reported otherwise', () => {
+  it('missing required props: dropped when undrawable (Image with neither prompt nor src), kept and reported otherwise', () => {
     const img = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { alt: 'x' } } } })
     expect(img.spec?.elements.i).toBeUndefined()
-    expect(img.errors.join(' ')).toMatch(/i \(Image\): missing src/)
+    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped')
     const inp = one('Input', { label: 'L' })
     expect(inp.spec?.elements.x.type).toBe('Input')
     expect(inp.errors).toEqual(['x (Input): missing name'])
@@ -266,5 +266,80 @@ describe('validateSpec', () => {
     expect(r.spec?.elements.c.children).toEqual(['half'])
     expect(r.spec?.elements.half.props?.type).toBeUndefined()
     expect(validateSpec({ root: 'c', elements: { c: { type: 'Car' } } }, { partial: true }).spec).toBeNull()
+  })
+})
+
+// F174: an Image's "prompt" describes a picture the engine paints; "src" is
+// only ever a real URL. Before, the only rule-abiding Image was an empty one,
+// and a model that wanted a picture invented a path the page drew as
+// "image unavailable".
+describe('validateSpec: Image prompt or src', () => {
+  const HINT = 'is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it'
+
+  it('{prompt, alt} is clean, and the prompt is normalised', () => {
+    const r = one('Image', { prompt: '  a tall green alien\n\n in a   silver suit ', alt: 'Tall alien' })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien in a silver suit', alt: 'Tall alien' })
+  })
+
+  it('a real http(s) or data:image src is kept as it is', () => {
+    expect(one('Image', { src: 'https://example.com/t.jpg', alt: 'a' }).spec?.elements.x.props?.src).toBe('https://example.com/t.jpg')
+    expect(one('Image', { src: 'data:image/png;base64,iVBORw0KGgo=', alt: 'a' }).errors).toEqual([])
+  })
+
+  it('a fake src is dropped with the prompt hint, never turned into a prompt; with no prompt the element goes too', () => {
+    for (const src of ['aliens/a.png', 'javascript:alert(1)', 'file:///etc/passwd', 'https://exa mple.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=']) {
+      const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Alien' } } } })
+      expect(r.spec?.elements.i, src).toBeUndefined()
+      expect(r.errors, src).toEqual([
+        `i.src: "${src}" ${HINT}`,
+        'i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+        'c.children: "i" is not an element id',
+      ])
+    }
+    const num = one('Image', { src: 42, alt: 'a' })
+    expect(num.errors[0]).toBe(`x.src: "42" ${HINT}`)
+  })
+
+  it('a fake src beside a prompt keeps the prompt and raises no src-URL note', () => {
+    const r = one('Image', { prompt: 'a small grey alien with large eyes', src: 'aliens/b.png', alt: 'Small alien' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a small grey alien with large eyes', alt: 'Small alien' })
+    expect(r.errors.some(e => e.includes(HINT))).toBe(false)
+    expect(r.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+  })
+
+  it('both a real src and a prompt: the prompt is kept and said so', () => {
+    const r = one('Image', { prompt: 'river table, walnut and blue resin', src: 'https://example.com/t.jpg', alt: 'River table' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'river table, walnut and blue resin', alt: 'River table' })
+    expect(r.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+  })
+
+  it('a prompt over 1,000 characters is cut and said so; one under 3 is no prompt', () => {
+    const long = one('Image', { prompt: 'walnut '.repeat(200), alt: 'a' })
+    expect((long.spec?.elements.x.props?.prompt as string).length).toBeLessThanOrEqual(1000)
+    expect(long.errors).toEqual(['x.prompt: cut to 1000 characters'])
+    const tiny = one('Image', { prompt: ' a ', src: 'https://example.com/t.jpg', alt: 'a' })
+    expect(tiny.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'a' })
+    expect(tiny.errors).toEqual([])
+  })
+
+  it('an element-level "image" is the engine\'s alone: the model\'s is reported and dropped', () => {
+    const forged = { status: 'done', key: 'a'.repeat(32), slug: 'p', w: 1024, h: 1024 }
+    const r = one('Image', { prompt: 'a tall alien', alt: 'a' }, { image: forged })
+    expect(r.spec?.elements.x.image).toBeUndefined()
+    expect(r.errors).toEqual(['x: unknown field "image" was dropped'])
+    const inProps = one('Image', { prompt: 'a tall alien', alt: 'a', image: forged })
+    expect(inProps.spec?.elements.x.image).toBeUndefined()
+    expect(inProps.spec?.elements.x.props?.image).toBeUndefined()
+  })
+
+  it('partial mode is silent: a half-streamed src is dropped quietly and an Image with nothing yet is skipped', () => {
+    const half = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i', 'j'] }, i: { type: 'Image', props: { src: 'https://exa', alt: 'a' } }, j: { type: 'Image', props: { src: 'aliens/', alt: 'b' } } } }, { partial: true })
+    expect(half.errors).toEqual([])
+    expect(half.spec?.elements.i.props?.src).toBe('https://exa')
+    expect(half.spec?.elements.j).toBeUndefined()
+    const both = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall alien', src: 'https://e.com/a.png' } } } }, { partial: true })
+    expect(both.errors).toEqual([])
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall alien' })
   })
 })

@@ -15,6 +15,7 @@ import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+import type { ImageAnnotator } from '../../imagegen/service.js'
 
 export type ScriptBlock =
   | { type: 'text'; text: string | string[] }  // an array streams as separate deltas
@@ -58,9 +59,11 @@ async function* streamOf(blocks: ScriptBlock[], id: string, hold: Hold | null): 
 /**
  * `model` defaults to a family the capability table does not know (no native
  * tool array); pass a known one such as 'qwen3.8' to see the request's
- * `tools` and `tool_choice` as llama-server would.
+ * `tools` and `tool_choice` as llama-server would. `images` is the picture
+ * annotator the loop hands each final RenderUI spec to (F174); absent, as in
+ * every engine-less test, the loop draws no picture state.
  */
-export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: string; model?: string }) {
+export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: string; model?: string; images?: ImageAnnotator }) {
   const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), 'cynco-loop-code-'))
   const calls: RecordedCall[] = []
   const events: any[] = []
@@ -80,6 +83,6 @@ export function makeLoop(opts: { script: ScriptBlock[][]; hold?: Hold; cwd?: str
       yield* streamOf(blocks, `m${n}`, opts.hold && opts.hold.call === n ? opts.hold : null)
     },
   } as Provider
-  const loop = new ConversationLoop({ cwd, config: config(opts.model), provider, emit: (e: any) => { events.push(e) } })
+  const loop = new ConversationLoop({ cwd, config: config(opts.model), provider, emit: (e: any) => { events.push(e) }, images: opts.images })
   return { loop, events, calls, cwd }
 }

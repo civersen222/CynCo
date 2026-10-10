@@ -52,6 +52,7 @@ import { embedBaseUrlFor } from './index/embedClient.js'
 import { makeProjectsDeps } from './projects/api.js'
 import { projectsHome } from './projects/layout.js'
 import { openBinding } from './projects/binding.js'
+import { ImageService } from './imagegen/service.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -359,6 +360,15 @@ let dashboardServer: DashboardServer | null = null
 // still null.
 let activationsConsumer: ActivationsConsumer | null = null
 
+// RenderUI Image prompts painted on the operator's ComfyUI (engine/imagegen,
+// F174), one job at a time beside the turn. Its `ui.image` events fan out to
+// both sockets like every engine event, late-binding to dashboardServer the
+// same way the loop's emit does. The config check runs here, once; the server
+// probe runs in the background and only logs (a picture nobody asked for is
+// not worth an alert — a failing server reaches the card through the job).
+const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) } })
+void imageService.probe()
+
 const loop = new ConversationLoop({
   config,
   provider,
@@ -391,6 +401,7 @@ const loop = new ConversationLoop({
     layerConvergence: activationsConsumer.convergence(),
     reset: () => activationsConsumer?.resetConvergence(),
   } : null,
+  images: imageService,
 })
 
 // Projects mode deps: the embedding client, model name and emit sink every
@@ -577,6 +588,13 @@ async function cleanShutdown(signal: string) {
     if (n > 0) console.log(`[index] closed ${n} open project index store(s)`)
   } catch (e) {
     console.log(`[index] closeAllIndexers skipped at shutdown: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  // Pictures in flight: interrupted on ComfyUI by prompt id and recorded
+  // failed, so a re-render re-queues them. Bounded to 3 s inside.
+  try {
+    await imageService.shutdown()
+  } catch (e) {
+    console.log(`[imagegen] shutdown failed: ${e instanceof Error ? e.message : String(e)}`)
   }
   activationsConsumer?.stop()
   jlensSidecar?.stop()

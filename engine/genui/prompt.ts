@@ -65,11 +65,13 @@ const OPTIONS_EXAMPLE = {
     elements: {
       card: { type: 'Card', props: { title: 'Two directions for the garden path' }, children: ['grid', 'ask'] },
       grid: { type: 'Grid', props: { columns: 2 }, children: ['a', 'b'] },
-      a: { type: 'Card', props: { title: 'A · Weathered stone', description: 'Quiet and lasting; slow to lay' }, children: ['a-tag', 'a-kv', 'a-go'] },
+      a: { type: 'Card', props: { title: 'A · Weathered stone', description: 'Quiet and lasting; slow to lay' }, children: ['a-img', 'a-tag', 'a-kv', 'a-go'] },
+      'a-img': { type: 'Image', props: { prompt: 'curving path of weathered grey flagstones through low ferns, morning light, photo', alt: 'Stone path' } },
       'a-tag': { type: 'Badge', props: { text: 'Recommended', variant: 'success' } },
       'a-kv': { type: 'KeyValue', props: { rows: [{ label: 'Mood', value: 'calm' }, { label: 'Effort', value: 'high' }] } },
       'a-go': { type: 'Button', props: { label: 'Choose A', action: 'choose', context: { option: 'A' }, variant: 'primary' } },
-      b: { type: 'Card', props: { title: 'B · Painted timber', description: 'Bright and quick; needs repainting' }, children: ['b-kv', 'b-go'] },
+      b: { type: 'Card', props: { title: 'B · Painted timber', description: 'Bright and quick; needs repainting' }, children: ['b-img', 'b-kv', 'b-go'] },
+      'b-img': { type: 'Image', props: { prompt: 'path of painted turquoise timber boards through a bright cottage garden, photo', alt: 'Timber path' } },
       'b-kv': { type: 'KeyValue', props: { rows: [{ label: 'Mood', value: 'playful' }, { label: 'Effort', value: 'low' }] } },
       'b-go': { type: 'Button', props: { label: 'Choose B', action: 'choose', context: { option: 'B' } } },
       ask: { type: 'Text', props: { text: 'Which one feels right for the front yard?' } },
@@ -98,7 +100,7 @@ function build(mode: GenuiPromptMode): string {
   return `<RENDER_UI>
 ${OPENING[mode]}
 
-Shapes: options or designs → a Grid of Cards, one per option (its name as title, a one-line pitch as description, KeyValue or Tags for its traits, a Button to choose it, a Badge "Recommended" on the one you recommend); a comparison → a Table; steps → Steps; figures → KeyValue, Metric or a chart; a pick from fixed answers → Buttons, or a Radio in a Form. An idea with no picture still gets a card: describe its look in the card's text.
+Shapes: options or designs → a Grid of Cards, one per option (its name as title, a one-line pitch as description, KeyValue or Tags for its traits, a Button to choose it, a Badge "Recommended" on the one you recommend); a comparison → a Table; steps → Steps; figures → KeyValue, Metric or a chart; a pick from fixed answers → Buttons, or a Radio in a Form. Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text.
 
 RenderUI takes two arguments: "surface" (a short id) and "spec" ({ "root": "<id>", "elements": { "<id>": { "type": "<Component>", "props": { … }, "children": ["<id>", …] }, … } }). Use the tool call itself — never write the arguments into your reply.
 
@@ -107,13 +109,13 @@ Rules:
 2. Element ids are short names you choose (letters, digits, - and _). Only components marked [children] take a "children" list of ids; every other component is a leaf.
 3. Props hold literal values only — no expressions, templates or bindings. Numbers are numbers (2, not "2"); lists are JSON arrays; option lists may be plain strings.
 4. Put "surface" before "spec", and write each parent before its children with the root first, so the surface draws while you stream.
-5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options) are yours to write, and drawing them is the point. With no real image URL, leave the Image out.
+5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options) are yours to write, and drawing them is the point. Never invent an image URL: describe the picture in the Image's "prompt".
 6. A Button click sends its action name, its context and every input value on the surface back to you as the user's next message; a Button inside a Form needs no action of its own, and one with no action sends its label. Give the main Button variant "primary". Input names are unique on a surface.
 7. FollowUps go last: 2-4 short questions the user is likely to ask you next; a chip click sends its text as the user's next message. A question you are asking the user goes in a Text line (or as Buttons when it has fixed answers), never in FollowUps.
 8. Inside Tabs, each child element carries "tab": "<tab value>" next to its "type" (not inside props).
 9. Keep it small: a few dozen elements at most, tables under ~50 rows with one cell per column, charts under ~30 points with the unit in yLabel. For long text inside a surface use a Markdown element; never add a Callout or Text that explains the UI itself.
 10. To change a surface you already drew, call RenderUI again with the same "surface" id — it is replaced in place and input values are kept by name.
-11. The tool result lists anything it could not draw. Fix those lines and call again; do not resend the same spec.
+11. The tool result's notes are already shown to the user. Call again only for a dropped element or a cut-off spec, never to tidy a note or wait for pictures — they fill in by themselves; do not resend the same spec.
 
 Example arguments — options to choose from (a Card per option; the recommended one carries the Badge and the "primary" Button):
 ${JSON.stringify(OPTIONS_EXAMPLE)}

@@ -348,8 +348,35 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     if (p.context === undefined && isObj(ev.context)) p.context = ev.context
   }
   if (type === 'Code' && p.code === undefined && typeof p.text === 'string') { p.code = p.text; delete p.text }
+  if (type === 'Image') {
+    // F174: "prompt" describes a picture the engine paints (engine/imagegen);
+    // "src" is only ever a real URL. A made-up path is dropped, never turned
+    // into a prompt — "aliens/a.png" describes nothing.
+    const prompt = toStr(p.prompt)
+    if (prompt !== undefined) {
+      const norm = prompt.replace(/\s+/g, ' ').trim()
+      if (norm.length < 3) delete p.prompt
+      else if (norm.length > IMAGE_PROMPT_CHARS) { p.prompt = norm.slice(0, IMAGE_PROMPT_CHARS).trimEnd(); report(ctx, `${at}.prompt: cut to ${IMAGE_PROMPT_CHARS} characters`) }
+      else p.prompt = norm
+    }
+    if (p.src === null) delete p.src
+    if (p.src !== undefined) {
+      const src = toStr(p.src)?.trim()
+      const shown = (src ?? JSON.stringify(p.src) ?? '').slice(0, 60)
+      // Both: the URL beside a description is most likely invented (rule 5), and a painted picture stays with the project.
+      if (typeof p.prompt === 'string') { delete p.src; report(ctx, `${at}: an Image takes "prompt" or "src", not both — the prompt was kept`) }
+      else if (src === undefined || !(IMAGE_HTTP_URL.test(src) || IMAGE_DATA_URL.test(src))) { delete p.src; report(ctx, `${at}.src: "${shown}" is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it`) }
+      else p.src = src
+    }
+  }
   return p
 }
+
+/** The page's own URL rules (index.html `safeUrl` and its data: check): anything else would draw as a broken box. */
+const IMAGE_HTTP_URL = /^https?:\/\/[^\s<>"']+$/i
+const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/
+/** A picture's description is a sentence or two, not a document. */
+const IMAGE_PROMPT_CHARS = 1000
 
 /** Props the renderer cannot do without; an element missing one is dropped rather than drawn empty. */
 const MUST_HAVE: Record<string, string[]> = {
@@ -358,8 +385,11 @@ const MUST_HAVE: Record<string, string[]> = {
   LineChart: ['labels', 'series'],
   PieChart: ['labels', 'values'],
   Sparkline: ['values'],
-  Image: ['src'],
   Link: ['href'],
+}
+/** At least one of these props, or the element is dropped; `needs` says what to give. */
+const EITHER: Record<string, { props: string[]; needs: string }> = {
+  Image: { props: ['prompt', 'src'], needs: '"prompt" (a description of the picture) or a real http(s) "src"' },
 }
 
 // ─── nested → flat ───────────────────────────────────────────────
@@ -472,6 +502,8 @@ export function validateSpec(raw: unknown, opts: ValidateOptions = {}): Validati
     const missing = Object.entries(def.props).filter(([k, d]) => d.required && coerced[k] === undefined).map(([k]) => k)
     const fatal = (MUST_HAVE[typeName] ?? []).some(k => coerced[k] === undefined)
     if (fatal) { report(ctx, `${at} (${typeName}): missing ${missing.join(', ') || 'required props'} — the element was dropped`); continue }
+    const either = EITHER[typeName]
+    if (either && either.props.every(k => coerced[k] === undefined)) { report(ctx, `${at} (${typeName}): needs ${either.needs} — the element was dropped`); continue }
     if (missing.length) report(ctx, `${at} (${typeName}): missing ${missing.join(', ')}`)
 
     if (typeof coerced.name === 'string' && RESERVED_KEYS.has(coerced.name)) coerced.name = `field-${coerced.name.replace(/_/g, '')}`

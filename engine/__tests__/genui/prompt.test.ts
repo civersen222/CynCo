@@ -1,7 +1,8 @@
 /**
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
  * every catalog component exactly once, stay under its budget (12k chars,
- * ~3k tokens — raised from 10k for the options example, F171), and be
+ * ~3k tokens — raised from 10k for the options example, F171; the picture
+ * wording of F174 fits under it: 11,920 project, 11,739 session), and be
  * byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
@@ -46,7 +47,7 @@ describe('genui prompt section', () => {
     expect(text).toMatch(/Ideas you propose \(designs, names, options\) are yours to write, and drawing them is the point/)
     // a draft the user asked to read stays prose (final review: rule 5 used to list drafts)
     expect(text).toMatch(/Plain prose is for a short direct answer, a single open question, or a draft the user asked to read/)
-    expect(text).toMatch(/With no real image URL, leave the Image out/)
+    expect(text).toMatch(/Never invent an image URL: describe the picture in the Image's "prompt"/)
     expect(text).toMatch(/FollowUps go last: 2-4 short questions the user is likely to ask you next/)
     expect(text).toMatch(/A question you are asking the user goes in a Text line .*never in FollowUps/)
     expect(text).toMatch(/one cell per column/)
@@ -58,6 +59,21 @@ describe('genui prompt section', () => {
     expect(text).toMatch(/"tab": "<tab value>" next to its "type"/)
     expect(text).toMatch(/same "surface" id/)
     expect(text).toMatch(/do not resend the same spec/)
+    // F174: a note is already on the user's screen and pictures arrive by themselves
+    expect(text).toMatch(/The tool result's notes are already shown to the user/)
+    expect(text).toMatch(/never to tidy a note or wait for pictures/)
+  })
+
+  // F174: every Image showed "image unavailable" — the only rule-abiding Image
+  // was an empty one. A design now gets a picture the engine paints, framed so
+  // a later image → 3D step can use it.
+  it('gives each design a prompted picture, framed for a later 3D model, and never names the server', () => {
+    expect(text).toMatch(/- Image\(prompt: string, src: string, alt\*: string, caption: string\) — A picture: "prompt" describes it and the engine paints it; "src" only for a real http\(s\) image URL\. Give one, not both\./)
+    expect(text).not.toMatch(/An idea with no picture/)
+    expect(text).not.toMatch(/leave the Image out/)
+    // whether ComfyUI is set up reaches the model through the tool result only: the prefix never varies
+    expect(text).not.toMatch(/ComfyUI|LOCALCODE_COMFYUI/)
+    expect(session).not.toMatch(/ComfyUI|LOCALCODE_COMFYUI/)
   })
 
   // F171: "Write your prose first, then one RenderUI call" ended the turn on
@@ -69,7 +85,8 @@ describe('genui prompt section', () => {
     expect(opening).toMatch(/Never also write the same options out as prose/)
     expect(text).not.toMatch(/prose first/i)
     expect(text).toMatch(/options or designs → a Grid of Cards, one per option/)
-    expect(text).toMatch(/An idea with no picture still gets a card/)
+    expect(text).toMatch(/Each design gets a picture: an Image with a "prompt" in its card/)
+    expect(text).toMatch(/one subject, whole, centred, front three-quarter view, plain light-grey background, no text/)
   })
 
   // Final review: a coding session may be the TUI, which draws no surface, so
@@ -91,8 +108,13 @@ describe('genui prompt section', () => {
     const opt = genuiOptionsExampleCall()
     const ro = validateSpec(opt.spec)
     expect(ro.errors).toEqual([])
-    expect(ro.count).toBe(10)
+    expect(ro.count).toBe(12)
     expect(opt.surface).toBe('path-options')
+    // each option card carries a prompted picture, drawn first in the card
+    expect(ro.spec?.elements.a.children?.[0]).toBe('a-img')
+    expect(ro.spec?.elements.b.children?.[0]).toBe('b-img')
+    expect(ro.spec?.elements['a-img'].props).toEqual({ prompt: 'curving path of weathered grey flagstones through low ferns, morning light, photo', alt: 'Stone path' })
+    expect(ro.spec?.elements['b-img'].props?.prompt).toMatch(/turquoise timber boards/)
     const iOpt = text.indexOf('{"surface":"path-options","spec":{"root":"card"')
     const iPlan = text.indexOf('{"surface":"plan","spec":{"root":"card"')
     expect(iOpt).toBeGreaterThan(0)

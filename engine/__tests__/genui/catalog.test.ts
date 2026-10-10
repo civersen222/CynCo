@@ -49,6 +49,18 @@ describe('genui catalog', () => {
     }
   })
 
+  // F174: an Image is painted from its "prompt", or shows a real URL; neither prop is
+  // required on its own (validateSpec needs one of the two), and the example paints.
+  it('Image takes a prompt or a real src, alt required, and its example is a prompt', () => {
+    const img = GENUI_CATALOG.Image
+    expect(Object.keys(img.props)).toEqual(['prompt', 'src', 'alt', 'caption'])
+    expect(img.props.prompt.required).toBeFalsy()
+    expect(img.props.src.required).toBeFalsy()
+    expect(img.props.alt.required).toBe(true)
+    expect(img.description).toBe('A picture: "prompt" describes it and the engine paints it; "src" only for a real http(s) image URL. Give one, not both.')
+    expect(img.example).toEqual({ prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' })
+  })
+
   it('containers are exactly the components that take children', () => {
     const containers = GENUI_COMPONENT_NAMES.filter(n => GENUI_CATALOG[n].children === 'any')
     expect([...containers].sort()).toEqual(['ButtonRow', 'Card', 'Form', 'Grid', 'Section', 'Stack', 'Tabs'])
