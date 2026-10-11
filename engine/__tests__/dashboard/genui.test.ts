@@ -211,7 +211,7 @@ function makeDocument() {
   }
 }
 
-type ImageEntry = { status: string; reason: string; slug: string; url: string; loading: boolean }
+type ImageEntry = { status: string; reason: string; slug: string; key: string; url: string; loading: boolean }
 
 type Page = {
   renderUiSpec: (spec: unknown, el: Node, ctx?: Record<string, unknown>) => Record<string, any>
@@ -993,6 +993,8 @@ describe('dashboard genui: "Show as UI" and "Save as artifact" under a project r
 
 const KEY = 'a'.repeat(32)
 const KEY2 = 'b'.repeat(32)
+/** The page's name for a picture in its map: the project's slug and the key (one key can be painted in two projects). */
+const P = (key: string, slug = 'p') => `${slug}/${key}`
 const PROMPT = 'curving path of weathered grey flagstones through low ferns, morning light, photo'
 
 /** One Image in a Card; `image` is the engine's annotation (omitted = none). */
@@ -1104,7 +1106,7 @@ describe('dashboard genui: generated pictures — every state', () => {
     expect(img.getAttribute('src')).toBe('blob:page/1')
     expect(img.getAttribute('alt')).toBe('Stone path')
     expect(blobs.created).toEqual([{ blob: 'png-bytes' }])
-    expect(page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/1', loading: false })
+    expect(page.genuiImages[P(KEY)]).toMatchObject({ status: 'done', url: 'blob:page/1', loading: false })
     // a second surface showing the same key draws at once from the cached blob URL: no second fetch
     const again = drawPic(page, 'other', done())
     expect(again.querySelector('.genui-image-box img')!.getAttribute('src')).toBe('blob:page/1')
@@ -1168,13 +1170,13 @@ describe('dashboard genui: generated pictures — ui.image and the map', () => {
   it('a late event for a key no surface shows only updates the map; a malformed one is ignored', () => {
     const { page, fetched } = harness()
     expect(() => page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })).not.toThrow()
-    expect(page.genuiImages[KEY]).toMatchObject({ status: 'done', slug: 'p', url: '' })
+    expect(page.genuiImages[P(KEY)]).toMatchObject({ status: 'done', slug: 'p', url: '' })
     expect(fetched).toEqual([]) // nothing shows it, so nothing is fetched
     for (const bad of [
       { key: 'x', slug: 'p', status: 'done' }, { key: KEY2, slug: '../p', status: 'done' }, { key: KEY2, slug: 'p', status: 'painted' },
       { key: KEY2, slug: 'p' }, null, 'ui.image',
     ]) expect(() => page.applyUiImage(bad as any)).not.toThrow()
-    expect(Object.keys(page.genuiImages)).toEqual([KEY])
+    expect(Object.keys(page.genuiImages)).toEqual([P(KEY)])
   })
 
   it('merge: done never goes back; a fresh queued/running replaces a failure; otherwise the more advanced status wins', () => {
@@ -1183,15 +1185,81 @@ describe('dashboard genui: generated pictures — ui.image and the map', () => {
     ev(KEY, 'done')
     ev(KEY, 'failed', 'late')
     ev(KEY, 'running')
-    expect(page.genuiImages[KEY].status).toBe('done')
+    expect(page.genuiImages[P(KEY)].status).toBe('done')
     ev(KEY2, 'failed', 'ComfyUI did not finish within 300 s')
     const el = drawPic(page, 'retry', { status: 'queued', key: KEY2, slug: 'p', w: 1024, h: 1024 })
-    expect(page.genuiImages[KEY2]).toMatchObject({ status: 'queued', reason: '' })
+    expect(page.genuiImages[P(KEY2)]).toMatchObject({ status: 'queued', reason: '' })
     expect(boxText(el)).toBe('Picture queued…')
     ev(KEY2, 'running')
     drawPic(page, 'stale', { status: 'queued', key: KEY2, slug: 'p', w: 1024, h: 1024 })
-    expect(page.genuiImages[KEY2].status).toBe('running')
+    expect(page.genuiImages[P(KEY2)].status).toBe('running')
     expect(boxText(el)).toBe('Painting the picture…')
+  })
+
+  // Completeness review: the key hashes how a picture is made, not where, so two
+  // projects asking for one prompt run two jobs under one key. A job still in
+  // the FIFO for project q must neither fill nor fail project p's card.
+  it('a picture is its project and its key: an event for the same key from another project leaves the card alone', async () => {
+    const { page, fetched } = harness({ fetch: async () => reply(200, 'image/png') })
+    const el = drawPic(page, 'mine', { status: 'queued', key: KEY, slug: 'p', w: 1024, h: 1024 })
+    expect(fig(el).getAttribute('data-image-slug')).toBe('p')
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'q', status: 'running' })
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'q', status: 'failed', reason: 'interrupted on the ComfyUI PC' })
+    expect(boxText(el)).toBe('Picture queued…')
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'q', status: 'done' })
+    expect(boxText(el)).toBe('Picture queued…')
+    expect(fetched).toEqual([]) // nothing shows q's picture, so nothing fetches it — least of all into p's card
+    expect(page.genuiImages[P(KEY)]).toMatchObject({ status: 'queued', slug: 'p', key: KEY })
+    expect(page.genuiImages[P(KEY, 'q')]).toMatchObject({ status: 'done', slug: 'q', key: KEY })
+    // p's own events still land, and the picture comes from p
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })
+    expect(fetched).toEqual([`/api/projects/p/images/${KEY}.png`])
+    await tick()
+    expect(el.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    // q's events do not even redraw p's card
+    const shown = el.querySelector('img')
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'q', status: 'failed', reason: 'x' })
+    expect(el.querySelector('img')).toBe(shown)
+  })
+
+  it('a card for each project showing one key: each fills from its own project', async () => {
+    const { page, fetched } = harness({ fetch: async () => reply(200, 'image/png') })
+    const p = drawPic(page, 'in-p', { status: 'running', key: KEY, slug: 'p', w: 1024, h: 1024 })
+    const q = drawPic(page, 'in-q', { status: 'queued', key: KEY, slug: 'q', w: 1024, h: 1024 })
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'q', status: 'done' })
+    expect(boxText(p)).toBe('Painting the picture…')
+    expect(fetched).toEqual([`/api/projects/q/images/${KEY}.png`])
+    await tick()
+    expect(q.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(p.querySelector('img')).toBeNull()
+  })
+
+  // failed ranks below done on purpose: the page's own load failure turns a
+  // done picture failed, and a later done — an event, a recheck or a re-render
+  // that finds it made — must fetch it again, not stay failed.
+  it('a picture whose load failed is fetched again by a later done event or a re-render that finds it made', async () => {
+    let answer = 401
+    const { page, fetched } = harness({ fetch: async () => (answer === 200 ? reply(200, 'image/png') : reply(answer, 'application/json')) })
+    const el = drawPic(page, 'opts', done())
+    await tick()
+    expect(boxText(el)).toBe('Picture failed: could not load the picture (HTTP 401)')
+    expect(page.genuiImages[P(KEY)]).toMatchObject({ status: 'failed', url: '', loading: false })
+    // a done event: fetched again
+    answer = 503
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'done' })
+    expect(fetched).toEqual([`/api/projects/p/images/${KEY}.png`, `/api/projects/p/images/${KEY}.png`])
+    await tick()
+    expect(boxText(el)).toBe('Picture failed: could not load the picture (HTTP 503)')
+    // a re-render whose annotation finds the picture made: fetched again, and this time shown
+    answer = 200
+    const again = drawPic(page, 'again', done())
+    expect(fetched).toHaveLength(3)
+    await tick()
+    expect(again.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(el.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    // and once shown, a late failure never takes it back
+    page.applyUiImage({ type: 'ui.image', key: KEY, slug: 'p', status: 'failed', reason: 'late' })
+    expect(page.genuiImages[P(KEY)]).toMatchObject({ status: 'done', url: 'blob:page/1' })
   })
 
   it('the recheck after a reconnect asks the record of queued/running pictures only and applies it', async () => {
@@ -1348,7 +1416,7 @@ describe('dashboard genui: generated pictures — the pane changes conversation 
     t.open(storedChat('running'))
     await opening
     await tick()
-    expect(h.page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/2' })
+    expect(h.page.genuiImages[P(KEY)]).toMatchObject({ status: 'done', url: 'blob:page/2' })
     expect(h.msgs.querySelector('.genui-image-box img')!.getAttribute('src')).toBe('blob:page/2')
     expect(h.fetched).toEqual([`/api/projects/p/images/${KEY2}.png`, `/api/projects/p/images/${KEY}.png`])
   })
@@ -1360,11 +1428,11 @@ describe('dashboard genui: generated pictures — the pane changes conversation 
     // the engine is still bound to the last chat until the transcript is drawn: its turn can draw meanwhile
     h.page.upsertSurface({ type: 'ui.render', toolId: 'late', surfaceId: 'late', partial: false, spec: picSpec(done(KEY2)) })
     await tick()
-    expect(h.page.genuiImages[KEY2].url).toBe('blob:page/1')
+    expect(h.page.genuiImages[P(KEY2)].url).toBe('blob:page/1')
     t.open(storedChat('queued'))
     await opening
     expect(h.blobs.revoked).toEqual(['blob:page/1'])
-    expect(Object.keys(h.page.genuiImages)).toEqual([KEY])
+    expect(Object.keys(h.page.genuiImages)).toEqual([P(KEY)])
   })
 
   it('a new project chat empties the pane through clearChatPane: the old pictures\' blob URLs are freed, the map emptied', async () => {
@@ -1382,7 +1450,7 @@ describe('dashboard genui: generated pictures — the pane changes conversation 
     const h = paneHarness(() => t.p, { active: { slug: 'p', chat: 'old.jsonl', title: 'Old' }, renderedChat: 'p/old.jsonl' })
     h.page.upsertSurface({ type: 'ui.render', toolId: 'stale', surfaceId: 'stale', partial: false, spec: picSpec(done(KEY3)) })
     await tick()
-    expect(h.page.genuiImages[KEY3].url).toBe('blob:page/1')
+    expect(h.page.genuiImages[P(KEY3)].url).toBe('blob:page/1')
     const opened = h.page.onProjectOpened({ type: 'project.opened', slug: 'p', chat: 'other.jsonl', title: 'Other' })
     // this chat's live turn streams in while the transcript loads: a cached picture, already shown
     const live = h.page.upsertSurface({ type: 'ui.render', toolId: 'live', surfaceId: 'live', partial: false, spec: picSpec(done(KEY2)) })!
@@ -1394,9 +1462,9 @@ describe('dashboard genui: generated pictures — the pane changes conversation 
     await opened
     await tick()
     expect(h.blobs.revoked).toEqual(['blob:page/1'])
-    expect(Object.keys(h.page.genuiImages).sort()).toEqual([KEY, KEY2])
+    expect(Object.keys(h.page.genuiImages).sort()).toEqual([P(KEY), P(KEY2)])
     expect(live.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
-    expect(h.page.genuiImages[KEY]).toMatchObject({ status: 'done', url: 'blob:page/3' })
+    expect(h.page.genuiImages[P(KEY)]).toMatchObject({ status: 'done', url: 'blob:page/3' })
   })
 })
 

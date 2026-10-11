@@ -172,6 +172,8 @@ export class ImageService implements ImageAnnotator {
   private running: Job | null = null
   private pumping = false
   private pumpRun: Promise<void> | null = null
+  /** Commits no job makes (the origins of pictures already made), awaited by whenIdle and shutdown. */
+  private readonly asideCommits = new Set<Promise<void>>()
   private stopped = false
   private wake: (() => void) | null = null
 
@@ -331,6 +333,8 @@ export class ImageService implements ImageAnnotator {
     }
     for (const j of newJobs) { this.queue.push(j); this.jobs.set(j.id, j) }
     summary(q, c, o, firstOff)
+    // Every picture already made: no job of this call will commit the origins just recorded.
+    if (origins.length && q === 0) this.commitAside(dir, `images: ${c} shown again`)
 
     const parts: string[] = []
     if (q > 0) {
@@ -386,8 +390,9 @@ export class ImageService implements ImageAnnotator {
 
   /** Resolves once the worker has nothing left to do, commits included (tests, check.ts). */
   async whenIdle(): Promise<void> {
-    while (this.pumpRun) {
+    while (this.pumpRun || this.asideCommits.size) {
       const run = this.pumpRun
+      if (!run) { await Promise.all([...this.asideCommits]); continue }
       await run
       if (this.pumpRun === run) this.pumpRun = null
     }
@@ -604,16 +609,26 @@ export class ImageService implements ImageAnnotator {
     if (message !== null) await this.commit(job.dir, [job.key], message)
   }
 
-  /** Commit the sidecars, the origin index, .gitignore and the journal — never a PNG (ignored, so naming one fails `git add`). */
-  private async commit(dir: string, keys: string[], message: string): Promise<void> {
+  /**
+   * Commit the sidecars, the origin index, .gitignore and (unless `journal`
+   * is false: nothing was journaled) the journal — never a PNG (ignored, so
+   * naming one fails `git add`).
+   */
+  private async commit(dir: string, keys: string[], message: string, journal = true): Promise<void> {
     try {
       await ensureHistory(dir)
-      const paths = ['.gitignore', ...keys.map(k => `images/${k}.json`), 'images/index.json', 'journal.md'].filter(p => existsSync(join(dir, p)))
+      const paths = ['.gitignore', ...keys.map(k => `images/${k}.json`), 'images/index.json', ...(journal ? ['journal.md'] : [])].filter(p => existsSync(join(dir, p)))
       const r = await commitHistory(dir, paths, message)
       if (!r.ok) this.log(`[imagegen] history commit in ${dir} failed: ${r.reason}`)
     } catch (e) {
       this.log(`[imagegen] history commit in ${dir} threw: ${errText(e)}`)
     }
+  }
+
+  /** The origins (and .gitignore) of a call that queued nothing, committed beside the turn; `commit` never rejects. */
+  private commitAside(dir: string, message: string): void {
+    const run = this.commit(dir, [], message, false).finally(() => { this.asideCommits.delete(run) })
+    this.asideCommits.add(run)
   }
 
   // ─── shutdown ───────────────────────────────────────────────────────
@@ -635,7 +650,8 @@ export class ImageService implements ImageAnnotator {
     // finished, was refused or was withdrawn has nothing on the server to cancel.
     const onServer = running && !running.settled ? running.onServer : null
     const jobs = [...(running ? [running] : []), ...this.queue.splice(0)]
-    if (jobs.length === 0) return
+    const aside = [...this.asideCommits]
+    if (jobs.length === 0 && aside.length === 0) return
     const outcome: Outcome = { status: 'failed', reason: STOPPED_REASON }
     const byDir = new Map<string, string[]>()
     for (const j of jobs) {
@@ -650,7 +666,7 @@ export class ImageService implements ImageAnnotator {
       for (const [dir, keys] of byDir) await this.commit(dir, keys, `images: ${keys.length} stopped with the engine`)
     }
     // Side by side: a slow POST or a hung /interrupt must not hold the commits past the bound.
-    const work = Promise.all([cancel(), commits()])
+    const work = Promise.all([cancel(), commits(), ...aside])
     let timer: ReturnType<typeof setTimeout> | undefined
     const bound = new Promise<void>(resolve => { timer = setTimeout(() => { this.log('[imagegen] shutdown passed its 3 s bound; leaving the rest'); resolve() }, SHUTDOWN_BOUND_MS) })
     await Promise.race([work.catch(e => this.log(`[imagegen] shutdown work threw: ${errText(e)}`)), bound])

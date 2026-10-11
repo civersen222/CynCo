@@ -2,8 +2,8 @@
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
  * every catalog component exactly once, stay under its budget (12k chars,
  * ~3k tokens — raised from 10k for the options example, F171; the picture
- * wording of F174 fits under it: 11,920 project, 11,824 session), and be
- * byte-identical on every call.
+ * wording of F174 fits under it: 11,920 project, 11,225 session, whose
+ * section asks for no picture), and be byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
 import { genuiPromptSection, genuiExampleCall, genuiOptionsExampleCall } from '../../genui/prompt.js'
@@ -13,6 +13,12 @@ import { validateSpec } from '../../genui/spec.js'
 describe('genui prompt section', () => {
   const text = genuiPromptSection('project')
   const session = genuiPromptSection('session')
+  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text.'
+  /** The options example as the session section prints it. */
+  const sessionOptionsExample = () => {
+    const at = session.indexOf('{"surface":"path-options"')
+    return JSON.parse(session.slice(at, session.indexOf('\n', at))) as ReturnType<typeof genuiOptionsExampleCall>
+  }
 
   it('is byte-stable and bounded in both modes', () => {
     expect(genuiPromptSection('project')).toBe(text)
@@ -87,24 +93,48 @@ describe('genui prompt section', () => {
     expect(text).toMatch(/options or designs → a Grid of Cards, one per option/)
     expect(text).toMatch(/Each design gets a picture: an Image with a "prompt" in its card/)
     expect(text).toMatch(/one subject, whole, centred, front three-quarter view, plain light-grey background, no text/)
+    expect(text).toContain(SHAPES_PICTURE)
   })
 
   // Final review: a coding session may be the TUI, which draws no surface, so
-  // only a project chat makes the surface the answer; the rest is shared.
+  // only a project chat makes the surface the answer. Past the opening, the
+  // modes differ only in the picture wording (below); everything else is shared.
   it('keeps a coding session\'s answer in prose, the surface alongside it', () => {
     const opening = session.split('\n\n')[0]
     expect(opening).toMatch(/write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files/)
     expect(session).not.toMatch(/the surface IS the answer/)
     expect(session).not.toMatch(/at most one sentence of prose/)
-    expect(session.slice(opening.length)).toBe(text.slice(text.split('\n\n')[0].length))
+    const projectBody = text.slice(text.split('\n\n')[0].length)
+    const asSession = projectBody
+      .replace(SHAPES_PICTURE, 'An idea with no picture still gets a card: describe its look in the card\'s text.')
+      .replace('Never invent an image URL: describe the picture in the Image\'s "prompt".', 'With no real image URL, leave the Image out.')
+      .replace('never to tidy a note or wait for pictures — they fill in by themselves;', 'never to tidy a note;')
+      .replace(JSON.stringify(genuiOptionsExampleCall()), JSON.stringify(sessionOptionsExample()))
+    expect(asSession).not.toBe(projectBody)
+    expect(session.slice(opening.length)).toBe(asSession)
   })
 
-  // Review of stage B: the shared Shapes line gives each design a prompted
-  // picture, but pictures are painted in project chats only — a coding session
-  // that followed it drew a "not generated" box in every card on every call.
-  it('tells a coding session to leave prompted pictures out, and only a coding session', () => {
+  // Completeness review of F174: pictures are painted in project chats only. A
+  // shared Shapes line, rule and example that gave each design a prompted
+  // picture contradicted the session opening's "leave them out", and a coding
+  // session that followed them drew a "not generated" box in every card on
+  // every call — the F174 symptom. Nothing in a session's section asks for one.
+  it('never asks a coding session for a prompted picture, and says why in its opening', () => {
     expect(session.split('\n\n')[0]).toMatch(/Pictures \(an Image "prompt"\) are painted in project chats only; leave them out here\./)
     expect(text).not.toMatch(/painted in project chats only/)
+    expect(session).not.toMatch(/Each design gets a picture/)
+    expect(session).not.toMatch(/describe the picture in the Image's "prompt"/)
+    expect(session).not.toMatch(/wait for pictures/)
+    expect(session).toMatch(/An idea with no picture still gets a card: describe its look in the card's text\./)
+    expect(session).toMatch(/With no real image URL, leave the Image out\./)
+    // its options example is the project's without the Images, and still validates clean
+    const ex = sessionOptionsExample()
+    expect(JSON.stringify(ex)).not.toMatch(/"type":"Image"|"prompt"/)
+    const r = validateSpec(ex.spec)
+    expect(r.errors).toEqual([])
+    expect(r.count).toBe(10)
+    expect(r.spec?.elements.a.children).toEqual(['a-tag', 'a-kv', 'a-go'])
+    expect(r.spec?.elements.b.children).toEqual(['b-kv', 'b-go'])
   })
 
   it('never shows the call as text the model could copy into its reply', () => {

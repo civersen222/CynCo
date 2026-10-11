@@ -159,6 +159,27 @@ describe('ImageService: a picture end to end', () => {
     expect(posts()).toHaveLength(1)
   })
 
+  it('a call whose pictures are all made already commits the origins it records', async () => {
+    mock = await startMockComfy()
+    const svc = start()
+    const s = spec(['alien'])
+    svc.annotate(s, at()).start()
+    await until(() => terminal(keyOf(s, 0)), 'the job')
+    await svc.whenIdle()
+    const uncommitted = () => execFileSync('git', ['status', '--porcelain', '--', 'images', '.gitignore'], { cwd: dir, encoding: 'utf8' })
+    expect(uncommitted()).toBe('')
+    // A cache hit records a new origin and queues nothing, so no job's commit will carry it.
+    const hit = svc.annotate(spec(['alien']), at({ toolId: 'tool-2' }))
+    expect(hit.note).toBe('Pictures: 1 already made — shown in their cards.')
+    hit.start()
+    await svc.whenIdle()
+    expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-2', elementId: 'img-0' })]).toBe(keyOf(s, 0))
+    expect(uncommitted()).toBe('')
+    expect(execFileSync('git', ['log', '-1', '--name-only', '--format=%s'], { cwd: dir, encoding: 'utf8' }).trim().split('\n')).toEqual(['images: 1 shown again', '', 'images/index.json'])
+    expect(posts()).toHaveLength(1)
+    expect(logs.some(l => l.includes('history commit'))).toBe(false)
+  })
+
   it('a picture asked for again the moment it fails gets a fresh job, never the old failure', async () => {
     mock = await startMockComfy({ executionError: { node_id: '3', node_type: 'KSampler', exception_message: 'boom' } })
     let again: UiSpec | null = null
@@ -288,6 +309,51 @@ describe('ImageService: failures are named', () => {
   })
 })
 
+describe('ImageService: how long a probe is trusted', () => {
+  const stats = () => mock!.calls.filter(c => c.path === '/system_stats').length
+  /** One picture through the worker at the clock's current time; resolves to its terminal event. */
+  async function paint(svc: ImageService, prompt: string, toolId: string): Promise<UiImageEvent> {
+    const s = spec([prompt])
+    svc.annotate(s, at({ toolId })).start()
+    const key = keyOf(s, 0)
+    await until(() => terminal(key), `the job for "${prompt}"`)
+    await svc.whenIdle()
+    return events.filter(e => e.key === key).at(-1)!
+  }
+
+  it('a failed probe is reused for 60 s, then asked again', async () => {
+    mock = await startMockComfy({ stats: '404' })
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    expect(await svc.probe()).toMatchObject({ ok: false })
+    expect(stats()).toBe(1)
+    mock.mode.stats = 'ok'
+    clock += 60_000 - 1
+    expect(await paint(svc, 'alien one', 't1')).toMatchObject({ status: 'failed', reason: `${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?` })
+    expect(stats()).toBe(1)
+    expect(posts()).toHaveLength(0)
+    clock += 1
+    expect((await paint(svc, 'alien two', 't2')).status).toBe('done')
+    expect(stats()).toBe(2)
+  })
+
+  it('a good probe is reused for 10 minutes, then asked again', async () => {
+    mock = await startMockComfy()
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    expect(await svc.probe()).toMatchObject({ ok: true })
+    expect(stats()).toBe(1)
+    mock.mode.stats = '404'
+    clock += 10 * 60_000 - 1
+    expect((await paint(svc, 'alien one', 't1')).status).toBe('done')
+    expect(stats()).toBe(1)
+    clock += 1
+    expect(await paint(svc, 'alien two', 't2')).toMatchObject({ status: 'failed', reason: `${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?` })
+    expect(stats()).toBe(2)
+    expect(posts()).toHaveLength(1)
+  })
+})
+
 describe('ImageService: what is not generated', () => {
   it('unset URL: every Image off with the reason, and no network call', async () => {
     let fetched = 0
@@ -373,6 +439,28 @@ describe('ImageService: lifecycle', () => {
     svc.annotate(later, at({ toolId: 'tool-2' }))
     expect(imageOf(later, 0).status).toBe('off')
   })
+
+  it('shutdown stays within its 3 s bound when ComfyUI stops answering, with every record already failed', async () => {
+    // /interrupt and /queue each hang past their own 2 s timeout: the cancel alone would take 4 s.
+    mock = await startMockComfy({ neverFinish: true, delay: { '/interrupt': 10_000, '/queue': 10_000 } })
+    const svc = start()
+    const s = spec(['alien one', 'alien two'])
+    svc.annotate(s, at()).start()
+    await until(() => events.some(e => e.status === 'running'), 'running')
+    const t0 = Date.now()
+    await svc.shutdown()
+    const took = Date.now() - t0
+    expect(took).toBeGreaterThanOrEqual(2900)
+    expect(took).toBeLessThan(3600)
+    expect(logs).toContain('[imagegen] shutdown passed its 3 s bound; leaving the rest')
+    for (const i of [0, 1]) {
+      expect(readSidecar(dir, keyOf(s, i))).toMatchObject({ status: 'failed', reason: STOPPED_REASON })
+      expect(events).toContainEqual({ type: 'ui.image', key: keyOf(s, i), slug, status: 'failed', reason: STOPPED_REASON })
+    }
+    // the cancel did go out, by id; it is the answer that never came
+    const id = (posts()[0].body as { prompt_id: string }).prompt_id
+    expect(mock.calls.find(c => c.path === '/interrupt')?.body).toEqual({ prompt_id: id })
+  }, 15_000)
 
   it('a record left queued or running by another engine run reloads as interrupted and is re-queued, not a cache hit', async () => {
     mock = await startMockComfy()

@@ -7,7 +7,7 @@
  * no ACAO. The page fetches it with the token header into a blob URL.
  */
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DashboardServer } from '../../dashboard/server.js'
@@ -28,6 +28,7 @@ const STALE = 'b'.repeat(32)
 const PLANTED = 'c'.repeat(32)
 const LINKED = 'd'.repeat(32)
 const MISSING = 'e'.repeat(32)
+const HUGE = 'f'.repeat(32)
 
 let server: DashboardServer
 let HOME: string
@@ -62,6 +63,9 @@ beforeAll(async () => {
   writeFileSync(pngPath(dir, DONE), PNG_1X1)
   writeSidecar(dir, sidecar(STALE, { status: 'running', runId: 'an-engine-that-stopped', finishedAt: undefined, sha256: undefined, bytes: undefined }))
   writeFileSync(pngPath(dir, PLANTED), '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>', 'utf8')
+  // a real PNG start with a sparse tail one byte past the 32 MB cap
+  writeFileSync(pngPath(dir, HUGE), PNG_1X1)
+  truncateSync(pngPath(dir, HUGE), 32 * 1024 * 1024 + 1)
   if (CAN_SYMLINK_FILES) {
     writeFileSync(join(OUTSIDE, 'secret.png'), PNG_1X1)
     symlinkSync(join(OUTSIDE, 'secret.png'), pngPath(dir, LINKED))
@@ -167,6 +171,13 @@ describe('anything else is refused, never read', () => {
     expect(res.status).toBe(415)
     expect(res.headers.get('content-type')).toBe('application/json')
     expect(await res.json()).toEqual({ error: `images/${PLANTED}.png is not a PNG; refused` })
+  })
+
+  it('a picture over 32 MB answers 413, never its bytes', async () => {
+    const res = await get(img(`${HUGE}.png`))
+    expect(res.status).toBe(413)
+    expect(res.headers.get('content-type')).toBe('application/json')
+    expect(await res.json()).toEqual({ error: `images/${HUGE}.png is larger than 32 MB; refused` })
   })
 
   it.skipIf(!CAN_SYMLINK_FILES)('a link out of the project answers 404', async () => {

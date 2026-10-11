@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -165,6 +165,20 @@ describe('servedImage', () => {
     mkdirSync(join(dir, 'images'), { recursive: true })
     writeFileSync(pngPath(dir, k), '<svg onload="alert(1)"/>', 'utf8')
     expect(servedImage(home, slug, `${k}.png`)).toEqual({ status: 415, json: { error: `images/${k}.png is not a PNG; refused` } })
+  })
+
+  it('refuses a picture or record over 32 MB before reading a byte of it', () => {
+    const k = imageKey(FIELDS)
+    writeSidecar(dir, sidecar(k))
+    // A real PNG start, then a sparse tail one byte past the cap.
+    writeFileSync(pngPath(dir, k), PNG_1X1)
+    truncateSync(pngPath(dir, k), 32 * 1024 * 1024 + 1)
+    expect(servedImage(home, slug, `${k}.png`)).toEqual({ status: 413, json: { error: `images/${k}.png is larger than 32 MB; refused` } })
+    truncateSync(sidecarPath(dir, k), 32 * 1024 * 1024 + 1)
+    expect(servedImage(home, slug, `${k}.json`)).toEqual({ status: 413, json: { error: `images/${k}.json is larger than 32 MB; refused` } })
+    // exactly at the cap is served (the cap is inclusive)
+    truncateSync(pngPath(dir, k), 32 * 1024 * 1024)
+    expect(servedImage(home, slug, `${k}.png`).status).toBe(200)
   })
 
   it.skipIf(!CAN_SYMLINK_FILES)('refuses a file symlink that escapes the project', () => {

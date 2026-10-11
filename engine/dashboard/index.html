@@ -4131,16 +4131,24 @@ function genuiPlotRect(p) {
 // off with a reason, or queued/running/done/failed with a key, slug and
 // size), and `ui.image` events keyed on the image key — never on a surface —
 // say when that changes. `genuiImages` outlives every re-render of every
-// surface, so each key is fetched once. The URL is built here from a checked
-// key and slug, never taken from the spec, and fetched through the injected
-// fetch wrapper (it adds the token) into a blob URL: a bare
-// <img src="/api/…"> carries no token and would be refused.
+// surface, so each picture is fetched once. A picture is its project's slug
+// AND its key: the key hashes how it was made, not where, so two projects
+// asking for the same prompt run two jobs under one key, and an event from
+// the other project must never fill (or fail) this one's card. The URL is
+// built here from a checked key and slug, never taken from the spec, and
+// fetched through the injected fetch wrapper (it adds the token) into a blob
+// URL: a bare <img src="/api/…"> carries no token and would be refused.
 var GENUI_IMAGE_KEY_RE = /^[0-9a-f]{32}$/;
 var GENUI_IMAGE_SLUG_RE = /^[a-z0-9-]{1,64}$/;
-// queued < running < failed < done: a picture that exists outranks a failure.
+// queued < running < failed < done: a picture that exists outranks a failure,
+// so a `done` after the page's own failed load (an event, a recheck, a
+// re-render) fetches it again.
 var GENUI_IMAGE_RANK = { queued: 1, running: 2, failed: 3, done: 4 };
-var genuiImages = {};   // image key → { status, reason, slug, url (blob), loading }
-var genuiLightboxShows = '';   // the key the open lightbox shows ('' when closed)
+var genuiImages = {};   // "<slug>/<key>" → { status, reason, slug, key, url (blob), loading }
+var genuiLightboxShows = '';   // the "<slug>/<key>" the open lightbox shows ('' when closed)
+
+/** The map's name for a picture: both parts pattern-checked, and a slug holds no "/". */
+function genuiImageId(slug, key) { return slug + '/' + key; }
 
 /** The engine's annotation on an Image, checked: a replayed transcript spec is otherwise unvalidated here. */
 function genuiImageAnnotation(el) {
@@ -4157,13 +4165,15 @@ function genuiImageAnnotation(el) {
 
 /**
  * Fold a picture state (an annotation, an event, a recheck) into genuiImages.
- * done never goes back; a queued/running state over a failed one is a fresh
- * attempt and replaces it; otherwise the more advanced status wins.
+ * done never goes back (only the page's own failed load turns it failed); a
+ * queued/running state over a failed one is a fresh attempt and replaces it;
+ * otherwise the more advanced status wins, and done outranks failed.
  */
 function genuiMergeImage(key, slug, status, reason) {
-  var m = genuiImages[key];
+  var id = genuiImageId(slug, key);
+  var m = genuiImages[id];
   if (!m) {
-    m = genuiImages[key] = { status: status, reason: reason || '', slug: slug, url: '', loading: false };
+    m = genuiImages[id] = { status: status, reason: reason || '', slug: slug, key: key, url: '', loading: false };
     return m;
   }
   if (m.status === 'done') return m;
@@ -4171,7 +4181,6 @@ function genuiMergeImage(key, slug, status, reason) {
   if (retry || GENUI_IMAGE_RANK[status] > GENUI_IMAGE_RANK[m.status]) {
     m.status = status;
     m.reason = reason || '';
-    m.slug = slug;
   }
   return m;
 }
@@ -4187,7 +4196,7 @@ function genuiGeneratedImage(el, ctx) {
   fig.appendChild(altLine);
   if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption));
   // pending: drawn from a partial frame, so it promises a picture the final frame decides.
-  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', note: '', named: false, pending: false };
+  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', slug: '', note: '', named: false, pending: false };
   fig.__genuiImage = g;
   var partial = !!(ctx && ctx.partial);
   var a = partial ? null : genuiImageAnnotation(el);
@@ -4201,8 +4210,10 @@ function genuiGeneratedImage(el, ctx) {
     g.named = !!alt;
   } else {
     g.key = a.key;
+    g.slug = a.slug;
     ratio = a.w + ' / ' + a.h;
     fig.setAttribute('data-image-key', a.key);
+    fig.setAttribute('data-image-slug', a.slug);
     genuiMergeImage(a.key, a.slug, a.status, a.reason);
   }
   box.style.aspectRatio = ratio;
@@ -4215,7 +4226,7 @@ function genuiFillImage(fig) {
   var g = fig && fig.__genuiImage;
   if (!g) return;
   var box = g.box;
-  var m = g.key ? genuiImages[g.key] : null;
+  var m = g.key ? genuiImages[genuiImageId(g.slug, g.key)] : null;
   var status = m ? m.status : '';
   genuiClear(box);
   genuiToggleClass(box, 'genui-image-pulse', status === 'queued' || status === 'running');
@@ -4234,37 +4245,39 @@ function genuiFillImage(fig) {
     img.addEventListener('error', function() { genuiClear(box); say('Picture failed: the picture could not be shown'); });
     img.setAttribute('src', m.url);
     open.appendChild(img);
-    open.addEventListener('click', function() { genuiOpenLightbox(g.key, g.alt, g.prompt); });
+    open.addEventListener('click', function() { genuiOpenLightbox(g.slug, g.key, g.alt, g.prompt); });
     box.appendChild(open);
   } else if (status === 'done') {
     say('Loading picture…');
-    genuiLoadImage(g.key);
+    genuiLoadImage(g.slug, g.key);
   } else if (status === 'queued') say('Picture queued…');
   else if (status === 'running') say('Painting the picture…');
   else say('Picture failed: ' + (m.reason || 'no reason given'));
 }
 
-/** Every figure in the page showing `key` (validated hex, so safe in a selector). */
-function genuiFillImages(key) {
+/** Every figure in the page showing `key` from project `slug` (both validated, so safe in a selector). */
+function genuiFillImages(slug, key) {
   var nodes = document.querySelectorAll('[data-image-key="' + key + '"]');
-  for (var i = 0; i < nodes.length; i++) genuiFillImage(nodes[i]);
+  for (var i = 0; i < nodes.length; i++) if (nodes[i].getAttribute('data-image-slug') === slug) genuiFillImage(nodes[i]);
 }
 
 /**
- * Fetch a done picture once per key. Same-origin, so the fetch wrapper adds
- * the token; the reply must be 200 image/png; it is shown as a blob URL. Any
- * failure marks the key failed with the HTTP status.
+ * Fetch a done picture once. Same-origin, so the fetch wrapper adds the
+ * token; the reply must be 200 image/png; it is shown as a blob URL. Any
+ * failure marks the picture failed with the HTTP status — the one way a done
+ * goes back, and a later done fetches it again.
  */
-function genuiLoadImage(key) {
-  var m = genuiImages[key];
+function genuiLoadImage(slug, key) {
+  var id = genuiImageId(slug, key);
+  var m = genuiImages[id];
   if (!m || m.status !== 'done' || m.url || m.loading) return;
   m.loading = true;
   var failed = function(why) {
     m.loading = false;
-    if (genuiImages[key] !== m) return;
+    if (genuiImages[id] !== m) return;
     m.status = 'failed';
     m.reason = 'could not load the picture (' + why + ')';
-    genuiFillImages(key);
+    genuiFillImages(slug, key);
   };
   fetch('/api/projects/' + m.slug + '/images/' + key + '.png').then(function(res) {
     var type = String((res.headers && res.headers.get && res.headers.get('content-type')) || '').split(';')[0].trim().toLowerCase();
@@ -4275,9 +4288,9 @@ function genuiLoadImage(key) {
     }
     return res.blob().then(function(blob) {
       m.loading = false;
-      if (genuiImages[key] !== m) return;   // the chat was cleared while it loaded
+      if (genuiImages[id] !== m) return;   // the chat was cleared while it loaded
       m.url = URL.createObjectURL(blob);
-      genuiFillImages(key);
+      genuiFillImages(slug, key);
     });
   }).catch(function(e) {
     console.warn('[genui] loading picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
@@ -4285,14 +4298,14 @@ function genuiLoadImage(key) {
   });
 }
 
-/** The `ui.image` arm: fold the event in and refill every figure showing that key; with none showing it, only the map changes. */
+/** The `ui.image` arm: fold the event in and refill every figure showing that picture (key and project); with none showing it, only the map changes. */
 function applyUiImage(event) {
   if (!event || typeof event !== 'object') return;
   var key = event.key, slug = event.slug, status = event.status;
   if (typeof key !== 'string' || !GENUI_IMAGE_KEY_RE.test(key) || typeof slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(slug) ||
       typeof status !== 'string' || !Object.prototype.hasOwnProperty.call(GENUI_IMAGE_RANK, status)) return;
   genuiMergeImage(key, slug, status, typeof event.reason === 'string' ? event.reason : '');
-  genuiFillImages(key);
+  genuiFillImages(slug, key);
 }
 
 /**
@@ -4301,27 +4314,27 @@ function applyUiImage(event) {
  * or running and apply what it says.
  */
 function genuiRecheckImages() {
-  Object.keys(genuiImages).forEach(function(key) {
-    var m = genuiImages[key];
+  Object.keys(genuiImages).forEach(function(id) {
+    var m = genuiImages[id];
     if (m.status !== 'queued' && m.status !== 'running') return;
-    fetch('/api/projects/' + m.slug + '/images/' + key + '.json').then(function(res) {
+    fetch('/api/projects/' + m.slug + '/images/' + m.key + '.json').then(function(res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.json();
     }).then(function(rec) {
-      if (rec && typeof rec === 'object') applyUiImage({ key: key, slug: m.slug, status: rec.status, reason: rec.reason });
+      if (rec && typeof rec === 'object') applyUiImage({ key: m.key, slug: m.slug, status: rec.status, reason: rec.reason });
     }).catch(function(e) {
-      console.warn('[genui] rechecking picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
+      console.warn('[genui] rechecking picture ' + m.key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
     });
   });
 }
 
-/** Drop one picture from the map, freeing its blob URL. */
-function genuiFreeImage(key) {
-  var url = genuiImages[key].url;
-  if (url) {
-    try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
+/** Drop one picture (by its "<slug>/<key>") from the map, freeing its blob URL. */
+function genuiFreeImage(id) {
+  var m = genuiImages[id];
+  if (m.url) {
+    try { URL.revokeObjectURL(m.url); } catch (e) { console.warn('[genui] freeing picture ' + m.key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
   }
-  delete genuiImages[key];
+  delete genuiImages[id];
 }
 
 /** The chat pane was cleared: no figure shows these any more, so every blob URL is freed and the map emptied (in place). */
@@ -4339,9 +4352,9 @@ function genuiForgetImages() {
 function genuiPruneImages() {
   var shown = Object.create(null);
   var nodes = document.querySelectorAll('[data-image-key]');
-  for (var i = 0; i < nodes.length; i++) shown[nodes[i].getAttribute('data-image-key')] = true;
+  for (var i = 0; i < nodes.length; i++) shown[genuiImageId(nodes[i].getAttribute('data-image-slug'), nodes[i].getAttribute('data-image-key'))] = true;
   if (genuiLightboxShows && !shown[genuiLightboxShows]) genuiCloseLightbox();
-  Object.keys(genuiImages).forEach(function(key) { if (!shown[key]) genuiFreeImage(key); });
+  Object.keys(genuiImages).forEach(function(id) { if (!shown[id]) genuiFreeImage(id); });
 }
 
 /** The download name: the alt as a slug of at most 40 characters, then the key's first 8. */
@@ -4351,8 +4364,9 @@ function genuiImageFileName(alt, key) {
 }
 
 /** A click on a done picture: one overlay with the full picture, its alt and prompt, Download and Close. Escape or the backdrop closes it. */
-function genuiOpenLightbox(key, alt, prompt) {
-  var m = genuiImages[key];
+function genuiOpenLightbox(slug, key, alt, prompt) {
+  var id = genuiImageId(slug, key);
+  var m = genuiImages[id];
   if (!m || !m.url) return null;
   genuiCloseLightbox();
   var back = genuiEl('div', 'genui-lightbox');
@@ -4379,7 +4393,7 @@ function genuiOpenLightbox(key, alt, prompt) {
   back.appendChild(panel);
   back.addEventListener('click', function(ev) { if (ev && ev.target === back) genuiCloseLightbox(); });
   document.body.appendChild(back);
-  genuiLightboxShows = key;
+  genuiLightboxShows = id;
   document.addEventListener('keydown', genuiLightboxKey);
   if (typeof close.focus === 'function') close.focus();
   return back;
