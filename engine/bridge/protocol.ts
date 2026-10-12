@@ -152,7 +152,7 @@ export type UiElement = {
   visible?: { name: string; eq?: unknown; neq?: unknown }
   /** Inside a Tabs container: the tab value this child belongs to. */
   tab?: string
-  /** On an Image with a "prompt": its generated picture (engine/imagegen). Set by the engine only. */
+  /** On an Image with a "prompt": its generated picture (engine/imagegen); with a path "src": the project file it shows. Set by the engine only. */
   image?: UiImageState
 }
 
@@ -179,10 +179,12 @@ export type UiRenderEvent = {
   errors?: string[]
 }
 
-/** A generated picture's state on an Image element. Engine-only: validateSpec drops an element-level "image" the model writes. */
+/** A generated picture's state on an Image element, or the project file it shows. Engine-only: validateSpec drops an element-level "image" the model writes. */
 export type UiImageState =
   | { status: 'off'; reason: string }
   | { status: 'queued' | 'running' | 'done' | 'failed'; key: string; slug: string; w: number; h: number; reason?: string }
+  /** An Image whose src was a relative image path: served by GET /api/projects/:slug/files/<path>, never cached (the file can change). */
+  | { status: 'file'; slug: string; path: string }
 
 /**
  * A generated picture changed state (engine/imagegen). Keyed on the image key, never on a

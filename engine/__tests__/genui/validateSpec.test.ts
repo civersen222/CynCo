@@ -6,7 +6,7 @@
  * reported, never thrown, and reported silently in partial mode.
  */
 import { describe, expect, it } from 'vitest'
-import { validateSpec, LIMITS, isSurfaceId } from '../../genui/spec.js'
+import { validateSpec, LIMITS, isSurfaceId, projectImagePath, PROJECT_IMAGE_PATH_RE, PROJECT_IMAGE_PATH_MAX } from '../../genui/spec.js'
 import { genuiExampleCall } from '../../genui/prompt.js'
 
 const one = (type: string, props: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
@@ -197,7 +197,7 @@ describe('validateSpec', () => {
   it('missing required props: dropped when undrawable (Image with neither prompt nor src), kept and reported otherwise', () => {
     const img = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { alt: 'x' } } } })
     expect(img.spec?.elements.i).toBeUndefined()
-    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped')
+    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
     const inp = one('Input', { label: 'L' })
     expect(inp.spec?.elements.x.type).toBe('Input')
     expect(inp.errors).toEqual(['x (Input): missing name'])
@@ -274,7 +274,7 @@ describe('validateSpec', () => {
 // and a model that wanted a picture invented a path the page drew as
 // "image unavailable".
 describe('validateSpec: Image prompt or src', () => {
-  const HINT = 'is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it'
+  const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
 
   it('{prompt, alt} is clean, and the prompt is normalised', () => {
     const r = one('Image', { prompt: '  a tall green alien\n\n in a   silver suit ', alt: 'Tall alien' })
@@ -288,12 +288,12 @@ describe('validateSpec: Image prompt or src', () => {
   })
 
   it('a fake src is dropped with the prompt hint, never turned into a prompt; with no prompt the element goes too', () => {
-    for (const src of ['aliens/a.png', 'javascript:alert(1)', 'file:///etc/passwd', 'https://exa mple.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=']) {
+    for (const src of ['aliens/a.bmp', 'javascript:alert(1)', 'file:///etc/passwd', 'https://exa mple.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=']) {
       const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Alien' } } } })
       expect(r.spec?.elements.i, src).toBeUndefined()
       expect(r.errors, src).toEqual([
         `i.src: "${src}" ${HINT}`,
-        'i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+        'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
         'c.children: "i" is not an element id — nothing was drawn for it (the element was dropped)',
       ])
     }
@@ -328,11 +328,11 @@ describe('validateSpec: Image prompt or src', () => {
   // above — a fake path was kept unreported, both survived, the prompt was
   // never bounded, and validating the output again gave a different answer.
   it('a prop name in any letter case meets the same checks, and validating the output again changes nothing', () => {
-    const fake = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { Src: 'aliens/a.png', alt: 'Alien' } } } })
+    const fake = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { Src: 'aliens/a.bmp', alt: 'Alien' } } } })
     expect(fake.spec?.elements.i).toBeUndefined()
     expect(fake.errors.slice(0, 2)).toEqual([
-      `i.src: "aliens/a.png" ${HINT}`,
-      'i (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+      `i.src: "aliens/a.bmp" ${HINT}`,
+      'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
     ])
     expect(one('Image', { SRC: 'javascript:alert(1)', alt: 'a' }).errors[0]).toBe(`x.src: "javascript:alert(1)" ${HINT}`)
     const both = one('Image', { prompt: 'a tall green alien', Src: 'https://e.com/a.png', alt: 'A' })
@@ -347,10 +347,10 @@ describe('validateSpec: Image prompt or src', () => {
     expect(lifted.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
     expect(lifted.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
     // two spellings of one prop: the exact name wins and the other is reported
-    const twice = one('Image', { Src: 'aliens/a.png', src: 'https://e.com/a.png', alt: 'A' })
+    const twice = one('Image', { Src: 'aliens/a.bmp', src: 'https://e.com/a.png', alt: 'A' })
     expect(twice.spec?.elements.x.props).toEqual({ src: 'https://e.com/a.png', alt: 'A' })
     expect(twice.errors).toEqual(['x: "Src" repeats "src" and was dropped'])
-    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.png', alt: 'A' }]) {
+    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.bmp', alt: 'A' }, { Src: 'tower/t.svg', alt: 'A' }]) {
       const first = one('Image', props)
       const again = validateSpec(first.spec)
       expect(again.errors, JSON.stringify(props).slice(0, 60)).toEqual([])
@@ -369,12 +369,82 @@ describe('validateSpec: Image prompt or src', () => {
   })
 
   it('partial mode is silent: a half-streamed src is dropped quietly and an Image with nothing yet is skipped', () => {
-    const half = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i', 'j'] }, i: { type: 'Image', props: { src: 'https://exa', alt: 'a' } }, j: { type: 'Image', props: { src: 'aliens/', alt: 'b' } } } }, { partial: true })
+    const half = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i', 'j', 'k', 'l'] }, i: { type: 'Image', props: { src: 'https://exa', alt: 'a' } }, j: { type: 'Image', props: { src: 'aliens/', alt: 'b' } }, k: { type: 'Image', props: { src: 'tower/temp', alt: 'c' } }, l: { type: 'Image', props: { src: 'tower/t.svg', alt: 'd' } } } }, { partial: true })
     expect(half.errors).toEqual([])
     expect(half.spec?.elements.i.props?.src).toBe('https://exa')
     expect(half.spec?.elements.j).toBeUndefined()
+    expect(half.spec?.elements.k).toBeUndefined()
+    expect(half.spec?.elements.l.props).toEqual({ src: 'tower/t.svg', alt: 'd' })
     const both = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall alien', src: 'https://e.com/a.png' } } } }, { partial: true })
     expect(both.errors).toEqual([])
     expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall alien' })
+  })
+})
+
+// A model that wrote 1:1 printable SVG templates into the project tried to show
+// them as Images with those paths, and the validator dropped each one as "not an
+// http(s) image URL" (dashboard transcript, 2026-10-11). A relative png, jpg,
+// gif, webp or svg path inside the project is now kept as the src; the loop's
+// annotator (ImageService.annotate, withValidatedSurfaces on reload) turns it
+// into the engine-only `image: { status: 'file', slug, path }` in a project
+// chat and the dashboard fetches it from /api/projects/:slug/files/<path>.
+describe('validateSpec: Image src as a file in the project', () => {
+  const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+
+  it('a relative image path is kept as the src — trimmed, a leading "./" removed, the case as written — and no image state is set', () => {
+    for (const [src, path] of [
+      ['tower/templates/tower_v1.1_30in.svg', 'tower/templates/tower_v1.1_30in.svg'],
+      ['  ./sketches/front.png ', 'sketches/front.png'],
+      ['Cover (final).JPG', 'Cover (final).JPG'],
+      ['a-b_c/d.jpeg', 'a-b_c/d.jpeg'],
+      ['x.gif', 'x.gif'],
+      ['x.webp', 'x.webp'],
+      ['my tower/v 2.png', 'my tower/v 2.png'],
+      ['-/-.svg', '-/-.svg'],
+      ['a'.repeat(PROJECT_IMAGE_PATH_MAX - 4) + '.png', 'a'.repeat(PROJECT_IMAGE_PATH_MAX - 4) + '.png'],
+    ]) {
+      const r = one('Image', { src, alt: 'Tower' })
+      expect(r.errors, src).toEqual([])
+      expect(r.spec?.elements.x.props, src).toEqual({ src: path, alt: 'Tower' })
+      expect(r.spec?.elements.x.image, src).toBeUndefined()
+      expect(projectImagePath(src), src).toBe(path)
+    }
+    expect(PROJECT_IMAGE_PATH_MAX).toBe(200)
+  })
+
+  it('every other form is refused with the hint and the element is dropped: "..", absolute, a drive letter, a backslash, a dot-leading segment, a scheme, another extension, 201 characters', () => {
+    const refused = [
+      '../secret.png', 'a/../b.png', 'tower/..', '..', '/etc/passwd.png', '//host/x.png', 'C:/Users/x.png', 'C:\\x.png', 'tower\\x.svg', 'a//b.png',
+      '.git/x.png', '.cynco/tmp/x.png', 'tower/.hidden.png', 'x.png/', 'tower/', 'data:text/html,<script>', 'javascript:alert(1)', 'file:///x.png', 'ftp://h/x.png',
+      'x.html', 'x.svgz', 'x.png.exe', 'x', 'x.svg?v=2', 'x.svg#a', 'a%2fb.png', 'a\0.png', 'tower/\u2024\u2024/x.png', 'türme.png', 'x\n.png', 'a .png', 'a  b.png', '"x".png', "x'.png",
+      'a'.repeat(PROJECT_IMAGE_PATH_MAX - 3) + '.png',
+    ]
+    for (const src of refused) {
+      expect(projectImagePath(src), JSON.stringify(src)).toBeNull()
+      const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Tower' } } } })
+      expect(r.spec?.elements.i, JSON.stringify(src)).toBeUndefined()
+      expect(r.errors[0], JSON.stringify(src)).toBe(`i.src: "${src.slice(0, 60)}" ${HINT}`)
+      expect(r.errors[1], JSON.stringify(src)).toBe('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
+    }
+    expect(projectImagePath(42)).toBeNull()
+    expect(projectImagePath(null)).toBeNull()
+    // the page copies this rule verbatim: a path that passes here must pass there
+    expect(PROJECT_IMAGE_PATH_RE.flags).toBe('i')
+    expect(PROJECT_IMAGE_PATH_RE.test('tower/templates/tower_v1.1_30in.svg')).toBe(true)
+  })
+
+  it('a path beside a prompt keeps the prompt; the model\'s own file state is dropped; validating the output again changes nothing', () => {
+    const both = one('Image', { prompt: 'a tall alien', src: 'tower/t.svg', alt: 'A' })
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall alien', alt: 'A' })
+    expect(both.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    const forged = one('Image', { src: 'tower/t.svg', alt: 'A' }, { image: { status: 'file', slug: 'p', path: '../../etc/passwd.png' } })
+    expect(forged.spec?.elements.x.image).toBeUndefined()
+    expect(forged.spec?.elements.x.props).toEqual({ src: 'tower/t.svg', alt: 'A' })
+    expect(forged.errors).toEqual(['x: unknown field "image" was dropped'])
+    const first = one('Image', { Src: ' ./tower/t.svg ', alt: 'A' })
+    expect(first.errors).toEqual([])
+    const again = validateSpec(first.spec)
+    expect(again.errors).toEqual([])
+    expect(again.spec).toEqual(first.spec)
   })
 })

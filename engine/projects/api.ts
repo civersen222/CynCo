@@ -16,7 +16,7 @@ import { appendJournal, createProject, isReservedFileName, projectDir, readFileI
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
-import { originKey, promptedImages, readOrigins, storedImageState } from '../imagegen/store.js'
+import { annotateFileImages, originKey, promptedImages, readOrigins, storedImageState } from '../imagegen/store.js'
 
 export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number }
 export type ApiResult = { status: number; body: unknown }
@@ -167,7 +167,9 @@ export type SurfaceImagesAt = { dir: string; slug: string; chatFile: string }
  * `<chatFile>#<toolId>#<elementId>` — the exact picture shown live, even if
  * the knobs changed since. A transcript block's id is the live toolId: the
  * tool_use is appended before the tools run. index.json is read once, and
- * only when a surface has such an Image. The stored history stays untouched.
+ * only when a surface has such an Image. Each Image whose src is a path in
+ * the project gets its file state again (`annotateFileImages`), as the live
+ * frame had it. The stored history stays untouched.
  */
 export function withValidatedSurfaces<T>(t: T, at?: SurfaceImagesAt): T {
   const msgs = (t as { messages?: unknown }).messages
@@ -184,6 +186,11 @@ export function withValidatedSurfaces<T>(t: T, at?: SurfaceImagesAt): T {
         const spec = validateSpec(raw).spec
         if (spec && at) {
           const toolId = typeof b.id === 'string' ? b.id : ''
+          try {
+            annotateFileImages(spec, at.slug)
+          } catch (e) {
+            console.log(`[projects] file Images of ${at.chatFile} ${toolId} could not be annotated: ${e instanceof Error ? e.message : String(e)}`)
+          }
           for (const im of promptedImages(spec)) {
             try {
               origins ??= readOrigins(at.dir)

@@ -350,8 +350,9 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
   if (type === 'Code' && p.code === undefined && typeof p.text === 'string') { p.code = p.text; delete p.text }
   if (type === 'Image') {
     // F174: "prompt" describes a picture the engine paints (engine/imagegen);
-    // "src" is only ever a real URL. A made-up path is dropped, never turned
-    // into a prompt — "aliens/a.png" describes nothing.
+    // "src" is a real URL or the path of an image file the model wrote into
+    // the project (`projectImagePath`). Anything else is dropped, never turned
+    // into a prompt — "aliens/a.bmp" describes nothing.
     // coerceProps and the relocation above take any letter case, so "Src"
     // and "Prompt" must meet these checks too; the exact name wins a tie.
     for (const k of Object.keys(p)) {
@@ -374,12 +375,42 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
       const shown = (src ?? JSON.stringify(p.src) ?? '').slice(0, 60)
       // Both: the URL beside a description is most likely invented (rule 5), and a painted picture stays with the project.
       if (typeof p.prompt === 'string') { delete p.src; report(ctx, `${at}: an Image takes "prompt" or "src", not both — the prompt was kept`) }
-      else if (src === undefined || !(IMAGE_HTTP_URL.test(src) || IMAGE_DATA_URL.test(src))) { delete p.src; report(ctx, `${at}.src: "${shown}" is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it`) }
-      else p.src = src
+      else if (src !== undefined && (IMAGE_HTTP_URL.test(src) || IMAGE_DATA_URL.test(src))) p.src = src
+      else {
+        // A file in the project, by its relative path: kept as written (trimmed,
+        // a leading "./" removed). Whether it is shown is the loop's annotator's
+        // call (a project chat) and whether it exists the file route's.
+        const path = projectImagePath(src)
+        if (path !== null) p.src = path
+        else { delete p.src; report(ctx, `${at}.src: "${shown}" ${IMAGE_SRC_HINT}`) }
+      }
     }
   }
   return p
 }
+
+/**
+ * The path of an image file the model wrote into the project, relative to
+ * the project folder, or null: '/'-separated segments of ASCII letters,
+ * digits, _ - . ( ) and single inner spaces, none starting with a dot (so
+ * never ".", ".." or a hidden folder such as .git or .cynco), ending in png,
+ * jpg, jpeg, gif, webp or svg; at most PROJECT_IMAGE_PATH_MAX characters;
+ * no scheme, no leading "/" or drive letter, no backslash, no "..", nothing
+ * a URL would need encoding for. Trimmed, with a leading "./" removed. The
+ * page keeps a verbatim copy of the pattern (GENUI_IMAGE_PATH_RE) and the
+ * file route checks the decoded path against this same rule before any join.
+ */
+export function projectImagePath(src: unknown): string | null {
+  if (typeof src !== 'string') return null
+  let s = src.trim()
+  if (s.startsWith('./')) s = s.slice(2)
+  if (s.length === 0 || s.length > PROJECT_IMAGE_PATH_MAX || s.includes('..') || !PROJECT_IMAGE_PATH_RE.test(s)) return null
+  return s
+}
+
+export const PROJECT_IMAGE_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*)*\.(?:png|jpe?g|gif|webp|svg)$/i
+export const PROJECT_IMAGE_PATH_MAX = 200
+const IMAGE_SRC_HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
 
 /** The page's own URL rules (index.html `safeUrl` and its data: check): anything else would draw as a broken box. */
 const IMAGE_HTTP_URL = /^https?:\/\/[^\s<>"']+$/i
@@ -398,7 +429,7 @@ const MUST_HAVE: Record<string, string[]> = {
 }
 /** At least one of these props, or the element is dropped; `needs` says what to give. */
 const EITHER: Record<string, { props: string[]; needs: string }> = {
-  Image: { props: ['prompt', 'src'], needs: '"prompt" (a description of the picture) or a real http(s) "src"' },
+  Image: { props: ['prompt', 'src'], needs: '"prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project' },
 }
 
 // ─── nested → flat ───────────────────────────────────────────────

@@ -22,6 +22,7 @@ import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { GENUI_CATALOG } from '../../genui/catalog.js'
+import { PROJECT_IMAGE_PATH_RE } from '../../genui/spec.js'
 import { genuiExampleCall } from '../../genui/prompt.js'
 import { uiRequestReason } from '../../genui/intent.js'
 import { isFollowUp } from '../../genui/actions.js'
@@ -211,7 +212,7 @@ function makeDocument() {
   }
 }
 
-type ImageEntry = { status: string; reason: string; slug: string; key: string; url: string; loading: boolean }
+type ImageEntry = { status: string; reason: string; slug: string; key: string; url: string; loading: boolean; path?: string; stale?: boolean }
 
 type Page = {
   renderUiSpec: (spec: unknown, el: Node, ctx?: Record<string, unknown>) => Record<string, any>
@@ -1495,5 +1496,163 @@ describe('dashboard genui: generated pictures — a withdrawn or cramped card (s
     expect(rule('.genui-image-msg')).toContain('max-height: 100%')
     expect(rule('.genui-image-msg')).toContain('overflow-y: auto')
     expect(rule('.genui-image-box')).toContain('align-items: safe center')
+  })
+})
+
+// ═══ 5. pictures from project files ═══════════════════════
+// An Image whose src is a relative image path shows a file the model wrote
+// into the project (dashboard transcript, 2026-10-11: 1:1 printable SVG
+// templates the page could not show). The engine's annotation carries
+// `{ status: 'file', slug, path }` and the page treats it like a done
+// generated picture: a fetch of /api/projects/:slug/files/<path> with the
+// token, a blob URL in an <img>, the lightbox, a Download named after the
+// file. Never inline, never innerHTML: an SVG in an <img> runs no script.
+
+const PATH = 'tower/templates/tower_v1.1_30in.svg'
+const fileState = (path = PATH, slug = 'p') => ({ status: 'file', slug, path })
+const F = (path = PATH, slug = 'p') => `${slug}/file:${path}`
+function fileSpec(image?: unknown) {
+  const img: Record<string, unknown> = { type: 'Image', props: { alt: 'Tower template', caption: '30 in' } }
+  if (image !== undefined) img.image = image
+  return { root: 'c', elements: { c: { type: 'Card', props: { title: 'Templates' }, children: ['img'] }, img } }
+}
+function drawFile(page: Page, surface: string, image?: unknown, partial = false) {
+  return page.upsertSurface({ type: 'ui.render', toolId: 't-' + surface, surfaceId: surface, partial, spec: fileSpec(image) })!
+}
+
+describe('dashboard genui: pictures from project files — wiring', () => {
+  const js = scripts()
+
+  it('checks the path against the engine\'s own rule before it builds a URL, builds the URL segment by segment, and never writes HTML', () => {
+    expect(js).toContain('var GENUI_IMAGE_PATH_RE = ' + PROJECT_IMAGE_PATH_RE.toString() + ';')
+    expect(js).toContain('var GENUI_IMAGE_PATH_MAX = 200;')
+    expect(fnSource('genuiFileUrl')).toContain("'/api/projects/' + slug + '/files/' + path.split('/').map(encodeURIComponent).join('/')")
+    for (const fn of ['genuiGeneratedImage', 'genuiFillImage', 'genuiLoadImage', 'genuiOpenLightbox', 'genuiImageAnnotation', 'genuiMergeFile', 'genuiFileUrl']) {
+      expect(fnSource(fn), fn).not.toContain('innerHTML')
+      expect(fnSource(fn), fn).not.toContain('insertAdjacentHTML')
+    }
+    expect(js).not.toMatch(/setAttribute\(\s*['"]src['"]\s*,\s*['"]\/api\//)
+    expect(js).not.toMatch(/\.src\s*=\s*['"]\/api\//)
+    // only an <img> ever shows it: no <object>, <embed>, <iframe> or inline <svg> from a file
+    for (const fn of ['genuiFillImage', 'genuiOpenLightbox']) {
+      expect(fnSource(fn), fn).not.toMatch(/genuiEl\('(object|embed|iframe|svg)'/)
+      expect(fnSource(fn), fn).not.toMatch(/createElementNS/)
+    }
+  })
+})
+
+describe('dashboard genui: pictures from project files — every state', () => {
+  it('file: "Loading <name>…", one fetch of /api/projects/p/files/<path> with each segment encoded, then an <img> on the blob URL', async () => {
+    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/svg+xml') })
+    const el = drawFile(page, 'opts', fileState())
+    expect(fig(el)).not.toBeNull()
+    expect(boxText(el)).toBe('Loading tower_v1.1_30in.svg…')
+    expect(fetched).toEqual(['/api/projects/p/files/tower/templates/tower_v1.1_30in.svg'])
+    expect(fig(el).getAttribute('data-image-key')).toBe('file:' + PATH)
+    expect(fig(el).getAttribute('data-image-slug')).toBe('p')
+    await tick()
+    const img = el.querySelector('.genui-image-box img')!
+    expect(img.getAttribute('src')).toBe('blob:page/1')
+    expect(img.getAttribute('alt')).toBe('Tower template')
+    expect(el.querySelector('figcaption')!.textContent).toBe('30 in')
+    expect(blobs.created).toEqual([{ blob: 'png-bytes' }])
+    expect(page.genuiImages[F()]).toMatchObject({ status: 'done', url: 'blob:page/1', loading: false, path: PATH, key: 'file:' + PATH, slug: 'p' })
+    // a path with spaces and parentheses is encoded per segment (its own harness: the stub's selector matcher cannot refill a name with a space)
+    const spaced = harness()
+    drawFile(spaced.page, 'sp', fileState('my tower (v2)/front view.png'))
+    expect(spaced.fetched).toEqual(['/api/projects/p/files/my%20tower%20(v2)/front%20view.png'])
+    // the box takes the file's own shape: no fixed aspect ratio
+    expect(el.querySelector('.genui-image-box')!.style.aspectRatio).toBe('auto')
+  })
+
+  it('a failed load names the file and the HTTP status; a wrong type counts as a failure; a later frame fetches it again', async () => {
+    let answer: FakeReply = reply(404, 'application/json')
+    const { page, fetched } = harness({ fetch: async () => answer })
+    const el = drawFile(page, 'opts', fileState())
+    await tick()
+    expect(boxText(el)).toBe('tower/templates/tower_v1.1_30in.svg could not be loaded (HTTP 404)')
+    expect(el.querySelector('.genui-image-box')!.classList.contains('genui-image-failed')).toBe(true)
+    expect(el.querySelector('img')).toBeNull()
+    expect(page.genuiImages[F()]).toMatchObject({ status: 'failed', url: '' })
+    answer = reply(200, 'text/html')
+    const again = drawFile(page, 'opts', fileState())
+    expect(fetched).toHaveLength(2)
+    await tick()
+    expect(boxText(again)).toBe('tower/templates/tower_v1.1_30in.svg could not be loaded (HTTP 200, text/html)')
+    answer = reply(200, 'image/svg+xml')
+    const third = drawFile(page, 'opts', fileState())
+    expect(fetched).toHaveLength(3)
+    await tick()
+    expect(third.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+  })
+
+  it('a new final frame fetches a shown file again (it may have changed) and keeps the old picture until the new one is in', async () => {
+    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/png') })
+    const a = drawFile(page, 'a', fileState('front.png'))
+    await tick()
+    expect(a.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    // a second surface showing the same file draws the picture at once and asks for it again
+    const b = drawFile(page, 'b', fileState('front.png'))
+    expect(b.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(fetched).toHaveLength(2)
+    await tick()
+    expect(b.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(a.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(blobs.revoked).toEqual(['blob:page/1'])
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ status: 'done', url: 'blob:page/2', stale: false, loading: false })
+  })
+
+  it('off (a coding session): the reason in the box and no fetch; a bad reference draws as off', () => {
+    const { page, fetched } = harness()
+    const off = drawFile(page, 'off', { status: 'off', reason: 'files are shown in project chats only' })
+    expect(boxText(off)).toBe('Tower template — files are shown in project chats only')
+    for (const [i, im] of [
+      fileState('../x.png'), fileState('x.html'), fileState('/etc/passwd.png'), fileState('a\\b.png'), fileState(PATH, 'P'), fileState(PATH, '../p'),
+      fileState('a'.repeat(197) + '.png'), { status: 'file', slug: 'p' }, { status: 'file', slug: 'p', path: 7 }, { status: 'file', slug: 'p', path: 'x.svg?v=1' },
+    ].entries()) {
+      const el = drawFile(page, 'bad' + i, im)
+      expect(boxText(el), JSON.stringify(im)).toBe('Tower template — bad file reference')
+      expect(fig(el).hasAttribute('data-image-key')).toBe(false)
+    }
+    expect(fetched).toEqual([])
+    expect(page.genuiImages).toEqual({})
+  })
+
+  it('a partial frame with a path src draws the neutral placeholder and never a fetch; an unannotated path draws the placeholder', () => {
+    const { page, fetched } = harness()
+    const spec = (src: string) => ({ root: 'i', elements: { i: { type: 'Image', props: { src, alt: 'Tower template' } } } })
+    const el = page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'ref', partial: true, spec: spec('tower/templ') })!
+    expect(el.querySelector('.genui-image-ph')!.textContent).toBe('Tower template')
+    expect(el.querySelector('button')).toBeNull()
+    page.upsertSurface({ type: 'ui.render', toolId: 't1', surfaceId: 'ref', partial: false, spec: spec(PATH) })
+    expect(el.querySelector('.genui-image-ph')!.textContent).toBe('Tower template')
+    expect(el.querySelector('img')).toBeNull()
+    expect(fetched).toEqual([])
+  })
+
+  it('the lightbox shows the file with its alt and path and downloads it under its own name; a cleared pane frees it', async () => {
+    const h = harness({ fetch: async () => reply(200, 'image/svg+xml') })
+    const el = drawFile(h.page, 'opts', fileState())
+    await tick()
+    el.querySelector('button.genui-image-open')!.fire('click')
+    const box = h.document.body.querySelector('.genui-lightbox')!
+    expect(box.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(box.querySelector('.genui-lightbox-alt')!.textContent).toBe('Tower template')
+    expect(box.querySelector('.genui-lightbox-prompt')!.textContent).toBe(PATH)
+    const dl = box.querySelector('a')!
+    expect(dl.getAttribute('href')).toBe('blob:page/1')
+    expect(dl.getAttribute('download')).toBe('tower_v1.1_30in.svg')
+    h.page.genuiForgetImages()
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    expect(h.page.genuiImages).toEqual({})
+    expect(h.document.body.querySelector('.genui-lightbox')).toBeNull()
+  })
+
+  it('the recheck after a reconnect never asks about a file', () => {
+    const { page, fetched } = harness()
+    drawFile(page, 'a', fileState())
+    expect(fetched).toHaveLength(1)
+    page.genuiRecheckImages()
+    expect(fetched).toHaveLength(1)
   })
 })

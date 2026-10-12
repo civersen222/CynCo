@@ -168,8 +168,8 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
   },
   Image: {
     group: 'Content', children: 'none',
-    description: 'A picture: "prompt" describes it and the engine paints it; "src" only for a real http(s) image URL. Give one, not both.',
-    props: { prompt: str('what the picture shows'), src: str('real image URL'), alt: str('what it shows', { required: true }), caption: str('text under the image') },
+    description: 'A picture: "prompt" describes it and the engine paints it; "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.',
+    props: { prompt: str('what the picture shows'), src: str('image URL, or a file path from the project folder'), alt: str('what it shows', { required: true }), caption: str('text under the image') },
     example: { prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' },
   },
 

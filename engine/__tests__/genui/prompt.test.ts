@@ -2,8 +2,9 @@
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
  * every catalog component exactly once, stay under its budget (12k chars,
  * ~3k tokens — raised from 10k for the options example, F171; the picture
- * wording of F174 fits under it: 11,920 project, 11,225 session, whose
- * section asks for no picture), and be byte-identical on every call.
+ * wording of F174 fits under it: 11,984 project, 11,289 session, whose
+ * section asks for no picture, after the Image's file-path sentence), and
+ * be byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
 import { genuiPromptSection, genuiExampleCall, genuiOptionsExampleCall } from '../../genui/prompt.js'
@@ -74,7 +75,9 @@ describe('genui prompt section', () => {
   // was an empty one. A design now gets a picture the engine paints, framed so
   // a later image → 3D step can use it.
   it('gives each design a prompted picture, framed for a later 3D model, and never names the server', () => {
-    expect(text).toMatch(/- Image\(prompt: string, src: string, alt\*: string, caption: string\) — A picture: "prompt" describes it and the engine paints it; "src" only for a real http\(s\) image URL\. Give one, not both\./)
+    expect(text).toMatch(/- Image\(prompt: string, src: string, alt\*: string, caption: string\) — A picture: "prompt" describes it and the engine paints it; "src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote\. Give one, not both\./)
+    // a file the model wrote into the project (an SVG template, a sketch) is shown by its path: the one sentence, in both modes
+    expect(session).toMatch(/the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote/)
     expect(text).not.toMatch(/An idea with no picture/)
     expect(text).not.toMatch(/leave the Image out/)
     // whether ComfyUI is set up reaches the model through the tool result only: the prefix never varies

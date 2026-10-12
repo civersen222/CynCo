@@ -4158,13 +4158,24 @@ function genuiPlotRect(p) {
 // built here from a checked key and slug, never taken from the spec, and
 // fetched through the injected fetch wrapper (it adds the token) into a blob
 // URL: a bare <img src="/api/…"> carries no token and would be refused.
+//
+// An Image whose src was a path in the project (a template the model wrote)
+// arrives with `{ status: 'file', slug, path }` instead and is treated as a
+// done picture under "<slug>/file:<path>": fetched from the file route with
+// the token into a blob URL — only ever into an <img>, where an SVG runs no
+// script and loads nothing — and fetched again on every new frame that shows
+// it, since the file can change. The path is checked here against the
+// engine's own rule (engine/genui/spec.ts PROJECT_IMAGE_PATH_RE, copied
+// verbatim) before a URL is built from it, segment by segment encoded.
 var GENUI_IMAGE_KEY_RE = /^[0-9a-f]{32}$/;
 var GENUI_IMAGE_SLUG_RE = /^[a-z0-9-]{1,64}$/;
+var GENUI_IMAGE_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*)*\.(?:png|jpe?g|gif|webp|svg)$/i;
+var GENUI_IMAGE_PATH_MAX = 200;
 // queued < running < failed < done: a picture that exists outranks a failure,
 // so a `done` after the page's own failed load (an event, a recheck, a
 // re-render) fetches it again.
 var GENUI_IMAGE_RANK = { queued: 1, running: 2, failed: 3, done: 4 };
-var genuiImages = {};   // "<slug>/<key>" → { status, reason, slug, key, url (blob), loading }
+var genuiImages = {};   // "<slug>/<key>" → { status, reason, slug, key, url (blob), loading }; a file: key "file:<path>", path, stale
 var genuiLightboxShows = '';   // the "<slug>/<key>" the open lightbox shows ('' when closed)
 
 /** The map's name for a picture: both parts pattern-checked, and a slug holds no "/". */
@@ -4175,6 +4186,11 @@ function genuiImageAnnotation(el) {
   var im = el && el.image;
   if (!im || typeof im !== 'object') return null;
   if (im.status === 'off') return { status: 'off', reason: genuiStr(im.reason) || 'picture not generated' };
+  if (im.status === 'file') {
+    if (typeof im.slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(im.slug) || typeof im.path !== 'string' || im.path.length > GENUI_IMAGE_PATH_MAX ||
+        im.path.indexOf('..') >= 0 || !GENUI_IMAGE_PATH_RE.test(im.path)) return { status: 'off', reason: 'bad file reference' };
+    return { status: 'file', key: 'file:' + im.path, slug: im.slug, path: im.path, reason: '', w: 0, h: 0 };
+  }
   if (typeof im.status !== 'string' || !Object.prototype.hasOwnProperty.call(GENUI_IMAGE_RANK, im.status) ||
       typeof im.key !== 'string' || !GENUI_IMAGE_KEY_RE.test(im.key) ||
       typeof im.slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(im.slug)) return { status: 'off', reason: 'bad picture reference' };
@@ -4205,7 +4221,33 @@ function genuiMergeImage(key, slug, status, reason) {
   return m;
 }
 
-/** The Image renderer's generated branch: a box the shape of the picture, filled by genuiFillImage. */
+/** The file route for a checked slug and path, each segment encoded (a space, a parenthesis). */
+function genuiFileUrl(slug, path) {
+  return '/api/projects/' + slug + '/files/' + path.split('/').map(encodeURIComponent).join('/');
+}
+
+/** The last segment of a checked path: the Download name and the "Loading …" line. */
+function genuiBaseName(path) {
+  return path.split('/').pop() || path;
+}
+
+/**
+ * Fold a file Image into genuiImages as a done picture under
+ * "<slug>/file:<path>". The file can change between frames (the model
+ * rewrites a template and shows it again), so a frame that finds it shown
+ * marks it stale: it is fetched again, and the old picture stays up until
+ * the new one is in. A failed load is tried again.
+ */
+function genuiMergeFile(slug, path) {
+  var key = 'file:' + path, id = genuiImageId(slug, key);
+  var m = genuiImages[id];
+  if (!m) return genuiImages[id] = { status: 'done', reason: '', slug: slug, key: key, path: path, url: '', loading: false, stale: false };
+  if (m.status === 'failed') { m.status = 'done'; m.reason = ''; }
+  else if (m.url && !m.loading) m.stale = true;
+  return m;
+}
+
+/** The Image renderer's generated branch — and its file branch: a box the shape of the picture, filled by genuiFillImage. */
 function genuiGeneratedImage(el, ctx) {
   var p = el.props || {};
   var alt = genuiStr(p.alt);
@@ -4216,7 +4258,7 @@ function genuiGeneratedImage(el, ctx) {
   fig.appendChild(altLine);
   if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption));
   // pending: drawn from a partial frame, so it promises a picture the final frame decides.
-  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', slug: '', note: '', named: false, pending: false };
+  var g = { box: box, altLine: altLine, alt: alt, prompt: genuiStr(p.prompt), key: '', slug: '', path: '', note: '', named: false, pending: false };
   fig.__genuiImage = g;
   var partial = !!(ctx && ctx.partial);
   var a = partial ? null : genuiImageAnnotation(el);
@@ -4228,6 +4270,15 @@ function genuiGeneratedImage(el, ctx) {
   } else if (!a || a.status === 'off') {
     g.note = (alt ? alt + ' — ' : '') + (a ? a.reason : 'picture not generated');
     g.named = !!alt;
+  } else if (a.status === 'file') {
+    // A file in the project: its own shape, fetched (again) from the file route.
+    g.key = a.key;
+    g.slug = a.slug;
+    g.path = a.path;
+    ratio = 'auto';
+    fig.setAttribute('data-image-key', a.key);
+    fig.setAttribute('data-image-slug', a.slug);
+    genuiMergeFile(a.slug, a.path);
   } else {
     g.key = a.key;
     g.slug = a.slug;
@@ -4256,22 +4307,23 @@ function genuiFillImage(fig) {
   genuiToggleClass(g.altLine, 'genui-hidden', !g.alt || g.named);
   var say = function(text) { box.appendChild(genuiEl('div', 'genui-image-msg', text)); };
   if (!m) { say(g.note); return; }
+  // Not shown yet, or a file shown from a frame before this one: fetch it (once; the load keeps its own guard).
+  if (status === 'done' && (!m.url || m.stale)) genuiLoadImage(g.slug, g.key);
   if (status === 'done' && m.url) {
     var open = genuiEl('button', 'genui-image-open');
     open.type = 'button';
     open.title = 'Enlarge';
     var img = genuiEl('img', 'genui-img');
     img.setAttribute('alt', g.alt);
-    img.addEventListener('error', function() { genuiClear(box); say('Picture failed: the picture could not be shown'); });
+    img.addEventListener('error', function() { genuiClear(box); say(g.path ? g.path + ' could not be shown' : 'Picture failed: the picture could not be shown'); });
     img.setAttribute('src', m.url);
     open.appendChild(img);
-    open.addEventListener('click', function() { genuiOpenLightbox(g.slug, g.key, g.alt, g.prompt); });
+    open.addEventListener('click', function() { genuiOpenLightbox(g.slug, g.key, g.alt, g.prompt || g.path); });
     box.appendChild(open);
-  } else if (status === 'done') {
-    say('Loading picture…');
-    genuiLoadImage(g.slug, g.key);
-  } else if (status === 'queued') say('Picture queued…');
+  } else if (status === 'done') say(g.path ? 'Loading ' + genuiBaseName(g.path) + '…' : 'Loading picture…');
+  else if (status === 'queued') say('Picture queued…');
   else if (status === 'running') say('Painting the picture…');
+  else if (g.path) say(m.reason || g.path + ' could not be loaded');
   else say('Picture failed: ' + (m.reason || 'no reason given'));
 }
 
@@ -4282,40 +4334,55 @@ function genuiFillImages(slug, key) {
 }
 
 /**
- * Fetch a done picture once. Same-origin, so the fetch wrapper adds the
- * token; the reply must be 200 image/png; it is shown as a blob URL. Any
- * failure marks the picture failed with the HTTP status — the one way a done
- * goes back, and a later done fetches it again.
+ * Fetch a done picture once (a file: once per frame that shows it, since it
+ * may have changed). Same-origin, so the fetch wrapper adds the token; the
+ * reply must be 200 image/png (a file: 200 and any image type); it is shown
+ * as a blob URL. Any failure marks the picture failed with the HTTP status —
+ * the one way a done goes back, and a later done fetches it again. A file
+ * that fails names itself: "<path> could not be loaded (HTTP n)".
  */
 function genuiLoadImage(slug, key) {
   var id = genuiImageId(slug, key);
   var m = genuiImages[id];
-  if (!m || m.status !== 'done' || m.url || m.loading) return;
+  if (!m || m.status !== 'done' || (m.url && !m.stale) || m.loading) return;
   m.loading = true;
+  var name = m.path || key.slice(0, 8);
   var failed = function(why) {
     m.loading = false;
     if (genuiImages[id] !== m) return;
     m.status = 'failed';
-    m.reason = 'could not load the picture (' + why + ')';
+    m.stale = false;
+    if (m.url) { genuiRevoke(m.url, name); m.url = ''; }
+    m.reason = m.path ? m.path + ' could not be loaded (' + why + ')' : 'could not load the picture (' + why + ')';
     genuiFillImages(slug, key);
   };
-  fetch('/api/projects/' + m.slug + '/images/' + key + '.png').then(function(res) {
+  var res = m.path ? fetch(genuiFileUrl(m.slug, m.path)) : fetch('/api/projects/' + m.slug + '/images/' + key + '.png');
+  res.then(function(res) {
     var type = String((res.headers && res.headers.get && res.headers.get('content-type')) || '').split(';')[0].trim().toLowerCase();
-    if (!res.ok || type !== 'image/png') {
-      console.warn('[genui] picture ' + key.slice(0, 8) + ': HTTP ' + res.status + ' ' + (type || 'no content-type'));
+    var typeOk = m.path ? type.indexOf('image/') === 0 : type === 'image/png';
+    if (!res.ok || !typeOk) {
+      console.warn('[genui] picture ' + name + ': HTTP ' + res.status + ' ' + (type || 'no content-type'));
       failed('HTTP ' + res.status + (res.ok ? ', ' + (type || 'no content-type') : ''));
       return null;
     }
     return res.blob().then(function(blob) {
       m.loading = false;
       if (genuiImages[id] !== m) return;   // the chat was cleared while it loaded
+      var old = m.stale ? m.url : '';
       m.url = URL.createObjectURL(blob);
+      m.stale = false;
+      if (old) genuiRevoke(old, name);
       genuiFillImages(slug, key);
     });
   }).catch(function(e) {
-    console.warn('[genui] loading picture ' + key.slice(0, 8) + ': ' + (e && e.message ? e.message : e));
+    console.warn('[genui] loading picture ' + name + ': ' + (e && e.message ? e.message : e));
     failed(e && e.message ? e.message : 'network error');
   });
+}
+
+/** Free one blob URL; a failure is logged, never thrown. */
+function genuiRevoke(url, name) {
+  try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + name + ': ' + (e && e.message ? e.message : e)); }
 }
 
 /** The `ui.image` arm: fold the event in and refill every figure showing that picture (key and project); with none showing it, only the map changes. */
@@ -4351,9 +4418,7 @@ function genuiRecheckImages() {
 /** Drop one picture (by its "<slug>/<key>") from the map, freeing its blob URL. */
 function genuiFreeImage(id) {
   var m = genuiImages[id];
-  if (m.url) {
-    try { URL.revokeObjectURL(m.url); } catch (e) { console.warn('[genui] freeing picture ' + m.key.slice(0, 8) + ': ' + (e && e.message ? e.message : e)); }
-  }
+  if (m.url) genuiRevoke(m.url, m.path || m.key.slice(0, 8));
   delete genuiImages[id];
 }
 
@@ -4383,7 +4448,7 @@ function genuiImageFileName(alt, key) {
   return (s || 'picture') + '-' + key.slice(0, 8) + '.png';
 }
 
-/** A click on a done picture: one overlay with the full picture, its alt and prompt, Download and Close. Escape or the backdrop closes it. */
+/** A click on a done picture: one overlay with the full picture, its alt and prompt (a file: its path), Download and Close. Escape or the backdrop closes it. */
 function genuiOpenLightbox(slug, key, alt, prompt) {
   var id = genuiImageId(slug, key);
   var m = genuiImages[id];
@@ -4403,7 +4468,7 @@ function genuiOpenLightbox(slug, key, alt, prompt) {
   var row = genuiEl('div', 'genui-lightbox-actions');
   var dl = genuiEl('a', 'genui-lightbox-btn', 'Download');
   dl.setAttribute('href', m.url);
-  dl.setAttribute('download', genuiImageFileName(alt, key));
+  dl.setAttribute('download', m.path ? genuiBaseName(m.path) : genuiImageFileName(alt, key));
   var close = genuiEl('button', 'genui-lightbox-btn', 'Close');
   close.type = 'button';
   close.addEventListener('click', genuiCloseLightbox);
@@ -4591,7 +4656,10 @@ var GENUI_RENDERERS = {
     return a;
   },
   // A "prompt" is a picture the engine paints (F174): genuiGeneratedImage
-  // draws it from the engine's own annotation and never reads `src`.
+  // draws it from the engine's own annotation and never reads `src`. So is
+  // a file in the project (a src that was a path): the engine's annotation
+  // names it and the path is no longer in props; without an annotation (a
+  // partial frame, or no engine annotator) such a src is a placeholder.
   // A remote image is fetched only after a click. The model chose the URL,
   // and a URL can carry anything the model has read (a prompt-injected page
   // asking it to put .env into a query string): loading it unasked would make
@@ -4601,6 +4669,7 @@ var GENUI_RENDERERS = {
   Image: function(el, ctx) {
     var p = el.props || {};
     if (typeof p.prompt === 'string' && p.prompt.trim()) return genuiGeneratedImage(el, ctx);
+    if (el.image && typeof el.image === 'object' && !(ctx && ctx.partial)) return genuiGeneratedImage(el, ctx);
     var remote = safeUrl(p.src);
     var inline = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/.test(genuiStr(p.src)) ? genuiStr(p.src) : '';
     var fig = genuiEl('figure', 'genui-image');

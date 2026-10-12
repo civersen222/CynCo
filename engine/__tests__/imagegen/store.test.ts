@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { createProject } from '../../projects/layout.js'
 import {
-  canonicalJson, ensureImageIgnore, imageKey, INTERRUPTED_REASON, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
-  readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, sidecarPath, storeFault, storedImageState, writeSidecar, type ImageSidecar, type KeyFields,
+  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
+  readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, servedProjectFile, sidecarPath, storeFault, storedImageState, SVG_CAP_BYTES, writeSidecar, type ImageSidecar, type KeyFields,
 } from '../../imagegen/store.js'
+import type { UiSpec } from '../../bridge/protocol.js'
 import { canSymlinkFiles, PNG_1X1 } from './mockComfy.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
@@ -305,5 +306,136 @@ describe('links and special files the model planted', () => {
     rmSync(join(dir, '.gitignore'))
     execFileSync('mkfifo', [join(dir, '.gitignore')])
     expect(ensureImageIgnore(dir)).toBe('.gitignore in the project is a link or not a regular file; the engine will not write through it — refused')
+  })
+})
+
+// An Image whose src is a relative image path shows a file the model wrote into
+// the project (dashboard transcript, 2026-10-11: 1:1 printable SVG templates).
+describe('file Images: which Images show a project file, and their annotation', () => {
+  const spec = (): UiSpec => ({ root: 'g', elements: Object.assign(Object.create(null), {
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
+    a: { type: 'Image', props: { src: 'tower/templates/tower_v1.svg', alt: 'Tower' } },
+    b: { type: 'Image', props: { prompt: 'a tall alien', alt: 'Alien' } },
+    c: { type: 'Image', props: { src: 'https://example.com/a.png', alt: 'URL' } },
+    d: { type: 'Image', props: { src: '../secret.png', alt: 'Bad' } },   // validateSpec never lets this through; the rule is checked here again
+    e: { type: 'Image', props: { src: 'sketches/front.png', alt: 'Front', caption: 'Front view' } },
+    f: { type: 'Text', props: { text: 'x', src: 'x.png' } },
+    orphan: { type: 'Image', props: { src: 'x.png', alt: 'x' } },
+  }) })
+
+  it('fileImages: every reachable Image with a project-path src and no prompt, in draw order', () => {
+    const s = spec()
+    expect(fileImages(s).map(f => [f.id, f.path])).toEqual([['a', 'tower/templates/tower_v1.svg'], ['e', 'sketches/front.png']])
+    expect(fileImages(s)[0].el).toBe(s.elements.a)
+    expect(fileImages({ root: 'none', elements: Object.create(null) })).toEqual([])
+    expect(fileImages({ root: 'x', elements: Object.assign(Object.create(null), { x: null as unknown as UiSpec['elements'][string] }) })).toEqual([])
+  })
+
+  it('annotateFileImages in a project: the file state with the slug and path, the src taken out of props; outside one: off with the reason', () => {
+    const s = spec()
+    expect(annotateFileImages(s, 'aliens')).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg' }, { id: 'e', path: 'sketches/front.png' }])
+    expect(s.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'file', slug: 'aliens', path: 'tower/templates/tower_v1.svg' } })
+    expect(s.elements.e).toEqual({ type: 'Image', props: { alt: 'Front', caption: 'Front view' }, image: { status: 'file', slug: 'aliens', path: 'sketches/front.png' } })
+    expect(s.elements.b).toEqual({ type: 'Image', props: { prompt: 'a tall alien', alt: 'Alien' } })
+    expect(s.elements.c).toEqual({ type: 'Image', props: { src: 'https://example.com/a.png', alt: 'URL' } })
+    expect(s.elements.d).toEqual({ type: 'Image', props: { src: '../secret.png', alt: 'Bad' } })
+    expect(s.elements.f.image).toBeUndefined()
+    const t = spec()
+    expect(annotateFileImages(t, null)).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg' }, { id: 'e', path: 'sketches/front.png' }])
+    expect(t.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'off', reason: FILES_ONLY_REASON } })
+    expect(t.elements.e.image).toEqual({ status: 'off', reason: FILES_ONLY_REASON })
+    expect(FILES_ONLY_REASON).toBe('files are shown in project chats only')
+    // annotating again is a no-op: the src is gone and the state stays
+    expect(annotateFileImages(s, 'aliens')).toEqual([])
+    expect(s.elements.a.image).toEqual({ status: 'file', slug: 'aliens', path: 'tower/templates/tower_v1.svg' })
+  })
+})
+
+describe('servedProjectFile', () => {
+  const SVG = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<!-- 1:1 template -->\n<svg xmlns="http://www.w3.org/2000/svg" width="30in" height="40in"><rect width="1" height="1"/></svg>\n'
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46])
+  const GIF = Buffer.from('GIF89a\x01\x00\x01\x00', 'latin1')
+  const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0x10, 0, 0, 0]), Buffer.from('WEBPVP8 ')])
+  const write = (rel: string, bytes: Buffer | string) => {
+    const p = join(dir, ...rel.split('/'))
+    mkdirSync(join(p, '..'), { recursive: true })
+    writeFileSync(p, bytes)
+  }
+
+  it('serves each type under its fixed content type when the bytes carry its signature', () => {
+    write('tower/templates/tower_v1.svg', '\uFEFF' + SVG)
+    write('plain.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>')
+    write('spaced.svg', '  \n\t<svg>')
+    write('front.png', PNG_1X1)
+    write('a.jpg', JPEG)
+    write('b.JPEG', JPEG)
+    write('c.gif', GIF)
+    write('d.webp', WEBP)
+    write('my tower (v2)/front view.png', PNG_1X1)
+    for (const [rel, type, bytes] of [
+      ['tower/templates/tower_v1.svg', 'image/svg+xml', Buffer.from('\uFEFF' + SVG)], ['plain.svg', 'image/svg+xml', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>')],
+      ['spaced.svg', 'image/svg+xml', Buffer.from('  \n\t<svg>')], ['front.png', 'image/png', PNG_1X1], ['a.jpg', 'image/jpeg', JPEG], ['b.JPEG', 'image/jpeg', JPEG],
+      ['c.gif', 'image/gif', GIF], ['d.webp', 'image/webp', WEBP], ['./front.png', 'image/png', PNG_1X1], ['my tower (v2)/front view.png', 'image/png', PNG_1X1],
+    ] as Array<[string, string, Buffer]>) {
+      const r = servedProjectFile(home, slug, rel)
+      expect(r.status, rel).toBe(200)
+      expect(r.type, rel).toBe(type)
+      expect(Buffer.from(r.bytes!).equals(bytes), rel).toBe(true)
+    }
+  })
+
+  it('refuses a bad path (400), a bad slug, a missing project, a missing file, a folder, a dot-leading segment (404)', () => {
+    write('front.png', PNG_1X1)
+    for (const rel of ['../project.json', 'project.json', '/front.png', 'C:/front.png', 'tower\\front.png', 'front.png\0', '.cynco/index/x.png', 'x.html', 'front.png/', '', 'a'.repeat(197) + '.png']) {
+      expect(servedProjectFile(home, slug, rel), JSON.stringify(rel)).toEqual({ status: 400, json: { error: 'bad file path' } })
+    }
+    expect(servedProjectFile(home, '../x', 'front.png')).toEqual({ status: 400, json: { error: 'bad slug' } })
+    expect(servedProjectFile(home, 'no-such-project', 'front.png')).toEqual({ status: 404, json: { error: 'no such project' } })
+    expect(servedProjectFile(home, slug, 'missing.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+    mkdirSync(join(dir, 'folder.png'))
+    expect(servedProjectFile(home, slug, 'folder.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+  })
+
+  it('415: a raster without its signature, an svg that is not one (html, a renamed PNG, a DOCTYPE with an internal subset, a script before the root)', () => {
+    write('fake.png', '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>')
+    write('fake.jpg', PNG_1X1)
+    write('fake.gif', PNG_1X1)
+    write('fake.webp', Buffer.from('RIFF\x00\x00\x00\x00WAVE'))
+    write('page.svg', '<!DOCTYPE html><html><body><script>alert(1)</script></body></html>')
+    write('renamed.svg', PNG_1X1)
+    write('entities.svg', '<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY x "y"> ]><svg xmlns="http://www.w3.org/2000/svg"/>')
+    write('script.svg', '<script>alert(1)</script><svg/>')
+    write('half.svg', '<sv')
+    write('empty.svg', '')
+    for (const [rel, what] of [['fake.png', 'PNG'], ['fake.jpg', 'JPEG'], ['fake.gif', 'GIF'], ['fake.webp', 'WEBP'], ['page.svg', 'SVG'], ['renamed.svg', 'SVG'], ['entities.svg', 'SVG'], ['script.svg', 'SVG'], ['half.svg', 'SVG'], ['empty.svg', 'SVG']]) {
+      expect(servedProjectFile(home, slug, rel), rel).toEqual({ status: 415, json: { error: `${rel} is not a ${what} file; refused` } })
+    }
+  })
+
+  it('413: a raster over 32 MB, an svg over 2 MB — before reading a byte', () => {
+    write('big.png', PNG_1X1)
+    truncateSync(join(dir, 'big.png'), 32 * 1024 * 1024 + 1)
+    expect(servedProjectFile(home, slug, 'big.png')).toEqual({ status: 413, json: { error: 'big.png is larger than 32 MB; refused' } })
+    truncateSync(join(dir, 'big.png'), 32 * 1024 * 1024)
+    expect(servedProjectFile(home, slug, 'big.png').status).toBe(200)
+    write('big.svg', '<svg xmlns="http://www.w3.org/2000/svg"/>')
+    truncateSync(join(dir, 'big.svg'), SVG_CAP_BYTES + 1)
+    expect(servedProjectFile(home, slug, 'big.svg')).toEqual({ status: 413, json: { error: 'big.svg is larger than 2 MB; refused' } })
+    truncateSync(join(dir, 'big.svg'), SVG_CAP_BYTES)
+    expect(servedProjectFile(home, slug, 'big.svg').status).toBe(200)
+    expect(SVG_CAP_BYTES).toBe(2 * 1024 * 1024)
+  })
+
+  it.skipIf(!CAN_SYMLINK_FILES)('a file link or a folder link out of the project is 404', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'cynco-imagegen-outside-'))
+    try {
+      writeFileSync(join(outside, 'secret.png'), PNG_1X1)
+      symlinkSync(join(outside, 'secret.png'), join(dir, 'linked.png'))
+      expect(servedProjectFile(home, slug, 'linked.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+      symlinkSync(outside, join(dir, 'elsewhere'), 'junction')
+      expect(servedProjectFile(home, slug, 'elsewhere/secret.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })

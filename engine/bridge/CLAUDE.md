@@ -43,16 +43,16 @@ This package is the CynCo engine's spine: `ConversationLoop` drives the user-mes
 - **`ConversationLoop.executeOneTool`** (`conversationLoop.ts:4715`) — executes one tool call: malformed-input repair ladder, allowedTools/S5/governance refusal checks, commit-pressure accounting, `toolCallsTotal` increment, `tool.start`/`tool.complete` emission.
 - **`ConversationLoop.toolCallCount`** (`conversationLoop.ts:901`) — getter exposing `toolCallsTotal`; the dashboard's iteration-budget gauge.
 - **`ConversationLoop.contextUsed`** (`conversationLoop.ts:906`) — the `estimatedTokens` last emitted on `context.status` (floored by the server's measured prompt count), null until a turn has run and reset when `resume`/`startProjectSession` swap the conversation; `main.ts`'s `getSessionCounters` hands it, with `countUserTurns` over `getMessages()`, to the dashboard's `GET /api/session` so a reloaded page seeds Turns and the context gauge (projects-fix-1 D).
-- **`EngineEvent`** (`protocol.ts:739`) — discriminated union of every engine→TUI event type (`session.ready`, `tool.start`, `message.complete`, etc.).
-- **`TUICommand`** (`protocol.ts:969`) — discriminated union of every TUI→engine command type.
-- **`parseCommandResult`** (`protocol.ts:1022`) — parses and shape-validates a command frame, returning the refusal reason rather than swallowing it (F32).
+- **`EngineEvent`** (`protocol.ts:741`) — discriminated union of every engine→TUI event type (`session.ready`, `tool.start`, `message.complete`, etc.).
+- **`TUICommand`** (`protocol.ts:971`) — discriminated union of every TUI→engine command type.
+- **`parseCommandResult`** (`protocol.ts:1024`) — parses and shape-validates a command frame, returning the refusal reason rather than swallowing it (F32).
 - **`maybeAutoCreateContract`** (`contractAutoCreate.ts:197`) — intent-classifies a user message into a DoD contract when no incomplete contract is already active.
 - **`applyHarnessContract`** (`contractAutoCreate.ts:546`) — installs a mission-driver-supplied contract, refusing one with an unrunnable verification command.
 - **`LocalCodeWSServer`** (`server.ts:23`) — the bridge's WebSocket server: loopback-only, token-gated, single-client, refuses any request carrying an `Origin` header.
 - **`applyToolFloor`** (`toolFloor.ts:80`) — restores `Bash`/`ContractAssertPass`/`ContractAssertFail`/`ContractStatus` (and a file-mutation tool, if the contract needs one) whenever any upstream narrowing layer dropped them during active enforcement.
 
 ## Data flow
-1. A `user.message` frame arrives on the bridge socket, is shape-checked by `parseCommandResult` (`protocol.ts:1022`, via `validateCommand` in `commandSchema.ts`), and dispatched to `ConversationLoop.handleUserMessage` (`conversationLoop.ts:1382`).
+1. A `user.message` frame arrives on the bridge socket, is shape-checked by `parseCommandResult` (`protocol.ts:1024`, via `validateCommand` in `commandSchema.ts`), and dispatched to `ConversationLoop.handleUserMessage` (`conversationLoop.ts:1382`).
 2. `handleUserMessage` guards re-entrancy and calls `runUserMessage` (`conversationLoop.ts:1613`) inside `runWithFinalize` (`finalizeGuard.ts:12`) so the trajectory finalizer always runs.
 3. `runUserMessage` pushes the message, applies a harness contract or auto-creates one via `maybeAutoCreateContract` (`contractAutoCreate.ts:197`), sets sealed/read-only gate paths, and hands off to `runModelLoop` (`conversationLoop.ts:2907`).
 4. `runModelLoop` iterates: it checks stuck-loop tiers, injects iteration-budget notices (`iterationBudget.ts:29`) and commit-pressure notices (`commitPressure.ts`), then calls the model via `localCallModel` (`../engine/callModel.js`).

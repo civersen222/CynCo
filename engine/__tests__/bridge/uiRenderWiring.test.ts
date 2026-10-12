@@ -9,7 +9,7 @@
  * (a question the page never showed) in a new coat of paint.
  */
 import { describe, expect, it, afterAll, afterEach } from 'vitest'
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -20,7 +20,8 @@ import { createProject } from '../../projects/layout.js'
 import { openBinding } from '../../projects/binding.js'
 import { setProjectToolContext } from '../../projects/tools.js'
 import { makeLoop, type ScriptBlock } from '../projects/loopScaffold.js'
-import type { AnnotateAt, ImageAnnotator } from '../../imagegen/service.js'
+import { ImageService, type AnnotateAt, type ImageAnnotator } from '../../imagegen/service.js'
+import { FILES_ONLY_REASON } from '../../imagegen/store.js'
 import type { UiSpec } from '../../bridge/protocol.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
@@ -653,4 +654,88 @@ describe('a streamed RenderUI call that the loop would have dropped unexecuted',
     expect(resultAt).toBeGreaterThan(-1)
     expect(criticalAt).toBeGreaterThan(resultAt)
   }, 60000)
+})
+
+// ── An Image whose src is a file in the project ─────────────────────────
+//
+// The model wrote 1:1 printable SVG templates into the project and tried to
+// show them as Images with those paths; the validator dropped each one
+// (dashboard transcript, 2026-10-11). A relative image path is now kept, and
+// the same annotate call that places prompted pictures gives it — in a project
+// chat — the engine-only file state the page fetches from the file route, and
+// — in a coding session — "off" with the reason. The real ImageService, with no
+// ComfyUI configured: a file needs no server.
+
+describe('an Image whose src is a file in the project', () => {
+  const spec = { root: 'c', elements: {
+    c: { type: 'Card', props: { title: 'Tower template' }, children: ['i', 'u'] },
+    i: { type: 'Image', props: { src: './tower/templates/tower_v1.1_30in.svg', alt: 'Tower template' } },
+    u: { type: 'Image', props: { src: 'https://example.com/t.jpg', alt: 'Reference' } },
+  } }
+  const draw: ScriptBlock = { type: 'tool_use', name: 'RenderUI', input: { surface: 'towers', spec } }
+  const load: ScriptBlock = { type: 'tool_use', name: 'load_tools', input: { tools: ['RenderUI'] } }
+  const service = () => new ImageService({ env: {}, emit: () => {}, log: () => {} })
+
+  it('a project chat: the final frame carries the file state under the project\'s slug, the src is gone, and a file that is there gets no note', async () => {
+    globalContract.clear()
+    const home = tempDir('cynco-ui-files-proj-')
+    const slug = createProject(home, { name: 'Towers', instructions: '' }).slug
+    mkdirSync(join(home, slug, 'tower', 'templates'), { recursive: true })
+    writeFileSync(join(home, slug, 'tower', 'templates', 'tower_v1.1_30in.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>', 'utf8')
+    const made = makeLoop({ script: [[draw], [{ type: 'text', text: 'Here it is.' }]], images: service() })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await made.loop.startProjectSession(b.binding, b.messages)
+    try {
+      await made.loop.handleUserMessage('show me the tower template')
+    } finally {
+      setProjectToolContext(null)
+      globalContract.clear()
+    }
+    const finals = uiFrames(made.events).filter(f => !f.partial)
+    expect(finals).toHaveLength(1)
+    expect(finals[0].surfaceId).toBe('towers')
+    expect(finals[0].spec.elements.i).toEqual({ type: 'Image', props: { alt: 'Tower template' }, image: { status: 'file', slug, path: 'tower/templates/tower_v1.1_30in.svg' } })
+    expect(finals[0].spec.elements.u).toEqual({ type: 'Image', props: { src: 'https://example.com/t.jpg', alt: 'Reference' } })
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolName === 'RenderUI')
+    expect(complete?.isError).toBe(false)
+    expect(String(complete?.result)).toContain('(surface: towers)')
+    expect(String(complete?.result)).not.toContain('Files:')
+    expect(String(complete?.result)).not.toContain('Pictures:')
+  }, 30000)
+
+  it('a project chat naming a file that is not there: the file state all the same, and the result names it', async () => {
+    globalContract.clear()
+    const home = tempDir('cynco-ui-files-missing-')
+    const slug = createProject(home, { name: 'Towers', instructions: '' }).slug
+    const made = makeLoop({ script: [[draw], [{ type: 'text', text: 'Here it is.' }]], images: service() })
+    const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768 })
+    if (!b.ok) throw new Error(b.reason)
+    await made.loop.startProjectSession(b.binding, b.messages)
+    try {
+      await made.loop.handleUserMessage('show me the tower template')
+    } finally {
+      setProjectToolContext(null)
+      globalContract.clear()
+    }
+    const final = uiFrames(made.events).find(f => !f.partial)
+    expect(final?.spec.elements.i.image).toEqual({ status: 'file', slug, path: 'tower/templates/tower_v1.1_30in.svg' })
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolName === 'RenderUI')
+    expect(String(complete?.result)).toContain('(surface: towers)\nFiles: not in the project — tower/templates/tower_v1.1_30in.svg; write the file first, or describe the picture in "prompt" and the engine generates it.')
+  }, 30000)
+
+  it('a coding session: off with the reason on the frame, and the result says so', async () => {
+    globalContract.clear()
+    const made = makeLoop({ script: [[load], [draw], [{ type: 'text', text: 'Here it is.' }]], images: service() })
+    try {
+      await made.loop.handleUserMessage('draw the template')
+    } finally {
+      globalContract.clear()
+    }
+    const final = uiFrames(made.events).find(f => !f.partial)
+    expect(final?.spec.elements.i).toEqual({ type: 'Image', props: { alt: 'Tower template' }, image: { status: 'off', reason: FILES_ONLY_REASON } })
+    expect(final?.spec.elements.u.props.src).toBe('https://example.com/t.jpg')
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolName === 'RenderUI')
+    expect(String(complete?.result)).toContain(`(surface: towers)\nFiles: not shown — ${FILES_ONLY_REASON}.`)
+  }, 30000)
 })

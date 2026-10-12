@@ -8,7 +8,7 @@ import { ensureHistory } from '../../projects/history.js'
 import { createProject, readJournal } from '../../projects/layout.js'
 import { UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
-import { INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, storedImageState, writeSidecar } from '../../imagegen/store.js'
+import { FILES_ONLY_REASON, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
@@ -58,7 +58,7 @@ function spec(prompts: string[]): UiSpec {
 
 const at = (over: Partial<AnnotateAt> = {}): AnnotateAt => ({ project: { dir, slug, chatFile: 'c.jsonl' }, toolId: 'tool-1', surfaceId: 'aliens', cutOff: false, ...over })
 const imageOf = (s: UiSpec, i: number) => s.elements[`img-${i}`].image!
-const keyOf = (s: UiSpec, i: number) => { const st = imageOf(s, i); if (st.status === 'off') throw new Error(`img-${i} is off: ${st.reason}`); return st.key }
+const keyOf = (s: UiSpec, i: number) => { const st = imageOf(s, i); if (st.status === 'off') throw new Error(`img-${i} is off: ${st.reason}`); if (st.status === 'file') throw new Error(`img-${i} is a file: ${st.path}`); return st.key }
 const posts = () => mock!.calls.filter(c => c.path === '/prompt')
 const cancels = () => mock!.calls.filter(c => c.path === '/interrupt' || c.path === '/queue').map(c => [c.path, c.body])
 const terminal = (key: string) => events.some(e => e.key === key && (e.status === 'done' || e.status === 'failed'))
@@ -679,5 +679,76 @@ describe('ImageService: links and special files the model planted', () => {
     expect(imageOf(s, 0)).toMatchObject({ status: 'queued' })
     expect(lstatSync(join(dir, 'images', 'index.json')).isFile()).toBe(true)
     expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-1', elementId: 'img-0' })]).toBe(keyOf(s, 0))
+  })
+})
+
+// An Image whose src is a relative image path shows a file the model wrote into
+// the project (dashboard transcript, 2026-10-11: SVG templates the page could
+// not show). The same annotate call marks them, needs no ComfyUI for it, and
+// names in the note the ones that are not there.
+describe('ImageService: files from the project (an Image whose src is a path)', () => {
+  const files = (): UiSpec => ({ root: 'g', elements: Object.assign(Object.create(null), {
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'p'] },
+    a: { type: 'Image', props: { src: 'tower/templates/tower_v1.svg', alt: 'Tower' } },
+    b: { type: 'Image', props: { src: 'tower/missing.png', alt: 'Missing' } },
+    p: { type: 'Image', props: { prompt: 'a tall alien', alt: 'Alien' } },
+  }) })
+  const SVG = '<svg xmlns="http://www.w3.org/2000/svg"/>'
+
+  it('a project chat: each file Image gets its file state whatever ComfyUI is, and a file that is not there is named in the note', () => {
+    const svc = start({ env: {} })   // LOCALCODE_COMFYUI_URL unset: files need no server
+    mkdirSync(join(dir, 'tower', 'templates'), { recursive: true })
+    writeFileSync(join(dir, 'tower', 'templates', 'tower_v1.svg'), SVG, 'utf8')
+    const s = files()
+    const pics = svc.annotate(s, at())
+    expect(s.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'file', slug, path: 'tower/templates/tower_v1.svg' } })
+    expect(s.elements.b).toEqual({ type: 'Image', props: { alt: 'Missing' }, image: { status: 'file', slug, path: 'tower/missing.png' } })
+    expect(s.elements.p.image).toEqual({ status: 'off', reason: UNSET_REASON })
+    expect(pics.note).toBe(`Files: not in the project — tower/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it. Pictures: not generated — ${UNSET_REASON}. The cards show their alt text; tell the user if they want pictures.`)
+    expect(logs).toContain('[imagegen] RenderUI tool-1 (surface aliens): 2 files from the project, 1 not found: tower/missing.png')
+    pics.start()
+    expect(existsSync(join(dir, 'images'))).toBe(false)
+    // every file there and no prompted Image: no note at all
+    const only: UiSpec = { root: 'a', elements: Object.assign(Object.create(null), { a: { type: 'Image', props: { src: './tower/templates/tower_v1.svg', alt: 'Tower' } } }) }
+    expect(svc.annotate(only, at({ toolId: 'tool-2' })).note).toBeNull()
+    expect(only.elements.a.image).toEqual({ status: 'file', slug, path: 'tower/templates/tower_v1.svg' })
+    expect(logs).toContain('[imagegen] RenderUI tool-2 (surface aliens): 1 file from the project')
+  })
+
+  it('a file that is a folder counts as not there', () => {
+    const svc = start({ env: {} })
+    mkdirSync(join(dir, 'folder.png'), { recursive: true })
+    const s: UiSpec = { root: 'a', elements: Object.assign(Object.create(null), { a: { type: 'Image', props: { src: 'folder.png', alt: 'F' } } }) }
+    expect(svc.annotate(s, at()).note).toBe('Files: not in the project — folder.png; write the file first, or describe the picture in "prompt" and the engine generates it.')
+    expect(s.elements.a.image).toEqual({ status: 'file', slug, path: 'folder.png' })
+  })
+
+  it('a coding session: off with the reason, and the note says so beside the pictures note', async () => {
+    mock = await startMockComfy()
+    const svc = start()
+    const s = files()
+    const pics = svc.annotate(s, at({ project: null }))
+    expect(s.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'off', reason: FILES_ONLY_REASON } })
+    expect(s.elements.b.image).toEqual({ status: 'off', reason: FILES_ONLY_REASON })
+    expect(s.elements.p.image).toEqual({ status: 'off', reason: PROJECT_ONLY_REASON })
+    expect(pics.note).toBe(`Files: not shown — ${FILES_ONLY_REASON}. Pictures: not generated — ${PROJECT_ONLY_REASON}. The cards show their alt text; tell the user if they want pictures.`)
+    expect(mock.calls).toEqual([])
+  })
+
+  it('files beside pictures that generate: the file note comes first, and a cut-off call still shows its files', async () => {
+    mock = await startMockComfy()
+    const svc = start()
+    const s = files()
+    const pics = svc.annotate(s, at({ cutOff: true }))
+    expect(s.elements.a.image).toEqual({ status: 'file', slug, path: 'tower/templates/tower_v1.svg' })
+    expect(s.elements.p.image).toEqual({ status: 'off', reason: CUT_OFF_REASON })
+    expect(pics.note).toBe(`Files: not in the project — tower/templates/tower_v1.svg, tower/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it. Pictures: not generated — ${CUT_OFF_REASON}. The cards show their alt text; tell the user if they want pictures.`)
+    const t = files()
+    const made = svc.annotate(t, at({ toolId: 'tool-3' }))
+    expect(t.elements.a.image).toEqual({ status: 'file', slug, path: 'tower/templates/tower_v1.svg' })
+    expect(t.elements.p.image).toMatchObject({ status: 'queued' })
+    expect(made.note).toMatch(/^Files: not in the project — tower\/templates\/tower_v1.svg, tower\/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it\. Pictures: 1 generating on ComfyUI at /)
+    made.start()
+    await svc.whenIdle()
   })
 })

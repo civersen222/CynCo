@@ -68,19 +68,20 @@ describe('RenderUI tool', () => {
 
   // F174: every drop line ends "the element was dropped", so the header tells
   // the model which notes are worth a second call and which are already done.
-  it('an invented image path is a note, and an Image with nothing to show is a dropped element', async () => {
+  it('a src that is neither a URL nor an image path is a note, and an Image with nothing to show is a dropped element; an image path in the project is kept', async () => {
     const r = await renderUiTool.execute({ spec: { root: 'c', elements: {
-      c: { type: 'Card', props: { title: 'Aliens' }, children: ['a', 'b'] },
+      c: { type: 'Card', props: { title: 'Aliens' }, children: ['a', 'b', 'f'] },
       a: { type: 'Image', props: { prompt: 'a tall green alien in a silver suit, full body', src: 'aliens/a.png', alt: 'Tall alien' } },
-      b: { type: 'Image', props: { src: 'aliens/b.png', alt: 'Small alien' } },
+      b: { type: 'Image', props: { src: 'aliens/b.bmp', alt: 'Small alien' } },
+      f: { type: 'Image', props: { src: './aliens/front.svg', alt: 'Front view' } },
     } } }, '/tmp')
     expect(r.isError).toBe(false)
     expect(r.output.split('\n')).toEqual([
-      'Rendered 2 elements.',
+      'Rendered 3 elements.',
       'Notes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):',
       '- a: an Image takes "prompt" or "src", not both — the prompt was kept',
-      '- b.src: "aliens/b.png" is not an http(s) image URL — dropped; describe the picture in "prompt" and the engine generates it',
-      '- b (Image): needs "prompt" (a description of the picture) or a real http(s) "src" — the element was dropped',
+      '- b.src: "aliens/b.bmp" is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it',
+      '- b (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
       '- c.children: "b" is not an element id — nothing was drawn for it (the element was dropped)',
     ])
   })

@@ -33,7 +33,7 @@ import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig } from './config.js'
-import { ensureImageIgnore, imageKey, imagesDir, originKey, partPath, pngPath, promptedImages, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pngPath, promptedImages, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
 import { fillWorkflow } from './workflow.js'
 
 export type AnnotateAt = {
@@ -248,7 +248,48 @@ export class ImageService implements ImageAnnotator {
 
   // ─── annotate ───────────────────────────────────────────────────────
 
+  /**
+   * Two kinds of Image get their engine-only state here, in one synchronous
+   * step: one with a `prompt` is a picture to paint (`annotatePictures`), one
+   * whose src was a path in the project is a file to show (`annotateFiles`).
+   * The note for the tool result names the files first, then the pictures.
+   */
   annotate(spec: UiSpec, at: AnnotateAt): Annotation {
+    const files = this.annotateFiles(spec, at)
+    const pictures = this.annotatePictures(spec, at)
+    if (files === null) return pictures
+    return { note: pictures.note ? `${files} ${pictures.note}` : files, start: pictures.start }
+  }
+
+  /**
+   * File Images: each gets the file state the page fetches from the file
+   * route (a project chat), or off with the reason (anywhere else), whatever
+   * ComfyUI is — a file needs no server. The note names a file that is not
+   * in the project (a folder, a link out, or simply not written) so the model
+   * writes it or describes the picture instead; it says nothing when every
+   * file is there. Never throws.
+   */
+  private annotateFiles(spec: UiSpec, at: AnnotateAt): string | null {
+    try {
+      const project = at.project
+      const files = annotateFileImages(spec, project ? project.slug : null)
+      if (files.length === 0) return null
+      const count = `${files.length} file${files.length === 1 ? '' : 's'}`
+      if (!project) {
+        this.log(`[imagegen] RenderUI ${at.toolId} (surface ${at.surfaceId}): ${count} not shown — ${FILES_ONLY_REASON}`)
+        return `Files: not shown — ${FILES_ONLY_REASON}.`
+      }
+      const missing = files.filter(f => !isProjectFile(project.dir, f.path)).map(f => f.path)
+      this.log(`[imagegen] RenderUI ${at.toolId} (surface ${at.surfaceId}): ${count} from the project${missing.length ? `, ${missing.length} not found: ${missing.join(', ')}` : ''}`)
+      if (missing.length === 0) return null
+      return `Files: not in the project — ${missing.join(', ')}; write the file first, or describe the picture in "prompt" and the engine generates it.`
+    } catch (e) {
+      this.log(`[imagegen] annotating RenderUI ${at.toolId}'s files threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+      return null
+    }
+  }
+
+  private annotatePictures(spec: UiSpec, at: AnnotateAt): Annotation {
     try {
       return this.annotateInner(spec, at)
     } catch (e) {

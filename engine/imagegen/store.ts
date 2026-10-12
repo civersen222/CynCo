@@ -17,12 +17,19 @@
  * would otherwise freeze the engine's one thread. Nothing is written through
  * a link (`storeFault`). All writes are synchronous read-modify-write on the
  * one JS thread, so two of them cannot interleave.
+ *
+ * An Image may also show a file the model wrote anywhere in the project
+ * (`fileImages`, `annotateFileImages`, `servedProjectFile`): a relative
+ * png/jpg/gif/webp/svg path the validator kept (`projectImagePath`), served
+ * under the same guards as a picture — the real path inside the project, a
+ * regular file under a cap, the format's signature — and under its own.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UiElement, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { projectDir, readProject, realInside, SLUG_RE, writeJsonAtomic } from '../projects/layout.js'
+import { projectImagePath } from '../genui/spec.js'
 import { DOWNLOAD_CAP_BYTES } from './config.js'
 
 /** This engine process. A queued/running record under another runId was left by an engine that stopped. */
@@ -33,8 +40,15 @@ export const IMAGE_NAME_RE = /^([0-9a-f]{32})\.(png|json)$/
 export const ORIGINS_CAP = 5000
 export const INTERRUPTED_REASON = 'interrupted — the engine stopped before this picture finished'
 export const NOT_GENERATED_REASON = 'this picture was not generated'
+/** A file Image outside a project chat: there is no project folder to show it from. */
+export const FILES_ONLY_REASON = 'files are shown in project chats only'
+/** The cap on an SVG the file route serves: text the browser parses, and far past any drawing a model writes. */
+export const SVG_CAP_BYTES = 2 * 1024 * 1024
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+/** The file route's types and names, by the checked extension; the type is never sniffed. */
+const FILE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
+const FILE_NAMES: Record<string, string> = { png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WEBP', svg: 'SVG' }
 /** Read caps. A sidecar holds the filled graph, so it allows for a 1 MB workflow pretty-printed; the index for ORIGINS_CAP long origins. */
 const SIDECAR_CAP = 8 * 1024 * 1024
 const INDEX_CAP = 4 * 1024 * 1024
@@ -88,6 +102,46 @@ export type KeyFields = {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const sha256 = (s: string | Uint8Array) => createHash('sha256').update(s).digest('hex')
+
+function bytesAt(b: Uint8Array, at: number, sig: number[]): boolean {
+  if (b.length < at + sig.length) return false
+  for (let i = 0; i < sig.length; i++) if (b[at + i] !== sig[i]) return false
+  return true
+}
+
+/**
+ * Whether `b` is an SVG document: after an optional BOM, whitespace, an XML
+ * declaration, a DOCTYPE (one without an internal subset — entities are not
+ * served) and comments, the first tag is <svg. Only the head is read. An
+ * <img> runs no script and loads no external resource from an SVG and the
+ * route adds a sandbox CSP for a direct open; this check keeps a renamed
+ * HTML page or PNG from going out as image/svg+xml at all.
+ */
+export function isSvg(b: Uint8Array): boolean {
+  let s = Buffer.from(b.subarray(0, 4096)).toString('utf8')
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1)
+  let i = 0
+  for (;;) {
+    while (i < s.length && /\s/.test(s[i])) i++
+    if (s.startsWith('<?xml', i)) { const e = s.indexOf('?>', i); if (e < 0) return false; i = e + 2; continue }
+    if (s.slice(i, i + 9).toUpperCase() === '<!DOCTYPE') { const e = s.indexOf('>', i); if (e < 0 || s.slice(i, e).includes('[')) return false; i = e + 1; continue }
+    if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i); if (e < 0) return false; i = e + 3; continue }
+    break
+  }
+  return /^<svg[\s>/]/i.test(s.slice(i, i + 5))
+}
+
+/** Whether the bytes carry the signature of the format the extension names. */
+function hasSignature(ext: string, b: Uint8Array): boolean {
+  switch (ext) {
+    case 'png': return isPng(b)
+    case 'jpg': case 'jpeg': return bytesAt(b, 0, [0xff, 0xd8, 0xff])
+    case 'gif': return bytesAt(b, 0, [0x47, 0x49, 0x46, 0x38]) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61
+    case 'webp': return bytesAt(b, 0, [0x52, 0x49, 0x46, 0x46]) && bytesAt(b, 8, [0x57, 0x45, 0x42, 0x50])
+    case 'svg': return isSvg(b)
+    default: return false
+  }
+}
 
 export function isPng(b: Uint8Array): boolean {
   return b.length >= 8 && PNG_SIGNATURE.every((x, i) => b[i] === x)
@@ -347,13 +401,9 @@ export function ensureImageIgnore(dir: string): string | null {
 
 // ─── readers for the route and for reload ─────────────────────────────
 
-/**
- * Every Image with a non-empty prompt, in draw order (depth-first from the
- * root). The one definition of "a picture the engine paints": `annotate`
- * queues these and a reloaded chat (`withValidatedSurfaces`) looks these up.
- */
-export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string }> {
-  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string }> = []
+/** Every element reachable from the root, in draw order (depth-first), with its props when they are an object. */
+function reachableElements(spec: UiSpec): Array<{ id: string; el: UiElement; props: Record<string, unknown> | null }> {
+  const out: Array<{ id: string; el: UiElement; props: Record<string, unknown> | null }> = []
   const els = spec.elements
   const seen = new Set<string>()
   const stack: string[] = [spec.root]
@@ -363,12 +413,57 @@ export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement;
     seen.add(id)
     const el = els[id]
     if (!isObj(el)) continue
-    const props = isObj(el.props) ? el.props : null
-    if (el.type === 'Image' && props && typeof props.prompt === 'string') {
-      const prompt = normPrompt(props.prompt)
-      if (prompt) out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '' })
-    }
+    out.push({ id, el, props: isObj(el.props) ? el.props : null })
     if (Array.isArray(el.children)) for (let i = el.children.length - 1; i >= 0; i--) stack.push(el.children[i])
+  }
+  return out
+}
+
+/**
+ * Every Image with a non-empty prompt, in draw order (depth-first from the
+ * root). The one definition of "a picture the engine paints": `annotate`
+ * queues these and a reloaded chat (`withValidatedSurfaces`) looks these up.
+ */
+export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string }> {
+  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string }> = []
+  for (const { id, el, props } of reachableElements(spec)) {
+    if (el.type !== 'Image' || !props || typeof props.prompt !== 'string') continue
+    const prompt = normPrompt(props.prompt)
+    if (prompt) out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '' })
+  }
+  return out
+}
+
+/**
+ * Every Image whose src is the path of a file in the project (and no
+ * prompt), in draw order: the one definition of "a file the Image shows",
+ * checked against the validator's rule again here so no unchecked path ever
+ * reaches an annotation.
+ */
+export function fileImages(spec: UiSpec): Array<{ id: string; el: UiElement; path: string }> {
+  const out: Array<{ id: string; el: UiElement; path: string }> = []
+  for (const { id, el, props } of reachableElements(spec)) {
+    if (el.type !== 'Image' || !props || typeof props.prompt === 'string') continue
+    const path = projectImagePath(props.src)
+    if (path !== null) out.push({ id, el, path })
+  }
+  return out
+}
+
+/**
+ * Give each file Image its engine-only state and take the path out of its
+ * props: in a project chat (`slug`) the file state the page fetches from
+ * GET /api/projects/:slug/files/<path>; elsewhere off with the reason. Run by
+ * `ImageService.annotate` on the live final frame and by
+ * `withValidatedSurfaces` on a reload, whether or not the file is there —
+ * the route and the page say when it is not. Returns what was annotated.
+ */
+export function annotateFileImages(spec: UiSpec, slug: string | null): Array<{ id: string; path: string }> {
+  const out: Array<{ id: string; path: string }> = []
+  for (const im of fileImages(spec)) {
+    im.el.image = slug === null ? { status: 'off', reason: FILES_ONLY_REASON } : { status: 'file', slug, path: im.path }
+    if (isObj(im.el.props)) delete im.el.props.src
+    out.push({ id: im.id, path: im.path })
   }
   return out
 }
@@ -419,6 +514,55 @@ export function servedImage(home: string, slug: string, name: string): { status:
   if (bytes === null) return missing
   if (!isPng(bytes)) return { status: 415, json: { error: `images/${key}.png is not a PNG; refused` } }
   return { status: 200, bytes }
+}
+
+/** `<dir>/<rel>` when it is a regular file whose real path is inside the project (links followed), else null; logged unless simply absent. */
+function regularFileInside(dir: string, rel: string, label: string): { file: string; size: number } | null {
+  const file = join(dir, rel)
+  if (!realInside(dir, file).inside) return null
+  try {
+    const st = statSync(file)
+    return st.isFile() ? { file, size: st.size } : null
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') console.log(`[imagegen] stat ${label} failed: ${(e as Error).message}`)
+    return null
+  }
+}
+
+/** Whether a checked relative path names a regular file really inside the project: what `annotate` tells the model about a file Image. */
+export function isProjectFile(dir: string, rel: string): boolean {
+  return regularFileInside(dir, rel, rel) !== null
+}
+
+/**
+ * `GET /api/projects/:slug/files/<path>` without the HTTP: a status plus the
+ * bytes and their fixed type, or a JSON body. The decoded path must pass the
+ * validator's own rule (`projectImagePath`: 400 otherwise, so `..`, a
+ * backslash, a NUL or a dot-leading segment never reaches a join), the file
+ * must really be inside the project (links followed; 404 otherwise, like a
+ * missing one), a regular file, at most 32 MB (an SVG 2 MB; 413), and carry
+ * its format's signature (415) — an SVG must start with <svg after the
+ * optional BOM, XML declaration, DOCTYPE and comments.
+ */
+export function servedProjectFile(home: string, slug: string, path: string): { status: number; bytes?: Uint8Array; type?: string; json?: unknown } {
+  if (!SLUG_RE.test(slug)) return { status: 400, json: { error: 'bad slug' } }
+  const rel = projectImagePath(path)
+  if (rel === null) return { status: 400, json: { error: 'bad file path' } }
+  if (!readProject(home, slug)) return { status: 404, json: { error: 'no such project' } }
+  const dir = projectDir(home, slug)
+  const ext = rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
+  const svg = ext === 'svg'
+  const cap = svg ? SVG_CAP_BYTES : DOWNLOAD_CAP_BYTES
+  const missing = { status: 404, json: { error: 'no such file' } }
+  const found = regularFileInside(dir, rel, `${rel} in ${slug}`)
+  if (!found) return missing
+  if (found.size > cap) return { status: 413, json: { error: `${rel} is larger than ${svg ? 2 : 32} MB; refused` } }
+  // Re-checked on the open file: a FIFO swapped in since the stat must not hang the route.
+  const bytes = readSmallFile(found.file, cap, `${rel} in ${slug}`)
+  if (bytes === null) return missing
+  if (!hasSignature(ext, bytes)) return { status: 415, json: { error: `${rel} is not a ${FILE_NAMES[ext]} file; refused` } }
+  return { status: 200, bytes, type: FILE_TYPES[ext] }
 }
 
 /**

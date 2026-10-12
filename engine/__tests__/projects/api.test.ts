@@ -11,7 +11,7 @@ import {
 } from '../../projects/api.js'
 import { createProject, readFileIndex } from '../../projects/layout.js'
 import { withValidatedSurfaces } from '../../projects/api.js'
-import { INTERRUPTED_REASON, NOT_GENERATED_REASON, originKey, pngPath, recordOrigins, RUN_ID, writeSidecar, type ImageSidecar } from '../../imagegen/store.js'
+import { FILES_ONLY_REASON, INTERRUPTED_REASON, NOT_GENERATED_REASON, originKey, pngPath, recordOrigins, RUN_ID, writeSidecar, type ImageSidecar } from '../../imagegen/store.js'
 import { PNG_1X1 } from '../imagegen/mockComfy.js'
 import { ingestFile, type IngestEvent } from '../../projects/ingest.js'
 import { appendTranscript, newChatFile, readTranscript } from '../../projects/chat.js'
@@ -340,6 +340,53 @@ describe('chats: generated pictures on reload', () => {
     expect(r.status).toBe(200)
     const states = Object.values(imagesOf(r.body, 0)).filter(Boolean)
     expect(states).toEqual(Array(5).fill({ status: 'off', reason: NOT_GENERATED_REASON }))
+  })
+})
+
+// An Image whose src is a relative image path shows a file the model wrote
+// into the project (dashboard transcript, 2026-10-11). A reload annotates it
+// the way the live frame did: the file state with the slug and path, the src
+// taken out of props — whether or not the file is there now (the route says).
+describe('chats: file Images on reload', () => {
+  const raw = { root: 'g', elements: {
+    g: { type: 'Grid', props: { columns: 2 }, children: ['t-img', 'u-img', 'p-img', 'f-img'] },
+    't-img': { type: 'Image', props: { src: './tower/templates/tower_v1.1_30in.svg', alt: 'Tower template' } },
+    'u-img': { type: 'Image', props: { src: 'https://example.com/t.jpg', alt: 'URL picture' } },
+    'p-img': { type: 'Image', props: { prompt: 'stone path', alt: 'Stone path' } },
+    // the model cannot write the state itself: validateSpec drops it and the path is annotated afresh
+    'f-img': { type: 'Image', props: { src: 'sketches/front.png', alt: 'Front' }, image: { status: 'file', slug: 'x', path: '../../etc/passwd.png' } },
+  } }
+
+  function setup() {
+    const slug = createProject(home, { name: 'Towers' }).slug
+    const dir = join(home, slug)
+    const { file } = newChatFile(dir, 'Show me the templates')
+    appendTranscript(dir, file, { role: 'user', content: [{ type: 'text', text: 'Show me the templates' }] })
+    appendTranscript(dir, file, { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'RenderUI', input: { surface: 'templates', spec: raw } }] })
+    return { slug, dir, file }
+  }
+  const elementsOf = (body: unknown) => (body as any).messages[1].content[0].input.spec.elements as Record<string, unknown>
+
+  it('getChatApi serves each file Image with its file state and no src, beside the generated and URL ones', () => {
+    const { slug, dir, file } = setup()
+    const before = readFileSync(join(dir, 'chats', file), 'utf8')
+    const r = getChatApi(deps(), slug, file)
+    expect(r.status).toBe(200)
+    const els = elementsOf(r.body)
+    expect(els['t-img']).toEqual({ type: 'Image', props: { alt: 'Tower template' }, image: { status: 'file', slug, path: 'tower/templates/tower_v1.1_30in.svg' } })
+    expect(els['f-img']).toEqual({ type: 'Image', props: { alt: 'Front' }, image: { status: 'file', slug, path: 'sketches/front.png' } })
+    expect(els['u-img']).toEqual({ type: 'Image', props: { src: 'https://example.com/t.jpg', alt: 'URL picture' } })
+    expect(els['p-img']).toEqual({ type: 'Image', props: { prompt: 'stone path', alt: 'Stone path' }, image: { status: 'off', reason: NOT_GENERATED_REASON } })
+    expect(readFileSync(join(dir, 'chats', file), 'utf8')).toBe(before)
+    expect(FILES_ONLY_REASON).toBe('files are shown in project chats only')
+  })
+
+  it('the one-argument call leaves the path as the src and sets no state', () => {
+    const { dir, file } = setup()
+    const one = withValidatedSurfaces(readTranscript(dir, file)!) as any
+    const els = one.messages[1].content[0].input.spec.elements
+    expect(els['t-img']).toEqual({ type: 'Image', props: { src: 'tower/templates/tower_v1.1_30in.svg', alt: 'Tower template' } })
+    expect(els['f-img']).toEqual({ type: 'Image', props: { src: 'sketches/front.png', alt: 'Front' } })
   })
 })
 
