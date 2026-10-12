@@ -257,7 +257,7 @@ function harness(opts: { wsOpen?: boolean; project?: boolean; cwd?: string | nul
     revokeObjectURL: (u: string) => { blobs.revoked.push(u) },
   }
   const make = new Function('document', 'ws', 'appendChatMsg', 'brainViz', 'projectsState', 'fetch', 'URL',
-    fnSource('escHtml') + '\n' + genuiSection() +
+    fnSource('escHtml') + '\n' + fnSource('projectChatUnsettled') + '\n' + genuiSection() +
     '\nreturn { renderUiSpec: renderUiSpec, upsertSurface: upsertSurface, sendUiAction: sendUiAction,' +
     ' finalizeGenuiSurfaces: finalizeGenuiSurfaces, GENUI_RENDERERS: GENUI_RENDERERS, genuiToolRows: genuiToolRows,' +
     ' applyUiImage: applyUiImage, genuiImages: genuiImages, genuiRecheckImages: genuiRecheckImages, genuiForgetImages: genuiForgetImages };')

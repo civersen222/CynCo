@@ -2725,9 +2725,9 @@ function fetchSessionState() {
         activateSession(data.contextLength);
       }
       if (data) { seedSessionCounters(data); render(); }
-      // The project chat the engine holds (null: none, as after a restart),
-      // against the one this pane shows.
-      reconcileProjectBinding(seq, data ? data.project : undefined);
+      // What the engine holds — `project` (null: none, as after a restart) and
+      // whether it is busy in the coding session — against the chat this pane shows.
+      reconcileProjectBinding(seq, data || undefined);
     })
     .catch(function(err) {
       console.warn('[session] /api/session: ' + err.message);
@@ -3409,6 +3409,11 @@ function sendChatMessage() {
   if (!text) return;
   input.value = '';
 
+  // A reconnect whose project binding is not settled yet: a frame sent now — a
+  // message, or a slash command whose workflow runs its task as a turn — could
+  // land in the coding session. The text stays in the box.
+  if (projectChatUnsettled()) { input.value = text; return; }
+
   if (text.startsWith('/')) {
     var parts = text.split(' ');
     var cmd = parts[0];
@@ -3420,9 +3425,6 @@ function sendChatMessage() {
     }
   }
 
-  // A reconnect whose project binding is not settled yet: a frame sent now
-  // could land in the coding session. The text stays in the box.
-  if (projectChatUnsettled()) { input.value = text; return; }
   // While a project is bound the box shows the project folder read-only and the
   // frame carries no cwd; only a coding turn sends one.
   var frame = { type: 'user.message', text: text };
@@ -5382,6 +5384,10 @@ function finalizeGenuiSurfaces() {
  */
 function sendUiAction(surfaceId, action, label, context, userMessage) {
   if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — the click was not sent.'); return false; }
+  // A click is a user turn (handleUiAction) on the surfaces still drawn after
+  // a reconnect; until the connect settles which chat the engine holds it
+  // could land in the coding session, like a typed message.
+  if (projectChatUnsettled()) return false;
   var el = genuiSurfaces[surfaceId];
   var ctx = el && el.__genui;
   // The socket's bounds (commandSchema.ts): short ids, 2,000-char text, 8 KB objects.
@@ -6130,16 +6136,25 @@ function setCodingCwd(path) {
  * project.opened on connect — a restarted engine holds no project — and the
  * pane kept its strip while every message went, with no cwd, to the coding
  * session: no project memory, no project tools, no pictures (dashboard
- * transcript, 2026-10-11). `project` is the engine's binding (null: none), or
- * undefined when the answer did not say (`failure` is why). Runs once per
- * connect (`seq`), and never after a project.opened frame settled this
- * connect — a frame is the engine's word, and this page never sends a
- * project.open in reply to one.
- *   - the engine holds nothing and the pane shows a project chat: send
- *     project.open for it (a new chat omits `chat`, as openProjectChat does)
- *     and say so; the engine reloads the transcript and answers project.opened,
- *     which onProjectOpened takes as the chat already shown, or session.error,
- *     which onProjectOpenRefused takes;
+ * transcript, 2026-10-11). `session` is /api/session's answer: `project` is
+ * the engine's binding (null: none), `processing` and `turns` its coding
+ * session's state; undefined when the answer did not say (`failure` is why).
+ * Runs once per connect (`seq`), and never after a project.opened frame
+ * settled this connect — a frame is the engine's word, and this page never
+ * sends a project.open in reply to one.
+ *   - the engine holds nothing and is idle with no coding turn taken (a
+ *     restart; or another client left the chat while this socket was down —
+ *     the answer cannot tell, so the line says neither) and the pane shows a
+ *     project chat: send project.open for it (a new chat omits `chat`, as
+ *     openProjectChat does) and say so; the engine reloads the transcript and
+ *     answers project.opened, which onProjectOpened takes as the chat already
+ *     shown, or session.error, which onProjectOpenRefused takes;
+ *   - the engine holds nothing but a coding turn is running, or turns have
+ *     been taken: another client is in the coding session, and main.ts runs a
+ *     project.open through startProjectSession, which aborts that turn and
+ *     swaps its conversation out. Nothing is sent; the pane becomes the coding
+ *     session and says so — only a deliberate open from the Projects tab may
+ *     displace a conversation someone is in;
  *   - the engine holds the chat shown: settled, nothing to send;
  *   - the engine holds another chat: its on-connect frame redraws the pane and
  *     settles the connect; until then the pane sends nothing.
@@ -6148,11 +6163,12 @@ function setCodingCwd(path) {
  * once the answer came, and a refused re-open leaves it with no right place to
  * go; a refusal keeps the text in the box and says why.
  */
-function reconcileProjectBinding(seq, project, failure) {
+function reconcileProjectBinding(seq, session, failure) {
   if (seq !== projectsState.connectSeq || projectsState.reconciled || projectsState.rebind) return;
   var a = projectsState.active;
   if (!a) { projectsState.reconciled = true; return; }
   var name = (projectsState.names[a.slug] || a.slug) + ' › ' + (a.title || 'new chat');
+  var project = session ? session.project : undefined;
   if (project === undefined) {
     console.warn('[projects] could not reconcile project chat ' + a.slug + ': ' + (failure || '/api/session did not name the project'));
     appendChatMsg('system', 'Could not check which chat the engine holds' + (failure ? ' (' + failure + ')' : '') +
@@ -6161,6 +6177,14 @@ function reconcileProjectBinding(seq, project, failure) {
   }
   if (project && project.slug) {
     if (project.slug === a.slug && (project.chat || null) === (a.chat || null)) projectsState.reconciled = true;
+    return;
+  }
+  var busy = session.processing === true ? 'a turn is running'
+    : session.turns > 0 ? session.turns + (session.turns === 1 ? ' turn' : ' turns') + ' so far' : '';
+  if (busy) {
+    console.warn('[projects] project chat ' + a.slug + ' not reopened: the engine is in the coding session (' + busy + ')');
+    unbindProjectPane('The engine is in the coding session (' + busy + ') — project chat ' + name +
+      ' was not reopened; this pane is the coding session now; reopen the chat from the Projects tab.');
     return;
   }
   if (!ws || ws.readyState !== 1) {
@@ -6172,19 +6196,18 @@ function reconcileProjectBinding(seq, project, failure) {
   if (a.chat) msg.chat = a.chat;
   projectsState.rebind = { seq: seq, slug: a.slug, chat: a.chat || null, title: a.title || null };
   ws.send(JSON.stringify(msg));
-  appendChatMsg('system', 'Engine restarted — reopening project chat ' + name);
+  // The connection panel's Project row went with /api/session's `project: null`
+  // (seedSessionCounters); while the re-open is pending it shows what the strip shows.
+  showConnProject(a);
+  appendChatMsg('system', 'The engine holds no project chat (a restart, or another client left it) — reopening ' + name);
 }
 
 /**
- * A session.error for a project.open: ours, if a re-open to a restarted engine
- * is pending (reconcileProjectBinding). The engine holds no project, so the
- * pane must not keep its strip and send the next message to the coding
- * session as if it were the chat — back to the coding session, said so. Any
- * other refusal (a click on a chat that is gone) is shown where it was sent.
+ * The pane stops showing a project chat the engine does not hold: strip and
+ * Project row off, the coding cwd back in the box, the hash off the chat,
+ * `line` said. Settles the connect, so the next send is a coding turn.
  */
-function onProjectOpenRefused(error) {
-  var r = projectsState.rebind;
-  if (!r || String(error || '').indexOf('project.open') < 0) return;
+function unbindProjectPane(line) {
   projectsState.rebind = null;
   projectsState.reconciled = true;
   projectsState.active = null;
@@ -6192,10 +6215,32 @@ function onProjectOpenRefused(error) {
   restoreCodingCwd();
   showConnProject(null);
   document.getElementById('chatProjectStrip').classList.remove('visible');
-  appendChatMsg('system', 'Could not reopen project chat ' + (projectsState.names[r.slug] || r.slug) + ' › ' + (r.title || 'new chat') +
-    ' after the engine restarted (' + error + ') — this pane is the coding session now; reopen the chat from the Projects tab.');
+  appendChatMsg('system', line);
   var ph = parseProjectsHash();
   if (ph && ph.chat !== undefined) history.replaceState(null, '', '#projects/' + encodeURIComponent(ph.slug));
+}
+
+/**
+ * A session.error for a project.open: ours, if a re-open to an engine holding
+ * no project is pending (reconcileProjectBinding) and the refusal does not name
+ * another chat or project — main.ts broadcasts every refusal to every socket,
+ * so another tab's click on a chat that is gone lands here too, and must not
+ * drop this pane to the coding session while its own re-open is still being
+ * answered. openBinding's refusals end with the name of what was refused
+ * (`no such project: <slug>`, `no such chat: <chat>`); any other shape is taken
+ * as ours. The engine holds no project, so the pane must not keep its strip
+ * and send the next message to the coding session as if it were the chat —
+ * back to the coding session, said so. Any other refusal is shown where it
+ * was sent.
+ */
+function onProjectOpenRefused(error) {
+  var r = projectsState.rebind;
+  var err = String(error || '');
+  if (!r || err.indexOf('project.open') < 0) return;
+  var named = /no such (chat|project): (.+)$/.exec(err);
+  if (named && named[2] !== (named[1] === 'chat' ? r.chat : r.slug)) return;
+  unbindProjectPane('Could not reopen project chat ' + (projectsState.names[r.slug] || r.slug) + ' › ' + (r.title || 'new chat') +
+    ' (' + error + ') — this pane is the coding session now; reopen the chat from the Projects tab.');
 }
 
 /** True, and said so, while this connect has not settled which chat the engine holds — a project send now could land in the coding session. */
@@ -6212,13 +6257,19 @@ function projectChatUnsettled() {
  * turn into a project.open. Any frame is the engine's word on what it holds:
  * it settles the connect (reconcileProjectBinding) and answers a pending re-open.
  *   - the chat this pane already shows (a reconnect of this page, or the
- *     re-open after an engine restart): refresh the strip label, nothing else;
+ *     re-open after an engine restart — a chat begun as a new chat here is
+ *     "shown" from the project.ingest that named it): refresh the strip
+ *     label, nothing else;
  *   - an existing chat the pane does not show (a page load into a bound chat):
  *     fetch its transcript and draw it, THEN the "Opened …" line — so a reload
  *     is not a blank pane with only the next thinking streaming in;
- *   - a new chat: a fresh pane.
+ *   - a new chat: a fresh pane — unless it answers this page's re-open of a
+ *     chat the engine lost before project.ingest named it (its first turn was
+ *     in flight): the turn drawn stays, and where its record went is said.
  */
 function onProjectOpened(event) {
+  // The re-open this page sent to an engine holding no project, if this frame answers it.
+  var rebind = projectsState.rebind;
   projectsState.reconciled = true;
   projectsState.rebind = null;
   var strip = document.getElementById('chatProjectStrip');
@@ -6273,8 +6324,18 @@ function onProjectOpened(event) {
   // openProjectChat already drew this chat's transcript; keep it.
   if (key && projectsState.renderedChat === key) { opened(''); return; }
   if (!key) {
-    // A new chat: anything in the pane belongs to the conversation the engine left.
     projectsState.renderedChat = null;
+    if (rebind && rebind.slug === event.slug && !rebind.chat) {
+      // The answer to this page's re-open of an unnamed chat: the engine names
+      // a chat's file at the start of its first turn and tells the page
+      // (project.ingest) only at the turn's natural end, so a turn cut off
+      // between the two left the pane holding a chat it has no name for. The
+      // engine opened a fresh one; what was drawn stays, with its whereabouts.
+      var cut = msgs && msgs.querySelector('.chat-msg-user');
+      opened(cut ? ' — the turn drawn above was cut off before its chat was named; look for it under the project\'s Chats list; this is a fresh chat' : '');
+      return;
+    }
+    // A new chat: anything in the pane belongs to the conversation the engine left.
     clearChatPane();
     opened('');
     return;
@@ -6563,6 +6624,9 @@ function onProjectIngest(event) {
     var chatFile = fp.indexOf('chats/') === 0 ? fp.slice('chats/'.length) : '';
     if (a && a.slug === event.slug && !a.chat && chatFile) {
       a.chat = chatFile;
+      // The pane shows exactly this chat now, drawn live: a later frame for it
+      // (a reconnect, the answer to a re-open) is label-only, not a redraw.
+      projectsState.renderedChat = a.slug + '/' + chatFile;
       history.replaceState(null, '', '#projects/' + encodeURIComponent(a.slug) + '/chat/' + encodeURIComponent(chatFile));
       projFetch(projUrl(a.slug) + '/chats').then(function(data) {
         var c = (data.chats || []).filter(function(x) { return x.file === chatFile; })[0];

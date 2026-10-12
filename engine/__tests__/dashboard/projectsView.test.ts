@@ -434,11 +434,13 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
       set innerHTML(_v: string) { children.length = 0 },
       removeChild: (n: any) => { children.splice(children.indexOf(n), 1); n.parentNode = null },
       appendChild: (n: any) => { const i = children.indexOf(n); if (i >= 0) children.splice(i, 1); children.push(n); n.parentNode = msgs },
+      // appendChatMsg('user', …) is a .chat-msg-user div; here a line that starts "user: ".
+      querySelector: (sel: string) => (sel === '.chat-msg-user' ? children.find(c => String(c.text).indexOf('user: ') === 0) ?? null : null),
     }
     const put = (text: string) => msgs.appendChild({ text })
     const projectsState: Record<string, any> = {
       active: null, renderedChat: null, openedSeq: 0, names: { yard: 'Front Yard' }, paths: { yard: 'C:/p/yard' }, slug: null,
-      codingCwd: null, replyCount: 0, connectSeq: 0, reconciled: true, rebind: null, ...state0,
+      codingCwd: null, replyCount: 0, chatToasted: {}, connectSeq: 0, reconciled: true, rebind: null, ...state0,
     }
     const state: Record<string, any> = { connected: false, turnCount: 0, context: null, model: '', tier: '' }
     let sock: any = null
@@ -450,18 +452,23 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
       if (path === '/api/session') return session().then(data => ({ json: () => data }))
       return Promise.resolve({ json: () => null })
     }
+    // A page function this review adds; absent on the commit under review, so only its tests fail there.
+    const optional = (name: string) => (scripts().indexOf(`function ${name}(`) >= 0 ? fnSource(name) : '')
     const make = new Function('WebSocket', 'location', 'window', 'document', 'state', 'projectsState', 'fetch', 'setInterval',
       'setTimeout', 'render', 'genuiRecheckImages', 'handleEvent', 'appendChatMsg', 'appendChatTool', 'summarizeInput', 'setSlider',
       'activateSession', 'clearChatCitations', 'parseProjectsHash', 'history', 'projFetch', 'projUrl', 'projStatus', 'loadProjectChats',
       'markSaveableReplies', 'clearChatPane', 'genuiPruneImages', 'brainViz', 'console',
       'fetchPredictions', 'fetchContracts', 'fetchTrainingData', 'renderToolFeed', 'renderSubsystems', 'escHtml',
+      'projToast', 'indexedLabel', 'genuiSurfaces',
       'var ws = null; var reconnectDelay = 1000;\n' +
       fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('reconcileProjectBinding') + fnSource('onProjectOpened') +
       fnSource('onProjectOpenRefused') + fnSource('projectChatUnsettled') + fnSource('fetchTranscript') + fnSource('renderTranscript') +
       fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') + fnSource('setCodingCwd') +
-      fnSource('seedSessionCounters') + fnSource('showConnProject') +
+      fnSource('seedSessionCounters') + fnSource('showConnProject') + fnSource('onProjectIngest') +
+      fnSource('sendUiAction') + fnSource('genuiActionId') + fnSource('genuiStr') + fnSource('genuiInputState') +
+      optional('unbindProjectPane') +
       '\nreturn { connect: function() { connectWS(); return ws; }, onProjectOpened: onProjectOpened, onProjectOpenRefused: onProjectOpenRefused,' +
-      ' sendChatMessage: sendChatMessage, fetchSessionState: fetchSessionState };')
+      ' sendChatMessage: sendChatMessage, fetchSessionState: fetchSessionState, onProjectIngest: onProjectIngest, sendUiAction: sendUiAction };')
     const page = make(
       WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161' }, { __CYNCO_TOKEN: 't' },
       { getElementById: (id: string) => (id === 'chatMessages' ? msgs : el(id)), body: el('body') },
@@ -478,6 +485,7 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
       () => {}, () => {}, () => {}, () => { msgs.innerHTML = '' }, () => {}, { setActive: () => {} },
       { warn: (m: string) => warned.push(m), log: () => {} },
       () => {}, () => {}, () => {}, () => {}, () => {}, (t: string) => String(t),
+      () => {}, () => 'indexed', {},
     )
     const pane = () => children.map(c => c.text)
     /** A restart the page lived through: the socket (re)opens and /api/session is read. */
@@ -525,12 +533,15 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
     const userMessages = sent.filter(f => f.type === 'user.message')
     expect(userMessages, `a user.message with no cwd and no project bound is a coding turn: ${JSON.stringify(sent)}`).toEqual([])
     expect(sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
-    expect(lines).toContain('system: Engine restarted — reopening project chat yard › Diorama')
+    expect(lines).toContain(REOPEN + 'yard › Diorama')
   })
 
   /** The page as the operator had it: a bound chat, drawn, the CWD box holding the project folder. */
   const boundPane = (extra: Record<string, any> = {}) => ({ active: { ...ACTIVE }, renderedChat: 'yard/c1.jsonl', codingCwd: 'C:/code/launch', ...extra })
-  const withProject = (project: unknown) => () => Promise.resolve({ ...SESSION, project })
+  /** /api/session's answer: the engine's binding, plus its run state (`processing`, `turns`) when a test says. */
+  const withProject = (project: unknown, run: Record<string, unknown> = {}) => () => Promise.resolve({ ...SESSION, project, ...run })
+  /** The line the pane says when it re-opens a chat the engine no longer holds — a cause it cannot know is not asserted. */
+  const REOPEN = 'system: The engine holds no project chat (a restart, or another client left it) — reopening '
 
   it('the engine lost the project: project.open {slug, chat} once, the line says so, and the answer settles the pane', async () => {
     const h = harness(withProject(null), boundPane())
@@ -538,7 +549,7 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
     h.reconnect()
     await flush()
     expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
-    expect(h.pane()).toEqual(['system: Engine restarted — reopening project chat Front Yard › Diorama'])
+    expect(h.pane()).toEqual([REOPEN + 'Front Yard › Diorama'])
     expect(h.projectsState.active).toEqual(ACTIVE)
     // a second read of /api/session on the same connect sends nothing more
     h.fetchSessionState()
@@ -561,7 +572,7 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
     h.reconnect()
     await flush()
     expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard' }])
-    expect(h.pane()).toEqual(['system: Engine restarted — reopening project chat Front Yard › new chat'])
+    expect(h.pane()).toEqual([REOPEN + 'Front Yard › new chat'])
   })
 
   it('the engine still holds the chat shown: nothing is sent, whichever answer lands first', async () => {
@@ -698,18 +709,232 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
     expect(h.sent).toEqual([{ type: 'user.message', text: 'coding', cwd: 'C:/code/launch' }])
   })
 
-  it('the wiring, as text: onopen opens a connect, fetchSessionState reads data.project, session.error reaches the refusal, the sends gate', () => {
+  // ── review of the re-bind ────────────────────────────────────────────────
+
+  it('a surface click or a FollowUps chip while the binding is unsettled is refused like a typed message (review: sendUiAction was not gated)', async () => {
+    let answer: (d: unknown) => void = () => {}
+    const h = harness(() => new Promise(res => { answer = res }), boundPane())
+    h.reconnect()
+    // a Button on a surface still in the pane, and a FollowUps chip (the verbatim text of a typed message)
+    expect(h.sendUiAction('s1', 'pick', 'Tower A', { option: 'A' })).toBe(false)
+    expect(h.sendUiAction('s1', 'followup', 'Show the towers again', undefined, 'Show the towers again')).toBe(false)
+    expect(h.sent).toEqual([])
+    expect(h.pane()).toEqual(['system: Reconnecting the project chat — try again in a moment.', 'system: Reconnecting the project chat — try again in a moment.'])
+    answer({ ...SESSION, project: null })
+    await flush()
+    // the re-open went out alone; a click before it would have reached an engine holding no project
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    expect(h.sendUiAction('s1', 'pick', 'Tower A')).toBe(false)
+    expect(h.sent).toHaveLength(1)
+    // settled: the click goes out as before
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    expect(h.sendUiAction('s1', 'pick', 'Tower A')).toBe(true)
+    expect(h.sent[1]).toEqual({ type: 'ui.action', surfaceId: 's1', action: 'pick', label: 'Tower A', state: {} })
+    expect(h.pane()[h.pane().length - 1]).toBe('action: ▶ Tower A')
+    // gated for the whole connect when /api/session is unreachable
+    const g = harness(() => Promise.reject(new Error('ECONNREFUSED')), boundPane())
+    g.reconnect()
+    await flush()
+    expect(g.sendUiAction('s1', 'followup', 'Show the towers again', undefined, 'Show the towers again')).toBe(false)
+    expect(g.sent).toEqual([])
+    // the coding session is never gated
+    const c = harness(withProject(null), { active: null })
+    c.reconnect()
+    expect(c.sendUiAction('s1', 'pick', 'Tower A')).toBe(true)
+    expect(c.sent).toHaveLength(1)
+  })
+
+  it('a slash command typed while the binding is unsettled is not sent as a command frame (review: the slash branch ran before the gate)', async () => {
+    let answer: (d: unknown) => void = () => {}
+    const h = harness(() => new Promise(res => { answer = res }), boundPane())
+    h.reconnect()
+    h.say('/tdd add a test for the crane')
+    expect(h.sent).toEqual([])
+    expect(h.el('chatInput').value).toBe('/tdd add a test for the crane')
+    expect(h.pane()).toEqual(['system: Reconnecting the project chat — try again in a moment.'])
+    answer({ ...SESSION, project: null })
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    h.say('/tdd add a test for the crane')
+    expect(h.sent[1]).toEqual({ type: 'command', command: '/tdd', args: 'add a test for the crane' })
+  })
+
+  it('the engine holds no project but is busy in the coding session (another client\'s turn): no re-open, the pane is the coding session, said so (review)', async () => {
+    // a running turn: a project.open now would abort it and swap its conversation out (startProjectSession)
+    const h = harness(withProject(null, { processing: true, toolCalls: 4, turns: 2 }), boundPane())
+    h.el('chatCwd').value = 'C:/p/yard'; h.el('chatCwd').readOnly = true
+    h.el('chatProjectStrip').classList.add('visible')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([])
+    expect(h.projectsState.active).toBeNull()
+    expect(h.projectsState.reconciled).toBe(true)
+    expect(h.projectsState.rebind).toBeNull()
+    expect(h.el('chatProjectStrip').classList.contains('visible')).toBe(false)
+    expect(h.el('connProjectRow').classList.contains('hidden')).toBe(true)
+    expect(h.el('chatCwd').readOnly).toBe(false)
+    const said = h.pane().filter(l => l.indexOf('system: The engine is in the coding session (a turn is running)') === 0)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toContain('Front Yard › Diorama')
+    expect(said[0]).toContain('Projects tab')
+    expect(h.warned.some(w => w.indexOf('not reopened') > 0)).toBe(true)
+    expect(h.el('chatCwd').value).toBe('C:/code/launch')
+    h.say('where am I?')
+    expect(h.sent).toEqual([{ type: 'user.message', text: 'where am I?', cwd: 'C:/code/launch' }])
+    // idle, but coding turns have been taken since: a conversation someone is in — the same
+    const g = harness(withProject(null, { processing: false, turns: 3 }), boundPane())
+    g.reconnect()
+    await flush()
+    expect(g.sent).toEqual([])
+    expect(g.projectsState.active).toBeNull()
+    expect(g.pane().some(l => l.indexOf('system: The engine is in the coding session (3 turns so far)') === 0)).toBe(true)
+    // one turn, singular
+    const k = harness(withProject(null, { processing: false, turns: 1 }), boundPane())
+    k.reconnect()
+    await flush()
+    expect(k.pane().some(l => l.indexOf('(1 turn so far)') > 0)).toBe(true)
+    // the restart as /api/session reports it (nothing running, no turns), and a snapshot with no run state at all: the re-open
+    for (const run of [{ processing: false, toolCalls: 0, turns: 0 }, { processing: null, toolCalls: null, turns: null }]) {
+      const r = harness(withProject(null, run), boundPane())
+      r.reconnect()
+      await flush()
+      expect(r.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    }
+  })
+
+  it('a broadcast refusal naming another chat or project is not the answer to this page\'s re-open (review)', async () => {
+    const h = harness(withProject(null), boundPane())
+    h.el('chatCwd').value = 'C:/p/yard'; h.el('chatCwd').readOnly = true
+    h.el('chatProjectStrip').classList.add('visible')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    // another tab clicked a chat that is gone, and a project that is gone (main.ts broadcasts every refusal)
+    h.onProjectOpenRefused('project.open refused: no such chat: gone.jsonl')
+    h.onProjectOpenRefused('project.open refused: no such project: other')
+    expect(h.projectsState.rebind).not.toBeNull()
+    expect(h.projectsState.active).toEqual(ACTIVE)
+    expect(h.el('chatProjectStrip').classList.contains('visible')).toBe(true)
+    expect(h.el('chatCwd').readOnly).toBe(true)
+    expect(h.pane()).toEqual([REOPEN + 'Front Yard › Diorama'])
+    h.say('hello')
+    expect(h.sent).toHaveLength(1)
+    // the real answer settles it
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    expect(h.projectsState.rebind).toBeNull()
+    h.say('hello')
+    expect(h.sent[1]).toEqual({ type: 'user.message', text: 'hello' })
+    // the refusal of THIS re-open, in openBinding's words, is taken: by chat, and by project
+    for (const refusal of ['project.open refused: no such chat: c1.jsonl', 'project.open refused: no such project: yard']) {
+      const g = harness(withProject(null), boundPane())
+      g.reconnect()
+      await flush()
+      g.onProjectOpenRefused(refusal)
+      expect(g.projectsState.active).toBeNull()
+      expect(g.projectsState.rebind).toBeNull()
+      expect(g.pane()[1]).toContain('Could not reopen project chat Front Yard › Diorama')
+    }
+    // an unnamed chat's re-open sent no chat: a refusal naming one is another tab's
+    const u = harness(withProject(null), boundPane({ active: { slug: 'yard', chat: null, title: null }, renderedChat: null }))
+    u.reconnect()
+    await flush()
+    u.onProjectOpenRefused('project.open refused: no such chat: x.jsonl')
+    expect(u.projectsState.rebind).not.toBeNull()
+    u.onProjectOpenRefused('project.open refused: no such project: yard')
+    expect(u.projectsState.active).toBeNull()
+  })
+
+  it('a chat begun as a new chat in this pane, named by project.ingest, is the chat shown: the re-open\'s answer is label-only (review)', async () => {
+    const h = harness(withProject(null), boundPane({ active: { slug: 'yard', chat: null, title: null }, renderedChat: null }), {
+      '/api/projects/yard/chats': { chats: [{ file: 'c1.jsonl', title: 'Diorama', createdAt: '2026-10-11T10:00:00Z', messages: 2 }] },
+      '/api/projects/yard/chats/c1.jsonl': { messages: [
+        { role: 'user', content: [{ type: 'text', text: 'Plan a diorama' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Two towers, 1:87' }] },
+      ] },
+    })
+    h.el('chatCwd').value = 'C:/p/yard'; h.el('chatCwd').readOnly = true
+    // the first turn ran live; the engine named the chat and told the page
+    h.put('user: Plan a diorama'); h.put('assistant: Two towers, 1:87')
+    h.onProjectIngest({ type: 'project.ingest', slug: 'yard', filePath: 'chats/c1.jsonl', kind: 'chat', indexed: true, chunks: 1 })
+    await flush()
+    expect(h.projectsState.active).toEqual({ slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' })
+    expect(h.projectsState.renderedChat).toBe('yard/c1.jsonl')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    const before = h.pane().slice()
+    expect(before).toEqual(['user: Plan a diorama', 'assistant: Two towers, 1:87', REOPEN + 'Front Yard › Diorama'])
+    const nFetched = h.fetched.length
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    await flush()
+    // no transcript refetch, no redraw, the line survives, the label is fresh
+    expect(h.fetched.slice(nFetched)).toEqual([])
+    expect(h.pane()).toEqual(before)
+    expect(h.el('chatProjectLabel').textContent).toBe('Project: Front Yard › Diorama')
+    expect(h.el('chatCwd').readOnly).toBe(true)
+    h.say('and the crane?')
+    expect(h.sent[1]).toEqual({ type: 'user.message', text: 'and the crane?' })
+  })
+
+  it('a new chat whose first turn was in flight when the engine lost it: the answer is a fresh chat, the drawn turn stays and where it went is said (review)', async () => {
+    const h = harness(withProject(null), boundPane({ active: { slug: 'yard', chat: null, title: null }, renderedChat: null }))
+    h.put('user: Plan a diorama of my front yard with two towers.')
+    h.put('assistant: Let me sketch')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard' }])
+    // main.ts answers a project.open without `chat` with a fresh new chat
+    await h.onProjectOpened({ type: 'project.opened', slug: 'yard', chat: null, title: null })
+    expect(h.pane().slice(0, 3)).toEqual(['user: Plan a diorama of my front yard with two towers.', 'assistant: Let me sketch', REOPEN + 'Front Yard › new chat'])
+    const opened = h.pane().filter(l => l.indexOf('system: Opened Front Yard › new chat') === 0)
+    expect(opened).toHaveLength(1)
+    expect(opened[0]).toContain('Chats list')
+    expect(h.pane()).toHaveLength(4)
+    expect(h.projectsState.active).toEqual({ slug: 'yard', chat: null, title: null })
+    // nothing typed before the engine lost the chat: a plain fresh chat, no turn to point at
+    const g = harness(withProject(null), boundPane({ active: { slug: 'yard', chat: null, title: null }, renderedChat: null }))
+    g.reconnect()
+    await flush()
+    await g.onProjectOpened({ type: 'project.opened', slug: 'yard', chat: null, title: null })
+    expect(g.pane()).toEqual([REOPEN + 'Front Yard › new chat', 'system: Opened Front Yard › new chat'])
+    // a new chat opened elsewhere (no re-open pending) still clears the pane
+    const o = harness(withProject(ACTIVE), boundPane())
+    o.put('assistant: the towers')
+    o.reconnect()
+    await flush()
+    await o.onProjectOpened({ type: 'project.opened', slug: 'yard', chat: null, title: null })
+    expect(o.pane()).toEqual(['system: Opened Front Yard › new chat'])
+  })
+
+  it('while the re-open is pending the connection panel\'s Project row shows the chat the strip shows (review)', async () => {
+    const h = harness(withProject(null), boundPane())
+    h.el('connProjectRow').classList.remove('hidden')
+    h.el('chatProjectStrip').classList.add('visible')
+    h.reconnect()
+    await flush()
+    expect(h.projectsState.rebind).not.toBeNull()
+    expect(h.el('chatProjectStrip').classList.contains('visible')).toBe(true)
+    expect(h.el('connProjectRow').classList.contains('hidden')).toBe(false)
+    expect(h.el('connProject').textContent).toBe('Front Yard › Diorama')
+  })
+
+  it('the wiring, as text: onopen opens a connect, fetchSessionState hands reconcile the /api/session answer, session.error reaches the refusal, the sends gate', () => {
     const js = scripts()
     const onopen = js.slice(js.indexOf('ws.onopen = function()'), js.indexOf('ws.onclose'))
     expect(onopen).toContain('projectsState.connectSeq++')
     expect(onopen).toContain('projectsState.reconciled = !projectsState.active')
-    expect(fnSource('fetchSessionState')).toContain('data.project')
-    expect(fnSource('fetchSessionState')).toContain('reconcileProjectBinding(seq, ')
+    expect(fnSource('fetchSessionState')).toContain('reconcileProjectBinding(seq, data')
+    expect(fnSource('reconcileProjectBinding')).toContain('session.project')
+    expect(fnSource('reconcileProjectBinding')).toContain('session.processing')
     const arm = js.slice(js.indexOf("case 'session.error':"), js.indexOf("case 'ui.render':"))
     expect(arm).toContain('onProjectOpenRefused(event.error)')
     expect(fnSource('reconcileProjectBinding')).toContain("type: 'project.open'")
     expect(fnSource('onProjectOpened')).not.toContain('ws.send')
     expect(fnSource('onProjectOpened')).toContain('projectsState.reconciled = true')
-    for (const fn of ['sendChatMessage', 'saveAsArtifact', 'showReplyAsUi']) expect(fnSource(fn)).toContain('projectChatUnsettled()')
+    for (const fn of ['sendChatMessage', 'saveAsArtifact', 'showReplyAsUi', 'sendUiAction']) expect(fnSource(fn)).toContain('projectChatUnsettled()')
+    // the gate runs before the slash branch, so a /tdd typed while unsettled stays in the box
+    const send = fnSource('sendChatMessage')
+    expect(send.indexOf('projectChatUnsettled()')).toBeLessThan(send.indexOf("text.startsWith('/')"))
   })
 })
