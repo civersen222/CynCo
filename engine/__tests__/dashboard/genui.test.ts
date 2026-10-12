@@ -930,7 +930,7 @@ describe('dashboard genui: "Show as UI" and "Save as artifact" under a project r
     let cleared = 0
     const reply = { getAttribute: (k: string) => (k === 'data-raw' ? OPENING : null), textContent: 'x' }
     const fns = new Function('projectsState', 'ws', 'appendChatMsg', 'document', 'brainViz', 'clearChatCitations', 'window',
-      fnSource('replyReference') + fnSource('showReplyAsUi') + fnSource('saveAsArtifact') + '\nreturn { show: showReplyAsUi, save: saveAsArtifact };')(
+      fnSource('replyReference') + fnSource('showReplyAsUi') + fnSource('saveAsArtifact') + fnSource('projectChatUnsettled') + '\nreturn { show: showReplyAsUi, save: saveAsArtifact };')(
       state,
       { readyState: connected ? 1 : 3, send: (x: string) => sent.push(x) },
       (role: string, text: string) => shown.push(role + ': ' + text),

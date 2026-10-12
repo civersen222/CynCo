@@ -300,9 +300,9 @@ describe('dashboard: the Projects view', () => {
     const input = { value: '' }
     const sent: Record<string, unknown>[] = []
     const fetched: string[] = []
-    const projectsState: Record<string, any> = { active: null, paths: { harbor: 'C:/projects/harbor' }, names: {}, codingCwd: null }
+    const projectsState: Record<string, any> = { active: null, paths: { harbor: 'C:/projects/harbor' }, names: {}, codingCwd: null, reconciled: true }
     const make = new Function('document', 'ws', 'projectsState', 'appendChatMsg', 'brainViz', 'fetch', 'clearChatCitations',
-      fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') +
+      fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') + fnSource('projectChatUnsettled') +
       '\nreturn { sendChatMessage: sendChatMessage, showProjectCwd: showProjectCwd, restoreCodingCwd: restoreCodingCwd };')
     const page = make(
       { getElementById: (id: string) => (id === 'chatCwd' ? box : input) },
@@ -383,5 +383,333 @@ describe('dashboard: the Projects view', () => {
       expect(guard).toContain(`'${t}',`)
       expect(html).toContain(`case '${t}'`)
     }
+  })
+})
+
+/**
+ * The project chat after an engine restart (dashboard transcript, 2026-10-11).
+ *
+ * The page kept a project pane (strip, "Save as artifact" links) across an
+ * engine restart. The restarted engine held no project, so the server sent no
+ * project.opened on connect (server.ts, websocket open), fetchSessionState read
+ * /api/session and ignored its `project: null`, and the next message — sent
+ * with no cwd because projectsState.active was still set — went to the CODING
+ * session: no project memory, no project tools, no pictures. The page now
+ * reconciles its pane with the engine's binding on every connect.
+ */
+describe('dashboard: the project chat re-binds after an engine restart', () => {
+  const ACTIVE = { slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' }
+  const OTHER = { slug: 'yard', chat: 'c2.jsonl', title: 'Crane' }
+  const SESSION = { model: 'qwen.gguf', contextLength: 65536, tier: 'advanced', projectPath: 'C:/code/launch' }
+  const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)) }
+
+  function fnSource(name: string): string {
+    const js = scripts()
+    const start = js.indexOf(`function ${name}(`)
+    expect(start, `function ${name} not found`).toBeGreaterThan(-1)
+    const close = /\r?\n\}\r?\n/.exec(js.slice(start))
+    expect(close).not.toBeNull()
+    return js.slice(start, start + close!.index + close![0].length)
+  }
+
+  /**
+   * connectWS + fetchSessionState + the project handlers against stubs. The
+   * socket is a stub whose `onopen` the test fires; /api/session answers what
+   * `session()` resolves to (one call per read, so a test can hold an answer
+   * back); every socket send, pane line, route fetched and warning is recorded.
+   */
+  function harness(session: () => Promise<unknown>, state0: Record<string, any> = {}, transcripts: Record<string, unknown> = {}) {
+    const sent: Record<string, unknown>[] = []
+    const fetched: string[] = []
+    const warned: string[] = []
+    const replaced: string[] = []
+    const els: Record<string, any> = {}
+    const el = (id: string) => (els[id] ??= {
+      textContent: '', value: '', readOnly: false, title: '', cls: new Set<string>(),
+      classList: { add(c: string) { els[id].cls.add(c) }, remove(c: string) { els[id].cls.delete(c) }, contains(c: string) { return els[id].cls.has(c) } },
+    })
+    const children: any[] = []
+    const msgs: any = {
+      get children() { return children },
+      set innerHTML(_v: string) { children.length = 0 },
+      removeChild: (n: any) => { children.splice(children.indexOf(n), 1); n.parentNode = null },
+      appendChild: (n: any) => { const i = children.indexOf(n); if (i >= 0) children.splice(i, 1); children.push(n); n.parentNode = msgs },
+    }
+    const put = (text: string) => msgs.appendChild({ text })
+    const projectsState: Record<string, any> = {
+      active: null, renderedChat: null, openedSeq: 0, names: { yard: 'Front Yard' }, paths: { yard: 'C:/p/yard' }, slug: null,
+      codingCwd: null, replyCount: 0, connectSeq: 0, reconciled: true, rebind: null, ...state0,
+    }
+    const state: Record<string, any> = { connected: false, turnCount: 0, context: null, model: '', tier: '' }
+    let sock: any = null
+    function WebSocketStub(this: any, url: string) {
+      this.url = url; this.readyState = 1; this.send = (s: string) => sent.push(JSON.parse(s)); sock = this
+    }
+    const fetchStub = (path: string) => {
+      fetched.push(path)
+      if (path === '/api/session') return session().then(data => ({ json: () => data }))
+      return Promise.resolve({ json: () => null })
+    }
+    const make = new Function('WebSocket', 'location', 'window', 'document', 'state', 'projectsState', 'fetch', 'setInterval',
+      'setTimeout', 'render', 'genuiRecheckImages', 'handleEvent', 'appendChatMsg', 'appendChatTool', 'summarizeInput', 'setSlider',
+      'activateSession', 'clearChatCitations', 'parseProjectsHash', 'history', 'projFetch', 'projUrl', 'projStatus', 'loadProjectChats',
+      'markSaveableReplies', 'clearChatPane', 'genuiPruneImages', 'brainViz', 'console',
+      'fetchPredictions', 'fetchContracts', 'fetchTrainingData', 'renderToolFeed', 'renderSubsystems', 'escHtml',
+      'var ws = null; var reconnectDelay = 1000;\n' +
+      fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('reconcileProjectBinding') + fnSource('onProjectOpened') +
+      fnSource('onProjectOpenRefused') + fnSource('projectChatUnsettled') + fnSource('fetchTranscript') + fnSource('renderTranscript') +
+      fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') + fnSource('setCodingCwd') +
+      fnSource('seedSessionCounters') + fnSource('showConnProject') +
+      '\nreturn { connect: function() { connectWS(); return ws; }, onProjectOpened: onProjectOpened, onProjectOpenRefused: onProjectOpenRefused,' +
+      ' sendChatMessage: sendChatMessage, fetchSessionState: fetchSessionState };')
+    const page = make(
+      WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161' }, { __CYNCO_TOKEN: 't' },
+      { getElementById: (id: string) => (id === 'chatMessages' ? msgs : el(id)), body: el('body') },
+      state, projectsState, fetchStub, () => 0, () => 0, () => {}, () => {}, () => {},
+      (role: string, text: string) => put(`${role}: ${text}`),
+      (name: string) => { put(`tool ${name}`); return 'row' },
+      () => '', () => {}, () => {}, () => {}, () => null,
+      { replaceState: (_a: unknown, _b: string, h: string) => replaced.push(h) },
+      (path: string) => {
+        fetched.push(path)
+        return path in transcripts ? Promise.resolve(transcripts[path]) : Promise.reject(new Error('no route ' + path))
+      },
+      (slug: string) => '/api/projects/' + encodeURIComponent(slug),
+      () => {}, () => {}, () => {}, () => { msgs.innerHTML = '' }, () => {}, { setActive: () => {} },
+      { warn: (m: string) => warned.push(m), log: () => {} },
+      () => {}, () => {}, () => {}, () => {}, () => {}, (t: string) => String(t),
+    )
+    const pane = () => children.map(c => c.text)
+    /** A restart the page lived through: the socket (re)opens and /api/session is read. */
+    const reconnect = () => { const s = page.connect(); s.onopen(); return s }
+    const say = (text: string) => { el('chatInput').value = text; page.sendChatMessage() }
+    return { ...page, reconnect, say, sent, fetched, warned, replaced, pane, put, el, projectsState, state, get sock() { return sock } }
+  }
+
+  /**
+   * The transcript, replayed with only the functions HEAD had: the pane shows a
+   * project chat, the socket reopens on a restarted engine (/api/session says
+   * `project: null`, no project.opened frame), the operator types. The frame
+   * that goes out must be a project.open for the chat shown — not a bare
+   * user.message, which main.ts hands to the coding loop.
+   */
+  it('REPRO: after a restart the typed message must not go to the coding loop as a project turn', async () => {
+    const js = scripts()
+    const optional = (name: string) => (js.indexOf(`function ${name}(`) >= 0 ? fnSource(name) : '')
+    const sent: Record<string, unknown>[] = []
+    const lines: string[] = []
+    const els: Record<string, any> = {}
+    const el = (id: string) => (els[id] ??= { textContent: '', value: '', readOnly: true, cls: new Set<string>(),
+      classList: { add(c: string) { els[id].cls.add(c) }, remove(c: string) { els[id].cls.delete(c) }, contains(c: string) { return els[id].cls.has(c) } } })
+    let sock: any = null
+    function WebSocketStub(this: any) { this.readyState = 1; this.send = (s: string) => sent.push(JSON.parse(s)); sock = this }
+    const projectsState: Record<string, any> = { active: { ...ACTIVE }, renderedChat: 'yard/c1.jsonl', names: {}, paths: {}, codingCwd: 'C:/code/launch', connectSeq: 0, reconciled: true, rebind: null }
+    const make = new Function('WebSocket', 'location', 'window', 'document', 'state', 'projectsState', 'fetch', 'setInterval', 'setTimeout',
+      'render', 'genuiRecheckImages', 'handleEvent', 'appendChatMsg', 'setSlider', 'activateSession', 'clearChatCitations', 'brainViz', 'console',
+      'fetchPredictions', 'fetchContracts', 'fetchTrainingData', 'renderToolFeed', 'renderSubsystems', 'escHtml',
+      'var ws = null; var reconnectDelay = 1000;\n' + fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('sendChatMessage') +
+      fnSource('seedSessionCounters') + fnSource('showConnProject') + fnSource('setCodingCwd') +
+      optional('reconcileProjectBinding') + optional('projectChatUnsettled') +
+      '\nconnectWS(); return { ws: ws, sendChatMessage: sendChatMessage };')
+    const page = make(WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161' }, { __CYNCO_TOKEN: 't' },
+      { getElementById: el, body: el('body') }, { connected: false, turnCount: 0, context: null }, projectsState,
+      (path: string) => Promise.resolve({ json: () => (path === '/api/session' ? { ...SESSION, project: null } : null) }),
+      () => 0, () => 0, () => {}, () => {}, () => {}, (role: string, text: string) => lines.push(`${role}: ${text}`),
+      () => {}, () => {}, () => {}, { setActive: () => {} }, { warn: () => {}, log: () => {} },
+      () => {}, () => {}, () => {}, () => {}, () => {}, (t: string) => String(t))
+    el('chatCwd').value = 'C:/p/yard'
+    sock.onopen()
+    await flush()
+    el('chatInput').value = 'It looks like the design images for the towers did not come through. try again so I can actually see these proposals'
+    page.sendChatMessage()
+    const userMessages = sent.filter(f => f.type === 'user.message')
+    expect(userMessages, `a user.message with no cwd and no project bound is a coding turn: ${JSON.stringify(sent)}`).toEqual([])
+    expect(sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    expect(lines).toContain('system: Engine restarted — reopening project chat yard › Diorama')
+  })
+
+  /** The page as the operator had it: a bound chat, drawn, the CWD box holding the project folder. */
+  const boundPane = (extra: Record<string, any> = {}) => ({ active: { ...ACTIVE }, renderedChat: 'yard/c1.jsonl', codingCwd: 'C:/code/launch', ...extra })
+  const withProject = (project: unknown) => () => Promise.resolve({ ...SESSION, project })
+
+  it('the engine lost the project: project.open {slug, chat} once, the line says so, and the answer settles the pane', async () => {
+    const h = harness(withProject(null), boundPane())
+    h.el('chatCwd').value = 'C:/p/yard'; h.el('chatCwd').readOnly = true
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    expect(h.pane()).toEqual(['system: Engine restarted — reopening project chat Front Yard › Diorama'])
+    expect(h.projectsState.active).toEqual(ACTIVE)
+    // a second read of /api/session on the same connect sends nothing more
+    h.fetchSessionState()
+    await flush()
+    expect(h.sent).toHaveLength(1)
+    // until the engine answers, the pane is not a project chat to type into
+    h.say('too early')
+    expect(h.sent).toHaveLength(1)
+    // the engine reloaded the transcript and answered: the chat shown, label only, and typing works again
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    expect(h.el('chatProjectLabel').textContent).toBe('Project: Front Yard › Diorama')
+    expect(h.projectsState.rebind).toBeNull()
+    h.say('now the towers')
+    expect(h.sent[1]).toEqual({ type: 'user.message', text: 'now the towers' })
+    expect(h.sent).toHaveLength(2)
+  })
+
+  it('a new unnamed chat is reopened without `chat` (the command schema refuses chat: null)', async () => {
+    const h = harness(withProject(null), boundPane({ active: { slug: 'yard', chat: null, title: null }, renderedChat: null }))
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard' }])
+    expect(h.pane()).toEqual(['system: Engine restarted — reopening project chat Front Yard › new chat'])
+  })
+
+  it('the engine still holds the chat shown: nothing is sent, whichever answer lands first', async () => {
+    // the on-connect frame first, then /api/session
+    const a = harness(withProject(ACTIVE), boundPane())
+    a.reconnect()
+    await a.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    await flush()
+    expect(a.sent).toEqual([])
+    a.say('still here?')
+    expect(a.sent).toEqual([{ type: 'user.message', text: 'still here?' }])
+    // /api/session first, then the frame
+    const b = harness(withProject(ACTIVE), boundPane())
+    b.reconnect()
+    await flush()
+    expect(b.sent).toEqual([])
+    b.say('still here?')
+    expect(b.sent).toEqual([{ type: 'user.message', text: 'still here?' }])
+    await b.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    expect(b.sent).toHaveLength(1)
+    expect(b.pane()).toEqual(['user: still here?'])
+  })
+
+  it('a frame that landed first wins over a late /api/session null: no re-open is sent', async () => {
+    let answer: (d: unknown) => void = () => {}
+    const h = harness(() => new Promise(res => { answer = res }), boundPane())
+    h.reconnect()
+    await h.onProjectOpened({ type: 'project.opened', ...ACTIVE })
+    answer({ ...SESSION, project: null })
+    await flush()
+    expect(h.sent).toEqual([])
+    expect(h.pane()).toEqual([])
+  })
+
+  it('the engine holds another chat: nothing is sent, its frame redraws the pane, typing waits for the frame', async () => {
+    const h = harness(withProject(OTHER), boundPane(), {
+      '/api/projects/yard/chats/c2.jsonl': { messages: [{ role: 'user', content: [{ type: 'text', text: 'What colour is the crane?' }] }] },
+    })
+    h.put('assistant: the towers, drawn before the restart')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([])
+    h.say('too early')
+    expect(h.sent).toEqual([])
+    expect(h.pane()).toContain('system: Reconnecting the project chat — try again in a moment.')
+    expect(h.el('chatInput').value).toBe('too early')
+    await h.onProjectOpened({ type: 'project.opened', ...OTHER })
+    expect(h.pane()).toEqual(['user: What colour is the crane?', 'system: Opened Front Yard › Crane'])
+    expect(h.projectsState.active).toEqual(OTHER)
+    h.say('and now?')
+    expect(h.sent).toEqual([{ type: 'user.message', text: 'and now?' }])
+  })
+
+  it('a message typed while the binding is unsettled is never sent to the coding loop', async () => {
+    let answer: (d: unknown) => void = () => {}
+    const h = harness(() => new Promise(res => { answer = res }), boundPane())
+    h.reconnect()
+    h.say('It looks like the design images for the towers did not come through. try again')
+    expect(h.sent).toEqual([])
+    expect(h.pane()).toEqual(['system: Reconnecting the project chat — try again in a moment.'])
+    expect(h.el('chatInput').value).toBe('It looks like the design images for the towers did not come through. try again')
+    answer({ ...SESSION, project: null })
+    await flush()
+    // the re-open went out; the typed text did not
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+  })
+
+  it('the re-open refused: the pane stops pretending — strip hidden, coding cwd back, said so, the next message is a coding turn', async () => {
+    const h = harness(withProject(null), boundPane())
+    h.el('chatCwd').value = 'C:/p/yard'; h.el('chatCwd').readOnly = true
+    h.el('chatProjectStrip').classList.add('visible')
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+    h.onProjectOpenRefused('project.open refused: chat c1.jsonl not found')
+    expect(h.projectsState.active).toBeNull()
+    expect(h.projectsState.rebind).toBeNull()
+    expect(h.el('chatProjectStrip').classList.contains('visible')).toBe(false)
+    expect(h.el('chatCwd').readOnly).toBe(false)
+    const said = h.pane().filter(l => l.indexOf('system: Could not reopen project chat Front Yard › Diorama') === 0)
+    expect(said).toHaveLength(1)
+    expect(said[0]).toContain('project.open refused: chat c1.jsonl not found')
+    expect(said[0]).toContain('coding session')
+    await flush()
+    expect(h.el('chatCwd').value).toBe('C:/code/launch')
+    h.say('where am I?')
+    expect(h.sent[1]).toEqual({ type: 'user.message', text: 'where am I?', cwd: 'C:/code/launch' })
+  })
+
+  it('a refusal with no re-open pending (another tab\'s project.open) leaves the pane alone', () => {
+    const h = harness(withProject(null), boundPane())
+    h.onProjectOpenRefused('project.open refused: no such project')
+    expect(h.projectsState.active).toEqual(ACTIVE)
+    expect(h.pane()).toEqual([])
+    // and a session.error that is not about project.open never touches a pending re-open
+    h.projectsState.rebind = { seq: 1, slug: 'yard', chat: 'c1.jsonl', title: 'Diorama' }
+    h.projectsState.reconciled = false
+    h.onProjectOpenRefused('command frame refused: frame is not valid JSON')
+    expect(h.projectsState.rebind).not.toBeNull()
+    expect(h.projectsState.active).toEqual(ACTIVE)
+  })
+
+  it('a stale /api/session answer from the previous connect reconciles nothing (connectSeq)', async () => {
+    const answers: Array<(d: unknown) => void> = []
+    const h = harness(() => new Promise(res => { answers.push(res) }), boundPane())
+    h.reconnect()
+    h.reconnect()
+    expect(answers).toHaveLength(2)
+    answers[0]({ ...SESSION, project: null })
+    await flush()
+    expect(h.sent).toEqual([])
+    answers[1]({ ...SESSION, project: null })
+    await flush()
+    expect(h.sent).toEqual([{ type: 'project.open', slug: 'yard', chat: 'c1.jsonl' }])
+  })
+
+  it('/api/session unreachable: nothing is sent, the pane says it is not reconnected, and typing is refused', async () => {
+    const h = harness(() => Promise.reject(new Error('boom')), boundPane())
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([])
+    expect(h.pane().some(l => l.indexOf('system: Could not check which chat the engine holds') === 0 && l.indexOf('boom') > 0)).toBe(true)
+    h.say('hello?')
+    expect(h.sent).toEqual([])
+  })
+
+  it('a pane showing the coding session has nothing to reconcile', async () => {
+    const h = harness(withProject(null), { active: null })
+    h.reconnect()
+    await flush()
+    expect(h.sent).toEqual([])
+    h.el('chatCwd').value = 'C:/code/launch'
+    h.say('coding')
+    expect(h.sent).toEqual([{ type: 'user.message', text: 'coding', cwd: 'C:/code/launch' }])
+  })
+
+  it('the wiring, as text: onopen opens a connect, fetchSessionState reads data.project, session.error reaches the refusal, the sends gate', () => {
+    const js = scripts()
+    const onopen = js.slice(js.indexOf('ws.onopen = function()'), js.indexOf('ws.onclose'))
+    expect(onopen).toContain('projectsState.connectSeq++')
+    expect(onopen).toContain('projectsState.reconciled = !projectsState.active')
+    expect(fnSource('fetchSessionState')).toContain('data.project')
+    expect(fnSource('fetchSessionState')).toContain('reconcileProjectBinding(seq, ')
+    const arm = js.slice(js.indexOf("case 'session.error':"), js.indexOf("case 'ui.render':"))
+    expect(arm).toContain('onProjectOpenRefused(event.error)')
+    expect(fnSource('reconcileProjectBinding')).toContain("type: 'project.open'")
+    expect(fnSource('onProjectOpened')).not.toContain('ws.send')
+    expect(fnSource('onProjectOpened')).toContain('projectsState.reconciled = true')
+    for (const fn of ['sendChatMessage', 'saveAsArtifact', 'showReplyAsUi']) expect(fnSource(fn)).toContain('projectChatUnsettled()')
   })
 })

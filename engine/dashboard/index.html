@@ -1332,6 +1332,13 @@ function connectWS() {
     state.connected = true;
     reconnectDelay = 1000;
     document.getElementById('reconnectBanner').classList.remove('visible');
+    // Which chat the engine holds is unknown until its on-connect project.opened
+    // frame or /api/session says. A pane showing a project chat sends nothing
+    // until then: a restarted engine holds none, and a user.message sent to it
+    // with no cwd is a coding turn (reconcileProjectBinding).
+    projectsState.connectSeq++;
+    projectsState.reconciled = !projectsState.active;
+    projectsState.rebind = null;
     // Proactively check for active session on every connect (handles reload + late connect)
     fetchSessionState();
     // A picture that finished while the socket was down sent its ui.image to nobody.
@@ -1638,6 +1645,9 @@ function handleEvent(event) {
     case 'session.error':
       appendChatMsg('system', 'error: ' + (event.error || 'unknown engine error'));
       if (String(event.error || '').indexOf('project.open') >= 0) projStatus('projectsStatus', 'err', event.error);
+      // A re-open this page sent to a restarted engine, refused: the pane must
+      // not keep its strip over the coding session.
+      onProjectOpenRefused(event.error);
       finalizeGenuiSurfaces();
       break;
 
@@ -2702,6 +2712,7 @@ function showConnProject(p) {
 
 function fetchSessionState() {
   // Hydrate full dashboard state from REST — handles reload, late connect, reconnect
+  var seq = projectsState.connectSeq;
   fetch('/api/session')
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -2714,8 +2725,14 @@ function fetchSessionState() {
         activateSession(data.contextLength);
       }
       if (data) { seedSessionCounters(data); render(); }
+      // The project chat the engine holds (null: none, as after a restart),
+      // against the one this pane shows.
+      reconcileProjectBinding(seq, data ? data.project : undefined);
     })
-    .catch(function(err) { console.warn('[session] /api/session: ' + err.message); });
+    .catch(function(err) {
+      console.warn('[session] /api/session: ' + err.message);
+      reconcileProjectBinding(seq, undefined, err.message);
+    });
 
   // Hydrate + poll governance every 3 seconds (tok/s, stuck, health).
   // MERGE, never replace: /api/governance serves CyberneticsGovernance.getReport(),
@@ -3403,6 +3420,9 @@ function sendChatMessage() {
     }
   }
 
+  // A reconnect whose project binding is not settled yet: a frame sent now
+  // could land in the coding session. The text stays in the box.
+  if (projectChatUnsettled()) { input.value = text; return; }
   // While a project is bound the box shows the project folder read-only and the
   // frame carries no cwd; only a coding turn sends one.
   var frame = { type: 'user.message', text: text };
@@ -5603,6 +5623,9 @@ var projectsState = {
   openedSeq: 0,          // bumps per project.opened; a transcript fetch for an older frame draws nothing
   replyCount: 0,         // assistant replies given a "Save as artifact" link
   chatToasted: {},       // chat filePath + reason → true (one toast per cause, not per turn)
+  connectSeq: 0,         // bumps per socket open; a /api/session answer from an earlier connect reconciles nothing
+  reconciled: true,      // this connect knows which chat the engine holds (its frame or /api/session said); false gates every project send
+  rebind: null,          // { seq, slug, chat, title } — the project.open this connect sent to a restarted engine, until it is answered
 };
 
 /** fetch + JSON + the server's { error } turned into a thrown Error with that text. */
@@ -6033,18 +6056,102 @@ function setCodingCwd(path) {
 }
 
 /**
+ * What /api/session said the engine holds, against the chat this pane shows.
+ * After an engine restart (or a dispatch swap, F141) the server sends no
+ * project.opened on connect — a restarted engine holds no project — and the
+ * pane kept its strip while every message went, with no cwd, to the coding
+ * session: no project memory, no project tools, no pictures (dashboard
+ * transcript, 2026-10-11). `project` is the engine's binding (null: none), or
+ * undefined when the answer did not say (`failure` is why). Runs once per
+ * connect (`seq`), and never after a project.opened frame settled this
+ * connect — a frame is the engine's word, and this page never sends a
+ * project.open in reply to one.
+ *   - the engine holds nothing and the pane shows a project chat: send
+ *     project.open for it (a new chat omits `chat`, as openProjectChat does)
+ *     and say so; the engine reloads the transcript and answers project.opened,
+ *     which onProjectOpened takes as the chat already shown, or session.error,
+ *     which onProjectOpenRefused takes;
+ *   - the engine holds the chat shown: settled, nothing to send;
+ *   - the engine holds another chat: its on-connect frame redraws the pane and
+ *     settles the connect; until then the pane sends nothing.
+ * Until the connect is settled every project send is refused, not queued
+ * (projectChatUnsettled): a queued message would have to be sent, or dropped,
+ * once the answer came, and a refused re-open leaves it with no right place to
+ * go; a refusal keeps the text in the box and says why.
+ */
+function reconcileProjectBinding(seq, project, failure) {
+  if (seq !== projectsState.connectSeq || projectsState.reconciled || projectsState.rebind) return;
+  var a = projectsState.active;
+  if (!a) { projectsState.reconciled = true; return; }
+  var name = (projectsState.names[a.slug] || a.slug) + ' › ' + (a.title || 'new chat');
+  if (project === undefined) {
+    console.warn('[projects] could not reconcile project chat ' + a.slug + ': ' + (failure || '/api/session did not name the project'));
+    appendChatMsg('system', 'Could not check which chat the engine holds' + (failure ? ' (' + failure + ')' : '') +
+      ' — project chat ' + name + ' is not reconnected; reload the page or reopen it from the Projects tab.');
+    return;
+  }
+  if (project && project.slug) {
+    if (project.slug === a.slug && (project.chat || null) === (a.chat || null)) projectsState.reconciled = true;
+    return;
+  }
+  if (!ws || ws.readyState !== 1) {
+    // The socket closed again meanwhile; the next open reconciles afresh.
+    console.warn('[projects] socket closed before project chat ' + a.slug + ' could be reopened');
+    return;
+  }
+  var msg = { type: 'project.open', slug: a.slug };
+  if (a.chat) msg.chat = a.chat;
+  projectsState.rebind = { seq: seq, slug: a.slug, chat: a.chat || null, title: a.title || null };
+  ws.send(JSON.stringify(msg));
+  appendChatMsg('system', 'Engine restarted — reopening project chat ' + name);
+}
+
+/**
+ * A session.error for a project.open: ours, if a re-open to a restarted engine
+ * is pending (reconcileProjectBinding). The engine holds no project, so the
+ * pane must not keep its strip and send the next message to the coding
+ * session as if it were the chat — back to the coding session, said so. Any
+ * other refusal (a click on a chat that is gone) is shown where it was sent.
+ */
+function onProjectOpenRefused(error) {
+  var r = projectsState.rebind;
+  if (!r || String(error || '').indexOf('project.open') < 0) return;
+  projectsState.rebind = null;
+  projectsState.reconciled = true;
+  projectsState.active = null;
+  projectsState.renderedChat = null;
+  restoreCodingCwd();
+  showConnProject(null);
+  document.getElementById('chatProjectStrip').classList.remove('visible');
+  appendChatMsg('system', 'Could not reopen project chat ' + (projectsState.names[r.slug] || r.slug) + ' › ' + (r.title || 'new chat') +
+    ' after the engine restarted (' + error + ') — this pane is the coding session now; reopen the chat from the Projects tab.');
+  var ph = parseProjectsHash();
+  if (ph && ph.chat !== undefined) history.replaceState(null, '', '#projects/' + encodeURIComponent(ph.slug));
+}
+
+/** True, and said so, while this connect has not settled which chat the engine holds — a project send now could land in the coding session. */
+function projectChatUnsettled() {
+  if (!projectsState.active || projectsState.reconciled !== false) return false;
+  appendChatMsg('system', 'Reconnecting the project chat — try again in a moment.');
+  return true;
+}
+
+/**
  * `project.opened` — from this page's own project.open, or the frame the server
  * sends every socket that connects while a project is bound (a reload, a
  * reconnect, a second tab). Never sends anything: an on-connect frame must not
- * turn into a project.open.
- *   - the chat this pane already shows (a reconnect of this page): refresh the
- *     strip label, nothing else;
+ * turn into a project.open. Any frame is the engine's word on what it holds:
+ * it settles the connect (reconcileProjectBinding) and answers a pending re-open.
+ *   - the chat this pane already shows (a reconnect of this page, or the
+ *     re-open after an engine restart): refresh the strip label, nothing else;
  *   - an existing chat the pane does not show (a page load into a bound chat):
  *     fetch its transcript and draw it, THEN the "Opened …" line — so a reload
  *     is not a blank pane with only the next thinking streaming in;
  *   - a new chat: a fresh pane.
  */
 function onProjectOpened(event) {
+  projectsState.reconciled = true;
+  projectsState.rebind = null;
   var strip = document.getElementById('chatProjectStrip');
   var setLabel = function() {
     document.getElementById('chatProjectLabel').textContent =
@@ -6171,6 +6278,7 @@ function markSaveableReplies() {
 
 function saveAsArtifact(msgIndex) {
   if (!projectsState.active) { appendChatMsg('system', 'Save as artifact needs an open project chat.'); return; }
+  if (projectChatUnsettled()) return;
   if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — nothing was saved.'); return; }
   var name = window.prompt('Artifact name', 'reply-' + (msgIndex + 1));
   if (name === null) return;
@@ -6193,6 +6301,7 @@ function saveAsArtifact(msgIndex) {
  */
 function showReplyAsUi(msgIndex) {
   if (!projectsState.active) { appendChatMsg('system', 'Show as UI needs an open project chat.'); return; }
+  if (projectChatUnsettled()) return;
   if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine — nothing was sent.'); return; }
   var text = 'Show your previous reply as UI with RenderUI: the same content, no new facts.' + replyReference(msgIndex, 'show');
   // Sent the way a FollowUps chip is: a click that lands while a turn runs is
