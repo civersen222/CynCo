@@ -991,11 +991,47 @@ export class ConversationLoop {
     this.emit({ type: 'ui.render', ...frame })
   }
 
-  /** Every surface still partial gets its terminal frame, with the reason the page shows. */
-  private closePendingUiSurfaces(reasonFor: (toolId: string) => string): void {
+  /**
+   * Every surface still partial gets its terminal frame, with the reason the
+   * page shows; `path` names the exit that closed it, for the log.
+   */
+  private closePendingUiSurfaces(path: string, reasonFor: (toolId: string) => string): void {
     for (const toolId of [...this.pendingUiSurfaces]) {
-      this.emitUiRender({ toolId, surfaceId: toolId, partial: false, spec: null, errors: [reasonFor(toolId)] })
+      const reason = reasonFor(toolId)
+      console.log(`[genui] surface ${toolId} withdrawn (${path}): ${reason.slice(0, 160)}`)
+      this.emitUiRender({ toolId, surfaceId: toolId, partial: false, spec: null, errors: [reason] })
     }
+  }
+
+  /**
+   * A tool batch the loop decides not to run (today: the context-critical
+   * stop). Every call still gets a tool result naming the reason, under its
+   * own id: the model is told and no `tool_use` is left dangling in history,
+   * the page's tool rows say why, and a RenderUI surface that drew while its
+   * arguments streamed is withdrawn WITH that reason. A skipped batch used to
+   * leave the surface pending: the next batch end withdrew it as "the call did
+   * not run" (or the turn's end as "the turn ended before this surface was
+   * finished") and the model read a nudge where its result should have been
+   * (dashboard transcript 2026-10-11, "Tower design brief"). Nothing was
+   * dispatched, so the call counters are untouched.
+   */
+  private dropToolBatch(toolUseBlocks: any[], path: string, reason: string): void {
+    const toolResults: Message['content'] = []
+    for (const block of toolUseBlocks) {
+      const toolId = typeof block?.id === 'string' && block.id ? block.id : randomUUID()
+      const toolName = typeof block?.name === 'string' ? block.name : 'unknown'
+      const text = `Tool call "${toolName}" was not executed: ${reason}`
+      this.emit({ type: 'tool.start', toolId, toolName, input: (block?.input ?? {}) as Record<string, unknown> })
+      this.emit({ type: 'tool.complete', toolId, toolName, result: text, isError: true })
+      toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: [{ type: 'text', text }], is_error: true })
+    }
+    console.log(`[loop] ${toolResults.length} tool call(s) not executed (${path}): ${reason}`)
+    this.closePendingUiSurfaces(path, toolId => {
+      const r = (toolResults as any[]).find(x => x?.tool_use_id === toolId)
+      return String(r?.content?.[0]?.text ?? `the call was not executed: ${reason}`).slice(0, 300)
+    })
+    this.addMessage({ role: 'user', content: toolResults })
+    if (this.project?.chatFile) appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: toolResults as TranscriptMessage['content'] })
   }
 
   /**
@@ -1412,7 +1448,7 @@ export class ConversationLoop {
       // frame, and a click queued behind this turn that the natural end did
       // not drain is dispatched once the loop is free (design A2/A8). Both
       // wrapped: nothing here may skip the clears below.
-      try { this.closePendingUiSurfaces(() => 'the turn ended before this surface was finished') } catch (e) { console.error('[genui] terminal frame failed: ' + (e as Error).message) }
+      try { this.closePendingUiSurfaces('turn end', () => 'the turn ended before this surface was finished') } catch (e) { console.error('[genui] terminal frame failed: ' + (e as Error).message) }
       const queuedClick = this.pendingUiActions.shift()
       if (queuedClick) {
         console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after the turn`)
@@ -2889,6 +2925,30 @@ export class ConversationLoop {
     /** Evasion probes get their own small budget so they cannot consume the
      *  stop-attempt enforcement budget, and cannot nag indefinitely. */
     let evasionNudges = 0
+    /** The contract's "you are NOT done" nudge, phrased for the current workflow phase. */
+    const enforcementNudge = (): string => {
+      const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
+      return enforcementNudgeText({
+        pending: globalContract.pendingCount(),
+        failed: globalContract.failedCount(),
+        phaseName: this.workflowEngine.currentPhase?.name ?? null,
+        authoringPhase: !!phaseAllowed && !phaseAllowed.includes('Bash'),
+      })
+    }
+    /**
+     * Enforcement budget exhausted: resolve the contract as failed rather than
+     * allowing an unverified completion, and end the turn here instead of
+     * drifting through the other re-entry paths for several more rounds.
+     */
+    const failUnverified = (): void => {
+      const unverified = globalContract.resolveUnverified()
+      console.log(`[contract] UNRESOLVED after ${globalContract.enforcementRounds} rounds — failing ${unverified.length} unverified assertion(s)`)
+      this.emit({
+        type: 'stream.token',
+        text: `\n[System] Contract unresolved — ${unverified.length} assertion(s) were never verified:\n${unverified.map(t => `  - ${t}`).join('\n')}\n`,
+      })
+      this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+    }
 
     for (let i = 0; i < maxIterations; i++) {
       // ── Operator notes (Phase 2c-i) ──
@@ -3898,6 +3958,12 @@ export class ConversationLoop {
         }
       }
       if (ctxUtilization > 0.80) {
+        // This iteration's calls are not run — a read now could overflow the
+        // window — but each is answered with the reason rather than dropped,
+        // and a surface it had drawn is withdrawn with it (`dropToolBatch`).
+        if (toolUseBlocks.length > 0) {
+          this.dropToolBatch(toolUseBlocks, 'context critical', `the context is at ${Math.round(ctxUtilization * 100)}% (critical) — finish now with the smallest possible calls`)
+        }
         this.addMessage({
           role: 'user',
           content: [{ type: 'text', text: '[CONTEXT CRITICAL: 80% used] Finish current task NOW. Do not read more files. Write your changes immediately.' }],
@@ -3974,39 +4040,25 @@ export class ConversationLoop {
       // A truncated turn (max_tokens) is also a stop attempt — without this,
       // the token cap becomes a way to bypass enforcement on a new path.
       const modelStopping = toolUseBlocks.length === 0 && (stopReason === 'end_turn' || stopReason === 'max_tokens')
+      // The read-loop evasion probe fires on an iteration that DID call tools
+      // — reading in circles is what it looks for — so it is answered after
+      // the batch below: the calls run and get their results, then the nudge
+      // is appended. It used to `continue` here and drop every call of its
+      // iteration unexecuted: no tool result, and a RenderUI surface already
+      // drawn on the page withdrawn as "the call did not run" (dashboard
+      // transcript 2026-10-11, "Tower design brief").
       const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
-      if (contractActive && (modelStopping || readLoopEvasion)) {
+      if (contractActive && modelStopping) {
         // Only a genuine stop attempt spends the enforcement budget. The
         // periodic evasion probe has its own, so it cannot exhaust enforcement
         // before the model has tried to finish even once.
-        if (modelStopping) globalContract.enforcementRounds++
-        else evasionNudges++
-
+        globalContract.enforcementRounds++
         if (globalContract.enforcementRounds <= 5) {
-          const pending = globalContract.pendingCount()
-          const failed = globalContract.failedCount()
-          const phaseAllowed = this.workflowEngine.isActive ? this.workflowEngine.getAllowedTools() : null
-          const authoringPhase = !!phaseAllowed && !phaseAllowed.includes('Bash')
-          const phaseName = this.workflowEngine.currentPhase?.name ?? null
-          const nudgeText = enforcementNudgeText({ pending, failed, phaseName, authoringPhase })
-          this.addMessage({
-            role: 'user',
-            content: [{ type: 'text', text: nudgeText }],
-          })
-          console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${pending} pending, ${failed} failed`)
+          this.addMessage({ role: 'user', content: [{ type: 'text', text: enforcementNudge() }] })
+          console.log(`[contract] Enforcement round ${globalContract.enforcementRounds}: ${globalContract.pendingCount()} pending, ${globalContract.failedCount()} failed`)
           continue
         }
-
-        // Budget exhausted. Resolve the contract as failed rather than allowing
-        // an unverified completion, and end the turn here instead of drifting
-        // through the other re-entry paths for several more rounds.
-        const unverified = globalContract.resolveUnverified()
-        console.log(`[contract] UNRESOLVED after ${globalContract.enforcementRounds} rounds — failing ${unverified.length} unverified assertion(s)`)
-        this.emit({
-          type: 'stream.token',
-          text: `\n[System] Contract unresolved — ${unverified.length} assertion(s) were never verified:\n${unverified.map(t => `  - ${t}`).join('\n')}\n`,
-        })
-        this.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+        failUnverified()
         return
       }
 
@@ -4169,10 +4221,14 @@ export class ConversationLoop {
 
       // A RenderUI call that streamed partial frames and then never reached the
       // executor (refused, malformed, denied) still owes the page a terminal
-      // frame; the reason is what the model was told (design A2).
-      this.closePendingUiSurfaces(toolId => {
+      // frame; the reason is what the model was told (design A2). Every exit
+      // that skips a batch answers each of its calls (`dropToolBatch`), so a
+      // surface with no result under its id here came through an unknown
+      // path: logged, and withdrawn with the one thing that is known.
+      this.closePendingUiSurfaces('after the tool batch', toolId => {
         const r = (toolResults as any[]).find(x => x?.tool_use_id === toolId)
         const text = Array.isArray(r?.content) ? r.content.map((c: any) => c?.text ?? '').join(' ') : ''
+        if (!text) console.log(`[genui] no tool result under ${toolId} after the batch — an exit skipped this call without answering it`)
         return (text || 'the call did not run').slice(0, 300)
       })
 
@@ -4191,6 +4247,19 @@ export class ConversationLoop {
         content: toolResults,
       })
       if (this.project?.chatFile) appendTranscript(this.project.dir, this.project.chatFile, { role: 'user', content: toolResults as TranscriptMessage['content'] })
+
+      // The evasion probe decided above, delivered after the results it used
+      // to replace. Re-checked: a ContractAssertPass in this batch may have
+      // completed the contract.
+      if (readLoopEvasion && globalContract.isActive() && !globalContract.isComplete()) {
+        evasionNudges++
+        if (globalContract.enforcementRounds > 5) {
+          failUnverified()
+          return
+        }
+        this.addMessage({ role: 'user', content: [{ type: 'text', text: enforcementNudge() }] })
+        console.log(`[contract] Evasion probe ${evasionNudges}: ${globalContract.pendingCount()} pending, ${globalContract.failedCount()} failed`)
+      }
 
       // On-demand tool surfacing: if the model called load_tools this turn,
       // grow the loaded set and append a tool-availability block (Option B —

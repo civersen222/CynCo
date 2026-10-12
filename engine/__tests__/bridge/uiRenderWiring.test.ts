@@ -558,3 +558,99 @@ describe('RenderUI pictures on the live loop (F174)', () => {
     globalContract.clear()
   }, 30000)
 })
+
+// ── A streamed RenderUI call dropped unexecuted ─────────────────────────
+//
+// The page draws partial frames while the arguments stream. Two exits then
+// skipped the whole tool batch with the calls still in it — the contract's
+// read-loop evasion probe (every 8th iteration, tool calls or not) and the
+// context-critical stop — so no tool result was ever recorded under the
+// streamed id. The next batch end withdrew the surface as "the call did not
+// run" (or the turn's end as "the turn ended before this surface was
+// finished"): the Cards the operator was looking at vanished with no reason,
+// and the model read a nudge where its result should have been (dashboard
+// transcript 2026-10-11, "Tower design brief"). The probe now runs the calls
+// and nudges after them; the stop answers each dropped call with the reason.
+
+describe('a streamed RenderUI call that the loop would have dropped unexecuted', () => {
+  const load: ScriptBlock = { type: 'tool_use', name: 'load_tools', input: { tools: ['RenderUI'] } }
+  const draw: ScriptBlock = { type: 'tool_use', name: 'RenderUI', input: genuiExampleCall() as unknown as Record<string, unknown> }
+  const glob = (n: number): ScriptBlock => ({ type: 'tool_use', name: 'Glob', input: { pattern: `*.none-${n}` } })
+  const framesFor = (events: any[], toolId: string) => uiFrames(events).filter(f => f.toolId === toolId)
+  const userIndex = (loop: ConversationLoop, pick: (b: any) => boolean) =>
+    loop.getMessages().findIndex(m => m.role === 'user' && (m.content as any[]).some(pick))
+  async function withIterations(n: number, run: () => Promise<void>) {
+    const prev = process.env.LOCALCODE_MAX_ITERATIONS
+    process.env.LOCALCODE_MAX_ITERATIONS = String(n)
+    try { await run() } finally { if (prev === undefined) delete process.env.LOCALCODE_MAX_ITERATIONS; else process.env.LOCALCODE_MAX_ITERATIONS = prev }
+  }
+
+  it('the contract evasion probe (every 8th iteration) runs that iteration\'s calls and nudges after them', async () => {
+    globalContract.clear()
+    globalContract.create('Draw the plan', 'draw the plan', ['the plan is drawn'])
+    // i=8 is the probe's iteration: the RenderUI call lands exactly there.
+    const made = makeLoop({ script: [[load], [glob(1)], [glob(2)], [glob(3)], [glob(4)], [glob(5)], [glob(6)], [glob(7)], [draw], [glob(9)]] })
+    try {
+      await withIterations(11, () => made.loop.handleUserMessage('draw the plan as a surface'))
+    } finally { globalContract.clear() }
+    const frames = framesFor(made.events, 'tu-m8-0')
+    expect(frames.some(f => f.partial)).toBe(true) // the page had drawn it
+    const final = frames.filter(f => !f.partial)
+    expect(final).toHaveLength(1)
+    expect(final[0]).not.toMatchObject({ spec: null, errors: ['the call did not run'] })
+    // the call ran: a drawn surface and a result under the streamed id
+    expect(final[0].surfaceId).toBe('plan')
+    expect(final[0].spec).not.toBeNull()
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-m8-0')
+    expect(complete?.isError).toBe(false)
+    expect(String(complete?.result)).toContain('(surface: plan)')
+    // the probe still fires — after the results, not instead of them
+    const resultAt = userIndex(made.loop, b => b.type === 'tool_result' && b.tool_use_id === 'tu-m8-0')
+    const nudgeAt = userIndex(made.loop, b => b.type === 'text' && /You are NOT done\. Contract has/.test(b.text))
+    expect(resultAt).toBeGreaterThan(-1)
+    expect(nudgeAt).toBeGreaterThan(resultAt)
+  }, 60000)
+
+  it('the context-critical stop answers each dropped call with the reason and withdraws its surface with it', async () => {
+    globalContract.clear()
+    // ~224k chars of spec (~56k tokens): past 80% of the window sized below on its own.
+    const elements: Record<string, any> = { card: { type: 'Card', props: { title: 'Towers' }, children: [] as string[] } }
+    for (let i = 0; i < 40; i++) {
+      elements[`t${i}`] = { type: 'Text', props: { text: `tower ${i} `.repeat(700) } }
+      elements.card.children.push(`t${i}`)
+    }
+    const big: ScriptBlock = { type: 'tool_use', name: 'RenderUI', input: { surface: 'towers', spec: { root: 'card', elements } } }
+    const made = makeLoop({ script: [[load], [big], [glob(2)]] })
+    // The window is sized from iteration 0's measured prompt, right after its
+    // own check passed, so the stop fires on the RenderUI iteration and not
+    // before (the coding prompt alone is past 80% of a 32k window). Never at
+    // or under 65536: that turns on two-stage tool routing, whose stage-1
+    // call would consume the scripted RenderUI reply (toolRouter.ts).
+    const emit = (made.loop as any).emit
+    let sized = false
+    ;(made.loop as any).emit = (e: any) => {
+      emit(e)
+      if (e?.type === 'context.status' && !sized) { sized = true; (made.loop as any).config.contextLength = Math.max(65537, e.estimatedTokens + 1000) }
+    }
+    await withIterations(3, () => made.loop.handleUserMessage('draw the towers'))
+    const status = made.events.filter(e => e?.type === 'context.status')
+    expect(status[0].utilization).toBeLessThan(0.8) // iteration 0 ran its call
+    expect(status[1].utilization).toBeGreaterThan(0.8) // iteration 1 hit the stop
+    const criticalAt = userIndex(made.loop, b => b.type === 'text' && String(b.text).startsWith('[CONTEXT CRITICAL'))
+    expect(criticalAt).toBeGreaterThan(-1)
+    // the surface drew before the stop
+    const frames = framesFor(made.events, 'tu-m1-0')
+    expect(frames.some(f => f.partial && f.spec?.elements?.t0)).toBe(true)
+    const final = frames.filter(f => !f.partial)
+    expect(final).toHaveLength(1)
+    expect(final[0].spec).toBeNull()
+    expect(final[0].errors?.[0]).toMatch(/was not executed: the context is at \d+%/)
+    // the model and the page's tool row are told the same thing, under the streamed id
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-m1-0')
+    expect(complete?.isError).toBe(true)
+    expect(String(complete?.result)).toMatch(/was not executed: the context is at \d+%/)
+    const resultAt = userIndex(made.loop, b => b.type === 'tool_result' && b.tool_use_id === 'tu-m1-0' && b.is_error === true)
+    expect(resultAt).toBeGreaterThan(-1)
+    expect(criticalAt).toBeGreaterThan(resultAt)
+  }, 60000)
+})
