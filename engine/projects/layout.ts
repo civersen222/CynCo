@@ -7,7 +7,7 @@
  * plain filesystem shape, so it can be tested against a temp dir alone.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, realpathSync, lstatSync, readlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, realpathSync, lstatSync, readlinkSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
@@ -204,16 +204,101 @@ export function writeFileIndex(dir: string, area: 'knowledge' | 'artifacts', ind
 }
 
 export function appendJournal(dir: string, event: JournalEvent, detail: string, now: () => string = () => new Date().toISOString()): void {
-  appendFileSync(join(dir, 'journal.md'), `- ${now()} ${event} — ${detail.replace(/\r?\n/g, ' ')}\n`, 'utf8')
+  journalAppend(join(dir, 'journal.md'), `- ${now()} ${event} — ${detail.replace(/\r?\n/g, ' ')}\n`)
 }
 
 export function readJournal(dir: string, limit = 200): { at: string; event: string; detail: string }[] {
-  const p = join(dir, 'journal.md')
-  if (!existsSync(p)) return []
+  const text = journalRead(join(dir, 'journal.md'))
+  if (text === null) return []
   const out: { at: string; event: string; detail: string }[] = []
-  for (const line of readFileSync(p, 'utf8').split('\n')) {
+  for (const line of text.split('\n')) {
     const m = line.match(/^- (\S+) (\S+) — (.*)$/)
     if (m) out.push({ at: m[1], event: m[2], detail: m[3] })
   }
   return out.reverse().slice(0, limit)
+}
+
+// ─── the journal file is the engine's, but the model can plant anything at its name ───
+
+/** `readJournal` reads at most this much, from the end: the History tab wants the newest lines, and a planted multi-gigabyte file must not be loaded whole. */
+export const JOURNAL_READ_CAP = 8 * 1024 * 1024
+
+/**
+ * Why the engine must not write to or read `journal.md` here, or null when it
+ * is a regular file or absent (the append creates it). The model can write
+ * anywhere in a project, links included (`gradeProjectCall` grades `ln -s` as
+ * safe), so a link planted at `journal.md` would carry the engine's own append
+ * out of the project — the one thing the file-tool fence forbids the model —
+ * and a FIFO or a device there would block the engine's thread on the write
+ * or the read (review of F174; the image store guards its files the same way).
+ * `lstat`, never `stat`: a link must be seen as a link, not as its target.
+ */
+function journalFault(p: string): string | null {
+  try {
+    const st = lstatSync(p)
+    if (st.isSymbolicLink()) return 'journal.md in the project is a link; the engine writes and reads only a regular file there'
+    if (!st.isFile()) return 'journal.md in the project is not a regular file; the engine writes and reads only a regular file there'
+    return null
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return null
+    console.log(`[projects] lstat ${p} failed: ${(e as Error).message}`)
+    return `journal.md in the project could not be checked (${code ?? (e as Error).message})`
+  }
+}
+
+/** Append one line, or drop it with the reason logged: a journal line is a record, never worth breaking the write it records. */
+function journalAppend(p: string, line: string): void {
+  const fault = journalFault(p)
+  if (fault) { console.log(`[projects] ${fault} — the journal line was not written: ${line.trim()}`); return }
+  try {
+    appendFileSync(p, line, 'utf8')
+  } catch (e) {
+    console.log(`[projects] journal.md append failed (${(e as Error).message}) — the journal line was not written: ${line.trim()}`)
+  }
+}
+
+/**
+ * The journal text, or null when there is none to read. Opened non-blocking
+ * and checked on the open descriptor (a FIFO's plain read waits for a writer
+ * that never comes); over `JOURNAL_READ_CAP` only the tail is read and the cut
+ * first line dropped, so the newest entries still reach the History tab.
+ */
+function journalRead(p: string): string | null {
+  const fault = journalFault(p)
+  if (fault) { console.log(`[projects] ${fault} — not read`); return null }
+  let fd: number
+  try {
+    fd = openSync(p, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') console.log(`[projects] journal.md could not be opened: ${(e as Error).message}`)
+    return null
+  }
+  try {
+    const st = fstatSync(fd)
+    if (!st.isFile()) { console.log('[projects] journal.md in the project is not a regular file — not read'); return null }
+    let start = 0
+    if (st.size > JOURNAL_READ_CAP) {
+      start = st.size - JOURNAL_READ_CAP
+      console.log(`[projects] journal.md is ${st.size} bytes, over the ${JOURNAL_READ_CAP}-byte cap; reading its tail`)
+    }
+    const buf = Buffer.alloc(st.size - start)
+    let n = 0
+    while (n < buf.length) {
+      const r = readSync(fd, buf, n, buf.length - n, start + n)
+      if (r === 0) break
+      n += r
+    }
+    const text = buf.subarray(0, n).toString('utf8')
+    return start === 0 ? text : text.slice(text.indexOf('\n') + 1)
+  } catch (e) {
+    console.log(`[projects] reading journal.md failed: ${(e as Error).message}`)
+    return null
+  } finally {
+    try {
+      closeSync(fd)
+    } catch (e) {
+      console.log(`[projects] closing journal.md failed: ${(e as Error).message}`)
+    }
+  }
 }
