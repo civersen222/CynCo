@@ -247,6 +247,15 @@ function coerceValue(v: unknown, def: PropDef, ctx: Ctx, at: string): unknown {
       if (def.max !== undefined && n > def.max) n = def.max
       return n
     }
+    case 'int': {
+      // A whole number, exact in JS (an Image seed: 0 … 2^53−1), never rounded or wrapped; a boolean is not one.
+      if (typeof v === 'boolean') return undefined
+      const n = toNum(v)
+      if (n === undefined || !Number.isSafeInteger(n)) return undefined
+      if (def.min !== undefined && n < def.min) return undefined
+      if (def.max !== undefined && n > def.max) return undefined
+      return n
+    }
     case 'boolean': return toBool(v)
     case 'enum': return toEnum(v, def)
     case 'string[]': return toStrs(v, ctx, at)
@@ -274,6 +283,9 @@ function coerceProps(raw: Record<string, unknown>, fields: Record<string, PropDe
     if (coerced === undefined) {
       if (def.type === 'enum') {
         report(ctx, `${at}.${key}: "${String(value)}" is not one of ${(def.enum ?? []).join('|')}; using "${def.default ?? def.enum?.[0]}"`)
+      } else if (def.type === 'int') {
+        const range = def.min !== undefined && def.max !== undefined ? ` from ${def.min} to ${def.max}` : ''
+        report(ctx, `${at}.${key}: "${String(value)}" is not a whole number${range} — dropped`)
       } else {
         report(ctx, `${at}.${key}: expected ${def.type}, got ${Array.isArray(value) ? 'an array' : typeof value}`)
       }
@@ -352,21 +364,26 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     // F174: "prompt" describes a picture the engine paints (engine/imagegen);
     // "src" is a real URL or the path of an image file the model wrote into
     // the project (`projectImagePath`). Anything else is dropped, never turned
-    // into a prompt — "aliens/a.bmp" describes nothing.
-    // coerceProps and the relocation above take any letter case, so "Src"
-    // and "Prompt" must meet these checks too; the exact name wins a tie.
+    // into a prompt — "aliens/a.bmp" describes nothing. "seed" is another
+    // take of the same prompt (coerced as an int by the catalog; here only
+    // its place is checked: it means nothing without a prompt).
+    // coerceProps and the relocation above take any letter case, so "Src",
+    // "Prompt" and "Seed" must meet these checks too; the exact name wins a tie.
     for (const k of Object.keys(p)) {
       const canon = k.toLowerCase()
-      if ((canon !== 'prompt' && canon !== 'src') || k === canon) continue
+      if ((canon !== 'prompt' && canon !== 'src' && canon !== 'seed') || k === canon) continue
       if (p[canon] === undefined || p[canon] === null) p[canon] = p[k]
       else report(ctx, `${at}: "${k}" repeats "${canon}" and was dropped`)
       delete p[k]
     }
+    // Whitespace-normalised, at least 3 characters; its length is bounded
+    // only by LIMITS.stringChars like any string — a design may need whole
+    // paragraphs (a 1,000-character cut sent the model to drive the image
+    // server by hand, live run 2026-10-12).
     const prompt = toStr(p.prompt)
     if (prompt !== undefined) {
       const norm = prompt.replace(/\s+/g, ' ').trim()
       if (norm.length < 3) delete p.prompt
-      else if (norm.length > IMAGE_PROMPT_CHARS) { p.prompt = norm.slice(0, IMAGE_PROMPT_CHARS).trimEnd(); report(ctx, `${at}.prompt: cut to ${IMAGE_PROMPT_CHARS} characters`) }
       else p.prompt = norm
     }
     if (p.src === null) delete p.src
@@ -389,6 +406,7 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
         else { delete p.src; report(ctx, `${at}.src: "${shown}" ${src !== undefined && !URL_SCHEME.test(src) ? IMAGE_PATH_HINT : IMAGE_SRC_HINT}`) }
       }
     }
+    if (typeof p.prompt !== 'string' && p.seed !== undefined && p.seed !== null) { delete p.seed; report(ctx, `${at}.seed: only a prompted picture takes a seed — dropped`) }
   }
   return p
 }
@@ -423,8 +441,6 @@ const URL_SCHEME = /^[a-z][a-z0-9+.-]+:/i
 /** The page's own URL rules (index.html `safeUrl` and its data: check): anything else would draw as a broken box. */
 const IMAGE_HTTP_URL = /^https?:\/\/[^\s<>"']+$/i
 const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/
-/** A picture's description is a sentence or two, not a document. */
-const IMAGE_PROMPT_CHARS = 1000
 
 /** Props the renderer cannot do without; an element missing one is dropped rather than drawn empty. */
 const MUST_HAVE: Record<string, string[]> = {

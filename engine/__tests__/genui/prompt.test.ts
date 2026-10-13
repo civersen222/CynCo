@@ -1,10 +1,12 @@
 /**
  * The RENDER_UI section rides inside the cached prompt prefix: it must name
- * every catalog component exactly once, stay under its budget (12k chars,
- * ~3k tokens — raised from 10k for the options example, F171; the picture
- * wording of F174 fits under it: 11,984 project, 11,289 session, whose
- * section asks for no picture, after the Image's file-path sentence), and
- * be byte-identical on every call.
+ * every catalog component exactly once, stay under its budget (13k chars,
+ * ~3.3k tokens — raised from 10k for the options example, F171, and from
+ * 12k for the takes/seed/fence sentences of the 2026-10-12 live run: the
+ * prefix cache makes the size cost nil, and the bound exists only to catch
+ * accidental bloat; the picture wording of F174 fits under it, and the
+ * session section, which asks for no picture, stays under 12k), and be
+ * byte-identical on every call.
  */
 import { describe, expect, it } from 'vitest'
 import { genuiPromptSection, genuiExampleCall, genuiOptionsExampleCall } from '../../genui/prompt.js'
@@ -14,7 +16,7 @@ import { validateSpec } from '../../genui/spec.js'
 describe('genui prompt section', () => {
   const text = genuiPromptSection('project')
   const session = genuiPromptSection('session')
-  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text.'
+  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation). Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.'
   /** The options example as the session section prints it. */
   const sessionOptionsExample = () => {
     const at = session.indexOf('{"surface":"path-options"')
@@ -25,7 +27,7 @@ describe('genui prompt section', () => {
     expect(genuiPromptSection('project')).toBe(text)
     expect(genuiPromptSection('session')).toBe(session)
     expect(session.length).toBeLessThan(12_000)
-    expect(text.length).toBeLessThan(12_000)
+    expect(text.length).toBeLessThan(13_000)
     expect(text.startsWith('<RENDER_UI>')).toBe(true)
     expect(text.trimEnd().endsWith('</RENDER_UI>')).toBe(true)
   })
@@ -74,15 +76,31 @@ describe('genui prompt section', () => {
   // F174: every Image showed "image unavailable" — the only rule-abiding Image
   // was an empty one. A design now gets a picture the engine paints, framed so
   // a later image → 3D step can use it.
-  it('gives each design a prompted picture, framed for a later 3D model, and never names the server', () => {
-    expect(text).toMatch(/- Image\(prompt: string, src: string, alt\*: string, caption: string\) — A picture: "prompt" describes it and the engine paints it; "src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote\. Give one, not both\./)
+  it('gives each design a prompted picture, framed for a later 3D model, and never names the server\'s setup', () => {
+    expect(text).toMatch(/- Image\(prompt: string, seed: int, src: string, alt\*: string, caption: string\) — A picture: "prompt" describes it and the engine paints it \(the same prompt with another whole-number "seed" is another take; leave seed out for one picture\); "src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote\. Give one, not both\./)
     // a file the model wrote into the project (an SVG template, a sketch) is shown by its path: the one sentence, in both modes
     expect(session).toMatch(/the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote/)
     expect(text).not.toMatch(/An idea with no picture/)
     expect(text).not.toMatch(/leave the Image out/)
-    // whether ComfyUI is set up reaches the model through the tool result only: the prefix never varies
-    expect(text).not.toMatch(/ComfyUI|LOCALCODE_COMFYUI/)
+    // whether ComfyUI is set up, where it is and whether it answers reach the
+    // model through the tool result only: the prefix never varies. The one
+    // static mention is the fence ("never … write a ComfyUI workflow").
+    expect(text).not.toMatch(/LOCALCODE_COMFYUI|:8188|https?:\/\/|\/prompt\b|\/history\b/)
+    expect(text.match(/ComfyUI/g)).toEqual(['ComfyUI'])
     expect(session).not.toMatch(/ComfyUI|LOCALCODE_COMFYUI/)
+  })
+
+  // The operator's live run (2026-10-12/13): told nothing about takes, the
+  // model planned six KSamplers per design in a workflow JSON of its own and
+  // drove ComfyUI through Bash; told nothing about length, it kept its
+  // paragraph prompts in files. The Shapes sentence now says how takes are
+  // asked for, that a prompt may be as long as the design needs, and that
+  // the engine paints — never the chat.
+  it('says that takes are Images with one prompt and different seeds, prompts may be paragraphs, and the chat never paints', () => {
+    expect(text).toContain('Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation).')
+    expect(text).toContain('as long as the design needs (whole paragraphs are fine)')
+    expect(text).toContain('Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.')
+    for (const s of ['Several takes', 'whole paragraphs', 'never call an image server']) expect(session).not.toContain(s)
   })
 
   // F171: "Write your prose first, then one RenderUI call" ended the turn on

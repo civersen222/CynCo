@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { createProject } from '../../projects/layout.js'
 import {
-  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, isProjectFile, isSvg, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
+  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, isProjectFile, isSvg, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, promptedImages, publicSidecar,
   readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, servedProjectFile, sidecarPath, storeFault, storedImageState, SVG_CAP_BYTES, writeSidecar, type ImageSidecar, type KeyFields,
 } from '../../imagegen/store.js'
 import type { UiSpec } from '../../bridge/protocol.js'
@@ -49,6 +49,37 @@ describe('keys and seeds', () => {
     ]
     const keys = changed.map(c => imageKey({ ...FIELDS, ...c }))
     expect(new Set([k, ...keys]).size).toBe(changed.length + 1)
+  })
+
+  // Several takes of one design: a seed the model chose keys a different
+  // picture, and the sidecar says where the seed came from.
+  it('the same prompt with another seed is another key; the seed from the prompt is the default', () => {
+    const def = imageKey(FIELDS)
+    const take1 = imageKey({ ...FIELDS, seed: 1001 }), take2 = imageKey({ ...FIELDS, seed: 2002 })
+    expect(new Set([def, take1, take2]).size).toBe(3)
+    expect(imageKey({ ...FIELDS, seed: 1001 })).toBe(take1)
+    expect(imageKey({ ...FIELDS, seed: seedFor(FIELDS.prompt, FIELDS.negative) })).toBe(def)
+    const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
+      g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
+      a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
+      b: { type: 'Image', props: { prompt: 'a tall green alien', seed: 1001, alt: 'B' } },
+      c: { type: 'Image', props: { prompt: 'a tall green alien', seed: 0, alt: 'C' } },
+      d: { type: 'Image', props: { prompt: 'a tall green alien', seed: 2.5, alt: 'D' } }, // an unvalidated spec (a replayed transcript): not a seed
+    }) }
+    expect(promptedImages(spec).map(im => [im.id, im.seed])).toEqual([['a', undefined], ['b', 1001], ['c', 0], ['d', undefined]])
+  })
+
+  it('a sidecar records where its seed came from; a record with another value there reads as no record', () => {
+    const k = imageKey({ ...FIELDS, seed: 1001 })
+    writeSidecar(dir, sidecar(k, { seed: 1001, seedFrom: 'model' }))
+    expect(readSidecar(dir, k)).toMatchObject({ seed: 1001, seedFrom: 'model' })
+    expect(publicSidecar(readSidecar(dir, k)!)).toMatchObject({ seed: 1001, seedFrom: 'model' })
+    writeSidecar(dir, sidecar(k, { seedFrom: 'prompt' }))
+    expect(readSidecar(dir, k)?.seedFrom).toBe('prompt')
+    writeSidecar(dir, sidecar(k)) // a record from before the field: still valid
+    expect(readSidecar(dir, k)?.seedFrom).toBeUndefined()
+    writeFileSync(sidecarPath(dir, k), JSON.stringify({ ...sidecar(k), seedFrom: 'dice' }))
+    expect(readSidecar(dir, k)).toBeNull()
   })
 
   it('canonical JSON sorts keys at every depth', () => {

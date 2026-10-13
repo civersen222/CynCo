@@ -315,10 +315,18 @@ describe('validateSpec: Image prompt or src', () => {
     expect(r.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
   })
 
-  it('a prompt over 1,000 characters is cut and said so; one under 3 is no prompt', () => {
-    const long = one('Image', { prompt: 'walnut '.repeat(200), alt: 'a' })
-    expect((long.spec?.elements.x.props?.prompt as string).length).toBeLessThanOrEqual(1000)
-    expect(long.errors).toEqual(['x.prompt: cut to 1000 characters'])
+  // The operator's live run (2026-10-12): the model wrote whole-paragraph
+  // prompts for its tower designs and the validator cut each at 1,000
+  // characters, so it tried to drive ComfyUI by hand instead. A prompt is
+  // bounded only by LIMITS.stringChars, like any other string.
+  it('a prompt is kept whole up to the string cap, however long; one under 3 characters is no prompt', () => {
+    const paragraph = 'walnut '.repeat(200).trim()
+    const long = one('Image', { prompt: paragraph, alt: 'a' })
+    expect(long.spec?.elements.x.props?.prompt).toBe(paragraph)
+    expect(long.errors).toEqual([])
+    const huge = one('Image', { prompt: 'walnut '.repeat(1200), alt: 'a' })
+    expect((huge.spec?.elements.x.props?.prompt as string).length).toBe(LIMITS.stringChars)
+    expect(huge.errors).toEqual([`x.prompt: text cut at ${LIMITS.stringChars} characters`])
     const tiny = one('Image', { prompt: ' a ', src: 'https://example.com/t.jpg', alt: 'a' })
     expect(tiny.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'a' })
     expect(tiny.errors).toEqual([])
@@ -339,9 +347,9 @@ describe('validateSpec: Image prompt or src', () => {
     const both = one('Image', { prompt: 'a tall green alien', Src: 'https://e.com/a.png', alt: 'A' })
     expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
     expect(both.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
-    const long = one('Image', { Prompt: 'walnut '.repeat(200), alt: 'a' })
-    expect((long.spec?.elements.x.props?.prompt as string).length).toBeLessThanOrEqual(1000)
-    expect(long.errors).toEqual(['x.prompt: cut to 1000 characters'])
+    const long = one('Image', { Prompt: 'walnut '.repeat(1200), alt: 'a' })
+    expect((long.spec?.elements.x.props?.prompt as string).length).toBe(LIMITS.stringChars)
+    expect(long.errors).toEqual([`x.prompt: text cut at ${LIMITS.stringChars} characters`])
     expect(one('Image', { Prompt: '  a ', alt: 'a' }).spec).toBeNull()
     // an element-level "Prompt" beside a made-up props.src: the prompt counts as given
     const lifted = one('Image', { src: 'aliens/a.png', alt: 'A' }, { Prompt: 'a tall green alien' })
@@ -351,7 +359,7 @@ describe('validateSpec: Image prompt or src', () => {
     const twice = one('Image', { Src: 'aliens/a.bmp', src: 'https://e.com/a.png', alt: 'A' })
     expect(twice.spec?.elements.x.props).toEqual({ src: 'https://e.com/a.png', alt: 'A' })
     expect(twice.errors).toEqual(['x: "Src" repeats "src" and was dropped'])
-    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.bmp', alt: 'A' }, { Src: 'tower/t.svg', alt: 'A' }]) {
+    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(1200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.bmp', alt: 'A' }, { Src: 'tower/t.svg', alt: 'A' }, { prompt: 'a tall alien', Seed: '1001', alt: 'A' }]) {
       const first = one('Image', props)
       const again = validateSpec(first.spec)
       expect(again.errors, JSON.stringify(props).slice(0, 60)).toEqual([])
@@ -458,5 +466,47 @@ describe('validateSpec: Image src as a file in the project', () => {
     const again = validateSpec(first.spec)
     expect(again.errors).toEqual([])
     expect(again.spec).toEqual(first.spec)
+  })
+})
+
+// Several takes of one design: the same prompt with another seed is another
+// picture (engine/imagegen keys on the seed). A seed is a whole number the
+// KSampler takes; JS must stay exact, so 0 … 2^53−1 is kept and the rest is
+// dropped with a note, never rounded or wrapped.
+describe('validateSpec: an Image seed', () => {
+  const NOTE = (v: string) => `x.seed: "${v}" is not a whole number from 0 to ${Number.MAX_SAFE_INTEGER} — dropped`
+  it('coerces "1001" → 1001 and keeps a safe non-negative integer', () => {
+    const r = one('Image', { prompt: 'a tall green alien', seed: '1001', alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', seed: 1001, alt: 'A' })
+    expect(r.errors).toEqual([])
+    for (const seed of [0, 1, 4004, Number.MAX_SAFE_INTEGER, ' 2002 ', '9007199254740991']) {
+      const k = one('Image', { prompt: 'a tall green alien', seed, alt: 'A' })
+      expect(k.spec?.elements.x.props?.seed, String(seed)).toBe(Number(seed))
+      expect(k.errors, String(seed)).toEqual([])
+    }
+  })
+  it('drops a fraction, a negative, one past 2^53−1, a non-number or a boolean with a note; the Image stays', () => {
+    for (const [seed, shown] of [[1001.5, '1001.5'], [-1, '-1'], ['-7', '-7'], [2 ** 53, '9007199254740992'], ['abc', 'abc'], [true, 'true'], [Infinity, 'Infinity'], [[1], '1'], ['1e3.5', '1e3.5']] as Array<[unknown, string]>) {
+      const r = one('Image', { prompt: 'a tall green alien', seed, alt: 'A' })
+      expect(r.spec?.elements.x.props, shown).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+      expect(r.errors, shown).toEqual([NOTE(shown)])
+    }
+    const nul = one('Image', { prompt: 'a tall green alien', seed: null, alt: 'A' })
+    expect(nul.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(nul.errors).toEqual([])
+  })
+  it('a seed on an Image with no prompt means nothing and is dropped with a note', () => {
+    const r = one('Image', { src: 'https://example.com/t.jpg', seed: 7, alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'A' })
+    expect(r.errors).toEqual(['x.seed: only a prompted picture takes a seed — dropped'])
+    const file = one('Image', { src: 'tower/t.svg', seed: '7', alt: 'A' })
+    expect(file.spec?.elements.x.props).toEqual({ src: 'tower/t.svg', alt: 'A' })
+    expect(file.errors).toEqual(['x.seed: only a prompted picture takes a seed — dropped'])
+  })
+  it('the seed is static in partial mode too, and an int prop is not a number prop: 2.5 is refused where a Slider would keep it', () => {
+    const partial = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall green alien', seed: 2.5, alt: 'A' } } } }, { partial: true })
+    expect(partial.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(partial.errors).toEqual([])
+    expect(one('Slider', { name: 's', label: 'S', value: 2.5 }).spec?.elements.x.props?.value).toBe(2.5)
   })
 })

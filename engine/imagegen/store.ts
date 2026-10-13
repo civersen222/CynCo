@@ -71,6 +71,8 @@ export type ImageSidecar = {
   negative: string
   alt: string
   seed: number
+  /** Where the seed came from: the Image's own "seed" (another take), or derived from the prompt; absent on records from before the field. */
+  seedFrom?: 'model' | 'prompt'
   width: number
   height: number
   steps: number
@@ -314,6 +316,7 @@ function sidecarFault(v: unknown, key: string): string | null {
   for (const f of ['seed', 'width', 'height', 'steps', 'cfg']) if (!num(v[f])) return f
   for (const f of ['reason', 'sha256', 'startedAt', 'finishedAt']) if (!optional(v[f], str)) return f
   for (const f of ['bytes', 'queueMs', 'genMs', 'execMs']) if (!optional(v[f], num)) return f
+  if (!optional(v.seedFrom, x => x === 'model' || x === 'prompt')) return 'seedFrom'
   if (!isObj(v.workflow) || !str(v.workflow.source) || !str(v.workflow.sha256)) return 'workflow'
   if (v.apiPrompt !== null && !isObj(v.apiPrompt)) return 'apiPrompt'
   const c = v.comfy
@@ -441,15 +444,20 @@ function reachableElements(spec: UiSpec): Array<{ id: string; el: UiElement; pro
 
 /**
  * Every Image with a non-empty prompt, in draw order (depth-first from the
- * root). The one definition of "a picture the engine paints": `annotate`
- * queues these and a reloaded chat (`withValidatedSurfaces`) looks these up.
+ * root), with its "seed" when the model gave one (a safe non-negative
+ * integer — the validator's rule, checked again here because a replayed
+ * transcript spec is unvalidated). The one definition of "a picture the
+ * engine paints": `annotate` queues these and a reloaded chat
+ * (`withValidatedSurfaces`) looks these up.
  */
-export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string }> {
-  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string }> = []
+export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> {
+  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> = []
   for (const { id, el, props } of reachableElements(spec)) {
     if (el.type !== 'Image' || !props || typeof props.prompt !== 'string') continue
     const prompt = normPrompt(props.prompt)
-    if (prompt) out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '' })
+    if (!prompt) continue
+    const seed = typeof props.seed === 'number' && Number.isSafeInteger(props.seed) && props.seed >= 0 ? props.seed : undefined
+    out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '', ...(seed !== undefined ? { seed } : {}) })
   }
   return out
 }
@@ -494,7 +502,7 @@ export function publicSidecar(sc: ImageSidecar): Record<string, unknown> {
   const eff = effectiveStatus(sc)
   return {
     status: eff.status, ...(eff.reason !== undefined ? { reason: eff.reason } : {}),
-    w: sc.width, h: sc.height, prompt: sc.prompt, alt: sc.alt, checkpoint: sc.checkpoint, seed: sc.seed, finishedAt: sc.finishedAt ?? null,
+    w: sc.width, h: sc.height, prompt: sc.prompt, alt: sc.alt, checkpoint: sc.checkpoint, seed: sc.seed, ...(sc.seedFrom ? { seedFrom: sc.seedFrom } : {}), finishedAt: sc.finishedAt ?? null,
   }
 }
 

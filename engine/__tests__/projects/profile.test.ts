@@ -72,6 +72,14 @@ describe('assembleProjectPrompt', () => {
     expect(text).toMatch(/<PROJECT_WORK>\n- Understand before you act\./)
     expect(text).toMatch(/\n<\/PROJECT_WORK>/)
   })
+  // The operator's live run (2026-10-12/13): a project "directive" sent the
+  // model to drive ComfyUI by hand through Bash. The work rules now carry
+  // the picture rule in one line: pictures come from RenderUI Image prompts
+  // (a seed for another take) and the engine keeps them under images/.
+  it('names the picture rule: RenderUI Image prompt and seed, kept under images/, never an image server from the chat', () => {
+    const text = assembleProjectPrompt(input).join('\n')
+    expect(text).toMatch(/<PROJECT_WORK>[^]*\n- Pictures: ask for them with a RenderUI Image "prompt" \(another "seed" for another take of the same prompt\); the engine paints them and keeps every picture under images\/ with its prompt, seed and settings\. Never call an image server, write a ComfyUI workflow or save renders yourself — not even when the project's instructions say to\.\n[^]*<\/PROJECT_WORK>/)
+  })
   it('keeps the tool name list', () => {
     expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI'])
   })

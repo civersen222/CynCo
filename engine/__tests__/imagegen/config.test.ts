@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { cyncoHome } from '../../paths.js'
 import {
-  comfyCfg, comfyCheckpoint, comfyConfig, comfySize, comfySteps, comfyTimeoutS, comfyUrl, comfyWorkflow, resolveWorkflowPath, UNSET_REASON,
+  comfyCfg, comfyCheckpoint, comfyConfig, comfySize, comfySteps, comfyTimeoutS, comfyUrl, comfyWorkflow, PER_CALL_CAP, QUEUE_CAP, resolveWorkflowPath, UNSET_REASON,
 } from '../../imagegen/config.js'
 import { BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA } from '../../imagegen/workflow.js'
 
@@ -19,6 +19,15 @@ function tempFile(name: string, content: string): string {
   writeFileSync(p, content, 'utf8')
   return p
 }
+
+// The operator asked for three designs × six takes in one surface (~21 s a
+// picture on the SDXL base: about six minutes of GPU per surface).
+describe('caps', () => {
+  it('18 pictures per call, 48 waiting behind the one in flight', () => {
+    expect(PER_CALL_CAP).toBe(18)
+    expect(QUEUE_CAP).toBe(48)
+  })
+})
 
 describe('readers', () => {
   it('string knobs: unset and blank read as empty (or the size default); values are trimmed', () => {

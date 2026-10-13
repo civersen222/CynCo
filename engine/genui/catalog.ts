@@ -18,7 +18,7 @@
  */
 
 export type PropType =
-  | 'string' | 'number' | 'boolean' | 'enum'
+  | 'string' | 'number' | 'int' | 'boolean' | 'enum'
   | 'string[]' | 'number[]' | 'string[][]'
   | 'object' | 'object[]'
 
@@ -49,6 +49,8 @@ export type ComponentDef = {
 
 const str = (desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'string', desc, ...extra })
 const num = (desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'number', desc, ...extra })
+/** A whole number within [min, max]; anything else is dropped with a note, never rounded (`int` in the signature the model reads). */
+const int = (desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'int', desc, ...extra })
 const bool = (desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'boolean', desc, ...extra })
 const en = (values: readonly string[], desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'enum', enum: values, desc, ...extra })
 const strs = (desc: string, extra: Partial<PropDef> = {}): PropDef => ({ type: 'string[]', desc, ...extra })
@@ -168,8 +170,13 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
   },
   Image: {
     group: 'Content', children: 'none',
-    description: 'A picture: "prompt" describes it and the engine paints it; "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.',
-    props: { prompt: str('what the picture shows'), src: str('image URL, or a file path from the project folder'), alt: str('what it shows', { required: true }), caption: str('text under the image') },
+    description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.',
+    props: {
+      prompt: str('what the picture shows'),
+      // Another take of one design (engine/imagegen keys on it). ComfyUI's KSampler takes up to 2^64, but JS must stay exact.
+      seed: int('a whole number; the same prompt with another seed is another take — leave it out for one picture', { min: 0, max: Number.MAX_SAFE_INTEGER }),
+      src: str('image URL, or a file path from the project folder'), alt: str('what it shows', { required: true }), caption: str('text under the image'),
+    },
     example: { prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' },
   },
 

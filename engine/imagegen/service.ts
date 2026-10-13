@@ -174,6 +174,8 @@ export class ImageService implements ImageAnnotator {
   private pumpRun: Promise<void> | null = null
   /** Commits no job makes (the origins of pictures already made), awaited by whenIdle and shutdown. */
   private readonly asideCommits = new Set<Promise<void>>()
+  /** submit → history entry of the last picture made, for the note's wait estimate; null until one is. */
+  private lastGenMs: number | null = null
   private stopped = false
   private wake: (() => void) | null = null
 
@@ -330,8 +332,10 @@ export class ImageService implements ImageAnnotator {
     const origins: Array<[string, string]> = []
     let distinct = 0, overCap = false, queueFull = 0
     let q = 0, c = 0, o = 0, firstOff: string | null = null
+    // Jobs this call's pictures wait behind: the queue and a job still in flight (a settled one is committing, not painting).
+    const ahead = this.queue.length + (this.running && !this.running.settled ? 1 : 0)
     for (const im of images) {
-      const fields = this.keyFields(cfg, im.prompt)
+      const fields = this.keyFields(cfg, im.prompt, im.seed)
       const key = imageKey(fields)
       let state = decided.get(key)
       if (!state) {
@@ -347,7 +351,7 @@ export class ImageService implements ImageAnnotator {
           else if (sc && sc.status === 'done' && existsSync(pngPath(dir, key))) state = { status: 'done', ...base }
           else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
-            newJobs.push(this.makeJob(cfg, fields, key, im.alt, { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }))
+            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }))
             state = { status: 'queued', ...base }
           }
         }
@@ -380,6 +384,11 @@ export class ImageService implements ImageAnnotator {
     const parts: string[] = []
     if (q > 0) {
       let s = `Pictures: ${q} generating on ComfyUI at ${cfg.host}${c ? `, ${c} already made` : ''} — they appear in their cards by themselves; do not call RenderUI again for them.`
+      // More than three is minutes of GPU (three designs × six takes ≈ 6 min): say how long, so the wait is not read as a failure.
+      if (q > 3) {
+        if (this.lastGenMs === null) s += ' The first takes longer while the model loads.'
+        else s += ` About ${newJobs.length + ahead}×${Math.max(1, Math.round(this.lastGenMs / 1000))} s at the last measured pace${ahead ? ` (${ahead} ahead in the queue)` : ''}.`
+      }
       const last = this.probeCache?.result
       if (last && !last.ok) s += ` The last check of ComfyUI failed (${last.reason}); if it still fails, the cards will say so.`
       parts.push(s)
@@ -399,20 +408,21 @@ export class ImageService implements ImageAnnotator {
     }
   }
 
-  private keyFields(cfg: ComfyConfig, prompt: string): KeyFields {
+  /** The seed is the model's when the Image gave one (another take), else derived from the prompt (one prompt, one picture). */
+  private keyFields(cfg: ComfyConfig, prompt: string, seed?: number): KeyFields {
     return {
-      prompt, negative: cfg.negative, seed: seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
+      prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,
       // An auto-picked checkpoint keys as 'auto': the pick is not known until the server is probed.
       checkpoint: cfg.checkpoint ?? 'auto', workflow: cfg.workflow.sha256,
     }
   }
 
-  private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }): Job {
+  private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }): Job {
     const queuedAt = this.now()
     const sidecar: ImageSidecar = {
       schema: 1, key, status: 'queued', runId: RUN_ID,
-      prompt: f.prompt, negative: f.negative, alt, seed: f.seed, width: f.width, height: f.height, steps: f.steps, cfg: f.cfg,
+      prompt: f.prompt, negative: f.negative, alt, seed: f.seed, seedFrom, width: f.width, height: f.height, steps: f.steps, cfg: f.cfg,
       sampler: f.sampler, scheduler: f.scheduler, checkpoint: f.checkpoint,
       workflow: { source: cfg.workflow.source, sha256: cfg.workflow.sha256 },
       apiPrompt: null,
@@ -635,6 +645,7 @@ export class ImageService implements ImageAnnotator {
       : { type: 'ui.image', key: job.key, slug: job.slug, status: 'failed', reason: outcome.reason })
     const total = secs(end - job.queuedAt), queue = secs(sc.queueMs ?? end - job.queuedAt)
     if (outcome.status === 'done') {
+      if (sc.genMs !== undefined) this.lastGenMs = sc.genMs
       const exec = sc.execMs !== undefined ? `, exec ${secs(sc.execMs)}s` : ''
       const mb = ((sc.bytes ?? 0) / (1024 * 1024)).toFixed(1)
       this.log(`[imagegen] ${key8} done in ${total}s (queue ${queue}s, gen ${secs(sc.genMs ?? 0)}s${exec}) ${sc.width}x${sc.height} ${sc.steps} steps ${sc.checkpoint} on ${sc.comfy.host} → images/${job.key}.png (${mb} MB)`)

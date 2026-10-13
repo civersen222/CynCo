@@ -51,13 +51,15 @@ describe('genui catalog', () => {
 
   // F174: an Image is painted from its "prompt", or shows a real URL; neither prop is
   // required on its own (validateSpec needs one of the two), and the example paints.
-  it('Image takes a prompt or a real src, alt required, and its example is a prompt', () => {
+  it('Image takes a prompt (with an optional whole-number seed) or a real src, alt required, and its example is a prompt', () => {
     const img = GENUI_CATALOG.Image
-    expect(Object.keys(img.props)).toEqual(['prompt', 'src', 'alt', 'caption'])
+    expect(Object.keys(img.props)).toEqual(['prompt', 'seed', 'src', 'alt', 'caption'])
     expect(img.props.prompt.required).toBeFalsy()
     expect(img.props.src.required).toBeFalsy()
     expect(img.props.alt.required).toBe(true)
-    expect(img.description).toBe('A picture: "prompt" describes it and the engine paints it; "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.')
+    // another take of one design: the same prompt with another seed (engine/imagegen keys on it)
+    expect(img.props.seed).toEqual({ type: 'int', desc: 'a whole number; the same prompt with another seed is another take — leave it out for one picture', min: 0, max: Number.MAX_SAFE_INTEGER })
+    expect(img.description).toBe('A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.')
     expect(img.example).toEqual({ prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' })
   })
 
