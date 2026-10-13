@@ -123,6 +123,8 @@ export class ToolExecutor {
   private doomLoop = new DoomLoopDetector(3)
   private toolScorer?: ToolScorer
   private grader: Grader | null
+  /** The CodeIndex adoption nudge on retrieval results; off in a project chat, which has no CodeIndex. */
+  private codeIndexHints = true
 
   constructor(opts: ToolExecutorOptions) {
     this.cwd = opts.cwd
@@ -144,6 +146,10 @@ export class ToolExecutor {
 
   setGrader(g: Grader | null): void {
     this.grader = g
+  }
+
+  setCodeIndexHints(on: boolean): void {
+    this.codeIndexHints = on
   }
 
   getToolScorer(): ToolScorer | undefined {
@@ -227,10 +233,11 @@ export class ToolExecutor {
       // stack trace, a `git status`. Before the cap, so a truncated result is
       // truncated after the redaction and never after only part of it.
       // CodeIndex adoption nudge (see toolHints.ts): prepended AFTER the cap so
-      // the hint cannot be truncated away, and unconditionally so a CodeIndex
-      // call resets the crawl counter even on a doom-loop turn.
-      const nudged = withCodeIndexNudge(
-        toolName, input, capToolResult(redactSealed(result.output), this.contextLength), result.isError)
+      // the hint cannot be truncated away, and on every call (doom-loop turns
+      // included) so a CodeIndex call resets the crawl counter.
+      // Not in a project chat: it has no CodeIndex to point at.
+      const cappedOutput = capToolResult(redactSealed(result.output), this.contextLength)
+      const nudged = this.codeIndexHints ? withCodeIndexNudge(toolName, input, cappedOutput, result.isError) : cappedOutput
       const capped = {
         output: nudged,
         isError: result.isError,

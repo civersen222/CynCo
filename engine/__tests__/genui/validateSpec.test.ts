@@ -1,0 +1,519 @@
+/**
+ * validateSpec: the mistakes the surveys document a model making — numbers as
+ * strings, children omitted, props at the wrong level, option lists as plain
+ * strings, chart data as {label, value} pairs, a nested tree instead of a flat
+ * map, dangling and orphaned ids, unknown components — each coerced or
+ * reported, never thrown, and reported silently in partial mode.
+ */
+import { describe, expect, it } from 'vitest'
+import { validateSpec, LIMITS, isSurfaceId, projectImagePath, PROJECT_IMAGE_PATH_RE, PROJECT_IMAGE_PATH_MAX } from '../../genui/spec.js'
+import { genuiExampleCall } from '../../genui/prompt.js'
+
+const one = (type: string, props: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+  validateSpec({ root: 'x', elements: { x: { type, props, ...extra } } })
+
+describe('validateSpec', () => {
+  it('accepts the worked example without a single issue', () => {
+    const r = validateSpec(genuiExampleCall().spec)
+    expect(r.errors).toEqual([])
+    expect(r.count).toBe(7)
+    expect(r.spec?.root).toBe('card')
+    expect(r.spec?.elements.card.children).toEqual(['steps', 'costs', 'form', 'next'])
+  })
+
+  it('never throws and names the fault for non-specs', () => {
+    expect(validateSpec(null).spec).toBeNull()
+    expect(validateSpec('x').errors[0]).toMatch(/must be an object/)
+    expect(validateSpec({ root: 'a' }).errors[0]).toMatch(/elements/)
+    expect(validateSpec({ root: 'a', elements: {} }).spec).toBeNull()
+  })
+
+  it('coerces scalars: "2" → 2, "true" → true, 3 → "3", enum case', () => {
+    const g = one('Grid', { columns: '3' })
+    expect(g.spec?.elements.x.props?.columns).toBe(3)
+    expect(g.errors).toEqual([])
+    const s = one('Switch', { name: 'a', label: 'A', checked: 'true' })
+    expect(s.spec?.elements.x.props?.checked).toBe(true)
+    const m = one('Metric', { label: 'n', value: 42 })
+    expect(m.spec?.elements.x.props?.value).toBe('42')
+    const c = one('Callout', { message: 'm', type: 'WARNING' })
+    expect(c.spec?.elements.x.props?.type).toBe('warning')
+    expect(c.errors).toEqual([])
+  })
+
+  it('clamps numbers to their range and reports an enum value it cannot place', () => {
+    expect(one('Grid', { columns: 99 }).spec?.elements.x.props?.columns).toBe(6)
+    expect(one('Progress', { value: -5 }).spec?.elements.x.props?.value).toBe(0)
+    const c = one('Callout', { message: 'm', type: 'loud' })
+    expect(c.spec?.elements.x.props?.type).toBeUndefined()
+    expect(c.errors[0]).toMatch(/not one of info\|success\|warning\|error/)
+  })
+
+  it('relocates element-level props down and props-level visible/tab/children up', () => {
+    const r = validateSpec({ root: 'c', elements: {
+      c: { type: 'Card', title: 'T', children: ['t'] },
+      t: { type: 'Text', props: { text: 'hi', visible: { name: 'show', eq: true }, tab: 'a' } },
+    } })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.c.props?.title).toBe('T')
+    expect(r.spec?.elements.t.visible).toEqual({ name: 'show', eq: true })
+    expect(r.spec?.elements.t.tab).toBe('a')
+    expect(r.spec?.elements.t.props?.visible).toBeUndefined()
+  })
+
+  it('drops unknown props and fields with a report, ignores other formats\' noise silently', () => {
+    const r = one('Text', { text: 'x', colour: 'red' }, { id: 'x', weight: 2, catalogId: 'c' })
+    expect(r.spec?.elements.x.props).toEqual({ text: 'x' })
+    expect(r.errors).toEqual(['x: unknown prop "colour" was dropped'])
+  })
+
+  it('table rows: objects by column, strings, mixed cells — one cell per column', () => {
+    const r = one('Table', { columns: ['Name', 'Qty'], rows: [{ Name: 'Resin', Qty: 2 }, { name: 'Pigment', qty: '1' }, 'note', ['a', null]] })
+    expect(r.spec?.elements.x.props?.rows).toEqual([['Resin', '2'], ['Pigment', '1'], ['note', ''], ['a', '']])
+    expect(r.errors).toEqual([])
+    const long = one('Table', { columns: ['A'], rows: [['1', '2', '3'], ['4']] })
+    expect(long.spec?.elements.x.props?.rows).toEqual([['1'], ['4']])
+    expect(long.errors).toEqual(['x.rows: 1 row(s) had more cells than the 1 columns; the extra cells were dropped'])
+  })
+
+  it('table without columns derives them from the first row object; without rows it is dropped', () => {
+    const r = one('Table', { rows: [{ A: 1, B: 2 }] })
+    expect(r.spec?.elements.x.props?.columns).toEqual(['A', 'B'])
+    const d = one('Table', { rows: 'nope' })
+    expect(d.spec).toBeNull()
+    expect(d.errors.join(' ')).toMatch(/missing columns/)
+  })
+
+  it('charts: {label,value} pairs, bare number arrays, OpenUI {category,values}, numeric strings', () => {
+    const pairs = one('BarChart', { data: [{ label: 'a', value: '3' }, { label: 'b', value: 4 }] })
+    expect(pairs.spec?.elements.x.props?.labels).toEqual(['a', 'b'])
+    expect(pairs.spec?.elements.x.props?.series).toEqual([{ name: '', values: [3, 4] }])
+    const bare = one('LineChart', { labels: ['x', 'y'], series: ['1', 2] })
+    expect(bare.spec?.elements.x.props?.series).toEqual([{ name: '', values: [1, 2] }])
+    const openui = one('BarChart', { labels: ['x'], series: [{ category: 'A', values: [1] }] })
+    expect(openui.spec?.elements.x.props?.series).toEqual([{ name: 'A', values: [1] }])
+    const pie = one('PieChart', { data: [{ label: 'a', value: 1 }, { label: 'b', value: 3 }] })
+    expect(pie.spec?.elements.x.props?.values).toEqual([1, 3])
+    expect(pie.spec?.elements.x.props?.labels).toEqual(['a', 'b'])
+    const spark = one('Sparkline', { values: '1, 2, 3' })
+    expect(spark.spec?.elements.x.props?.values).toEqual([1, 2, 3])
+  })
+
+  it('options: strings, {value}-only, {label}-only, comma string; list items as strings', () => {
+    const r = one('Select', { name: 's', label: 'S', options: ['a', { value: 'b' }, { label: 'C' }] })
+    expect(r.spec?.elements.x.props?.options).toEqual([{ label: 'a', value: 'a' }, { label: 'b', value: 'b' }, { label: 'C', value: 'C' }])
+    const csv = one('Radio', { name: 'r', label: 'R', options: 'x, y' })
+    expect(csv.spec?.elements.x.props?.options).toEqual([{ label: 'x', value: 'x' }, { label: 'y', value: 'y' }])
+    const list = one('List', { items: ['one', { title: 'two', subtitle: 's' }] })
+    expect(list.spec?.elements.x.props?.items).toEqual([{ title: 'one' }, { title: 'two', subtitle: 's' }])
+  })
+
+  it('aliases: content→text, title→text (Heading), text→message (Callout), items→options, A2UI/OpenUI action objects', () => {
+    expect(one('Text', { content: 'c' }).spec?.elements.x.props?.text).toBe('c')
+    expect(one('Heading', { title: 'h' }).spec?.elements.x.props?.text).toBe('h')
+    expect(one('Callout', { text: 'm' }).spec?.elements.x.props?.message).toBe('m')
+    expect(one('Radio', { name: 'r', label: 'R', items: ['a'] }).spec?.elements.x.props?.options).toEqual([{ label: 'a', value: 'a' }])
+    const a2ui = one('Button', { label: 'Go', action: { event: { name: 'go', context: { id: 7 } } } })
+    expect(a2ui.spec?.elements.x.props?.action).toBe('go')
+    expect(a2ui.spec?.elements.x.props?.context).toEqual({ id: 7 })
+    const openui = one('Button', { label: 'Go', action: { type: 'continue_conversation', context: 'more' } })
+    expect(openui.spec?.elements.x.props?.action).toBe('continue_conversation')
+  })
+
+  it('unknown component → an error note the user sees and a report the model reads', () => {
+    const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['m'] }, m: { type: 'Modal', props: {} } } })
+    expect(r.spec?.elements.m.type).toBe('Callout')
+    expect(r.spec?.elements.m.props?.message).toContain('"Modal" is not in the catalog')
+    expect(r.errors.some(e => e.includes('unknown component "Modal"'))).toBe(true)
+  })
+
+  it('dangling child ids and orphans are dropped with a report; cycles are cut', () => {
+    const r = validateSpec({ root: 'c', elements: {
+      c: { type: 'Card', children: ['t', 'ghost', 'c'] },
+      t: { type: 'Text', props: { text: 'x' } },
+      lost: { type: 'Text', props: { text: 'orphan' } },
+    } })
+    expect(r.spec?.elements.c.children).toEqual(['t'])
+    expect(Object.keys(r.spec!.elements)).toEqual(['c', 't'])
+    expect(r.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('"ghost" is not an element id'),
+      expect.stringContaining('cycle'),
+      expect.stringContaining('lost: not reachable'),
+    ]))
+  })
+
+  it('a leaf given children reports them; a container without children gets []', () => {
+    const r = validateSpec({ root: 'c', elements: { c: { type: 'Card' }, t: { type: 'Text', props: { text: 'x' }, children: ['c'] } } })
+    expect(r.spec?.elements.c.children).toEqual([])
+    const leaf = validateSpec({ root: 't', elements: { t: { type: 'Text', props: { text: 'x' }, children: ['t'] } } })
+    expect(leaf.errors.join(' ')).toMatch(/takes no children/)
+  })
+
+  it('a nested tree is flattened with generated ids; a missing root is inferred', () => {
+    const tree = validateSpec({ root: { type: 'Card', props: { title: 'T' }, children: [{ type: 'Text', props: { text: 'a' } }, { id: 'b', type: 'Badge', props: { text: 'b' } }] } })
+    expect(tree.errors).toEqual([])
+    expect(tree.spec?.root).toBe('root')
+    expect(tree.spec?.elements.root.children).toEqual(['root-1', 'b'])
+    expect(tree.spec?.elements['root-1'].type).toBe('Text')
+    const noRoot = validateSpec({ elements: { a: { type: 'Card', children: ['b'] }, b: { type: 'Text', props: { text: 'x' } } } })
+    expect(noRoot.spec?.root).toBe('a')
+    expect(noRoot.errors[0]).toMatch(/spec.root was missing/)
+  })
+
+  it('action names are made socket-safe: "Plan trip" would be refused at the click', () => {
+    const r = validateSpec({ root: 'c', elements: {
+      c: { type: 'Card', children: ['b', 'f', 'l'] },
+      b: { type: 'Button', props: { label: 'Go', action: 'Plan trip' } },
+      f: { type: 'Form', props: { action: 'save form!' } },
+      l: { type: 'List', props: { items: [{ title: 'One', action: 'open step 1' }, { title: 'Two', action: 'ok_2' }] } },
+    } })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.b.props?.action).toBe('plan-trip')
+    expect(r.spec?.elements.f.props?.action).toBe('save-form')
+    expect((r.spec?.elements.l.props?.items as any[]).map(i => i.action)).toEqual(['open-step-1', 'ok_2'])
+  })
+
+  it('a Button with no action sends its label (OpenUI); inside a Form the Form supplies it', () => {
+    const bare = validateSpec({ root: 'b', elements: { b: { type: 'Button', props: { label: 'Plan a Trip!' } } } })
+    expect(bare.errors).toEqual([])
+    expect(bare.spec?.elements.b.props?.action).toBe('plan-a-trip')
+    expect(validateSpec({ root: 'b', elements: { b: { type: 'Button', props: { label: '!!!' } } } }).spec?.elements.b.props?.action).toBe('click')
+    const inForm = validateSpec({ root: 'f', elements: { f: { type: 'Form', children: ['row'] }, row: { type: 'ButtonRow', children: ['b'] }, b: { type: 'Button', props: { label: 'Go' } } } })
+    expect(inForm.errors).toEqual([])
+    expect(inForm.spec?.elements.b.props?.action).toBeUndefined()
+  })
+
+  it('Tabs children without a tab go to the first tab, said once each', () => {
+    const r = validateSpec({ root: 't', elements: {
+      t: { type: 'Tabs', props: { tabs: [{ label: 'A', value: 'a' }, { label: 'B', value: 'b' }] }, children: ['x', 'y'] },
+      x: { type: 'Text', props: { text: '1' } },
+      y: { type: 'Text', props: { text: '2' }, tab: 'b' },
+    } })
+    expect(r.spec?.elements.x.tab).toBe('a')
+    expect(r.spec?.elements.y.tab).toBe('b')
+    expect(r.errors).toEqual(['x: no "tab" set; shown under "a"'])
+  })
+
+  it('missing required props: dropped when undrawable (Image with neither prompt nor src), kept and reported otherwise', () => {
+    const img = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { alt: 'x' } } } })
+    expect(img.spec?.elements.i).toBeUndefined()
+    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
+    const inp = one('Input', { label: 'L' })
+    expect(inp.spec?.elements.x.type).toBe('Input')
+    expect(inp.errors).toEqual(['x (Input): missing name'])
+  })
+
+  it('limits: strings, arrays, elements and depth are cut and said so', () => {
+    const long = one('Text', { text: 'x'.repeat(LIMITS.stringChars + 10) })
+    expect((long.spec?.elements.x.props?.text as string).length).toBe(LIMITS.stringChars)
+    expect(long.errors[0]).toMatch(/cut at/)
+    const rows = one('Table', { columns: ['a'], rows: Array.from({ length: LIMITS.arrayItems + 5 }, (_, i) => [String(i)]) })
+    expect((rows.spec?.elements.x.props?.rows as unknown[]).length).toBe(LIMITS.arrayItems)
+    const many: Record<string, unknown> = { c: { type: 'Stack', children: [] as string[] } }
+    for (let i = 0; i < LIMITS.elements + 5; i++) { many[`e${i}`] = { type: 'Text', props: { text: String(i) } }; (many.c as any).children.push(`e${i}`) }
+    const r = validateSpec({ root: 'c', elements: many })
+    expect(r.count).toBeLessThanOrEqual(LIMITS.elements)
+    expect(r.errors.some(e => e.includes(`first ${LIMITS.elements} elements`))).toBe(true)
+  })
+
+  it('a child that points back at the root terminates, even with an action-less Button (no engine freeze)', () => {
+    const spec = { root: 'a', elements: {
+      a: { type: 'Card', props: { title: 'x' }, children: ['b'] },
+      b: { type: 'Stack', children: ['go', 'a'] },
+      go: { type: 'Button', props: { label: 'Go' } },
+    } }
+    for (const partial of [false, true]) {
+      const r = validateSpec(spec, { partial })
+      expect(r.spec?.elements.a.children).toEqual(['b'])
+      expect(r.spec?.elements.b.children).toEqual(['go'])
+    }
+    expect(validateSpec(spec).errors).toEqual(['b.children: "a" is already placed (a cycle or a second parent) and was skipped'])
+  })
+
+  it('"__proto__", "constructor" and "prototype" are never ids or input names, and nothing pollutes Object.prototype', () => {
+    const r = validateSpec({ root: 't', elements: {
+      t: { type: 'Tabs', props: { tabs: [{ label: 'A', value: 'pwned' }] }, children: ['__proto__', 'constructor', 'x'] },
+      x: { type: 'Input', props: { name: '__proto__', label: 'X' } },
+    } })
+    expect(({} as any).tab).toBeUndefined()
+    expect(Object.keys(r.spec!.elements)).toEqual(['t', 'x'])
+    expect(r.spec?.elements.t.children).toEqual(['x'])
+    expect(r.spec?.elements.x.props?.name).toBe('field-proto')
+    const asId = validateSpec(JSON.parse('{"root":"c","elements":{"c":{"type":"Card","children":["__proto__"]},"__proto__":{"type":"Text","props":{"text":"x"}}}}'))
+    expect(({} as any).type).toBeUndefined()
+    expect(asId.spec?.elements.c.children).toEqual([])
+    expect(asId.errors.join(' ')).toMatch(/element id "__proto__" must match .* and not be a reserved name/)
+    const later = validateSpec({ root: 't', elements: { t: { type: 'Tabs', props: { tabs: [{ label: 'A', value: 'a' }] }, children: ['c1'] }, c1: { type: 'Text', props: { text: 'x' } } } })
+    expect(later.spec?.elements.c1.tab).toBe('a')
+  })
+
+  it('ids must be short and safe', () => {
+    const r = validateSpec({ root: 'ok', elements: { ok: { type: 'Card', children: ['bad id!'] }, 'bad id!': { type: 'Text', props: { text: 'x' } } } })
+    expect(r.errors[0]).toMatch(/element id "bad id!" must match/)
+    expect(isSurfaceId('plan-1')).toBe(true)
+    expect(isSurfaceId('a'.repeat(41))).toBe(false)
+    expect(isSurfaceId('../x')).toBe(false)
+  })
+
+  it('partial mode skips silently and reports nothing', () => {
+    const r = validateSpec({ root: 'c', elements: {
+      c: { type: 'Card', children: ['t', 'ghost', 'half'] },
+      t: { type: 'Tex', props: { text: 'x' } },
+      half: { type: 'Callout', props: { message: 'm', type: 'warn' } },
+      '': null,
+    } }, { partial: true })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.c.children).toEqual(['half'])
+    expect(r.spec?.elements.half.props?.type).toBeUndefined()
+    expect(validateSpec({ root: 'c', elements: { c: { type: 'Car' } } }, { partial: true }).spec).toBeNull()
+  })
+})
+
+// F174: an Image's "prompt" describes a picture the engine paints; "src" is
+// only ever a real URL. Before, the only rule-abiding Image was an empty one,
+// and a model that wanted a picture invented a path the page drew as
+// "image unavailable".
+describe('validateSpec: Image prompt or src', () => {
+  const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+  const PATH_HINT = 'is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most 200 characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it'
+
+  it('{prompt, alt} is clean, and the prompt is normalised', () => {
+    const r = one('Image', { prompt: '  a tall green alien\n\n in a   silver suit ', alt: 'Tall alien' })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien in a silver suit', alt: 'Tall alien' })
+  })
+
+  it('a real http(s) or data:image src is kept as it is', () => {
+    expect(one('Image', { src: 'https://example.com/t.jpg', alt: 'a' }).spec?.elements.x.props?.src).toBe('https://example.com/t.jpg')
+    expect(one('Image', { src: 'data:image/png;base64,iVBORw0KGgo=', alt: 'a' }).errors).toEqual([])
+  })
+
+  it('a fake src is dropped with the hint for the form it tried, never turned into a prompt; with no prompt the element goes too', () => {
+    for (const [src, hint] of [['aliens/a.bmp', PATH_HINT], ['javascript:alert(1)', HINT], ['file:///etc/passwd', HINT], ['https://exa mple.com/a.png', HINT], ['data:image/svg+xml;base64,PHN2Zz4=', HINT]]) {
+      const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Alien' } } } })
+      expect(r.spec?.elements.i, src).toBeUndefined()
+      expect(r.errors, src).toEqual([
+        `i.src: "${src}" ${hint}`,
+        'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
+        'c.children: "i" is not an element id — nothing was drawn for it (the element was dropped)',
+      ])
+    }
+    const num = one('Image', { src: 42, alt: 'a' })   // a number reads as its digits: a path form
+    expect(num.errors[0]).toBe(`x.src: "42" ${PATH_HINT}`)
+  })
+
+  it('a fake src beside a prompt keeps the prompt and raises no src-URL note', () => {
+    const r = one('Image', { prompt: 'a small grey alien with large eyes', src: 'aliens/b.png', alt: 'Small alien' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a small grey alien with large eyes', alt: 'Small alien' })
+    expect(r.errors.some(e => e.includes(HINT))).toBe(false)
+    expect(r.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+  })
+
+  it('both a real src and a prompt: the prompt is kept and said so', () => {
+    const r = one('Image', { prompt: 'river table, walnut and blue resin', src: 'https://example.com/t.jpg', alt: 'River table' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'river table, walnut and blue resin', alt: 'River table' })
+    expect(r.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+  })
+
+  // The operator's live run (2026-10-12): the model wrote whole-paragraph
+  // prompts for its tower designs and the validator cut each at 1,000
+  // characters, so it tried to drive ComfyUI by hand instead. A prompt is
+  // bounded only by LIMITS.stringChars, like any other string.
+  it('a prompt is kept whole up to the string cap, however long; one under 3 characters is no prompt', () => {
+    const paragraph = 'walnut '.repeat(200).trim()
+    const long = one('Image', { prompt: paragraph, alt: 'a' })
+    expect(long.spec?.elements.x.props?.prompt).toBe(paragraph)
+    expect(long.errors).toEqual([])
+    const huge = one('Image', { prompt: 'walnut '.repeat(1200), alt: 'a' })
+    expect((huge.spec?.elements.x.props?.prompt as string).length).toBe(LIMITS.stringChars)
+    expect(huge.errors).toEqual([`x.prompt: text cut at ${LIMITS.stringChars} characters`])
+    const tiny = one('Image', { prompt: ' a ', src: 'https://example.com/t.jpg', alt: 'a' })
+    expect(tiny.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'a' })
+    expect(tiny.errors).toEqual([])
+  })
+
+  // Review of stage B: coerceProps and the element-level relocation accept a
+  // prop name in any letter case, so "Src" and "Prompt" skipped every check
+  // above — a fake path was kept unreported, both survived, the prompt was
+  // never bounded, and validating the output again gave a different answer.
+  it('a prop name in any letter case meets the same checks, and validating the output again changes nothing', () => {
+    const fake = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { Src: 'aliens/a.bmp', alt: 'Alien' } } } })
+    expect(fake.spec?.elements.i).toBeUndefined()
+    expect(fake.errors.slice(0, 2)).toEqual([
+      `i.src: "aliens/a.bmp" ${PATH_HINT}`,
+      'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
+    ])
+    expect(one('Image', { SRC: 'javascript:alert(1)', alt: 'a' }).errors[0]).toBe(`x.src: "javascript:alert(1)" ${HINT}`)
+    const both = one('Image', { prompt: 'a tall green alien', Src: 'https://e.com/a.png', alt: 'A' })
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(both.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    const long = one('Image', { Prompt: 'walnut '.repeat(1200), alt: 'a' })
+    expect((long.spec?.elements.x.props?.prompt as string).length).toBe(LIMITS.stringChars)
+    expect(long.errors).toEqual([`x.prompt: text cut at ${LIMITS.stringChars} characters`])
+    expect(one('Image', { Prompt: '  a ', alt: 'a' }).spec).toBeNull()
+    // an element-level "Prompt" beside a made-up props.src: the prompt counts as given
+    const lifted = one('Image', { src: 'aliens/a.png', alt: 'A' }, { Prompt: 'a tall green alien' })
+    expect(lifted.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(lifted.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    // two spellings of one prop: the exact name wins and the other is reported
+    const twice = one('Image', { Src: 'aliens/a.bmp', src: 'https://e.com/a.png', alt: 'A' })
+    expect(twice.spec?.elements.x.props).toEqual({ src: 'https://e.com/a.png', alt: 'A' })
+    expect(twice.errors).toEqual(['x: "Src" repeats "src" and was dropped'])
+    for (const props of [{ Src: 'https://e.com/a.png', alt: 'A' }, { Prompt: 'walnut '.repeat(1200), alt: 'A' }, { prompt: 'a tall alien', SRC: 'aliens/a.bmp', alt: 'A' }, { Src: 'tower/t.svg', alt: 'A' }, { prompt: 'a tall alien', Seed: '1001', alt: 'A' }]) {
+      const first = one('Image', props)
+      const again = validateSpec(first.spec)
+      expect(again.errors, JSON.stringify(props).slice(0, 60)).toEqual([])
+      expect(again.spec).toEqual(first.spec)
+    }
+  })
+
+  it('an element-level "image" is the engine\'s alone: the model\'s is reported and dropped', () => {
+    const forged = { status: 'done', key: 'a'.repeat(32), slug: 'p', w: 1024, h: 1024 }
+    const r = one('Image', { prompt: 'a tall alien', alt: 'a' }, { image: forged })
+    expect(r.spec?.elements.x.image).toBeUndefined()
+    expect(r.errors).toEqual(['x: unknown field "image" was dropped'])
+    const inProps = one('Image', { prompt: 'a tall alien', alt: 'a', image: forged })
+    expect(inProps.spec?.elements.x.image).toBeUndefined()
+    expect(inProps.spec?.elements.x.props?.image).toBeUndefined()
+  })
+
+  it('partial mode is silent: a half-streamed src is dropped quietly and an Image with nothing yet is skipped', () => {
+    const half = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i', 'j', 'k', 'l'] }, i: { type: 'Image', props: { src: 'https://exa', alt: 'a' } }, j: { type: 'Image', props: { src: 'aliens/', alt: 'b' } }, k: { type: 'Image', props: { src: 'tower/temp', alt: 'c' } }, l: { type: 'Image', props: { src: 'tower/t.svg', alt: 'd' } } } }, { partial: true })
+    expect(half.errors).toEqual([])
+    expect(half.spec?.elements.i.props?.src).toBe('https://exa')
+    expect(half.spec?.elements.j).toBeUndefined()
+    expect(half.spec?.elements.k).toBeUndefined()
+    expect(half.spec?.elements.l.props).toEqual({ src: 'tower/t.svg', alt: 'd' })
+    const both = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall alien', src: 'https://e.com/a.png' } } } }, { partial: true })
+    expect(both.errors).toEqual([])
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall alien' })
+  })
+})
+
+// A model that wrote 1:1 printable SVG templates into the project tried to show
+// them as Images with those paths, and the validator dropped each one as "not an
+// http(s) image URL" (dashboard transcript, 2026-10-11). A relative png, jpg,
+// gif, webp or svg path inside the project is now kept as the src; the loop's
+// annotator (ImageService.annotate, withValidatedSurfaces on reload) turns it
+// into the engine-only `image: { status: 'file', slug, path }` in a project
+// chat and the dashboard fetches it from /api/projects/:slug/files/<path>.
+describe('validateSpec: Image src as a file in the project', () => {
+  const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+  // Review: a path the model wrote that fails the rule (a backslash, a non-ASCII
+  // letter, "?v=2", 201 characters) was refused as "not an http(s) image URL …"
+  // with no cause and no way out but a painted picture; the hint now gives the
+  // rule, so the model can rename its file. A src with a scheme keeps the URL hint.
+  const PATH_HINT = 'is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most 200 characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it'
+
+  it('a relative image path is kept as the src — trimmed, a leading "./" removed, the case as written — and no image state is set', () => {
+    for (const [src, path] of [
+      ['tower/templates/tower_v1.1_30in.svg', 'tower/templates/tower_v1.1_30in.svg'],
+      ['  ./sketches/front.png ', 'sketches/front.png'],
+      ['Cover (final).JPG', 'Cover (final).JPG'],
+      ['a-b_c/d.jpeg', 'a-b_c/d.jpeg'],
+      ['x.gif', 'x.gif'],
+      ['x.webp', 'x.webp'],
+      ['my tower/v 2.png', 'my tower/v 2.png'],
+      ['-/-.svg', '-/-.svg'],
+      ['a'.repeat(PROJECT_IMAGE_PATH_MAX - 4) + '.png', 'a'.repeat(PROJECT_IMAGE_PATH_MAX - 4) + '.png'],
+    ]) {
+      const r = one('Image', { src, alt: 'Tower' })
+      expect(r.errors, src).toEqual([])
+      expect(r.spec?.elements.x.props, src).toEqual({ src: path, alt: 'Tower' })
+      expect(r.spec?.elements.x.image, src).toBeUndefined()
+      expect(projectImagePath(src), src).toBe(path)
+    }
+    expect(PROJECT_IMAGE_PATH_MAX).toBe(200)
+  })
+
+  it('every other form is refused with the path rule as the hint and the element is dropped: "..", absolute, a drive letter, a backslash, a dot-leading segment, another extension, a query, 201 characters; a scheme gets the URL hint', () => {
+    const paths = [
+      '../secret.png', 'a/../b.png', 'tower/..', '..', '/etc/passwd.png', '//host/x.png', 'C:/Users/x.png', 'C:\\x.png', 'tower\\x.svg', 'a//b.png',
+      '.git/x.png', '.cynco/tmp/x.png', 'tower/.hidden.png', 'x.png/', 'tower/',
+      'x.html', 'x.svgz', 'x.png.exe', 'x', 'x.svg?v=2', 'x.svg#a', 'a%2fb.png', 'a\0.png', 'tower/\u2024\u2024/x.png', 'türme.png', 'tower/templates/tårn.svg', 'x\n.png', 'a .png', 'a  b.png', '"x".png', "x'.png",
+      'a'.repeat(PROJECT_IMAGE_PATH_MAX - 3) + '.png',
+    ]
+    const schemes = ['data:text/html,<script>', 'javascript:alert(1)', 'file:///x.png', 'ftp://h/x.png', 'DATA:image/png;base64,AAAA', 'http:/x.png', 'c0:/x.png']
+    for (const [list, hint] of [[paths, PATH_HINT], [schemes, HINT]] as Array<[string[], string]>) for (const src of list) {
+      expect(projectImagePath(src), JSON.stringify(src)).toBeNull()
+      const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Tower' } } } })
+      expect(r.spec?.elements.i, JSON.stringify(src)).toBeUndefined()
+      expect(r.errors[0], JSON.stringify(src)).toBe(`i.src: "${src.slice(0, 60)}" ${hint}`)
+      expect(r.errors[1], JSON.stringify(src)).toBe('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
+    }
+    // the rule the hint states is the one applied: the number it names is the cap
+    expect(PATH_HINT).toContain(`at most ${PROJECT_IMAGE_PATH_MAX} characters`)
+    // a number reads as its digits — no scheme, so the path rule; anything else is no src at all
+    expect(one('Image', { src: 42, alt: 'a' }).errors[0]).toBe(`x.src: "42" ${PATH_HINT}`)
+    expect(one('Image', { src: { a: 1 }, alt: 'a' }).errors[0]).toBe(`x.src: "{"a":1}" ${HINT}`)
+    expect(projectImagePath(42)).toBeNull()
+    expect(projectImagePath(null)).toBeNull()
+    // the page copies this rule verbatim: a path that passes here must pass there
+    expect(PROJECT_IMAGE_PATH_RE.flags).toBe('i')
+    expect(PROJECT_IMAGE_PATH_RE.test('tower/templates/tower_v1.1_30in.svg')).toBe(true)
+  })
+
+  it('a path beside a prompt keeps the prompt; the model\'s own file state is dropped; validating the output again changes nothing', () => {
+    const both = one('Image', { prompt: 'a tall alien', src: 'tower/t.svg', alt: 'A' })
+    expect(both.spec?.elements.x.props).toEqual({ prompt: 'a tall alien', alt: 'A' })
+    expect(both.errors).toEqual(['x: an Image takes "prompt" or "src", not both — the prompt was kept'])
+    const forged = one('Image', { src: 'tower/t.svg', alt: 'A' }, { image: { status: 'file', slug: 'p', path: '../../etc/passwd.png' } })
+    expect(forged.spec?.elements.x.image).toBeUndefined()
+    expect(forged.spec?.elements.x.props).toEqual({ src: 'tower/t.svg', alt: 'A' })
+    expect(forged.errors).toEqual(['x: unknown field "image" was dropped'])
+    const first = one('Image', { Src: ' ./tower/t.svg ', alt: 'A' })
+    expect(first.errors).toEqual([])
+    const again = validateSpec(first.spec)
+    expect(again.errors).toEqual([])
+    expect(again.spec).toEqual(first.spec)
+  })
+})
+
+// Several takes of one design: the same prompt with another seed is another
+// picture (engine/imagegen keys on the seed). A seed is a whole number the
+// KSampler takes; JS must stay exact, so 0 … 2^53−1 is kept and the rest is
+// dropped with a note, never rounded or wrapped.
+describe('validateSpec: an Image seed', () => {
+  const NOTE = (v: string) => `x.seed: "${v}" is not a whole number from 0 to ${Number.MAX_SAFE_INTEGER} — dropped`
+  it('coerces "1001" → 1001 and keeps a safe non-negative integer', () => {
+    const r = one('Image', { prompt: 'a tall green alien', seed: '1001', alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', seed: 1001, alt: 'A' })
+    expect(r.errors).toEqual([])
+    for (const seed of [0, 1, 4004, Number.MAX_SAFE_INTEGER, ' 2002 ', '9007199254740991']) {
+      const k = one('Image', { prompt: 'a tall green alien', seed, alt: 'A' })
+      expect(k.spec?.elements.x.props?.seed, String(seed)).toBe(Number(seed))
+      expect(k.errors, String(seed)).toEqual([])
+    }
+  })
+  it('drops a fraction, a negative, one past 2^53−1, a non-number or a boolean with a note; the Image stays', () => {
+    for (const [seed, shown] of [[1001.5, '1001.5'], [-1, '-1'], ['-7', '-7'], [2 ** 53, '9007199254740992'], ['abc', 'abc'], [true, 'true'], [Infinity, 'Infinity'], [[1], '1'], ['1e3.5', '1e3.5']] as Array<[unknown, string]>) {
+      const r = one('Image', { prompt: 'a tall green alien', seed, alt: 'A' })
+      expect(r.spec?.elements.x.props, shown).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+      expect(r.errors, shown).toEqual([NOTE(shown)])
+    }
+    const nul = one('Image', { prompt: 'a tall green alien', seed: null, alt: 'A' })
+    expect(nul.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(nul.errors).toEqual([])
+  })
+  it('a seed on an Image with no prompt means nothing and is dropped with a note', () => {
+    const r = one('Image', { src: 'https://example.com/t.jpg', seed: 7, alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ src: 'https://example.com/t.jpg', alt: 'A' })
+    expect(r.errors).toEqual(['x.seed: only a prompted picture takes a seed — dropped'])
+    const file = one('Image', { src: 'tower/t.svg', seed: '7', alt: 'A' })
+    expect(file.spec?.elements.x.props).toEqual({ src: 'tower/t.svg', alt: 'A' })
+    expect(file.errors).toEqual(['x.seed: only a prompted picture takes a seed — dropped'])
+  })
+  it('the note shows at most 60 characters of a value that is no seed: a prompt in the wrong slot is kilobytes, and the note rides the tool result and the final frame', () => {
+    const long = 'a red tower in the mist, '.repeat(400)
+    const r = one('Image', { prompt: 'a red tower in the mist', seed: long, alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a red tower in the mist', alt: 'A' })
+    expect(r.errors).toEqual([NOTE(long.slice(0, 60))])
+    expect(r.errors[0].length).toBeLessThan(160)
+  })
+  it('the seed is static in partial mode too, and an int prop is not a number prop: 2.5 is refused where a Slider would keep it', () => {
+    const partial = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall green alien', seed: 2.5, alt: 'A' } } } }, { partial: true })
+    expect(partial.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
+    expect(partial.errors).toEqual([])
+    expect(one('Slider', { name: 's', label: 'S', value: 2.5 }).spec?.elements.x.props?.value).toBe(2.5)
+  })
+})

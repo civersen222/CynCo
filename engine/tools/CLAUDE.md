@@ -20,7 +20,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | `resultCap.ts` | Truncates long tool output to fit the model's context budget. |
 | `sealedPaths.ts` | Four-layer defense keeping held-out gate scripts unreachable (reference/enumeration/location/content). |
 | `shellInfo.ts` | Detects the real shell (bash/pwsh/PowerShell 5.1) and translates POSIX-isms into its dialect. |
-| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints. |
+| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints (off in a project chat, which has no CodeIndex: `ToolExecutor.setCodeIndexHints`, `executor.ts:151`). |
 | `toolRouter.ts` | Two-stage tool-category routing to shrink the schema sent to small-context local models. |
 | `toolScorer.ts` | `ToolScorer` — per-tool success-rate tracking with probation-based demotion/reinstatement. |
 | `types.ts` | `ToolImpl`/`ToolResult` — the contract every tool and the executor share. |
@@ -48,11 +48,12 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | `impl/webFetch.ts` | `WebFetch` tool: SSRF-guarded URL fetch (blocks loopback/private/link-local, validates every redirect hop). |
 | `impl/webSearch.ts` | `WebSearch` tool: multi-engine search with routing, scoring, and de-duplication. |
 | `impl/write.ts` | `Write` tool: full-file write with empty-write rejection and a shrink guard against gutting a tracked file. |
+| (consumes) `../genui/renderUiTool.ts` | `RenderUI` tool: validates a model-authored UI spec against `../genui/catalog.ts` and answers with what will draw; registered in `registry.ts`, routed with the write category, always in `PROJECT_TOOL_NAMES`. |
 
 ## Important types & functions
 - **`ToolImpl`** (`types.ts:29`) — the contract every tool exports: name, description, input schema, approval tier, core/extended flag, `execute`. Implemented by every file under `impl/`.
 - **`ALL_TOOLS`** (`registry.ts:34`) — the flat tool registry every lookup/filter function in this file reads.
-- **`getToolByName`** (`registry.ts:57`) — registry lookup used by `ToolExecutor`, `approvalGate.ts`, and `load_tools` to resolve a call by name.
+- **`getToolByName`** (`registry.ts:61`) — registry lookup used by `ToolExecutor`, `approvalGate.ts`, and `load_tools` to resolve a call by name.
 - **`ToolExecutor`** (`executor.ts:117`) — turns `(toolName, input)` into a `ToolResult`: sealed check, immutable-path check, download gate, approval, execute, doom-loop check, redaction/cap. With a `Grader` set (`setGrader`, projects mode) one grade replaces the download gate and tier approval: `dangerous` is refused with its reason, `risky` asks, `safe` runs.
 - **`bashTool`** (`engine/tools/impl/bash.ts:129`) — the Bash implementation: safety check, shell-dialect translation, timeout clamp, failure formatting.
 - **`bashMaxTimeoutMs`** (`engine/tools/impl/bash.ts:91`) — the hard ceiling any Bash timeout is clamped to, env-raisable up to `HARD_MAX_BASH_TIMEOUT_MS`.

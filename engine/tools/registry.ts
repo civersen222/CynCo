@@ -31,6 +31,7 @@ import {
   contractStatusTool,
 } from './contract.js'
 import { projectSearchTool, saveArtifactTool, addToKnowledgeTool } from '../projects/tools.js'
+import { renderUiTool } from '../genui/renderUiTool.js'
 
 export const ALL_TOOLS: ToolImpl[] = [
   readTool, globTool, grepTool, editTool, writeTool,
@@ -40,6 +41,7 @@ export const ALL_TOOLS: ToolImpl[] = [
   loadToolsTool, runSkillTool, listSkillsTool, askUserTool,
   contractCreateTool, contractAssertPassTool, contractAssertFailTool, contractStatusTool,
   projectSearchTool, saveArtifactTool, addToKnowledgeTool,
+  renderUiTool,
 ]
 
 export function getToolsByTier(tier: ApprovalTier): ToolImpl[] {

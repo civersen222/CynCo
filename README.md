@@ -271,6 +271,8 @@ Open the URL the engine printed at startup (bridge port + 1; `http://localhost:9
 
 **[Chat]** — Send prompts directly from the browser. Full tool output with expandable details, visible thinking tokens, streaming model text. Slash commands (`/plan`, `/tdd`, `/debug`) for workflows. Enter to send, Shift+Enter for newlines.
 
+**Generative UI in the chat.** The model can draw structured UI in the chat pane with one tool call, `RenderUI`: cards, tables, plans with per-step status, key facts, metrics, inline-SVG charts, forms (inputs, selects, radios, checkboxes, sliders), buttons and follow-up chips, plus coding-agent report blocks (file changes, a command and its output, test results). A surface draws progressively while the call streams, a click on a button sends the action name and every input value on the surface back to the model as its next message, follow-up chips send their text as a user message, and the model can re-render a surface in place by reusing its id. Assistant prose is rendered as markdown (headings, lists, tables, code fences, links). The tool is always offered in a project chat and loadable with `load_tools` in a coding session. In a project chat, a message that asks to see options, designs, pictures, a comparison or a table is answered with a surface: its model calls go out with `tool_choice: required` until one draws (the prompt alone let the model answer such a request in prose, F171), and every reply carries a "Show as UI" link that redraws it; the component catalog, validator and prompt section live in `engine/genui/` (see `engine/genui/CLAUDE.md`). An Image can carry a `prompt` instead of a URL: in a project chat the engine paints it on your ComfyUI server (`LOCALCODE_COMFYUI_*`), the card shows a placeholder at once and the picture fills in when ready, and it is kept in the project's `images/` folder with how it was made (see `engine/imagegen/CLAUDE.md`). A prompt may be as long as the design needs; the same prompt with another whole-number `seed` is another take of it, and the same prompt and seed is the same picture, never painted twice; up to 18 pictures are painted per surface, one at a time, and the tool result says how long the wait is. The chat never drives ComfyUI itself: the prompt says to ask with an Image, and a Bash command or a file that would drive the server is refused (F176). An Image can also show an image file the model wrote into the project — a png, jpg, gif, webp or svg named in `src` by its path relative to the project folder — which the page fetches through the engine (`GET /api/projects/:slug/files/<path>`), so a template or sketch the model drew as a file appears in its card (F175). Check the setup with `bun engine/imagegen/check.ts`. The format and vocabulary were adopted from json-render, A2UI and OpenUI (credits in `CREDITS.md`); the renderer is hand-written vanilla DOM, so the page stays a single file with no build step.
+
 **[Governance]** — Real-time VSM monitoring:
 - **Tool Activity** — stacked bar chart + live feed with latency
 - **Governance Health** — S3/S4 balance, variety ratio, stuck turns, algedonic alerts, and action-fingerprint repetition alarms (flags 3-identical / 6-alternating tool-call loops)
@@ -295,13 +297,14 @@ coding workspace above. It lists your projects, opens one to its knowledge,
 artifacts, chats and journal, and opens a chat that answers from the project's
 own material (with numbered citations) alongside the open web.
 
-Each project is one plain folder, five pieces:
+Each project is one plain folder, five pieces (six once a chat has painted a picture):
 
 - `project.json` / `instructions.md` — the project's name, description, tags, and your standing instructions for every chat in it.
 - `knowledge/` — the sources you've gathered, each indexed for search.
 - `chats/` — one JSONL transcript per conversation.
 - `artifacts/` — the things CynCo has produced for you (specs, plans, drafts), promotable into `knowledge/`.
 - `journal.md` — an append-only record of what happened, plus an invisible git history underneath the whole folder (no git command ever shown to you).
+- `images/` — the pictures a chat's cards asked for, painted on your ComfyUI server (see Generative UI above), each beside a JSON record of how it was made; the records are in the git history, the pictures are not.
 
 Tool calls inside a project chat are graded, not approved by tier: a file write
 or read stays inside the project folder or is refused outright; a Bash command
@@ -531,6 +534,8 @@ Setting a variable overrides the profile for that one field and nothing else.
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | Where projects-mode project folders live (see [Projects](#projects)). |
 | `LOCALCODE_PROJECTS_EMBED_MODEL` | `nomic-embed-text` | Prose embedding model for project knowledge, artifacts and chats. Changing it rebuilds each project's store on its next write (journaled `index.rebuilt`). |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | Share of the context window given to a project chat's per-turn `[Project knowledge]` block (clamped to 0.02–0.5). |
+| `LOCALCODE_COMFYUI_URL` | — | ComfyUI server that paints RenderUI Image prompts in project chats (e.g. `http://192.168.1.50:8188`; start ComfyUI with `--listen`) |
+| `LOCALCODE_COMFYUI_CHECKPOINT` | — | ComfyUI checkpoint to use; unset picks an SDXL one (Juggernaut first) and logs the pick |
 
 ### Full inventory
 
@@ -542,7 +547,7 @@ complete list is generated from the source rather than written by hand:
 <!-- Generated by scripts/generate-env-docs.mjs. Do not edit by hand.
      Regenerate with: bun scripts/generate-env-docs.mjs -->
 
-Every `LOCALCODE_*` variable the engine reads — 78 of them — with the fallback
+Every `LOCALCODE_*` variable the engine reads — 85 of them — with the fallback
 each read site uses when it is unset, and the profile key (if any) that sits between the
 two. Read out of the source by `scripts/generate-env-docs.mjs`, so it cannot drift from
 the code the way a hand-written list does.
@@ -568,6 +573,13 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | — | `engine/bridge/server.ts` |
 | `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/llama/processManager.ts` |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_COMFYUI_CFG` | `6` | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_CHECKPOINT` | *not derived* | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_SIZE` | `1024x1024` | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_STEPS` | `40` | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_TIMEOUT_S` | `300` | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_URL` | *not derived* | — | `engine/imagegen/config.ts`, `engine/projects/binding.ts` |
+| `LOCALCODE_COMFYUI_WORKFLOW` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/llama/processManager.ts` |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | — | `engine/dashboard/server.ts` |

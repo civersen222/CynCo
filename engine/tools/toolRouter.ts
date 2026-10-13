@@ -2,7 +2,7 @@ import type { ToolImpl } from './types.js'
 
 export const TOOL_CATEGORIES: Record<string, string[]> = {
   read: ['Read', 'Glob', 'Grep', 'Ls', 'CodeIndex'],
-  write: ['Edit', 'Write', 'MultiEdit', 'ApplyPatch'],
+  write: ['Edit', 'Write', 'MultiEdit', 'ApplyPatch', 'RenderUI'],
   search: ['Grep', 'Glob', 'WebSearch', 'WebFetch', 'IndexResearch'],
   execute: ['Bash', 'Git'],
   agent: ['SpawnAgent', 'CollectAgent'],

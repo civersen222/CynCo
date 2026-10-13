@@ -36,6 +36,14 @@ const isPlainObject = (v: unknown): boolean =>
 const oneOf = (...allowed: string[]) => (v: unknown): boolean =>
   typeof v === 'string' && allowed.includes(v)
 
+/** Bounds for the `ui.action` frame (engine/genui). */
+const isShortId = (v: unknown): boolean => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v)
+const isShortText = (v: unknown): boolean => typeof v === 'string' && v.length <= 2000
+const isSmallObject = (v: unknown): boolean => {
+  if (!isPlainObject(v)) return false
+  try { return JSON.stringify(v).length <= 8192 } catch { return false }
+}
+
 /**
  * One assertion: plain text, or a redacted text paired with the command that
  * actually decides it.
@@ -180,6 +188,17 @@ export const COMMAND_SCHEMA: Record<TUICommand['type'], Check[]> = {
   'project.open': [
     (f) => (f.slug === null || (typeof f.slug === 'string' && /^[a-z0-9-]{1,64}$/.test(f.slug)) ? null : 'slug must be a lower-case slug or null'),
     (f) => (f.chat === undefined || (typeof f.chat === 'string' && /^[A-Za-z0-9._-]+\.jsonl$/.test(f.chat) && !f.chat.includes('..')) ? null : 'chat must be a transcript file name'),
+  ],
+  // A click on a RenderUI surface. Bounded at the socket (design A10): the
+  // context is model-authored and the state page-authored, and either could
+  // otherwise turn one click into a multi-megabyte user turn.
+  'ui.action': [
+    req('surfaceId', isShortId, 'a short id (letters, digits, - or _; at most 128 characters)'),
+    req('action', isShortId, 'a short id (letters, digits, - or _; at most 128 characters)'),
+    opt('label', isShortText, 'a string of at most 2000 characters'),
+    opt('userMessage', isShortText, 'a string of at most 2000 characters'),
+    opt('context', isSmallObject, 'an object of at most 8192 bytes as JSON'),
+    opt('state', isSmallObject, 'an object of at most 8192 bytes as JSON'),
   ],
 }
 

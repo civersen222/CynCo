@@ -139,6 +139,65 @@ export type AskRequestEvent = {
   options?: string[]
 }
 
+// ─── Generative UI (engine/genui) ──────────────────────────────
+//
+// One element of a model-authored UI spec. Inlined here rather than imported
+// from engine/genui so this file keeps its single import; genui/spec.ts
+// imports these types back (type-only, erased at runtime).
+export type UiElement = {
+  type: string
+  props?: Record<string, unknown>
+  children?: string[]
+  /** Show this element only while the named input holds (eq) / does not hold (neq) a value. */
+  visible?: { name: string; eq?: unknown; neq?: unknown }
+  /** Inside a Tabs container: the tab value this child belongs to. */
+  tab?: string
+  /** On an Image with a "prompt": its generated picture (engine/imagegen); with a path "src": the project file it shows. Set by the engine only. */
+  image?: UiImageState
+}
+
+/** A validated spec: a flat element map plus the id drawn first. */
+export type UiSpec = {
+  root: string
+  elements: Record<string, UiElement>
+}
+
+/**
+ * A RenderUI surface for the 9161 dashboard. `partial: true` frames carry a
+ * spec repaired out of the tool call's half-streamed arguments and always use
+ * `surfaceId === toolId`; the one `partial: false` frame per call carries the
+ * validated spec (or `null` when the call was refused, errored or cut off,
+ * with the reason in `errors`) under the surface the model named, or the
+ * toolId when it named none.
+ */
+export type UiRenderEvent = {
+  type: 'ui.render'
+  toolId: string
+  surfaceId: string
+  partial: boolean
+  spec: UiSpec | null
+  errors?: string[]
+}
+
+/** A generated picture's state on an Image element, or the project file it shows. Engine-only: validateSpec drops an element-level "image" the model writes. */
+export type UiImageState =
+  | { status: 'off'; reason: string }
+  | { status: 'queued' | 'running' | 'done' | 'failed'; key: string; slug: string; w: number; h: number; reason?: string }
+  /** An Image whose src was a relative image path: served by GET /api/projects/:slug/files/<path>, never cached (the file can change). */
+  | { status: 'file'; slug: string; path: string }
+
+/**
+ * A generated picture changed state (engine/imagegen). Keyed on the image key, never on a
+ * surface: every Image showing that key fills in, and a surface that no longer shows it is untouched.
+ */
+export type UiImageEvent = {
+  type: 'ui.image'
+  key: string
+  slug: string
+  status: 'running' | 'done' | 'failed'
+  reason?: string
+}
+
 export type ContextStatusEvent = {
   type: 'context.status'
   utilization: number
@@ -732,6 +791,8 @@ export type EngineEvent =
   | ProjectOpenedEvent
   | ProjectCitationsEvent
   | ProjectIngestEvent
+  | UiRenderEvent
+  | UiImageEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 
@@ -777,6 +838,23 @@ export type AskAnswerCommand = {
   type: 'ask.answer'
   requestId: string
   answer: string
+}
+
+/**
+ * A click on a RenderUI surface (a Button, a Form submit, a FollowUps chip is
+ * a plain user.message instead). `state` is the surface's current input
+ * values by `name`; `context` is whatever the model put on the Button; the
+ * loop turns the frame into a user turn the model reads (engine/genui/actions.ts).
+ */
+export type UiActionCommand = {
+  type: 'ui.action'
+  surfaceId: string
+  action: string
+  label?: string
+  context?: Record<string, unknown>
+  state?: Record<string, unknown>
+  /** What the page shows as the user's own bubble, when the model supplied one. */
+  userMessage?: string
 }
 
 export type SlashCommand = {
@@ -911,6 +989,7 @@ export type TUICommand =
   | VibeActionCommand
   | VibeEscalationResponseCommand
   | ProjectOpenCommand
+  | UiActionCommand
 
 // ─── Helpers ────────────────────────────────────────────────────
 

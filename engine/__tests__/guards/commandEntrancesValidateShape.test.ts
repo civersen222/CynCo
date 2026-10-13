@@ -46,6 +46,7 @@ const VALID: Record<string, Record<string, unknown>> = {
   'vibe.action': { type: 'vibe.action', action: 'done' },
   'vibe.escalation_response': { type: 'vibe.escalation_response', requestId: 'r1', action: 'fix' },
   'project.open': { type: 'project.open', slug: 'diorama' },
+  'ui.action': { type: 'ui.action', surfaceId: 's1', action: 'go', label: 'Go', context: { k: 1 }, state: { kg: 2 } },
 }
 
 /** The `type: '...'` literal of every member of the TUICommand union, read off

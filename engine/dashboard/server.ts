@@ -47,6 +47,7 @@ import {
   UPLOAD_MAX_BYTES,
   SLUG_RE,
 } from '../projects/api.js'
+import { servedImage, servedProjectFile } from '../imagegen/store.js'
 import { cyncoHome } from '../paths.js'
 
 /** Phase 5 ruling 2: the pooled board is Task 2's one spelling
@@ -195,6 +196,8 @@ const DASHBOARD_ALLOWED_TYPES: ReadonlySet<unknown> = new Set([
   'vibe.action',
   'vibe.escalation_response',
   'project.open',
+  // A click on a RenderUI surface: drives the agent exactly like user.message.
+  'ui.action',
 ])
 
 /**
@@ -283,6 +286,55 @@ function jsonResponse(data: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   })
+}
+
+/**
+ * GET /api/projects/:slug/images/:name (F174) as a Response. The PNG is
+ * inert anywhere but an <img>: its type comes from the fixed extension and
+ * is never sniffed, a sandbox CSP covers a direct open, and there is no ACAO.
+ * A key names one generation request and the PNG exists only once it is
+ * done, so it caches as immutable; the record (`.json`) changes, so never.
+ */
+function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }): Response {
+  if (r.status === 200 && r.bytes) {
+    return new Response(r.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': 'image/png',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Content-Disposition': 'inline',
+        'Cache-Control': 'private, max-age=31536000, immutable',
+      },
+    })
+  }
+  if (r.status === 200) {
+    return new Response(JSON.stringify(r.json), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } })
+  }
+  return jsonResponse(r.json ?? { error: 'no such image' }, r.status)
+}
+
+/**
+ * GET /api/projects/:slug/files/<path> as a Response: an image file the
+ * model wrote into the project, shown by an Image whose src is its path.
+ * The type comes from the checked extension and is never sniffed, a sandbox
+ * CSP covers a direct open, there is no ACAO, and it is never cached — the
+ * model may rewrite the file and show it again.
+ */
+function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; json?: unknown }): Response {
+  if (r.status === 200 && r.bytes && r.type) {
+    return new Response(r.bytes, {
+      status: 200,
+      headers: {
+        'Content-Type': r.type,
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Content-Disposition': 'inline',
+        'Cache-Control': 'no-store',
+      },
+    })
+  }
+  return jsonResponse(r.json ?? { error: 'no such file' }, r.status)
 }
 
 function htmlResponse(body: string, status = 200): Response {
@@ -882,6 +934,39 @@ export class DashboardServer {
         return jsonResponse({ error: 'Method not allowed' }, 405)
       }
       return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    // A generated picture or its public record (F174): `<32 hex>.png|json`
+    // only, checked by `servedImage` after decoding, so `..%2f`, `%00` or any
+    // other name never reaches a path join. Same inference gate as every
+    // project route; the page fetches with the header and shows a blob URL.
+    if (area === 'images') {
+      if (parts.length !== 5) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      try {
+        return imageResponse(servedImage(d.home, slug, name!))
+      } catch (e) {
+        console.log(`[dashboard] serving images/${name!.slice(0, 80)} in ${slug} failed: ${e instanceof Error ? e.message : String(e)}`)
+        return jsonResponse({ error: 'the picture could not be read' }, 500)
+      }
+    }
+
+    // An image file the model wrote into the project, by its relative path
+    // (an Image whose src is a path). The decoded segments are joined and
+    // checked by `servedProjectFile` against the validator's own rule, so
+    // `..%2f`, `%5c`, `%00` or a dot-leading segment never reaches a path
+    // join, and the file must really be inside the project. Same gate; the
+    // page fetches with the header into an <img>, never cached.
+    if (area === 'files') {
+      if (parts.length < 5) return jsonResponse({ error: 'Not found' }, 404)
+      if (method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
+      const path = parts.slice(4).join('/')
+      try {
+        return fileResponse(servedProjectFile(d.home, slug, path))
+      } catch (e) {
+        console.log(`[dashboard] serving file ${path.slice(0, 80)} in ${slug} failed: ${e instanceof Error ? e.message : String(e)}`)
+        return jsonResponse({ error: 'the file could not be read' }, 500)
+      }
     }
 
     if (area === 'chats') {

@@ -1514,3 +1514,47 @@ describe('recovering from a dead inference server', () => {
     })
   })
 })
+
+// ─── tool_choice (generative-UI forcing, F171) ──────────────────
+
+describe('localCallModel toolChoice', () => {
+  const textEvents: LocalStreamEvent[] = [
+    { type: 'message_start', message: { id: 'msg_tc', model: 'qwen3:32b', usage: { input_tokens: 10, output_tokens: 0 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ]
+  function capturing(): { provider: Provider; requests: any[] } {
+    const requests: any[] = []
+    const provider = { ...createMockProvider(textEvents), async *stream(r: any) { requests.push(r); for (const e of textEvents) yield e } } as Provider
+    return { provider, requests }
+  }
+  const tools = [makeTool('RenderUI', 'draw'), makeTool('Read', 'read')]
+
+  it('puts tool_choice required on a native-tools request, with the tool list unchanged', async () => {
+    const { provider, requests } = capturing()
+    await collect(localCallModel({
+      ...defaultParams({ tools, options: { model: 'qwen3:32b', toolChoice: 'required' } }),
+      deps: { getProvider: () => provider, loadConfig: () => defaultConfig(), resolveCapabilities: () => defaultCapabilities() },
+    }))
+    expect(requests[0].tool_choice).toBe('required')
+    expect(requests[0].tools.map((t: any) => t.name)).toEqual(['RenderUI', 'Read'])
+  })
+
+  it('leaves tool_choice off without the option, and on the simulated and no-tools paths', async () => {
+    for (const [caps, opts] of [
+      [defaultCapabilities(), { model: 'qwen3:32b' }],
+      [defaultCapabilities({ toolUse: 'simulated' }), { model: 'qwen3:32b', toolChoice: 'required' }],
+      [defaultCapabilities({ toolUse: 'none' }), { model: 'qwen3:32b', toolChoice: 'required' }],
+    ] as const) {
+      const { provider, requests } = capturing()
+      await collect(localCallModel({
+        ...defaultParams({ tools, options: opts }),
+        deps: { getProvider: () => provider, loadConfig: () => defaultConfig(), resolveCapabilities: () => caps },
+      }))
+      expect(requests[0].tool_choice).toBeUndefined()
+    }
+  })
+})
