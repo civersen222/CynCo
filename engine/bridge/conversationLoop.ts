@@ -1012,7 +1012,7 @@ export class ConversationLoop {
    * leave the surface pending: the next batch end withdrew it as "the call did
    * not run" (or the turn's end as "the turn ended before this surface was
    * finished") and the model read a nudge where its result should have been
-   * (dashboard transcript 2026-10-11, "Tower design brief"). Nothing was
+   * (F175, dashboard transcript 2026-10-11, "Tower design brief"). Nothing was
    * dispatched, so the call counters are untouched.
    */
   private dropToolBatch(toolUseBlocks: any[], path: string, reason: string): void {
@@ -4095,7 +4095,7 @@ export class ConversationLoop {
       // the batch below: the calls run and get their results, then the nudge
       // is appended. It used to `continue` here and drop every call of its
       // iteration unexecuted: no tool result, and a RenderUI surface already
-      // drawn on the page withdrawn as "the call did not run" (dashboard
+      // drawn on the page withdrawn as "the call did not run" (F175; dashboard
       // transcript 2026-10-11, "Tower design brief").
       const readLoopEvasion = contractActive && i > 0 && i % 8 === 0 && evasionNudges < 3
       if (contractActive && modelStopping) {
