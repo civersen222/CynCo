@@ -17,6 +17,8 @@ export type ToolErrorClass =
   | 'counted'
   | 'benign:test-failure'
   | 'benign:verification-check'
+  | 'benign:arbiter-verdict'
+  | 'benign:wrong-path'
 
 /** Argument keys worth naming, in the order they identify a call. */
 const IDENTIFYING_KEYS = ['command', 'file_path', 'path', 'pattern', 'url', 'agentId']

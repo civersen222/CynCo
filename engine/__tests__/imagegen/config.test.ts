@@ -20,8 +20,9 @@ function tempFile(name: string, content: string): string {
   return p
 }
 
-// The operator asked for three designs × six takes in one surface (~21 s a
-// picture on the SDXL base: about six minutes of GPU per surface).
+// The operator asked for three designs × six takes in one surface (~10 s a
+// picture on the SDXL base — gen 9.4–10.4 s, 40 steps, 1024², measured
+// 2026-10-13: about three minutes of GPU per surface).
 describe('caps', () => {
   it('18 pictures per call, 48 waiting behind the one in flight', () => {
     expect(PER_CALL_CAP).toBe(18)

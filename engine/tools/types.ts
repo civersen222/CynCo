@@ -24,6 +24,16 @@ export type ToolResult = {
    * set where the verdict is KNOWN rather than inferred downstream from prose.
    */
   arbiterVerdict?: boolean
+  /**
+   * True when `isError` means "that path does not exist": a file tool's
+   * `missingFileHint` answer, which lists the folder. The model guessed a name;
+   * the tool worked. Set by `ToolExecutor` from the tool's own output
+   * (`isWrongPathAnswer`), so the trust score, the circuit breaker and the
+   * algedonic channel leave it out — F178: three guessed names in one parallel
+   * Read batch demoted Read, stood at four of the five pains that halt a
+   * session, and a project chat read its files through Bash.
+   */
+  wrongPath?: boolean
 }
 
 export type ToolImpl = {

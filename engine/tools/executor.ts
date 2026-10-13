@@ -6,6 +6,7 @@ import { capToolResult } from './resultCap.js'
 import { ToolScorer } from './toolScorer.js'
 import { callTouchesSealed, redactSealed, SEALED_REFUSAL } from './sealedPaths.js'
 import { withCodeIndexNudge } from './toolHints.js'
+import { isWrongPathAnswer } from './impl/pathHint.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -260,6 +261,11 @@ export class ToolExecutor {
         }
       }
 
+      // A wrong path is the model's guess, not the tool failing: not scored
+      // either way, and flagged so the loop's counters leave it out too (F178).
+      // Checked on the tool's own answer — the cap and the CodeIndex nudge
+      // above may have put text in front of it.
+      if (isWrongPathAnswer(toolName, result.output, result.isError)) return { ...capped, wrongPath: true }
       this.toolScorer?.record(toolName, !capped.isError)
       return capped
     } catch (err) {

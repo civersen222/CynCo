@@ -6,9 +6,9 @@ import { execFileSync } from 'node:child_process'
 import type { UiImageEvent, UiSpec } from '../../bridge/protocol.js'
 import { ensureHistory } from '../../projects/history.js'
 import { createProject, readJournal } from '../../projects/layout.js'
-import { UNSET_REASON } from '../../imagegen/config.js'
+import { comfyConfig, UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
-import { FILES_ONLY_REASON, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, storedImageState, writeSidecar } from '../../imagegen/store.js'
+import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
@@ -197,8 +197,9 @@ describe('ImageService: a picture end to end', () => {
     expect(hit.note).toBe('Pictures: 1 already made — shown in their cards.')
   })
 
-  // Three designs × six takes is ~6 minutes of GPU: a model told only
-  // "generating" called RenderUI again and again while they came in.
+  // Three designs × six takes is ~3 minutes of GPU (~10 s a picture: gen
+  // 9.4–10.4 s, 40 steps, 1024², SDXL base, measured 2026-10-13): a model told
+  // only "generating" called RenderUI again and again while they came in.
   it('more than three generating: the note says the expected wait — the model-load caveat before a measurement, the last measured pace after one', async () => {
     mock = await startMockComfy()
     const svc = start()
@@ -274,6 +275,8 @@ describe('ImageService: a picture end to end', () => {
         }
       },
     })
+    // Picked before the first ask, so both asks key on the pick (F179): the re-request is the same key, the old failure's.
+    await svc.probe()
     const s = spec(['alien'])
     svc.annotate(s, at()).start()
     const key = keyOf(s, 0)
@@ -431,6 +434,548 @@ describe('ImageService: how long a probe is trusted', () => {
     expect(await paint(svc, 'alien two', 't2')).toMatchObject({ status: 'failed', reason: `${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?` })
     expect(stats()).toBe(2)
     expect(posts()).toHaveLength(1)
+  })
+})
+
+// F179: with LOCALCODE_COMFYUI_CHECKPOINT unset (the operator's setup) every
+// key said 'auto', so once Juggernaut XL was installed and picked, a prompt
+// and seed already painted on the SDXL base was a cache hit and showed the
+// old picture. The key names the checkpoint that paints — the configured
+// one, else the last good probe's pick, else 'auto' before any probe — and a
+// job paints with the checkpoint its key names. The pick is kept current
+// where it is decided: the loop warms the service at the start of every
+// project-chat turn (a probe at most every 30 s), and a refusal naming the
+// keyed checkpoint drops it, so neither a checkpoint added nor one removed
+// keeps a call of pictures on the old one.
+describe('ImageService: the key names the checkpoint that paints', () => {
+  const BASE = 'sd_xl_base_1.0.safetensors', JUGG = 'juggernautXL_v9.safetensors'
+  const OK_TTL = 10 * 60_000
+  const stats = () => mock!.calls.filter(c => c.path === '/system_stats').length
+  /** The ckpt_name of the i-th POST /prompt (the built-in graph's node 4). */
+  const ckptOf = (i: number) => (posts()[i].body as { prompt: Record<string, { inputs: Record<string, unknown> }> }).prompt['4'].inputs.ckpt_name
+  /** The key `imageKey` derives for this prompt, seed and checkpoint under `env`'s settings. */
+  function keyFor(env: NodeJS.ProcessEnv, prompt: string, seed: number, checkpoint: string): string {
+    const c = comfyConfig(env)
+    if (!c.ok) throw new Error(c.reason)
+    const k = c.cfg
+    return imageKey({ prompt, negative: k.negative, seed, width: k.width, height: k.height, steps: k.steps, cfg: k.cfg, sampler: k.sampler, scheduler: k.scheduler, checkpoint, workflow: k.workflow.sha256 })
+  }
+
+  it('a checkpoint installed later and picked makes the same prompt and seed a new picture; the old picture and its record stay as they were', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    let clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: BASE, picked: true })
+    const first = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(first, at())
+    const k1 = keyOf(first, 0)
+    pics.start()
+    await svc.whenIdle()
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'done', checkpoint: BASE })
+    const png1 = readFileSync(pngPath(dir, k1)), record1 = readFileSync(sidecarPath(dir, k1), 'utf8')
+
+    // Juggernaut lands in the checkpoints folder; the probe, past its 10 minutes, picks it.
+    mock.mode.checkpoints = [BASE, JUGG]
+    clock += OK_TTL
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: JUGG, picked: true })
+    const second = spec([{ prompt: 'alien', seed: 1001 }])
+    const again = svc.annotate(second, at({ toolId: 'tool-2' }))
+    const k2 = keyOf(second, 0)
+    // Not the old picture as a cache hit: a new key, queued.
+    expect(imageOf(second, 0)).toEqual({ status: 'queued', key: k2, slug, w: 1024, h: 1024 })
+    expect(k2).not.toBe(k1)
+    expect(again.note).toBe('Pictures: 1 generating — they appear in their cards by themselves; do not call RenderUI again for them.')
+    again.start()
+    await svc.whenIdle()
+    expect(readSidecar(dir, k2)).toMatchObject({ status: 'done', checkpoint: JUGG, seed: 1001, seedFrom: 'model' })
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, JUGG])
+
+    // The first picture is untouched: the first chat's origin still points at it.
+    expect(readFileSync(pngPath(dir, k1)).equals(png1)).toBe(true)
+    expect(readFileSync(sidecarPath(dir, k1), 'utf8')).toBe(record1)
+    const origins = readOrigins(dir)
+    expect(storedImageState(dir, slug, originKey({ chatFile: 'c.jsonl', toolId: 'tool-1', elementId: 'img-0' }), origins)).toEqual({ status: 'done', key: k1, slug, w: 1024, h: 1024 })
+    expect(storedImageState(dir, slug, originKey({ chatFile: 'c.jsonl', toolId: 'tool-2', elementId: 'img-0' }), origins)).toEqual({ status: 'done', key: k2, slug, w: 1024, h: 1024 })
+    // Each key is the one imageKey derives with the checkpoint that painted it.
+    expect(k1).toBe(keyFor(env, 'alien', 1001, BASE))
+    expect(k2).toBe(keyFor(env, 'alien', 1001, JUGG))
+  })
+
+  it('before any probe has finished the key says auto, annotate asks the server nothing, and the job paints with the pick', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    let fetched = 0
+    const svc = start({ env, fetchFn: ((url: string | URL | Request, init?: RequestInit) => { fetched++; return fetch(url, init) }) as typeof fetch })
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at())
+    expect(fetched).toBe(0)
+    expect(keyOf(s, 0)).toBe(keyFor(env, 'alien', 1001, 'auto'))
+    expect(readSidecar(dir, keyOf(s, 0))).toMatchObject({ status: 'queued', checkpoint: 'auto' })
+    // A probe still in flight has picked nothing yet.
+    const probing = svc.probe()
+    const asked = fetched
+    const during = spec([{ prompt: 'alien', seed: 2002 }])
+    const pics = svc.annotate(during, at({ toolId: 'tool-2' }))
+    expect(fetched).toBe(asked)
+    expect(keyOf(during, 0)).toBe(keyFor(env, 'alien', 2002, 'auto'))
+    expect(await probing).toMatchObject({ ok: true, checkpoint: BASE })
+    pics.start()
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, BASE])
+    expect(readSidecar(dir, keyOf(s, 0))).toMatchObject({ status: 'done', checkpoint: BASE })
+    expect(readSidecar(dir, keyOf(during, 0))).toMatchObject({ status: 'done', checkpoint: BASE })
+  })
+
+  it('a probe that fails after a good one keeps its pick: a picture already made is still shown while the server is away', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    const svc = start()
+    await svc.probe()
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at()).start()
+    await svc.whenIdle()
+    mock.mode.stats = '404'
+    expect(await svc.probe()).toMatchObject({ ok: false })
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    expect(svc.annotate(again, at({ toolId: 'tool-2' })).note).toBe('Pictures: 1 already made — shown in their cards.')
+    expect(imageOf(again, 0)).toEqual({ status: 'done', key: keyOf(s, 0), slug, w: 1024, h: 1024 })
+    expect(posts()).toHaveLength(1)
+  })
+
+  it("a picture asked before the first probe (keyed 'auto') is shown again while the pick is the checkpoint that painted it, and painted again once another is picked", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at()).start()
+    const kAuto = keyOf(s, 0)
+    await svc.whenIdle()
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+    // The probe the job ran picked the SDXL base: the same prompt and seed is that picture, under its 'auto' key.
+    const same = spec([{ prompt: 'alien', seed: 1001 }])
+    const hit = svc.annotate(same, at({ toolId: 'tool-2' }))
+    expect(imageOf(same, 0)).toEqual({ status: 'done', key: kAuto, slug, w: 1024, h: 1024 })
+    expect(hit.note).toBe('Pictures: 1 already made — shown in their cards.')
+    expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-2', elementId: 'img-0' })]).toBe(kAuto)
+    await svc.whenIdle()
+    expect(posts()).toHaveLength(1)
+    // Juggernaut is picked: the 'auto' picture was painted on the base, so it is not this one.
+    mock.mode.checkpoints = [BASE, JUGG]
+    clock += OK_TTL
+    await svc.probe()
+    const other = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(other, at({ toolId: 'tool-3' })).start()
+    expect(imageOf(other, 0)).toMatchObject({ status: 'queued' })
+    expect(keyOf(other, 0)).not.toBe(kAuto)
+    await svc.whenIdle()
+    expect(ckptOf(1)).toBe(JUGG)
+    expect(readSidecar(dir, keyOf(other, 0))).toMatchObject({ status: 'done', checkpoint: JUGG })
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+  })
+
+  it('a configured checkpoint keys and paints as before, whatever the probe would pick', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE, JUGG] })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url, LOCALCODE_COMFYUI_CHECKPOINT: BASE }
+    const svc = start({ env })
+    const before = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(before, at())
+    const key = keyOf(before, 0)
+    expect(key).toBe(keyFor(env, 'alien', 1001, BASE))
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: BASE, picked: false })
+    const after = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(after, at({ toolId: 'tool-2' }))
+    expect(keyOf(after, 0)).toBe(key)
+    pics.start()
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE])
+    expect(readSidecar(dir, key)).toMatchObject({ status: 'done', checkpoint: BASE })
+  })
+
+  it('a job paints with the checkpoint its key names, not the one a later probe picks', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    await svc.probe()
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(s, at())
+    // Before the worker reaches it, Juggernaut lands and the job's stale probe is asked again: it picks Juggernaut.
+    mock.mode.checkpoints = [BASE, JUGG]
+    clock += OK_TTL
+    pics.start()
+    await svc.whenIdle()
+    expect(stats()).toBe(2)
+    expect(ckptOf(0)).toBe(BASE)
+    expect(readSidecar(dir, keyOf(s, 0))).toMatchObject({ status: 'done', checkpoint: BASE })
+    expect(logs).toContain(`[imagegen] ${keyOf(s, 0).slice(0, 8)}: painting with ${BASE}, the pick when it was asked (the probe now picks ${JUGG})`)
+    // The next picture asked keys and paints with the new pick.
+    const next = spec([{ prompt: 'alien', seed: 2002 }])
+    svc.annotate(next, at({ toolId: 'tool-2' })).start()
+    await svc.whenIdle()
+    expect(ckptOf(1)).toBe(JUGG)
+    expect(readSidecar(dir, keyOf(next, 0))).toMatchObject({ status: 'done', checkpoint: JUGG })
+  })
+
+  it("a checkpoint the key names that is gone from the server fails the job with ComfyUI's refusal naming it; asked again, the picture keys and paints with the new pick", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    await svc.probe()
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(s, at())
+    const k1 = keyOf(s, 0)
+    // The SDXL base is swapped for Juggernaut before the job runs.
+    mock.mode.checkpoints = [JUGG]
+    clock += OK_TTL
+    pics.start()
+    await svc.whenIdle()
+    expect(ckptOf(0)).toBe(BASE)
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'failed', checkpoint: BASE, reason: `ComfyUI refused the workflow: Prompt outputs failed validation; node 4 (CheckpointLoaderSimple): Value not in list: ckpt_name: '${BASE}' not in ['${JUGG}']` })
+    expect(cancels()).toEqual([])
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(again, at({ toolId: 'tool-2' })).start()
+    expect(keyOf(again, 0)).not.toBe(k1)
+    await svc.whenIdle()
+    expect(ckptOf(1)).toBe(JUGG)
+    expect(readSidecar(dir, keyOf(again, 0))).toMatchObject({ status: 'done', checkpoint: JUGG })
+  })
+
+  it('warm() starts a background probe once the last one finished 30 s ago — none when younger, none while one runs, none once shutting down; a failed one is logged', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    let clock = 1_000_000
+    const svc = start({ now: () => clock })
+    // No probe yet: the first warm starts one, a second while it runs starts none.
+    svc.warm()
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(1)
+    clock += 30_000 - 1
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(1)
+    clock += 1
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(2)
+    // The engine-start probe still running: warm adds none.
+    clock += 30_000
+    const running = svc.probe()
+    svc.warm()
+    await running
+    await svc.whenIdle()
+    expect(stats()).toBe(3)
+    // A failed warm-up probe is logged like any other, and is 30 s old too before warm asks again.
+    mock.mode.stats = '404'
+    clock += 30_000
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(4)
+    expect(logs.at(-1)).toBe(`[imagegen] not ready: ${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?`)
+    clock += 30_000 - 1
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(4)
+    await svc.shutdown()
+    clock += 30_000
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(4)
+  })
+
+  // One failed warm-up probe used to replace the good probe the jobs trust, so every picture queued behind the one
+  // painting failed for 60 s with no POST, though the server answered again at once.
+  it('a failed warm-up probe never replaces a good probe still inside its 10 minutes: every picture queued behind the one painting paints; the pick is kept, the note says the check failed, and the next warm() waits 30 s from that failure', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], pendingPolls: 1_000 })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    let clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    await svc.probe()
+    const s = spec([{ prompt: 'alien', seed: 1 }, { prompt: 'alien', seed: 2 }, { prompt: 'alien', seed: 3 }])
+    svc.annotate(s, at()).start()
+    const keys = [0, 1, 2].map(i => keyOf(s, i))
+    await until(() => events.some(e => e.key === keys[0] && e.status === 'running'), 'the first picture painting')
+    // The next turn starts 30 s later, and its warm-up probe meets a blip: /system_stats answers 404.
+    mock.mode.stats = '404'
+    clock += 30_000
+    svc.warm()
+    const notReady = `[imagegen] not ready: ${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?`
+    await until(() => logs.includes(notReady), 'the failed warm-up probe logged')
+    expect(stats()).toBe(2)
+    // The pick is kept (the same prompt and seed keys on the base and joins the job painting it), and the note says the last check failed.
+    const same = spec([{ prompt: 'alien', seed: 1 }])
+    const note = svc.annotate(same, at({ toolId: 'tool-2' })).note
+    expect(imageOf(same, 0)).toEqual({ status: 'running', key: keys[0], slug, w: 1024, h: 1024 })
+    expect(keys[0]).toBe(keyFor(env, 'alien', 1, BASE))
+    expect(note).toBe(`Pictures: 1 generating — they appear in their cards by themselves; do not call RenderUI again for them. The last check of ComfyUI failed (${mock.url} answered /system_stats with HTTP 404 — is that ComfyUI?); if it still fails, the cards will say so.`)
+    // The server answers again. The next turn starts 29.999 s after the failed probe (59.999 s after the good one): no probe.
+    mock.mode.stats = 'ok'
+    clock += 30_000 - 1
+    svc.warm()
+    mock.mode.pendingPolls = 1
+    await svc.whenIdle()
+    expect(stats()).toBe(2)
+    // Every picture painted, one POST each, in order; the failure was logged once.
+    expect(keys.map(k => readSidecar(dir, k)!.status)).toEqual(['done', 'done', 'done'])
+    expect(posts().map(p => (p.body as { prompt_id: string }).prompt_id)).toEqual(keys.map(k => readSidecar(dir, k)!.comfy.promptId))
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, BASE, BASE])
+    expect(logs.filter(l => l.startsWith('[imagegen] not ready:'))).toEqual([notReady])
+    // 30 s after the failed probe the next turn's warm() probes again, and the good answer is logged as the state change it is.
+    clock += 1
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(3)
+    expect(logs.at(-1)).toMatch(/^\[imagegen\] ready: ComfyUI 0\.3\.60 at /)
+  })
+
+  it('warm() does nothing when the configuration is unset or refused', async () => {
+    let fetched = 0
+    const fetchFn = ((url: string | URL | Request, init?: RequestInit) => { fetched++; return fetch(url, init) }) as typeof fetch
+    for (const env of [{ LOCALCODE_COMFYUI_URL: '' }, { LOCALCODE_COMFYUI_URL: 'http://127.0.0.1:9', LOCALCODE_COMFYUI_SIZE: '100x100' }]) {
+      const svc = start({ env, fetchFn })
+      expect(() => svc.warm()).not.toThrow()
+      await svc.whenIdle()
+    }
+    expect(fetched).toBe(0)
+    expect(logs).toEqual([])
+  })
+
+  // The window a stale pick lived in: a pick changed only at a probe (engine
+  // start, or a job past the 10-minute reuse), so a whole call of pictures —
+  // up to 18 — could be keyed and painted on the checkpoint it replaced.
+  it("a checkpoint added while the last good probe is still trusted is the pick after the next turn's warm(): the same prompt and seed keys and paints on it", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    let clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    await svc.probe()
+    const first = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(first, at()).start()
+    await svc.whenIdle()
+    const k1 = keyOf(first, 0)
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'done', checkpoint: BASE })
+    // Juggernaut lands; the good probe is 30 s old, well inside its 10 minutes.
+    mock.mode.checkpoints = [BASE, JUGG]
+    clock += 30_000
+    // Until a probe sees it, the pick known is the base: the same prompt and seed is the base's picture.
+    const before = spec([{ prompt: 'alien', seed: 1001 }])
+    expect(svc.annotate(before, at({ toolId: 'tool-2' })).note).toBe('Pictures: 1 already made — shown in their cards.')
+    expect(keyOf(before, 0)).toBe(k1)
+    await svc.whenIdle()
+    // The next turn starts: the loop warms the service, and the pick is Juggernaut before the turn's RenderUI is annotated.
+    svc.warm()
+    await svc.whenIdle()
+    expect(stats()).toBe(2)
+    const after = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(after, at({ toolId: 'tool-3' }))
+    const k2 = keyOf(after, 0)
+    expect(imageOf(after, 0)).toEqual({ status: 'queued', key: k2, slug, w: 1024, h: 1024 })
+    expect(k2).toBe(keyFor(env, 'alien', 1001, JUGG))
+    pics.start()
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, JUGG])
+    expect(readSidecar(dir, k2)).toMatchObject({ status: 'done', checkpoint: JUGG })
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'done', checkpoint: BASE })
+    expect(stats()).toBe(2)
+  })
+
+  it("a refusal naming the keyed checkpoint drops that pick and probes again at once: asked while that probe runs, the picture keys 'auto' and paints on what it picks", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    const clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    await svc.probe()
+    // The SDXL base is removed while the good probe is fresh; the clock never moves, so no probe falls due.
+    // The probe the drop starts answers slowly, so the chat can ask while it runs.
+    mock.mode.checkpoints = [JUGG]
+    mock.mode.delay = { '/system_stats': 300 }
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at()).start()
+    const k1 = keyOf(s, 0)
+    expect(k1).toBe(keyFor(env, 'alien', 1001, BASE))
+    const dropped = `[imagegen] ${k1.slice(0, 8)}: ComfyUI no longer has ${BASE}; probing again for the pick (until it answers, a picture asked is keyed 'auto')`
+    await until(() => logs.includes(dropped), 'the base dropped')
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'failed', checkpoint: BASE, reason: `ComfyUI refused the workflow: Prompt outputs failed validation; node 4 (CheckpointLoaderSimple): Value not in list: ckpt_name: '${BASE}' not in ['${JUGG}']` })
+    expect(cancels()).toEqual([])
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(again, at({ toolId: 'tool-2' })).start()
+    const k2 = keyOf(again, 0)
+    expect(imageOf(again, 0)).toEqual({ status: 'queued', key: k2, slug, w: 1024, h: 1024 })
+    expect(k2).toBe(keyFor(env, 'alien', 1001, 'auto'))
+    await svc.whenIdle()
+    // One probe after the drop: the job joined the one the drop started.
+    expect(stats()).toBe(2)
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, JUGG])
+    expect(readSidecar(dir, k2)).toMatchObject({ status: 'done', checkpoint: JUGG })
+    // That probe's pick is the key's from now on, and the 'auto' picture painted on it is the same picture.
+    const third = spec([{ prompt: 'alien', seed: 1001 }])
+    expect(svc.annotate(third, at({ toolId: 'tool-3' })).note).toBe('Pictures: 1 already made — shown in their cards.')
+    expect(imageOf(third, 0)).toEqual({ status: 'done', key: k2, slug, w: 1024, h: 1024 })
+  })
+
+  // A guard, not a pin of the pinning: this held before queued 'auto' jobs were pinned too, since a running job's
+  // record already names the checkpoint its probe picked. It keeps a running 'auto' job from ever being joined by,
+  // or pinned to, an ask keyed on another checkpoint.
+  it("an 'auto' job still painting on the base is not the picture once Juggernaut is picked: the same prompt and seed is a new key, queued", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], pendingPolls: 1_000 })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    const svc = start({ env })
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at()).start()
+    const kAuto = keyOf(s, 0)
+    expect(kAuto).toBe(keyFor(env, 'alien', 1001, 'auto'))
+    await until(() => events.some(e => e.key === kAuto && e.status === 'running'), "the 'auto' job running")
+    // The job's own probe picked the base: an ask keyed on the base joins it.
+    const same = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(same, at({ toolId: 'tool-2' }))
+    expect(imageOf(same, 0)).toEqual({ status: 'running', key: kAuto, slug, w: 1024, h: 1024 })
+    // Juggernaut lands and a probe picks it while the 'auto' job still paints on the base.
+    mock.mode.checkpoints = [BASE, JUGG]
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: JUGG })
+    const other = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(other, at({ toolId: 'tool-3' }))
+    const kJ = keyOf(other, 0)
+    expect(imageOf(other, 0)).toEqual({ status: 'queued', key: kJ, slug, w: 1024, h: 1024 })
+    expect(kJ).toBe(keyFor(env, 'alien', 1001, JUGG))
+    mock.mode.pendingPolls = 1
+    pics.start()
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, JUGG])
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+    expect(readSidecar(dir, kJ)).toMatchObject({ status: 'done', checkpoint: JUGG })
+  })
+
+  it("an ask keyed on a checkpoint that joins a queued 'auto' job pins it there: the job paints that checkpoint, whatever its own probe picks later", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    let clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    // Asked before any probe: keyed 'auto', not started yet.
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    const first = svc.annotate(s, at())
+    const kAuto = keyOf(s, 0)
+    expect(kAuto).toBe(keyFor(env, 'alien', 1001, 'auto'))
+    // The engine-start probe picks the base; the same prompt and seed, keyed on the base now, joins the queued job.
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: BASE })
+    const same = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(same, at({ toolId: 'tool-2' }))
+    expect(imageOf(same, 0)).toEqual({ status: 'queued', key: kAuto, slug, w: 1024, h: 1024 })
+    expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-2', elementId: 'img-0' })]).toBe(kAuto)
+    // Juggernaut lands and the job's own probe, past its 10 minutes, picks it: the job still paints the base its joiner was keyed on.
+    mock.mode.checkpoints = [BASE, JUGG]
+    clock += OK_TTL
+    first.start()
+    await svc.whenIdle()
+    expect(stats()).toBe(2)
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE])
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+    expect(logs).toContain(`[imagegen] ${kAuto.slice(0, 8)}: painting with ${BASE}, the pick when it was asked (the probe now picks ${JUGG})`)
+  })
+
+  // Before the drop probed again, nothing did until a later turn's warm-up or the 10-minute reuse, and a picture
+  // keyed 'auto' and painted on the removed checkpoint read "already made" to every ask in between.
+  it("once a refusal has dropped the base, a picture painted on it under its 'auto' key is painted again on the new pick: the drop probes again at once", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    const clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    // Asked before any probe: keyed 'auto' and painted on the base its own probe picked, as every picture made before F179 was.
+    const p = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(p, at()).start()
+    const kAuto = keyOf(p, 0)
+    await svc.whenIdle()
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+    // The base is swapped for Juggernaut; another picture, keyed on the base, is refused, which drops the base.
+    mock.mode.checkpoints = [JUGG]
+    const r = spec([{ prompt: 'robot', seed: 2002 }])
+    svc.annotate(r, at({ toolId: 'tool-2' })).start()
+    await svc.whenIdle()
+    expect(readSidecar(dir, keyOf(r, 0))).toMatchObject({ status: 'failed', checkpoint: BASE })
+    // The clock never moved, so only the drop could have probed: the pick is Juggernaut, and the alien is not "already made".
+    expect(stats()).toBe(2)
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    const pics = svc.annotate(again, at({ toolId: 'tool-3' }))
+    expect(pics.note).toBe('Pictures: 1 generating — they appear in their cards by themselves; do not call RenderUI again for them.')
+    expect(keyOf(again, 0)).toBe(keyFor(env, 'alien', 1001, JUGG))
+    pics.start()
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, BASE, JUGG])
+    expect(readSidecar(dir, keyOf(again, 0))).toMatchObject({ status: 'done', checkpoint: JUGG })
+    expect(readSidecar(dir, kAuto)).toMatchObject({ status: 'done', checkpoint: BASE })
+  })
+
+  it("a queued 'auto' job pinned to a checkpoint a refusal drops goes back to 'auto': it paints on the new pick, and an ask that joins it after the drop gets that picture", async () => {
+    mock = await startMockComfy({ checkpoints: [BASE], checkCheckpoints: true })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    const clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    // Two pictures asked before any probe: both keyed 'auto', not started yet.
+    const r = spec([{ prompt: 'robot', seed: 2002 }])
+    const first = svc.annotate(r, at())
+    const p = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(p, at({ toolId: 'tool-2' }))
+    const kR = keyOf(r, 0), kP = keyOf(p, 0)
+    // The probe picks the base; the same two asked again, keyed on the base, join the queued jobs and pin both to it.
+    expect(await svc.probe()).toMatchObject({ ok: true, checkpoint: BASE })
+    const r2 = spec([{ prompt: 'robot', seed: 2002 }]), p2 = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(r2, at({ toolId: 'tool-3' }))
+    svc.annotate(p2, at({ toolId: 'tool-4' }))
+    expect([keyOf(r2, 0), keyOf(p2, 0)]).toEqual([kR, kP])
+    // The base is swapped for Juggernaut; the probe the drop starts answers slowly, so the chat can ask while it runs.
+    mock.mode.checkpoints = [JUGG]
+    mock.mode.delay = { '/system_stats': 300 }
+    first.start()
+    const dropped = `[imagegen] ${kR.slice(0, 8)}: ComfyUI no longer has ${BASE}; probing again for the pick (until it answers, a picture asked is keyed 'auto'); 1 queued picture pinned to it goes back to 'auto' and paints on the pick its job's probe makes`
+    await until(() => logs.includes(dropped), 'the base dropped')
+    // The robot, pinned to the base, was refused.
+    expect(readSidecar(dir, kR)).toMatchObject({ status: 'failed', checkpoint: BASE })
+    // Asked again while that probe runs, the alien keys 'auto' and joins its own queued job.
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(again, at({ toolId: 'tool-5' }))
+    expect(imageOf(again, 0)).toEqual({ status: 'queued', key: kP, slug, w: 1024, h: 1024 })
+    await svc.whenIdle()
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, JUGG])
+    expect(readSidecar(dir, kP)).toMatchObject({ status: 'done', checkpoint: JUGG })
+    expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-5', elementId: 'img-0' })]).toBe(kP)
+    expect(stats()).toBe(2)
+  })
+
+  it('only a refusal of the keyed checkpoint itself drops the pick: one for another loader whose list merely names it keeps it', async () => {
+    mock = await startMockComfy({ checkpoints: [BASE] })
+    const env = { LOCALCODE_COMFYUI_URL: mock.url }
+    const clock = 1_000_000
+    const svc = start({ env, now: () => clock })
+    await svc.probe()
+    // A second loader in the workflow (a refiner) names a file the server lacks; ComfyUI's refusal lists the base among what it has.
+    const REFINER = 'sd_xl_refiner_1.0.safetensors'
+    mock.mode.refuse = {
+      error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation', details: '', extra_info: {} },
+      node_errors: { '12': { errors: [{ type: 'value_not_in_list', message: 'Value not in list', details: `ckpt_name: '${REFINER}' not in ['${BASE}']`, extra_info: {} }], dependent_outputs: ['9'], class_type: 'CheckpointLoaderSimple' } },
+    }
+    const s = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(s, at()).start()
+    const k1 = keyOf(s, 0)
+    await svc.whenIdle()
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'failed', checkpoint: BASE, reason: `ComfyUI refused the workflow: Prompt outputs failed validation; node 12 (CheckpointLoaderSimple): Value not in list: ckpt_name: '${REFINER}' not in ['${BASE}']` })
+    expect(logs.some(l => l.includes('no longer has'))).toBe(false)
+    expect(stats()).toBe(1)
+    // The base is still the pick: asked again, the picture keys on it and paints.
+    mock.mode.refuse = null
+    const again = spec([{ prompt: 'alien', seed: 1001 }])
+    svc.annotate(again, at({ toolId: 'tool-2' })).start()
+    expect(keyOf(again, 0)).toBe(k1)
+    await svc.whenIdle()
+    expect(readSidecar(dir, k1)).toMatchObject({ status: 'done', checkpoint: BASE })
+    // The base itself refused (its own name before "not in") drops it.
+    mock.mode.checkCheckpoints = true
+    mock.mode.checkpoints = [JUGG]
+    const gone = spec([{ prompt: 'alien', seed: 2002 }])
+    svc.annotate(gone, at({ toolId: 'tool-3' })).start()
+    const k3 = keyOf(gone, 0)
+    expect(k3).toBe(keyFor(env, 'alien', 2002, BASE))
+    await svc.whenIdle()
+    expect(readSidecar(dir, k3)).toMatchObject({ status: 'failed', reason: `ComfyUI refused the workflow: Prompt outputs failed validation; node 4 (CheckpointLoaderSimple): Value not in list: ckpt_name: '${BASE}' not in ['${JUGG}']` })
+    expect(logs.filter(l => l.includes('no longer has'))).toEqual([`[imagegen] ${k3.slice(0, 8)}: ComfyUI no longer has ${BASE}; probing again for the pick (until it answers, a picture asked is keyed 'auto')`])
+    expect(posts().map((_, i) => ckptOf(i))).toEqual([BASE, BASE, BASE])
+    expect(stats()).toBe(2)
   })
 })
 

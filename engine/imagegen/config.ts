@@ -24,7 +24,7 @@ import { BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA, parseWorkflow, placeholdersIn, 
 export const SAMPLER = 'dpmpp_2m'
 export const SCHEDULER = 'karras'
 export const NEGATIVE_PROMPT = 'text, watermark, signature, logo, lowres, blurry, jpeg artifacts, deformed, disfigured, extra limbs, cropped, out of frame, multiple views, collage'
-/** Generated pictures per RenderUI call (F176: three designs × six takes, ~6 min of GPU at ~21 s each — it was 6, one design's takes); the rest of the call's Images are drawn as "off". */
+/** Generated pictures per RenderUI call (F176: three designs × six takes, ~3 min of GPU at ~10 s a picture — gen 9.4–10.4 s, 40 steps, 1024², SDXL base, measured 2026-10-13; it was 6, one design's takes); the rest of the call's Images are drawn as "off". */
 export const PER_CALL_CAP = 18
 /** Jobs waiting behind the one in flight. */
 export const QUEUE_CAP = 48

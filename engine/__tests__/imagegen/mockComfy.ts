@@ -2,7 +2,8 @@
  * A ComfyUI stand-in on a real `node:http` server (port 0), faithful to the
  * routes and shapes engine/imagegen uses: /system_stats, /models/checkpoints,
  * /object_info/<class> ({} for a class it lacks), POST /prompt (a canonical
- * uuid prompt_id is honoured; 400 with node_errors on request), /history/<id>
+ * uuid prompt_id is honoured; 400 with node_errors on request, or for a
+ * ckpt_name it does not list when `checkCheckpoints` is on), /history/<id>
  * ({} while pending, then an entry with outputs and timestamped
  * status.messages), /view (PNG bytes, or an oversized / non-PNG body),
  * POST /interrupt and POST /queue. Every request lands in `calls`.
@@ -31,6 +32,8 @@ export type MockMode = {
   neverFinish: boolean
   /** POST /prompt answers 400 with this body. */
   refuse: unknown | null
+  /** POST /prompt refuses a CheckpointLoaderSimple ckpt_name not in `checkpoints` with ComfyUI's value_not_in_list 400 (off by default: the client tests post the unfilled graph). */
+  checkCheckpoints: boolean
   /** The finished entry reports an execution_error / an interruption. */
   executionError: { node_id: string; node_type: string; exception_message: string; exception_type?: string } | null
   interrupted: boolean
@@ -67,7 +70,7 @@ export type MockComfy = {
 export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise<MockComfy> {
   const mode: MockMode = {
     stats: 'ok', checkpoints: ['juggernautXL_v9.safetensors', 'sd15.safetensors'], nodes: [...BUILTIN_CLASSES],
-    pendingPolls: 1, neverFinish: false, refuse: null, executionError: null, interrupted: false,
+    pendingPolls: 1, neverFinish: false, refuse: null, checkCheckpoints: false, executionError: null, interrupted: false,
     filename: null, subfolder: null, noOutputs: false, view: 'png', oversizedBytes: 4096, ignoreClientId: false, delay: {},
     ...overrides,
   }
@@ -114,6 +117,16 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
     if (u.pathname === '/prompt' && req.method === 'POST') {
       const b = body as { prompt?: Record<string, { class_type: string; inputs: Record<string, unknown> }>; prompt_id?: unknown; client_id?: unknown }
       if (mode.refuse) return json(res, 400, mode.refuse)
+      if (mode.checkCheckpoints) {
+        for (const [nodeId, n] of Object.entries(b?.prompt ?? {})) {
+          const name = n.class_type === 'CheckpointLoaderSimple' ? String(n.inputs.ckpt_name) : null
+          if (name === null || mode.checkpoints.includes(name)) continue
+          return json(res, 400, {
+            error: { type: 'prompt_outputs_failed_validation', message: 'Prompt outputs failed validation', details: '', extra_info: {} },
+            node_errors: { [nodeId]: { errors: [{ type: 'value_not_in_list', message: 'Value not in list', details: `ckpt_name: '${name}' not in [${mode.checkpoints.map(c => `'${c}'`).join(', ')}]`, extra_info: {} }], dependent_outputs: ['9'], class_type: 'CheckpointLoaderSimple' } },
+          })
+        }
+      }
       const id = !mode.ignoreClientId && typeof b?.prompt_id === 'string' && UUID_RE.test(b.prompt_id) ? b.prompt_id : randomUUID()
       const save = Object.values(b?.prompt ?? {}).find(n => n.class_type === 'SaveImage')
       const text = Object.values(b?.prompt ?? {}).find(n => n.class_type === 'CLIPTextEncode')?.inputs.text
