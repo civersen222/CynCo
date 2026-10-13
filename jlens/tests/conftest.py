@@ -1,10 +1,19 @@
-"""Shared synthetic Readout builder (d=8, vocab=16 — no artifacts in CI)."""
-import torch
+"""Shared synthetic Readout builder (d=8, vocab=16 — no artifacts in CI).
+torch is optional: a test that needs a Readout skips without it, so the
+server's own tests (no tensors) still run where only the service code is."""
+import pytest
 
-from jlens_service.readout import Readout
+try:
+    import torch
+    from jlens_service.readout import Readout
+except ImportError:  # no torch: make_readout skips its caller
+    torch = None
+    Readout = None
 
 
 def make_readout(d=8, vocab=16):
+    if torch is None:
+        pytest.skip("torch is not installed")
     torch.manual_seed(0)
     r = Readout.__new__(Readout)
     r.J = {2: torch.eye(d, dtype=torch.float32)}

@@ -59,6 +59,50 @@ export function jlensArtifactsDir(): string {
   return process.env.JLENS_DIR || join(cyncoHome(), 'jlens') // empty JLENS_DIR = unset, as cyncoHome() treats CYNCO_HOME
 }
 
+/** The sidecar's own line for a client that reset or aborted its keep-alive socket (jlens_service/server.py, JlensServer.handle_error). */
+const CLIENT_CLOSED_RE = /client closed the connection/
+const CLIENT_CLOSED_WINDOW_MS = 60_000
+
+/**
+ * The sidecar's stdout and stderr into the engine log, one `[jlens] <line>`
+ * per line (a line split across two chunks is joined; `flush` logs a last
+ * line with no newline). A run of the sidecar's "client closed the
+ * connection" lines — one per reset of an idle keep-alive socket, every few
+ * seconds in the operator's log of 2026-10-12/13 — is collapsed to one a
+ * minute, the next one saying how many were swallowed; every other line is
+ * relayed as it came, so no real error is hidden. Pure, for tests.
+ */
+export function sidecarRelay(log: (msg: string) => void, now: () => number = Date.now): { chunk(data: string): void; flush(): void } {
+  let pending = ''
+  let lastClosedAt: number | null = null
+  let swallowed = 0
+  const line = (raw: string): void => {
+    const text = raw.trimEnd() // a traceback's indentation is kept
+    if (!text.trim()) return
+    if (CLIENT_CLOSED_RE.test(text)) {
+      const t = now()
+      if (lastClosedAt !== null && t - lastClosedAt < CLIENT_CLOSED_WINDOW_MS) { swallowed++; return }
+      log(`[jlens] ${text}${swallowed ? ` (+${swallowed} more in the minute after the last)` : ''}`)
+      lastClosedAt = t
+      swallowed = 0
+      return
+    }
+    log(`[jlens] ${text}`)
+  }
+  return {
+    chunk(data) {
+      const parts = (pending + data).split(/\r?\n/)
+      pending = parts.pop() ?? ''
+      for (const p of parts) line(p)
+    },
+    flush() {
+      const last = pending
+      pending = ''
+      line(last)
+    },
+  }
+}
+
 function killStaleSidecars(log: (msg: string) => void): void {
   try {
     if (process.platform === 'win32') {
@@ -117,17 +161,13 @@ export function startJlensSidecar(opts: {
     cwd: jlensRepoDir,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
-  proc.stdout?.on('data', (d: Buffer) => {
-    const line = d.toString().trim()
-    if (line) log(`[jlens] ${line}`)
-  })
-  proc.stderr?.on('data', (d: Buffer) => {
-    const line = d.toString().trim()
-    if (line) log(`[jlens] ${line}`)
-  })
+  const relay = sidecarRelay(log)
+  proc.stdout?.on('data', (d: Buffer) => relay.chunk(d.toString()))
+  proc.stderr?.on('data', (d: Buffer) => relay.chunk(d.toString()))
   proc.on('exit', (code) => {
     // An exit is always worth a line: 0 means stop() ran; anything else is
     // the dependency the workspace status will blame going down for real.
+    relay.flush()
     log(`[jlens] sidecar exited with code ${code}`)
   })
   proc.on('error', (err) => {

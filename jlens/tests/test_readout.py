@@ -1,4 +1,6 @@
-import torch
+import pytest
+
+torch = pytest.importorskip("torch")
 
 from conftest import make_readout
 

@@ -10,7 +10,7 @@ The Brain is LocalCode's telemetry layer on top of the model's own token stream:
 | `brainRecorder.ts` | Persists per-turn entropy and divergence telemetry to `<trajectoryDir>/brain/<taskId>.jsonl`, joinable to trajectory rows by `(task_id, turn_idx)`. |
 | `jlensClient.ts` | HTTP client for the jlens sidecar's `/health` and `/readout` endpoints; null-degrades on any failure. |
 | `layerConvergence.ts` | Pure scoring: per position, how many shallower probed layers already agree with the deepest one, and from which depth. No I/O, no state beyond the accumulator's window. |
-| `jlensSidecar.ts` | Decides whether to manage a jlens sidecar process, kills stale ones, and spawns/stops a fresh one. |
+| `jlensSidecar.ts` | Decides whether to manage a jlens sidecar process, kills stale ones, spawns/stops a fresh one, and relays its output into the engine log (`sidecarRelay`: one line per line, a run of "client closed the connection" lines collapsed to one a minute). |
 | `toolDivergence.ts` | Detects reasoning/action divergence: a confident (low-entropy) tool emission that the read-loop gate has disabled. |
 
 ## Important types & functions
@@ -25,7 +25,8 @@ The Brain is LocalCode's telemetry layer on top of the model's own token stream:
 - **`ToolEntropySummary`** (`brainRecorder.ts:26`) — `{n, mean, min, max}` over one model call's tool-token entropies; `n` is carried so a two-token mean isn't mistaken for a two-hundred-token one.
 - **`JlensClient`** (`jlensClient.ts:7`) — `health()`/`readout()` against the sidecar at `LOCALCODE_JLENS_URL` (default `http://127.0.0.1:9163`); used by `ActivationsConsumer`.
 - **`sidecarDecision`** (`jlensSidecar.ts:41`) — pure function: whether the engine should start/manage a sidecar, given the configured URL and artifact presence; unit-tested directly.
-- **`startJlensSidecar`** (`jlensSidecar.ts:93`) — kills stale sidecars, spawns a fresh one if `sidecarDecision` says to, and returns a `stop()` handle; called once from `main.ts` when `provider === 'llama-cpp'`.
+- **`startJlensSidecar`** (`jlensSidecar.ts:137`) — kills stale sidecars, spawns a fresh one if `sidecarDecision` says to, and returns a `stop()` handle; called once from `main.ts` when `provider === 'llama-cpp'`.
+- **`sidecarRelay`** (`jlensSidecar.ts:75`) — the sidecar's stdout and stderr into the engine log, one `[jlens] <line>` per line (a line split across chunks is joined, `flush()` on exit logs a last one without a newline). The sidecar's own "client closed the connection (port N)" line — `JlensServer.handle_error` in `jlens/jlens_service/server.py`, which keeps HTTP/1.1 keep-alive but answers a `ConnectionResetError`/`ConnectionAbortedError`/`BrokenPipeError` (the engine's clients abort with `AbortSignal.timeout`, and Windows resets the idle socket) with that one line instead of socketserver's full traceback, every other error keeping its traceback — is collapsed to one a minute, the next logged one saying how many were swallowed (`(+N more in the minute after the last)`); nothing else is hidden. The operator's engine log of 2026-10-12/13 was flooded with one traceback per reset, every few seconds. Pure, unit-tested with an injected clock; the Python side is pinned by `jlens/tests/test_server.py` (a keep-alive socket closed with SO_LINGER 0, a handler that raises).
 - **`ToolDivergenceDetector`** (`toolDivergence.ts:10`) — tracks a running entropy floor over the tool stream and flags a disabled tool emitted with confidence below it; driven from `conversationLoop.ts`'s read-loop escalation path.
 
 ## Data flow
