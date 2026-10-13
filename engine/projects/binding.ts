@@ -8,7 +8,9 @@
  * download is `risky` (the user approves every download — standing rule),
  * otherwise the guardian classifier's word; `dangerous` is refused, `risky`
  * asks, `safe` runs. The classifier is passed in because this package never
- * imports from engine/bridge.
+ * imports from engine/bridge. One fence is this package's own: a command at
+ * the operator's ComfyUI (`comfyCommandFence`) is `dangerous`, because
+ * pictures are the engine's to make from RenderUI Image prompts.
  */
 import { isAbsolute, resolve } from 'node:path'
 import type { EmbedClient } from '../index/embedClient.js'
@@ -33,6 +35,39 @@ export type Grade = { level: 'safe' | 'risky' | 'dangerous'; reason: string }
 export type Classifier = (toolName: string, input: Record<string, unknown>) => 'safe' | 'risky' | 'dangerous'
 
 export const FILE_TOOLS: ReadonlySet<string> = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'Ls', 'ImageView', 'NotebookEdit', 'ApplyPatch', 'ReplaceFunction'])
+
+/**
+ * Why a Bash command aimed at ComfyUI is refused in a project chat. The live
+ * run of 2026-10-12/13 wrote a workflow of six KSamplers per design and drove
+ * the server by hand (POST /prompt, poll /history, GET /view, renders saved
+ * under the project) because a project "directive" told it to; the engine
+ * paints from Image prompts (engine/imagegen) and keeps every picture.
+ */
+export const COMFY_FENCE_REASON = 'pictures are made by the engine from RenderUI Image prompts; a project chat never drives ComfyUI itself — ask with an Image prompt (and a seed for another take)'
+
+/**
+ * `host:port` of LOCALCODE_COMFYUI_URL (lower-cased; the scheme's port when
+ * none is given), or null when it is unset or not an http(s) URL. A small
+ * parser of its own: engine/imagegen's reader sits beside imports of
+ * projects/layout and would cycle.
+ */
+export function comfyHostFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  const v = env.LOCALCODE_COMFYUI_URL
+  const raw = v && v.trim() ? v.trim() : ''
+  const m = /^(https?):\/\/(?:[^/?#@]*@)?(\[[^\]]+\]|[^/?#:]+)(?::(\d{1,5}))?(?=$|[/?#])/i.exec(raw)
+  if (!m) return null
+  return `${m[2].toLowerCase()}:${m[3] ?? (m[1].toLowerCase() === 'https' ? '443' : '80')}`
+}
+
+/** ComfyUI's own API on any host's 8188: /prompt, /history, /view, /object_info, /queue, /interrupt (then the end, a path, a query or a quote). */
+const COMFY_API_ON_8188 = /:8188\/(?:prompt|history|view|object_info|queue|interrupt)(?=$|[/?#"'\s)&;|,])/i
+
+/** The fence's reason when `command` targets the configured ComfyUI server or ComfyUI's API on any host's 8188, else null. */
+export function comfyCommandFence(command: string, host: string | null = comfyHostFromEnv()): string | null {
+  if (host && new RegExp(host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?!\\d)', 'i').test(command)) return COMFY_FENCE_REASON
+  if (COMFY_API_ON_8188.test(command)) return COMFY_FENCE_REASON
+  return null
+}
 
 function pathArgOf(toolName: string, input: Record<string, unknown>): string | null {
   const raw = (input.file_path ?? input.path ?? input.notebook_path) as unknown
@@ -65,6 +100,9 @@ export function gradeProjectCall(root: string, cwd: string, classify: Classifier
   }
   if (toolName === 'Bash') {
     const command = String(input.command ?? '')
+    // Before the download rule: a curl at the ComfyUI server is not a download to approve but a fence to refuse.
+    const fence = comfyCommandFence(command)
+    if (fence) return { level: 'dangerous', reason: fence }
     if (isDownloadCommand(command) || /\bgit\s+clone\b/i.test(command)) return { level: 'risky', reason: 'downloads need your approval' }
     const level = classify(toolName, input)
     return { level, reason: level === 'safe' ? '' : describe(toolName, input, level) }

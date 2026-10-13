@@ -578,7 +578,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_COMFYUI_SIZE` | `1024x1024` | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_STEPS` | `40` | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_TIMEOUT_S` | `300` | — | `engine/imagegen/config.ts` |
-| `LOCALCODE_COMFYUI_URL` | *not derived* | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_COMFYUI_URL` | *not derived* | — | `engine/imagegen/config.ts`, `engine/projects/binding.ts` |
 | `LOCALCODE_COMFYUI_WORKFLOW` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/llama/processManager.ts` |

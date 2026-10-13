@@ -2,7 +2,8 @@ import { describe, it, expect } from 'bun:test'
 import { join } from 'node:path'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { gradeProjectCall, FILE_TOOLS } from '../../projects/binding.js'
+import { afterAll, beforeAll } from 'bun:test'
+import { gradeProjectCall, FILE_TOOLS, COMFY_FENCE_REASON, comfyHostFromEnv } from '../../projects/binding.js'
 import { classifyRisk, describeRisk } from '../../bridge/guardianRules.js'
 
 const root = 'C:/p/diorama'
@@ -75,5 +76,74 @@ describe('gradeProjectCall', () => {
     expect(grade('WebSearch', { query: 'x' }).level).toBe('safe')
     expect(grade('ProjectSearch', { query: 'x' }).level).toBe('safe')
     expect([...FILE_TOOLS].sort()).toEqual(['ApplyPatch', 'Edit', 'Glob', 'Grep', 'ImageView', 'Ls', 'MultiEdit', 'NotebookEdit', 'Read', 'ReplaceFunction', 'Write'])
+  })
+})
+
+// The operator's live run (2026-10-12/13): a project "directive" sent the
+// model to drive ComfyUI by hand — a workflow JSON of six KSamplers, POST
+// /prompt, poll /history, GET /view, renders saved under tower/renders/ —
+// through Bash and PowerShell. Pictures are the engine's to make from
+// RenderUI Image prompts; a command at the configured server, or at
+// ComfyUI's API on any host's 8188, is refused with the way to ask instead.
+describe('gradeProjectCall: the ComfyUI fence', () => {
+  let prev: string | undefined
+  beforeAll(() => { prev = process.env.LOCALCODE_COMFYUI_URL; process.env.LOCALCODE_COMFYUI_URL = 'http://192.168.0.47:8188' })
+  afterAll(() => { if (prev === undefined) delete process.env.LOCALCODE_COMFYUI_URL; else process.env.LOCALCODE_COMFYUI_URL = prev })
+  const fenced = { level: 'dangerous', reason: COMFY_FENCE_REASON }
+
+  it('names the reason and the way to ask', () => {
+    expect(COMFY_FENCE_REASON).toBe('pictures are made by the engine from RenderUI Image prompts; a project chat never drives ComfyUI itself — ask with an Image prompt (and a seed for another take)')
+  })
+
+  it('curl, Invoke-RestMethod and python requests at the configured server are dangerous, before the download rule', () => {
+    expect(grade('Bash', { command: 'curl -s -X POST http://192.168.0.47:8188/prompt -H "Content-Type: application/json" -d @tower/workflow.json' })).toEqual(fenced)
+    expect(grade('Bash', { command: 'curl -s http://192.168.0.47:8188/system_stats' })).toEqual(fenced)
+    expect(grade('Bash', { command: 'Invoke-RestMethod -Uri "http://192.168.0.47:8188/prompt" -Method Post -Body $json -ContentType "application/json"' })).toEqual(fenced)
+    expect(grade('Bash', { command: 'python -c "import requests; print(requests.get(\'http://192.168.0.47:8188/history/abc\').json())"' })).toEqual(fenced)
+    expect(grade('Bash', { command: 'python tower/render.py --server 192.168.0.47:8188' })).toEqual(fenced)
+    expect(grade('Bash', { command: 'Invoke-WebRequest "http://192.168.0.47:8188/view?filename=x.png&type=output" -OutFile tower/renders/a.png' })).toEqual(fenced)
+    // the server's host on another port is not the server
+    expect(grade('Bash', { command: 'curl http://192.168.0.47:81889/x' }).reason).not.toBe(COMFY_FENCE_REASON)
+    expect(grade('Bash', { command: 'ping 192.168.0.47' }).level).toBe('safe')
+  })
+
+  it("ComfyUI's API paths on any host's 8188 are dangerous too", () => {
+    for (const command of [
+      'curl -X POST http://10.0.0.9:8188/prompt -d @wf.json',
+      'curl "http://comfy.local:8188/view?filename=x.png&type=output" -o a.png',
+      'curl http://localhost:8188/object_info',
+      'curl -X POST http://127.0.0.1:8188/interrupt',
+      'curl http://[::1]:8188/queue',
+      'python -c "import urllib.request; urllib.request.urlopen(\'http://pc:8188/history/\')"',
+      'Invoke-RestMethod http://pc:8188/history/1234',
+    ]) expect(grade('Bash', { command }), command).toEqual(fenced)
+    // the same paths on another port, or 8188 with another path, are not ComfyUI
+    expect(grade('Bash', { command: 'curl http://10.0.0.9:8080/prompt' }).reason).not.toBe(COMFY_FENCE_REASON)
+    expect(grade('Bash', { command: 'curl http://10.0.0.9:8188/promptly' }).reason).not.toBe(COMFY_FENCE_REASON)
+    expect(grade('Bash', { command: 'curl http://10.0.0.9:8188/api/health' }).reason).not.toBe(COMFY_FENCE_REASON)
+  })
+
+  it('a harmless mention of the word is safe, and every other grade is unchanged', () => {
+    expect(grade('Bash', { command: 'echo "ComfyUI paints the tower; ask with an Image prompt"' })).toEqual({ level: 'safe', reason: '' })
+    expect(grade('Bash', { command: 'python -c "print(400*1.1)"' }).level).toBe('safe')
+    expect(grade('Bash', { command: 'curl -O https://x/y.zip' })).toEqual({ level: 'risky', reason: 'downloads need your approval' })
+    expect(grade('Bash', { command: 'rm -rf knowledge' }).level).toBe('dangerous')
+    expect(grade('Write', { file_path: 'tower/workflow.json', content: '{}' }).level).toBe('safe')
+  })
+
+  it('comfyHostFromEnv: host:port of LOCALCODE_COMFYUI_URL, lower-cased, the scheme default when no port; null when unset or not a URL', () => {
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188' })).toBe('192.168.0.47:8188')
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: ' http://Comfy-PC:8188/ ' })).toBe('comfy-pc:8188')
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'https://comfy.example/api' })).toBe('comfy.example:443')
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'http://user:pw@pc:8188' })).toBe('pc:8188')
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'http://[::1]:8188' })).toBe('[::1]:8188')
+    expect(comfyHostFromEnv({})).toBeNull()
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: '   ' })).toBeNull()
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'pc:8188' })).toBeNull()
+    expect(comfyHostFromEnv({ LOCALCODE_COMFYUI_URL: 'ftp://pc:8188' })).toBeNull()
+    // the fence stands without the variable: the API paths on 8188
+    const unset = { ...process.env }
+    delete unset.LOCALCODE_COMFYUI_URL
+    expect(comfyHostFromEnv(unset)).toBeNull()
   })
 })
