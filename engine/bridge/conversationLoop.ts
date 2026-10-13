@@ -3490,6 +3490,16 @@ export class ConversationLoop {
       this.partialAssistantText = ''
       this.uiStream = null
       this.truncatedToolIds.clear()
+      // The turn is pushed once, after the stream (see below); a stream that
+      // started and never reached message_stop was cut, and `transportNotice`
+      // is what the transport said when it went (callModel's `api_retry`
+      // yield). One that never started is not a cut: a failure before the
+      // first event is callModel's pre-stream retry, which throws when it
+      // gives up, and a mock with nothing left to say yields nothing.
+      let assistantYielded = false
+      let sawMessageStart = false
+      let sawMessageStop = false
+      let transportNotice: string | null = null
 
       for await (const yielded of gen) {
         if (this.abortController?.signal.aborted) return
@@ -3541,6 +3551,7 @@ export class ConversationLoop {
               break
             }
             case 'message_start':
+              sawMessageStart = true
               lastMessageId = event.message?.id ?? ''
               break
             case 'message_delta':
@@ -3567,6 +3578,7 @@ export class ConversationLoop {
               }
               break
             case 'message_stop': {
+              sawMessageStop = true
               this.uiStream = null
               const modelCallElapsedMs = Date.now() - modelCallStartTime
               // `tokenCount` and `reasoningTokenCount` count stream DELTAS, not
@@ -3822,21 +3834,36 @@ export class ConversationLoop {
             }
           }
         } else if (yielded.type === 'assistant') {
-          const msg = yielded as any
-          assistantContent = msg.message?.content ?? []
-          this.addMessage({
-            role: 'assistant',
-            content: assistantContent as Message['content'],
-          })
-          this.partialAssistantText = ''
-          if (this.project?.chatFile) {
-            appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: assistantContent as TranscriptMessage['content'] })
-            // A surface carries the details now (F171), so its [n] count too.
-            const text = (assistantContent as any[]).map((b: any) =>
-              b.type === 'text' ? b.text : b.type === 'tool_use' && b.name === 'RenderUI' ? JSON.stringify(b.input ?? {}) : '').join('\n')
-            const used = citationsUsed(text, this.project.citations)
-            if (used.length) this.emit({ type: 'project.citations', chat: this.project.chatFile, turn: this.messages.length, citations: used })
-          }
+          // Cumulative: callModel yields the turn so far at every
+          // content_block_stop. The last one is the turn, pushed once below.
+          assistantContent = (yielded as any).message?.content ?? []
+          assistantYielded = true
+        } else if (yielded.type === 'system' && (yielded as any).subtype === 'api_retry') {
+          transportNotice = String((yielded as any).message ?? '')
+        }
+      }
+
+      // One assistant message per model call, pushed when the stream has
+      // ended — never per yield. Pushing each cumulative yield put a turn of N
+      // blocks into history N times, each copy a strict prefix of the next,
+      // and sent the provider consecutive assistant messages: the model
+      // re-read its own narration and met a tool_use id twice before its one
+      // result, and the journal and a project transcript carried the copies
+      // (review of 6cb97b4). An abort returns above and leaves the streamed
+      // text in `partialAssistantText`, which startProjectSession keeps.
+      if (assistantYielded) {
+        this.addMessage({
+          role: 'assistant',
+          content: assistantContent as Message['content'],
+        })
+        this.partialAssistantText = ''
+        if (this.project?.chatFile) {
+          appendTranscript(this.project.dir, this.project.chatFile, { role: 'assistant', content: assistantContent as TranscriptMessage['content'] })
+          // A surface carries the details now (F171), so its [n] count too.
+          const text = (assistantContent as any[]).map((b: any) =>
+            b.type === 'text' ? b.text : b.type === 'tool_use' && b.name === 'RenderUI' ? JSON.stringify(b.input ?? {}) : '').join('\n')
+          const used = citationsUsed(text, this.project.citations)
+          if (used.length) this.emit({ type: 'project.citations', chat: this.project.chatFile, turn: this.messages.length, citations: used })
         }
       }
 
@@ -3844,6 +3871,29 @@ export class ConversationLoop {
       let toolUseBlocks = (assistantContent as any[]).filter(
         (b: any) => b.type === 'tool_use'
       )
+
+      // A stream that started and ended without message_stop was cut: the
+      // socket went mid-generation and callModel swallowed the (retryable)
+      // transport error into an `api_retry` notice and returned, with no
+      // stop_reason synthesised. Read as a finished turn — `end_turn` with no
+      // tool blocks, or with complete ones that never ran — it drew the "call
+      // a tool" nudge or the natural end's summary follow-up, and the next
+      // batch end withdrew a surface the page had drawn as "the call did not
+      // run", the model never told (review of 6cb97b4). Instead: every
+      // streamed call is answered under its own id, every open surface
+      // withdrawn with the cut as its reason, and the turn ends through the
+      // error path (`session.error` carries the reason), as a non-retryable
+      // cut always has.
+      if (sawMessageStart && !sawMessageStop) {
+        const reason = transportNotice
+          ? `the model's reply was cut off by a transport error (${transportNotice})`
+          : 'the model\'s reply ended before it was complete (no message_stop)'
+        console.log(`[loop] stream cut at iteration ${i + 1}: ${reason}`)
+        if (toolUseBlocks.length > 0) this.dropToolBatch(toolUseBlocks, 'stream cut', reason)
+        this.closePendingUiSurfaces('stream cut', () => reason)
+        throw new Error(reason)
+      }
+
       // Diagnostic: log which tools the model is calling
       if (toolUseBlocks.length > 0) {
         const toolNames = toolUseBlocks.map((b: any) => b.name).join(', ')

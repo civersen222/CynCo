@@ -656,6 +656,106 @@ describe('a streamed RenderUI call that the loop would have dropped unexecuted',
   }, 60000)
 })
 
+// ── A stream cut by a transport error mid-turn ──────────────────────────
+//
+// A socket closed mid-generation (Bun's `ConnectionClosed`, `ECONNRESET`,
+// "socket connection was closed") is swallowed by callModel's mid-stream catch
+// into an `api_retry` notice and a plain return: no `message_stop`, no
+// synthesised stop_reason. The loop used to take that half-turn for a finished
+// one — `end_turn`, no tool blocks (or complete ones it never ran) — and fell
+// into the "call a tool" nudge or the natural end's summary follow-up, so the
+// next batch end withdrew the drawn surface as "the call did not run" and the
+// model was never told (review of 6cb97b4). A stream that ends without
+// `message_stop` is a cut: every streamed call is answered under its own id,
+// the surface withdrawn with the cut as its reason, and the turn ends as an
+// error, the way a non-retryable cut always has.
+describe('a stream cut by a transport error mid-turn', () => {
+  const load: ScriptBlock = { type: 'tool_use', name: 'load_tools', input: { tools: ['RenderUI'] } }
+  const draw: ScriptBlock = { type: 'tool_use', name: 'RenderUI', input: genuiExampleCall() as unknown as Record<string, unknown> }
+  const glob = (n: number): ScriptBlock => ({ type: 'tool_use', name: 'Glob', input: { pattern: `*.none-${n}` } })
+  const framesFor = (events: any[], toolId: string) => uiFrames(events).filter(f => f.toolId === toolId)
+  const userTexts = (loop: ConversationLoop) =>
+    (loop.getMessages() as any[]).filter(m => m.role === 'user').flatMap(m => (m.content as any[]).filter(b => b.type === 'text').map(b => String(b.text)))
+  /** Every tool_use id in history with no tool_result under it. */
+  const dangling = (loop: ConversationLoop) => {
+    const msgs = loop.getMessages() as any[]
+    const answered = new Set(msgs.flatMap(m => m.role === 'user' ? (m.content as any[]).filter(b => b.type === 'tool_result').map(b => b.tool_use_id) : []))
+    return msgs.flatMap(m => m.role === 'assistant' ? (m.content as any[]).filter(b => b.type === 'tool_use' && !answered.has(b.id)).map(b => b.id) : [])
+  }
+  async function withIterations(n: number, run: () => Promise<void>) {
+    const prev = process.env.LOCALCODE_MAX_ITERATIONS
+    process.env.LOCALCODE_MAX_ITERATIONS = String(n)
+    try { await run() } finally { if (prev === undefined) delete process.env.LOCALCODE_MAX_ITERATIONS; else process.env.LOCALCODE_MAX_ITERATIONS = prev }
+  }
+  /**
+   * Model call `call` streams up to and including its first delta of `kind`,
+   * then the socket goes: `err` carries a code from callModel's retryable set.
+   */
+  function cutAt(made: ReturnType<typeof makeLoop>, call: number, kind: 'input_json_delta' | 'text_delta', err: Error) {
+    const provider = (made.loop as any).provider
+    const orig = provider.stream.bind(provider)
+    let n = 0
+    provider.stream = async function* (r: any) {
+      const k = n++
+      const gen = orig(r)
+      if (k !== call) { yield* gen; return }
+      for await (const ev of gen) {
+        yield ev
+        if (ev?.type === 'content_block_delta' && ev.delta?.type === kind) throw err
+      }
+    }
+  }
+
+  it('cut while the RenderUI arguments stream, under a contract: the surface is withdrawn with the cut as its reason and the turn ends — no nudge, no enforcement line, no further call', async () => {
+    globalContract.clear()
+    globalContract.create('Draw the plan', 'draw the plan', ['the plan is drawn'])
+    const made = makeLoop({ script: [[load], [draw], [glob(2)], [glob(3)]] })
+    cutAt(made, 1, 'input_json_delta', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+    try {
+      await withIterations(6, () => made.loop.handleUserMessage('draw the plan as a surface'))
+    } finally { globalContract.clear() }
+    const frames = framesFor(made.events, 'tu-m1-0')
+    expect(frames.some(f => f.partial)).toBe(true) // the page had drawn it
+    const final = frames.filter(f => !f.partial)
+    expect(final).toHaveLength(1)
+    expect(final[0].spec).toBeNull()
+    expect(final[0].errors?.[0]).toMatch(/cut off by a transport error \(read ECONNRESET\)/)
+    // the turn ended as an error naming the cut, and the model was not called again
+    expect(made.events.filter(e => e?.type === 'session.error').map(e => e.error)).toEqual([expect.stringMatching(/cut off by a transport error \(read ECONNRESET\)/)])
+    expect(made.calls).toHaveLength(2)
+    expect(userTexts(made.loop).some(t => /Call a tool now|You are NOT done/.test(t))).toBe(false)
+    expect(dangling(made.loop)).toEqual([])
+  }, 60000)
+
+  it('cut after the RenderUI block closed (text streaming): the call is answered as not run under its id, the surface withdrawn with that reason, and the turn ends', async () => {
+    globalContract.clear()
+    const drawThenTalk: ScriptBlock[] = [draw, { type: 'text', text: ['Here is the plan', ' and more'] }]
+    const made = makeLoop({ script: [[load], drawThenTalk, [glob(2)]] })
+    // the first text delta closes the tool block in the translator (callModel
+    // has yielded the complete RenderUI block); the cut lands right after it
+    cutAt(made, 1, 'text_delta', Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))
+    try {
+      await withIterations(6, () => made.loop.handleUserMessage('draw the plan as a surface'))
+    } finally { globalContract.clear() }
+    const frames = framesFor(made.events, 'tu-m1-0')
+    expect(frames.some(f => f.partial)).toBe(true)
+    const final = frames.filter(f => !f.partial)
+    expect(final).toHaveLength(1)
+    expect(final[0].spec).toBeNull()
+    expect(final[0].errors?.[0]).toMatch(/^Tool call "RenderUI" was not executed: the model's reply was cut off by a transport error \(socket hang up\)/)
+    // the model and the page's tool row are told the same thing, under the streamed id
+    const complete = made.events.find(e => e?.type === 'tool.complete' && e.toolId === 'tu-m1-0')
+    expect(complete?.isError).toBe(true)
+    expect(String(complete?.result)).toMatch(/was not executed: the model's reply was cut off by a transport error/)
+    const msgs = made.loop.getMessages() as any[]
+    expect(msgs.some(m => m.role === 'user' && (m.content as any[]).some(b => b.type === 'tool_result' && b.tool_use_id === 'tu-m1-0' && b.is_error === true))).toBe(true)
+    expect(dangling(made.loop)).toEqual([])
+    expect(made.events.some(e => e?.type === 'session.error')).toBe(true)
+    expect(made.calls).toHaveLength(2)
+    expect(made.events.some(e => e?.type === 'summary.injected')).toBe(false)
+  }, 60000)
+})
+
 // ── An Image whose src is a file in the project ─────────────────────────
 //
 // The model wrote 1:1 printable SVG templates into the project and tried to
