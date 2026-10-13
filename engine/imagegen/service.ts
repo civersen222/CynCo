@@ -332,11 +332,14 @@ export class ImageService implements ImageAnnotator {
     const origins: Array<[string, string]> = []
     let distinct = 0, overCap = false, queueFull = 0
     let q = 0, c = 0, o = 0, firstOff: string | null = null
+    // Distinct pictures, for the note: Images that repeat a prompt and seed are one picture (the log's counts are per Image).
+    let qd = 0, cd = 0, dup = 0
     // Jobs this call's pictures wait behind: the queue and a job still in flight (a settled one is committing, not painting).
     const ahead = this.queue.length + (this.running && !this.running.settled ? 1 : 0)
     for (const im of images) {
       const fields = this.keyFields(cfg, im.prompt, im.seed)
       const key = imageKey(fields)
+      const repeat = decided.has(key)
       let state = decided.get(key)
       if (!state) {
         const base = { key, slug, w: cfg.width, h: cfg.height }
@@ -364,8 +367,9 @@ export class ImageService implements ImageAnnotator {
         if (state.reason === QUEUE_FULL_REASON) queueFull++
       } else {
         origins.push([originKey({ chatFile, toolId: at.toolId, elementId: im.id }), key])
-        if (state.status === 'done') c++
-        else q++
+        if (repeat) dup++
+        if (state.status === 'done') { c++; if (!repeat) cd++ }
+        else { q++; if (!repeat) qd++ }
       }
     }
 
@@ -382,18 +386,21 @@ export class ImageService implements ImageAnnotator {
     if (origins.length && q === 0) this.commitAside(dir, `images: ${c} shown again`)
 
     const parts: string[] = []
-    if (q > 0) {
-      let s = `Pictures: ${q} generating on ComfyUI at ${cfg.host}${c ? `, ${c} already made` : ''} — they appear in their cards by themselves; do not call RenderUI again for them.`
+    if (qd > 0) {
+      // The server's address is the engine log's, never the model's: the prompt says never to call it, and the fence refuses a command at it.
+      let s = `Pictures: ${qd} generating${cd ? `, ${cd} already made` : ''} — they appear in their cards by themselves; do not call RenderUI again for them.`
       // More than three is minutes of GPU (three designs × six takes ≈ 6 min): say how long, so the wait is not read as a failure.
-      if (q > 3) {
+      if (qd > 3) {
         if (this.lastGenMs === null) s += ' The first takes longer while the model loads.'
         else s += ` About ${newJobs.length + ahead}×${Math.max(1, Math.round(this.lastGenMs / 1000))} s at the last measured pace${ahead ? ` (${ahead} ahead in the queue)` : ''}.`
       }
       const last = this.probeCache?.result
       if (last && !last.ok) s += ` The last check of ComfyUI failed (${last.reason}); if it still fails, the cards will say so.`
       parts.push(s)
-    } else if (c > 0) parts.push(`Pictures: ${c} already made — shown in their cards.`)
+    } else if (cd > 0) parts.push(`Pictures: ${cd} already made — shown in their cards.`)
     else parts.push(notGeneratedNote(firstOff ?? CAP_REASON))
+    // Four takes asked with no seeds are one picture four times: say so, or the cards fill with one picture after "4 generating".
+    if (dup) parts.push(`${dup} Image${dup === 1 ? ' repeats' : 's repeat'} the prompt and seed of another — give each take its own "seed" for another picture.`)
     if (overCap) parts.push(`Only the first ${PER_CALL_CAP} pictures in a surface are generated.`)
     if (queueFull && (q > 0 || c > 0)) parts.push(`${queueFull} not generated — ${QUEUE_FULL_REASON}.`)
 

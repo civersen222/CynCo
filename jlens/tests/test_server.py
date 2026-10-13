@@ -3,8 +3,12 @@ injected with a synthetic Readout (no real artifacts needed)."""
 import contextlib
 import io
 import json
+import os
+import re
 import socket
 import struct
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -154,6 +158,57 @@ def test_a_client_that_resets_its_keep_alive_socket_gets_one_line_and_no_traceba
     assert "ConnectionResetError" not in text(), text()
     assert text().count("client closed the connection") == 1, text()
     assert "(port " in text(), text()
+
+
+# The engine spawns the sidecar with piped stdout and stderr
+# (engine/brain/jlensSidecar.ts) and relays both. On a pipe Python
+# block-buffers stdout (8 KiB) and keeps stderr line-buffered, so the
+# traceback this line replaced reached the engine at once while a line
+# print()ed to stdout sat in the buffer until ~150 resets filled it — and was
+# lost at stop(). The tests above capture in-process and cannot see this; the
+# line goes to stderr, flushed, as the traceback did.
+DRIVER = '''import sys
+sys.path.insert(0, sys.argv[1])
+from jlens_service import server as s
+srv = s.JlensServer(("127.0.0.1", 0), s.Handler)
+print("PORT %d" % srv.server_address[1], file=sys.stderr, flush=True)
+srv.serve_forever()
+'''
+
+
+def test_the_line_reaches_a_parent_over_a_pipe_at_once_without_pythonunbuffered(tmp_path):
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER)
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(server_mod.__file__)))
+    proc = subprocess.Popen([sys.executable, str(driver), package_root], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    lines = []
+
+    def pump(stream):
+        for line in stream:
+            lines.append(line.rstrip("\n"))
+
+    seen = lambda: [l for l in lines if "client closed the connection" in l]
+    try:
+        port = int(proc.stderr.readline().split()[1])
+        for stream in (proc.stdout, proc.stderr):
+            threading.Thread(target=pump, args=(stream,), daemon=True).start()
+        s = socket.create_connection(("127.0.0.1", port))
+        s.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        head, _ = _read_response(s)
+        assert head.startswith(b"HTTP/1.1 200")
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        s.close()
+        deadline = time.time() + 2
+        while time.time() < deadline and not seen():
+            time.sleep(0.02)
+        got = list(lines)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    assert len(seen()) == 1 and "(port " in seen()[0], got
+    assert not any("Traceback" in l for l in got), got
+    assert re.fullmatch(r"\[jlens\] client closed the connection \(port \d+\)", seen()[0]), got
 
 
 def test_any_other_error_in_a_handler_keeps_its_traceback():

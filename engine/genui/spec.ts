@@ -285,7 +285,9 @@ function coerceProps(raw: Record<string, unknown>, fields: Record<string, PropDe
         report(ctx, `${at}.${key}: "${String(value)}" is not one of ${(def.enum ?? []).join('|')}; using "${def.default ?? def.enum?.[0]}"`)
       } else if (def.type === 'int') {
         const range = def.min !== undefined && def.max !== undefined ? ` from ${def.min} to ${def.max}` : ''
-        report(ctx, `${at}.${key}: "${String(value)}" is not a whole number${range} — dropped`)
+        // At most 60 characters of the value, as the src hint shows: a prompt in the
+        // wrong slot is kilobytes, and the note rides the tool result and the final frame.
+        report(ctx, `${at}.${key}: "${String(value).slice(0, 60)}" is not a whole number${range} — dropped`)
       } else {
         report(ctx, `${at}.${key}: expected ${def.type}, got ${Array.isArray(value) ? 'an array' : typeof value}`)
       }

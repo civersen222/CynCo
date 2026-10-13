@@ -66,7 +66,8 @@ describe('sidecarRelay', () => {
     relay.chunk('[jlens] loading artifacts...\n[jlens] serving on 127.0.0.1:9163 layers=[24]\n')
     relay.chunk('[jlens] readout er')
     relay.chunk('ror: bad layer\n\n')
-    expect(lines).toEqual(['[jlens] [jlens] loading artifacts...', '[jlens] [jlens] serving on 127.0.0.1:9163 layers=[24]', '[jlens] [jlens] readout error: bad layer'])
+    // the sidecar's own "[jlens] " prefix is not doubled; a line without one gets it
+    expect(lines).toEqual(['[jlens] loading artifacts...', '[jlens] serving on 127.0.0.1:9163 layers=[24]', '[jlens] readout error: bad layer'])
     relay.chunk('tail without a newline')
     expect(lines).toHaveLength(3)
     relay.flush()
@@ -91,12 +92,12 @@ describe('sidecarRelay', () => {
     t = 200_000
     relay.chunk('[jlens] client closed the connection (port 50006)\n')
     expect(lines).toEqual([
-      '[jlens] [jlens] client closed the connection (port 50001)',
+      '[jlens] client closed the connection (port 50001)',
       '[jlens] Traceback (most recent call last):',
       '[jlens]   File "server.py", line 1',
       '[jlens] RuntimeError: boom',
-      '[jlens] [jlens] client closed the connection (port 50005) (+3 more in the minute after the last)',
-      '[jlens] [jlens] client closed the connection (port 50006)',
+      '[jlens] client closed the connection (port 50005) (+3 more in the minute after the last)',
+      '[jlens] client closed the connection (port 50006)',
     ])
   })
 })

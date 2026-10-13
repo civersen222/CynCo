@@ -117,18 +117,22 @@ export type GenuiPromptMode = keyof typeof OPENING
  * session opening names files beside pictures (review of the file Images).
  * Static per mode, so each section stays byte-stable.
  */
-const PICTURES: Record<GenuiPromptMode, { shapes: string; url: string; wait: string; example: ExampleCall }> = {
+const PICTURES: Record<GenuiPromptMode, { shapes: string; ideas: string; url: string; wait: string; example: ExampleCall }> = {
   project: {
     // Takes, length and the fence (live run 2026-10-12/13): told nothing about
     // them, the model wrote a ComfyUI workflow of six KSamplers per design and
     // drove the server through Bash, with its paragraph prompts kept in files.
     shapes: `Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation). Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.`,
+    // Rule 5 forbids inventing numbers, and a seed is a number from no tool
+    // result: the rule names it among the model's own (review of that run).
+    ideas: ` — and the whole-number "seed" of a picture's take`,
     url: `Never invent an image URL: describe the picture in the Image's "prompt".`,
     wait: ` or wait for pictures — they fill in by themselves`,
     example: OPTIONS_EXAMPLE,
   },
   session: {
     shapes: `An idea with no picture still gets a card: describe its look in the card's text.`,
+    ideas: '',
     url: `With no real image URL, leave the Image out.`,
     wait: '',
     example: withoutPictures(OPTIONS_EXAMPLE),
@@ -152,7 +156,7 @@ Rules:
 2. Element ids are short names you choose (letters, digits, - and _). Only components marked [children] take a "children" list of ids; every other component is a leaf.
 3. Props hold literal values only — no expressions, templates or bindings. Numbers are numbers (2, not "2"); lists are JSON arrays; option lists may be plain strings.
 4. Put "surface" before "spec", and write each parent before its children with the root first, so the surface draws while you stream.
-5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options) are yours to write, and drawing them is the point. ${PICTURES[mode].url}
+5. Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them. Ideas you propose (designs, names, options${PICTURES[mode].ideas}) are yours to write, and drawing them is the point. ${PICTURES[mode].url}
 6. A Button click sends its action name, its context and every input value on the surface back to you as the user's next message; a Button inside a Form needs no action of its own, and one with no action sends its label. Give the main Button variant "primary". Input names are unique on a surface.
 7. FollowUps go last: 2-4 short questions the user is likely to ask you next; a chip click sends its text as the user's next message. A question you are asking the user goes in a Text line (or as Buttons when it has fixed answers), never in FollowUps.
 8. Inside Tabs, each child element carries "tab": "<tab value>" next to its "type" (not inside props).

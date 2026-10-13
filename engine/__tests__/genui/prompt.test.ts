@@ -53,7 +53,9 @@ describe('genui prompt section', () => {
     // ideas the model proposes are its to draw (F171: "never invent" read as
     // a reason to keep designs out of the surface).
     expect(text).toMatch(/Facts must be real: numbers, prices, file paths, test counts, command output and URLs come from your tool results or the conversation — never invent them/)
-    expect(text).toMatch(/Ideas you propose \(designs, names, options\) are yours to write, and drawing them is the point/)
+    // a seed is a number that comes from no tool result: rule 5 names it among the model's own (review of the 2026-10-12 run)
+    expect(text).toContain('Ideas you propose (designs, names, options — and the whole-number "seed" of a picture\'s take) are yours to write, and drawing them is the point.')
+    expect(session).toContain('Ideas you propose (designs, names, options) are yours to write, and drawing them is the point.')
     // a draft the user asked to read stays prose (final review: rule 5 used to list drafts)
     expect(text).toMatch(/Plain prose is for a short direct answer, a single open question, or a draft the user asked to read/)
     expect(text).toMatch(/Never invent an image URL: describe the picture in the Image's "prompt"/)
@@ -130,6 +132,7 @@ describe('genui prompt section', () => {
       .replace(SHAPES_PICTURE, 'An idea with no picture still gets a card: describe its look in the card\'s text.')
       .replace('Never invent an image URL: describe the picture in the Image\'s "prompt".', 'With no real image URL, leave the Image out.')
       .replace('never to tidy a note or wait for pictures — they fill in by themselves;', 'never to tidy a note;')
+      .replace('(designs, names, options — and the whole-number "seed" of a picture\'s take)', '(designs, names, options)')
       .replace(JSON.stringify(genuiOptionsExampleCall()), JSON.stringify(sessionOptionsExample()))
     expect(asSession).not.toBe(projectBody)
     expect(session.slice(opening.length)).toBe(asSession)

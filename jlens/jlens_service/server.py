@@ -69,7 +69,11 @@ class JlensServer(ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         exc = sys.exc_info()[1]
         if isinstance(exc, CLIENT_CLOSED):
-            print(f"[jlens] client closed the connection (port {client_address[1]})")
+            # stderr, flushed, as the traceback this replaces: the engine reads
+            # the sidecar over a pipe, where Python block-buffers stdout (8 KiB)
+            # — a line printed there sat in the buffer until ~150 resets filled
+            # it and was lost at stop() (tests/test_server.py, the pipe test).
+            print(f"[jlens] client closed the connection (port {client_address[1]})", file=sys.stderr, flush=True)
             return
         super().handle_error(request, client_address)
 

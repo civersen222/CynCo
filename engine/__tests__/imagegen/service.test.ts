@@ -86,7 +86,7 @@ describe('ImageService: a picture end to end', () => {
     const pics = svc.annotate(s, at())
     const key = keyOf(s, 0)
     expect(imageOf(s, 0)).toEqual({ status: 'queued', key, slug, w: 1024, h: 1024 })
-    expect(pics.note).toBe(`Pictures: 1 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them.`)
+    expect(pics.note).toBe('Pictures: 1 generating — they appear in their cards by themselves; do not call RenderUI again for them.')
     expect(readSidecar(dir, key)).toMatchObject({ status: 'queued', prompt: 'a tall green alien in a silver suit', alt: 'Alien 0', checkpoint: 'auto', apiPrompt: null, origin: { chatFile: 'c.jsonl', toolId: 'tool-1', elementId: 'img-0', surfaceId: 'aliens' } })
     expect(readOrigins(dir)[originKey({ chatFile: 'c.jsonl', toolId: 'tool-1', elementId: 'img-0' })]).toBe(key)
     expect(posts()).toHaveLength(0) // nothing leaves before start()
@@ -142,7 +142,8 @@ describe('ImageService: a picture end to end', () => {
     const s = spec(['alien', ' alien '])
     const pics = svc.annotate(s, at())
     expect(keyOf(s, 0)).toBe(keyOf(s, 1))
-    expect(pics.note).toMatch(/^Pictures: 2 generating/)
+    // one picture, said so: the second Image repeats the first's prompt (and derived seed)
+    expect(pics.note).toBe('Pictures: 1 generating — they appear in their cards by themselves; do not call RenderUI again for them. 1 Image repeats the prompt and seed of another — give each take its own "seed" for another picture.')
     pics.start()
     await until(() => terminal(keyOf(s, 0)), 'the job')
     expect(posts()).toHaveLength(1)
@@ -172,7 +173,7 @@ describe('ImageService: a picture end to end', () => {
     const [k1, k2, k0, k1again] = [0, 1, 2, 3].map(i => keyOf(s, i))
     expect(k1again).toBe(k1)
     expect(new Set([k0, k1, k2]).size).toBe(3)
-    expect(pics.note).toMatch(/^Pictures: 4 generating/)
+    expect(pics.note).toBe('Pictures: 3 generating — they appear in their cards by themselves; do not call RenderUI again for them. 1 Image repeats the prompt and seed of another — give each take its own "seed" for another picture.')
     expect(readSidecar(dir, k1)).toMatchObject({ prompt: 'alien', seed: 1001, seedFrom: 'model' })
     expect(readSidecar(dir, k2)).toMatchObject({ prompt: 'alien', seed: 2002, seedFrom: 'model' })
     expect(readSidecar(dir, k0)).toMatchObject({ prompt: 'alien', seedFrom: 'prompt' })
@@ -202,19 +203,40 @@ describe('ImageService: a picture end to end', () => {
     mock = await startMockComfy()
     const svc = start()
     const three = svc.annotate(spec(['alien 1', 'alien 2', 'alien 3']), at({ toolId: 't0' }))
-    expect(three.note).toBe(`Pictures: 3 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them.`)
+    expect(three.note).toBe('Pictures: 3 generating — they appear in their cards by themselves; do not call RenderUI again for them.')
     const s = spec(['alien a', 'alien b', 'alien c', 'alien d'])
     const four = svc.annotate(s, at({ toolId: 't1' }))
-    expect(four.note).toBe(`Pictures: 4 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them. The first takes longer while the model loads.`)
+    expect(four.note).toBe('Pictures: 4 generating — they appear in their cards by themselves; do not call RenderUI again for them. The first takes longer while the model loads.')
     three.start(); four.start()
     await until(() => [0, 1, 2, 3].every(i => terminal(keyOf(s, i))), 'seven jobs')
     const next = spec(['alien e', 'alien f', 'alien g', 'alien h', 'alien i'])
     const five = svc.annotate(next, at({ toolId: 't2' }))
-    expect(five.note).toBe(`Pictures: 5 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them. About 5×1 s at the last measured pace.`)
+    expect(five.note).toBe('Pictures: 5 generating — they appear in their cards by themselves; do not call RenderUI again for them. About 5×1 s at the last measured pace.')
     // the queue ahead counts: a call behind those five waits for them too
     const behind = spec(['alien j', 'alien k', 'alien l', 'alien m'])
     const four2 = svc.annotate(behind, at({ toolId: 't3' }))
-    expect(four2.note).toBe(`Pictures: 4 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them. About 9×1 s at the last measured pace (5 ahead in the queue).`)
+    expect(four2.note).toBe('Pictures: 4 generating — they appear in their cards by themselves; do not call RenderUI again for them. About 9×1 s at the last measured pace (5 ahead in the queue).')
+    // the server's address is the engine log's, never the model's: the prompt says never to call it
+    for (const n of [three.note, four.note, five.note, four2.note]) expect(n).not.toContain(`${mock.port}`)
+  })
+
+  // Four takes asked with no seeds — the case the seed guidance exists for —
+  // are one picture four times: told "4 generating", the model watched the
+  // cards fill with one picture. The note counts pictures and says why.
+  it('Images that repeat a prompt and seed are one picture: the note counts pictures, not Images, and says to give each take its own seed', async () => {
+    mock = await startMockComfy()
+    const svc = start()
+    const s = spec(['alien', 'alien', { prompt: 'alien', seed: 5 }, 'alien'])
+    const pics = svc.annotate(s, at())
+    expect(pics.note).toBe('Pictures: 2 generating — they appear in their cards by themselves; do not call RenderUI again for them. 2 Images repeat the prompt and seed of another — give each take its own "seed" for another picture.')
+    expect(keyOf(s, 1)).toBe(keyOf(s, 0))
+    expect(keyOf(s, 3)).toBe(keyOf(s, 0))
+    pics.start()
+    await until(() => [0, 2].every(i => terminal(keyOf(s, i))), 'two jobs')
+    expect(posts()).toHaveLength(2)
+    // a repeat of a picture already made is counted once as well
+    const again = spec(['alien', 'alien'])
+    expect(svc.annotate(again, at({ toolId: 'tool-2' })).note).toBe('Pictures: 1 already made — shown in their cards. 1 Image repeats the prompt and seed of another — give each take its own "seed" for another picture.')
   })
 
   it('a call whose pictures are all made already commits the origins it records', async () => {
@@ -452,7 +474,7 @@ describe('ImageService: what is not generated', () => {
     expect(imageOf(s, 18)).toEqual({ status: 'off', reason: CAP_REASON })
     expect(imageOf(s, 19)).toEqual({ status: 'off', reason: CAP_REASON })
     expect(CAP_REASON).toBe('only the first 18 pictures in a surface are generated')
-    expect(pics.note).toBe(`Pictures: 18 generating on ComfyUI at 127.0.0.1:${mock.port} — they appear in their cards by themselves; do not call RenderUI again for them. The first takes longer while the model loads. Only the first 18 pictures in a surface are generated.`)
+    expect(pics.note).toBe('Pictures: 18 generating — they appear in their cards by themselves; do not call RenderUI again for them. The first takes longer while the model loads. Only the first 18 pictures in a surface are generated.')
   })
 
   it('the queue holds 48; the next picture is refused with a reason', async () => {
@@ -808,7 +830,7 @@ describe('ImageService: files from the project (an Image whose src is a path)', 
     const made = svc.annotate(t, at({ toolId: 'tool-3' }))
     expect(t.elements.a.image).toEqual({ status: 'file', slug, path: 'tower/templates/tower_v1.svg' })
     expect(t.elements.p.image).toMatchObject({ status: 'queued' })
-    expect(made.note).toMatch(/^Files: not in the project — tower\/templates\/tower_v1.svg, tower\/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it\. Pictures: 1 generating on ComfyUI at /)
+    expect(made.note).toMatch(/^Files: not in the project — tower\/templates\/tower_v1.svg, tower\/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it\. Pictures: 1 generating — /)
     made.start()
     await svc.whenIdle()
   })

@@ -66,7 +66,8 @@ const CLIENT_CLOSED_WINDOW_MS = 60_000
 /**
  * The sidecar's stdout and stderr into the engine log, one `[jlens] <line>`
  * per line (a line split across two chunks is joined; `flush` logs a last
- * line with no newline). A run of the sidecar's "client closed the
+ * line with no newline; the sidecar's own `[jlens] ` prefix is not doubled,
+ * a traceback's lines get it). A run of the sidecar's "client closed the
  * connection" lines — one per reset of an idle keep-alive socket, every few
  * seconds in the operator's log of 2026-10-12/13 — is collapsed to one a
  * minute, the next one saying how many were swallowed; every other line is
@@ -79,15 +80,16 @@ export function sidecarRelay(log: (msg: string) => void, now: () => number = Dat
   const line = (raw: string): void => {
     const text = raw.trimEnd() // a traceback's indentation is kept
     if (!text.trim()) return
+    const tagged = text.startsWith('[jlens] ') ? text : `[jlens] ${text}`
     if (CLIENT_CLOSED_RE.test(text)) {
       const t = now()
       if (lastClosedAt !== null && t - lastClosedAt < CLIENT_CLOSED_WINDOW_MS) { swallowed++; return }
-      log(`[jlens] ${text}${swallowed ? ` (+${swallowed} more in the minute after the last)` : ''}`)
+      log(`${tagged}${swallowed ? ` (+${swallowed} more in the minute after the last)` : ''}`)
       lastClosedAt = t
       swallowed = 0
       return
     }
-    log(`[jlens] ${text}`)
+    log(tagged)
   }
   return {
     chunk(data) {
@@ -157,7 +159,11 @@ export function startJlensSidecar(opts: {
   killStaleSidecars(log)
 
   const python = process.env.LOCALCODE_JLENS_PYTHON ?? 'python'
-  const proc = spawn(python, ['-m', SIDECAR_MODULE], {
+  // -u: on a pipe Python block-buffers stdout (8 KiB), so "loading
+  // artifacts..." and "serving on ..." reached the log late or, at stop(),
+  // never. The sidecar's own "client closed" line goes to stderr, flushed,
+  // whatever the flags (jlens_service/server.py).
+  const proc = spawn(python, ['-u', '-m', SIDECAR_MODULE], {
     cwd: jlensRepoDir,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -173,7 +179,7 @@ export function startJlensSidecar(opts: {
   proc.on('error', (err) => {
     log(`[jlens] sidecar failed to spawn: ${err.message} — is python on PATH? (LOCALCODE_JLENS_PYTHON overrides)`)
   })
-  log(`[jlens] sidecar starting (pid ${proc.pid ?? '?'}, ${python} -m ${SIDECAR_MODULE})`)
+  log(`[jlens] sidecar starting (pid ${proc.pid ?? '?'}, ${python} -u -m ${SIDECAR_MODULE})`)
 
   return {
     proc,

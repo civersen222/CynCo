@@ -503,6 +503,13 @@ describe('validateSpec: an Image seed', () => {
     expect(file.spec?.elements.x.props).toEqual({ src: 'tower/t.svg', alt: 'A' })
     expect(file.errors).toEqual(['x.seed: only a prompted picture takes a seed — dropped'])
   })
+  it('the note shows at most 60 characters of a value that is no seed: a prompt in the wrong slot is kilobytes, and the note rides the tool result and the final frame', () => {
+    const long = 'a red tower in the mist, '.repeat(400)
+    const r = one('Image', { prompt: 'a red tower in the mist', seed: long, alt: 'A' })
+    expect(r.spec?.elements.x.props).toEqual({ prompt: 'a red tower in the mist', alt: 'A' })
+    expect(r.errors).toEqual([NOTE(long.slice(0, 60))])
+    expect(r.errors[0].length).toBeLessThan(160)
+  })
   it('the seed is static in partial mode too, and an int prop is not a number prop: 2.5 is refused where a Slider would keep it', () => {
     const partial = validateSpec({ root: 'x', elements: { x: { type: 'Image', props: { prompt: 'a tall green alien', seed: 2.5, alt: 'A' } } } }, { partial: true })
     expect(partial.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
