@@ -389,7 +389,7 @@ export class ImageService implements ImageAnnotator {
     if (qd > 0) {
       // The server's address is the engine log's, never the model's: the prompt says never to call it, and the fence refuses a command at it.
       let s = `Pictures: ${qd} generating${cd ? `, ${cd} already made` : ''} — they appear in their cards by themselves; do not call RenderUI again for them.`
-      // More than three is minutes of GPU (three designs × six takes ≈ 6 min): say how long, so the wait is not read as a failure.
+      // More than three is minutes of GPU (three designs × six takes ≈ 6 min, F176): say how long, so the wait is not read as a failure.
       if (qd > 3) {
         if (this.lastGenMs === null) s += ' The first takes longer while the model loads.'
         else s += ` About ${newJobs.length + ahead}×${Math.max(1, Math.round(this.lastGenMs / 1000))} s at the last measured pace${ahead ? ` (${ahead} ahead in the queue)` : ''}.`
@@ -415,7 +415,7 @@ export class ImageService implements ImageAnnotator {
     }
   }
 
-  /** The seed is the model's when the Image gave one (another take), else derived from the prompt (one prompt, one picture). */
+  /** The seed is the model's when the Image gave one (another take, F176), else derived from the prompt (one prompt, one picture). */
   private keyFields(cfg: ComfyConfig, prompt: string, seed?: number): KeyFields {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,

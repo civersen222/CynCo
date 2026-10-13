@@ -119,9 +119,9 @@ export type GenuiPromptMode = keyof typeof OPENING
  */
 const PICTURES: Record<GenuiPromptMode, { shapes: string; ideas: string; url: string; wait: string; example: ExampleCall }> = {
   project: {
-    // Takes, length and the fence (live run 2026-10-12/13): told nothing about
-    // them, the model wrote a ComfyUI workflow of six KSamplers per design and
-    // drove the server through Bash, with its paragraph prompts kept in files.
+    // Takes, length and the fence (F176, live run 2026-10-12/13): told nothing
+    // about them, the model wrote a ComfyUI workflow of six KSamplers per design
+    // and drove the server through Bash, with its paragraph prompts kept in files.
     shapes: `Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation). Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.`,
     // Rule 5 forbids inventing numbers, and a seed is a number from no tool
     // result: the rule names it among the model's own (review of that run).

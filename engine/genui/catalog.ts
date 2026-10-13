@@ -173,7 +173,7 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
     description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both.',
     props: {
       prompt: str('what the picture shows'),
-      // Another take of one design (engine/imagegen keys on it). ComfyUI's KSampler takes up to 2^64, but JS must stay exact.
+      // Another take of one design (engine/imagegen keys on it; F176). ComfyUI's KSampler takes up to 2^64, but JS must stay exact.
       seed: int('a whole number; the same prompt with another seed is another take — leave it out for one picture', { min: 0, max: Number.MAX_SAFE_INTEGER }),
       src: str('image URL, or a file path from the project folder'), alt: str('what it shows', { required: true }), caption: str('text under the image'),
     },

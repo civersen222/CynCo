@@ -22,7 +22,7 @@ READOUT: Readout | None = None
 # fetch with AbortSignal.timeout; an abort resets the socket (Windows sends
 # RST), handle_one_request's readline raises, and socketserver's handle_error
 # printed a full traceback to stderr for each one — relayed line by line into
-# the engine log as "[jlens] …" (operator's log, 2026-10-12/13).
+# the engine log as "[jlens] …" (F177, operator's log, 2026-10-12/13).
 CLIENT_CLOSED = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 
 

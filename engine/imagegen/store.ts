@@ -71,7 +71,7 @@ export type ImageSidecar = {
   negative: string
   alt: string
   seed: number
-  /** Where the seed came from: the Image's own "seed" (another take), or derived from the prompt; absent on records from before the field. */
+  /** Where the seed came from: the Image's own "seed" (another take, F176), or derived from the prompt; absent on records from before the field. */
   seedFrom?: 'model' | 'prompt'
   width: number
   height: number
@@ -175,9 +175,9 @@ export function normPrompt(s: string): string {
 }
 
 /**
- * The KSampler seed for a prompt: the first 48 bits of its hash, so the same
- * prompt paints the same picture everywhere in a project. Element ids are left
- * out on purpose — models rename ids across re-renders and that must not repaint.
+ * The default KSampler seed for a prompt — an Image's own "seed" replaces it
+ * (F176) — the first 48 bits of its hash, so the same prompt paints the same
+ * picture everywhere in a project; element ids are left out so a renamed id never repaints.
  */
 export function seedFor(prompt: string, negative: string): number {
   return parseInt(sha256(prompt + '\n' + negative).slice(0, 12), 16)

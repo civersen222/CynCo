@@ -39,7 +39,7 @@ export const FILE_TOOLS: ReadonlySet<string> = new Set(['Read', 'Write', 'Edit',
 
 /**
  * Why a Bash command, or a file about to be written, that drives ComfyUI is
- * refused in a project chat. The live run of 2026-10-12/13 wrote a workflow
+ * refused in a project chat (F176). The live run of 2026-10-12/13 wrote a workflow
  * of six KSamplers per design and drove the server by hand (POST /prompt,
  * poll /history, GET /view, renders saved under the project — through curl
  * and a render script of its own) because a project "directive" told it to;

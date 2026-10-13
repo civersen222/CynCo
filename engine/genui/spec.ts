@@ -380,8 +380,8 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     }
     // Whitespace-normalised, at least 3 characters; its length is bounded
     // only by LIMITS.stringChars like any string — a design may need whole
-    // paragraphs (a 1,000-character cut sent the model to drive the image
-    // server by hand, live run 2026-10-12).
+    // paragraphs (F176: a 1,000-character cut sent the model to drive the
+    // image server by hand, live run 2026-10-12).
     const prompt = toStr(p.prompt)
     if (prompt !== undefined) {
       const norm = prompt.replace(/\s+/g, ' ').trim()

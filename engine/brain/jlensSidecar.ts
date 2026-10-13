@@ -59,7 +59,7 @@ export function jlensArtifactsDir(): string {
   return process.env.JLENS_DIR || join(cyncoHome(), 'jlens') // empty JLENS_DIR = unset, as cyncoHome() treats CYNCO_HOME
 }
 
-/** The sidecar's own line for a client that reset or aborted its keep-alive socket (jlens_service/server.py, JlensServer.handle_error). */
+/** The sidecar's own line for a client that reset or aborted its keep-alive socket (jlens_service/server.py, JlensServer.handle_error; F177). */
 const CLIENT_CLOSED_RE = /client closed the connection/
 const CLIENT_CLOSED_WINDOW_MS = 60_000
 
@@ -69,7 +69,7 @@ const CLIENT_CLOSED_WINDOW_MS = 60_000
  * line with no newline; the sidecar's own `[jlens] ` prefix is not doubled,
  * a traceback's lines get it). A run of the sidecar's "client closed the
  * connection" lines — one per reset of an idle keep-alive socket, every few
- * seconds in the operator's log of 2026-10-12/13 — is collapsed to one a
+ * seconds in the operator's log of 2026-10-12/13, F177 — is collapsed to one a
  * minute, the next one saying how many were swallowed; every other line is
  * relayed as it came, so no real error is hidden. Pure, for tests.
  */
