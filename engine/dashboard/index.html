@@ -4339,8 +4339,12 @@ function genuiFillImages(slug, key) {
 /**
  * Fetch a done picture once (a file: once per frame that shows it, since it
  * may have changed). Same-origin, so the fetch wrapper adds the token; the
- * reply must be 200 image/png (a file: 200 and any image type); it is shown
- * as a blob URL. Any failure marks the picture failed with the HTTP status —
+ * reply must be 200 image/png (a file: 200 and any image type); a raster is
+ * shown as a blob URL, an SVG as a data: URL (F175 review): a blob: URL has
+ * the dashboard's origin, and "Open image in new tab" on a model-written SVG
+ * would run its <script> there, where it can fetch the served page and read
+ * the token in it; a data: document has an opaque origin and can reach
+ * nothing. Any failure marks the picture failed with the HTTP status —
  * the one way a done goes back, and a later done fetches it again. A file
  * that fails names itself: "<path> could not be loaded (HTTP n)". One read
  * at a time: a frame that shows the file while a read is in flight marks
@@ -4372,11 +4376,15 @@ function genuiLoadImage(slug, key) {
       failed('HTTP ' + res.status + (res.ok ? ', ' + (type || 'no content-type') : ''));
       return null;
     }
-    return res.blob().then(function(blob) {
+    var shown = type === 'image/svg+xml'
+      ? res.arrayBuffer().then(function(buf) { return 'data:image/svg+xml;base64,' + genuiBase64(new Uint8Array(buf)); })
+      : res.blob().then(function(blob) { return URL.createObjectURL(blob); });
+    return shown.then(function(url) {
       m.loading = false;
-      if (genuiImages[id] !== m) return;   // the chat was cleared while it loaded
+      if (genuiImages[id] !== m) { genuiRevoke(url, name); return; }   // the chat was cleared while it loaded
       var old = m.url;   // a file read again: the picture this one replaces
-      m.url = URL.createObjectURL(blob);
+      m.url = url;
+      genuiLightboxShow(id, url);   // an open lightbox on this picture moves to the new one before the old is freed
       if (old) genuiRevoke(old, name);
       genuiFillImages(slug, key);
       if (m.stale) genuiLoadImage(slug, key);   // a frame showed the file while this read ran: read it again for that frame
@@ -4387,9 +4395,29 @@ function genuiLoadImage(slug, key) {
   });
 }
 
-/** Free one blob URL; a failure is logged, never thrown. */
+/** Free one blob URL (a data: URL holds nothing to free); a failure is logged, never thrown. */
 function genuiRevoke(url, name) {
+  if (typeof url !== 'string' || !(url.indexOf('blob:') === 0)) return;
   try { URL.revokeObjectURL(url); } catch (e) { console.warn('[genui] freeing picture ' + name + ': ' + (e && e.message ? e.message : e)); }
+}
+
+/** Base64 of raw bytes, in chunks: String.fromCharCode.apply has an argument cap, and an SVG file may be up to 2 MB. */
+function genuiBase64(bytes) {
+  var s = '';
+  for (var i = 0; i < bytes.length; i += 8192) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return btoa(s);
+}
+
+/** The open lightbox, if it shows this picture, moves to a URL that replaced the one it was opened on. */
+function genuiLightboxShow(id, url) {
+  if (genuiLightboxShows !== id) return;
+  var open = document.querySelectorAll('.genui-lightbox');
+  for (var i = 0; i < open.length; i++) {
+    var img = open[i].querySelector('img.genui-lightbox-img');
+    if (img) img.setAttribute('src', url);
+    var dl = open[i].querySelector('.genui-lightbox-actions a');
+    if (dl) dl.setAttribute('href', url);
+  }
 }
 
 /** The `ui.image` arm: fold the event in and refill every figure showing that picture (key and project); with none showing it, only the map changes. */

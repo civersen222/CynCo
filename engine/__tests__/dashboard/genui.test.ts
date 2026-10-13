@@ -228,15 +228,19 @@ type Page = {
 }
 
 /** A fetch reply the way the page reads one: ok/status, a content-type header, blob() or json(). */
-type FakeReply = { ok: boolean; status: number; headers: { get: (k: string) => string | null }; blob: () => Promise<unknown>; json: () => Promise<unknown> }
+type FakeReply = { ok: boolean; status: number; headers: { get: (k: string) => string | null }; blob: () => Promise<unknown>; arrayBuffer: () => Promise<ArrayBuffer>; json: () => Promise<unknown> }
 function reply(status: number, type: string | null, body: unknown = 'png-bytes'): FakeReply {
   return {
     ok: status >= 200 && status < 300, status,
     headers: { get: (k: string) => (k.toLowerCase() === 'content-type' ? type : null) },
     blob: () => Promise.resolve({ blob: body }),
+    arrayBuffer: () => Promise.resolve(new TextEncoder().encode(String(body)).buffer as ArrayBuffer),
     json: () => Promise.resolve(body),
   }
 }
+/** An SVG file's bytes and the one URL the page may show them through: data:, never a same-origin blob. */
+const SVG_BODY = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script></svg>'
+const SVG_DATA_URL = 'data:image/svg+xml;base64,' + Buffer.from(SVG_BODY, 'utf8').toString('base64')
 
 /**
  * The page's genui section running against the stub document, a recording
@@ -1543,7 +1547,7 @@ describe('dashboard genui: pictures from project files — wiring', () => {
 
 describe('dashboard genui: pictures from project files — every state', () => {
   it('file: "Loading <name>…", one fetch of /api/projects/p/files/<path> with each segment encoded, then an <img> on the blob URL', async () => {
-    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/svg+xml') })
+    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/png') })
     const el = drawFile(page, 'opts', fileState())
     expect(fig(el)).not.toBeNull()
     expect(boxText(el)).toBe('Loading tower_v1.1_30in.svg…')
@@ -1579,11 +1583,54 @@ describe('dashboard genui: pictures from project files — every state', () => {
     expect(fetched).toHaveLength(2)
     await tick()
     expect(boxText(again)).toBe('tower/templates/tower_v1.1_30in.svg could not be loaded (HTTP 200, text/html)')
-    answer = reply(200, 'image/svg+xml')
+    answer = reply(200, 'image/png')
     const third = drawFile(page, 'opts', fileState())
     expect(fetched).toHaveLength(3)
     await tick()
     expect(third.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+  })
+
+  // Security review of track C (F175): the page used to turn every file into
+  // a same-origin blob: URL. An <img> runs nothing, but "Open image in new
+  // tab" on that URL opens the SVG as a document of the dashboard's origin,
+  // where its <script> can fetch the served page and read the token the
+  // server embeds in it. A data: URL has an opaque origin: the picture draws
+  // the same, and a script inside it can reach nothing of the dashboard's.
+  it('an SVG file is shown through a data: URL, never a same-origin blob URL; nothing is created or revoked for it', async () => {
+    const { page, fetched, blobs } = harness({ fetch: async () => reply(200, 'image/svg+xml', SVG_BODY) })
+    const el = drawFile(page, 'opts', fileState())
+    await tick()
+    expect(el.querySelector('.genui-image-box img')!.getAttribute('src')).toBe(SVG_DATA_URL)
+    expect(blobs.created).toEqual([])
+    expect(page.genuiImages[F()]).toMatchObject({ status: 'done', url: SVG_DATA_URL, loading: false })
+    // read again for a newer frame: the old data: URL is simply replaced, nothing to revoke
+    drawFile(page, 'opts', fileState())
+    expect(fetched).toHaveLength(2)
+    await tick()
+    expect(blobs.revoked).toEqual([])
+    expect(el.querySelector('.genui-image-box img')!.getAttribute('src')).toBe(SVG_DATA_URL)
+  })
+
+  it('the SVG rule is in the code: the loader builds a data: URL for image/svg+xml and only a blob: URL is ever revoked', () => {
+    const load = fnSource('genuiLoadImage')
+    expect(load).toContain("type === 'image/svg+xml'")
+    expect(load).toContain("'data:image/svg+xml;base64,'")
+    expect(fnSource('genuiRevoke')).toContain("indexOf('blob:') === 0")
+  })
+
+  it('a file read again while its lightbox is open: the lightbox switches to the new picture before the old blob is freed', async () => {
+    let n = 0
+    const h = harness({ fetch: async () => reply(200, 'image/png', 'bytes-' + ++n) })
+    const el = drawFile(h.page, 'opts', fileState('front.png'))
+    await tick()
+    el.querySelector('button.genui-image-open')!.fire('click')
+    const box = h.document.body.querySelector('.genui-lightbox')!
+    expect(box.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe('blob:page/1')
+    drawFile(h.page, 'again', fileState('front.png'))
+    await tick()
+    expect(box.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(box.querySelector('a')!.getAttribute('href')).toBe('blob:page/2')
+    expect(h.blobs.revoked).toEqual(['blob:page/1'])
   })
 
   it('a new final frame fetches a shown file again (it may have changed) and keeps the old picture until the new one is in', async () => {
@@ -1687,19 +1734,19 @@ describe('dashboard genui: pictures from project files — every state', () => {
   })
 
   it('the lightbox shows the file with its alt and path and downloads it under its own name; a cleared pane frees it', async () => {
-    const h = harness({ fetch: async () => reply(200, 'image/svg+xml') })
+    const h = harness({ fetch: async () => reply(200, 'image/svg+xml', SVG_BODY) })
     const el = drawFile(h.page, 'opts', fileState())
     await tick()
     el.querySelector('button.genui-image-open')!.fire('click')
     const box = h.document.body.querySelector('.genui-lightbox')!
-    expect(box.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(box.querySelector('img.genui-lightbox-img')!.getAttribute('src')).toBe(SVG_DATA_URL)
     expect(box.querySelector('.genui-lightbox-alt')!.textContent).toBe('Tower template')
     expect(box.querySelector('.genui-lightbox-prompt')!.textContent).toBe(PATH)
     const dl = box.querySelector('a')!
-    expect(dl.getAttribute('href')).toBe('blob:page/1')
+    expect(dl.getAttribute('href')).toBe(SVG_DATA_URL)
     expect(dl.getAttribute('download')).toBe('tower_v1.1_30in.svg')
     h.page.genuiForgetImages()
-    expect(h.blobs.revoked).toEqual(['blob:page/1'])
+    expect(h.blobs.revoked).toEqual([])   // a data: URL holds nothing to free
     expect(h.page.genuiImages).toEqual({})
     expect(h.document.body.querySelector('.genui-lightbox')).toBeNull()
   })
