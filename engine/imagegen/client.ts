@@ -236,8 +236,12 @@ function refusalReason(body: unknown): string {
 
 // ─── the probe ────────────────────────────────────────────────────────
 
+/**
+ * A good probe carries `checkpoints`, the server's `/models/checkpoints` list as sent (strings only), when the workflow
+ * has `{{checkpoint}}`; `runJob` checks the checkpoint a picture was keyed on against it before the POST (F179).
+ */
 export type ProbeResult =
-  | { ok: true; version: string; device: string; vramGB: number | null; checkpoint: string | null; picked: boolean; checkpointCount: number }
+  | { ok: true; version: string; device: string; vramGB: number | null; checkpoint: string | null; picked: boolean; checkpointCount: number; checkpoints?: string[] }
   | { ok: false; reason: string }
 
 function sample(list: string[]): string {
@@ -247,17 +251,19 @@ function sample(list: string[]): string {
 /**
  * Can this server paint with this config? System stats, then the checkpoint
  * (only when the workflow has `{{checkpoint}}`: a configured name must be
- * listed exactly; otherwise the alphabetically first /juggernaut/i, else /xl/i),
- * then every node class the workflow uses. Never throws.
+ * listed exactly; otherwise the alphabetically first /juggernaut/i, else /xl/i;
+ * a good answer then carries the list), then every node class the workflow
+ * uses. Never throws.
  */
 export async function probeComfy(cfg: ComfyConfig, fetchFn: typeof fetch = fetch, timeouts: Partial<ClientTimeouts> = {}): Promise<ProbeResult> {
   try {
     const client = new ComfyClient(cfg.url, fetchFn, timeouts)
     const stats = await client.systemStats()
-    let checkpoint: string | null = null, picked = false, checkpointCount = 0
+    let checkpoint: string | null = null, picked = false, checkpointCount = 0, checkpoints: string[] | null = null
     if (cfg.workflow.usesCheckpoint) {
       const list = await client.checkpoints()
       checkpointCount = list.length
+      checkpoints = list
       if (cfg.checkpoint) {
         if (!list.includes(cfg.checkpoint)) return { ok: false, reason: `ComfyUI at ${client.host} has no checkpoint "${cfg.checkpoint}" (it has: ${sample(list)})` }
         checkpoint = cfg.checkpoint
@@ -271,7 +277,7 @@ export async function probeComfy(cfg: ComfyConfig, fetchFn: typeof fetch = fetch
     for (const cls of workflowClasses(cfg.workflow.graph)) {
       if (!(await client.hasNode(cls))) return { ok: false, reason: `ComfyUI at ${client.host} has no "${cls}" node, which the workflow uses — install it or change the workflow` }
     }
-    return { ok: true, ...stats, checkpoint, picked, checkpointCount }
+    return { ok: true, ...stats, checkpoint, picked, checkpointCount, ...(checkpoints ? { checkpoints } : {}) }
   } catch (e) {
     if (e instanceof ComfyError) return { ok: false, reason: e.reason }
     console.log(`[imagegen] probe of ${cfg.url} failed unexpectedly: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)

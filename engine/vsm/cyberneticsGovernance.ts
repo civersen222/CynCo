@@ -299,7 +299,7 @@ export class CyberneticsGovernance {
   }
 
   onToolResult(name: string, success: boolean, latencyMs: number, _output?: string, input?: unknown,
-               opts?: { governanceDenial?: boolean }): void {
+               opts?: { governanceDenial?: boolean; repeatInCall?: boolean }): void {
     // Reset stuck counter on successful write/edit/bash operations
     // These represent actual progress — the model is doing real work
     if (success && ['Write', 'Edit', 'MultiEdit', 'Bash', 'ApplyPatch'].includes(name)) {

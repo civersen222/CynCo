@@ -126,6 +126,8 @@ export class ToolExecutor {
   private grader: Grader | null
   /** The CodeIndex adoption nudge on retrieval results; off in a project chat, which has no CodeIndex. */
   private codeIndexHints = true
+  /** `<tool>:ok` / `<tool>:failed` outcomes this model call already scored; null until a caller marks a call (`beginModelCall`). */
+  private scoredThisCall: Set<string> | null = null
 
   constructor(opts: ToolExecutorOptions) {
     this.cwd = opts.cwd
@@ -155,6 +157,20 @@ export class ToolExecutor {
 
   getToolScorer(): ToolScorer | undefined {
     return this.toolScorer
+  }
+
+  /**
+   * Mark the start of a model call's tool batches. From then on the trust
+   * score takes at most one success and one failure per tool per call: calls
+   * the model fired together are one decision, so three failed Edits in one
+   * call are one failure, not three that demote Edit, and a call that both
+   * succeeded and failed with a tool counts one of each (F178). The unit is the
+   * model call on both sides; capping failures alone let three good Reads in
+   * one call outweigh three later calls that each failed. A caller that never
+   * marks a call (a sub-agent's executor, a test) scores every call.
+   */
+  beginModelCall(): void {
+    this.scoredThisCall = new Set()
   }
 
   async execute(toolName: string, input: Record<string, unknown>): Promise<ToolResult> {
@@ -266,6 +282,12 @@ export class ToolExecutor {
       // Checked on the tool's own answer — the cap and the CodeIndex nudge
       // above may have put text in front of it.
       if (isWrongPathAnswer(toolName, result.output, result.isError)) return { ...capped, wrongPath: true }
+      // One success and one failure per tool per model call, once the caller marks calls (F178).
+      if (this.scoredThisCall) {
+        const outcome = `${toolName}:${capped.isError ? 'failed' : 'ok'}`
+        if (this.scoredThisCall.has(outcome)) return capped
+        this.scoredThisCall.add(outcome)
+      }
       this.toolScorer?.record(toolName, !capped.isError)
       return capped
     } catch (err) {

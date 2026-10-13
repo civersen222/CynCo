@@ -7,6 +7,7 @@ import {
   parseArgs, resultText, inputSummary, typeCounts, promptedImages, askAnswer, answersOpen,
   commandRefusal, refusalLine, picturesNote, picturesEvidence, everyPictureEvidence, didNotRunEvidence, mergePicture, turnEvidence,
   frameThrottle, frameBrief, usageText, isStuckHalt, RESULT_CAP,
+  chatStampMs, chatIngestNotOurs, pickChat, chatFromApi, noChatIngestWhy, CHAT_WAIT_MS,
 } from '../project-chat-drive.mjs'
 
 const DRIVER = fileURLToPath(new URL('../project-chat-drive.mjs', import.meta.url))
@@ -339,9 +340,9 @@ describe('project-chat-drive: turnEvidence', () => {
     expect(turnEvidence({ ended: { at: 9000 }, complete: { at: 8500, stopReason: 'halted' }, error: null }, rel)).toEqual({ ok: false, evidence: 'halted: message.complete stop=halted at +8.5s' })
     expect(turnEvidence({ ended: { at: 9000 }, complete: { at: 8500, stopReason: 'max_iterations' }, error: null }, rel)).toEqual({ ok: false, evidence: 'stopped at max_iterations: message.complete stop=max_iterations at +8.5s' })
   })
-  it('fails the stuck-loop halt, which the loop ends with stop=end_turn', () => {
-    const r = turnEvidence({ ended: { at: 9000 }, complete: { at: 8500, stopReason: 'end_turn' }, error: null, stuckHalt: { at: 8400 } }, rel)
-    expect(r).toEqual({ ok: false, evidence: 'halted: the stuck-loop halt at +8.4s (message.complete stop=end_turn)' })
+  it('fails the stuck-loop halt, whose last message.complete is stop=max_iterations (its end_turn falls through to the iteration-budget exit)', () => {
+    const r = turnEvidence({ ended: { at: 9000 }, complete: { at: 8500, stopReason: 'max_iterations' }, error: null, stuckHalt: { at: 8400 } }, rel)
+    expect(r).toEqual({ ok: false, evidence: 'halted: the stuck-loop halt at +8.4s (message.complete stop=max_iterations)' })
   })
   it('fails a stop reason it does not know, and none', () => {
     expect(turnEvidence({ ended: { at: 9000 }, complete: { at: 8500, stopReason: 'cancelled' }, error: null }, rel)).toMatchObject({ ok: false, evidence: expect.stringMatching(/^message\.complete stop=cancelled at \+8\.5s/) })
@@ -400,5 +401,147 @@ describe('project-chat-drive: usage', () => {
     expect(help).toMatch(/--hold-min/)
     expect(help).not.toMatch(/^import /m)
     expect(help).not.toMatch(/node:fs/)
+  })
+  it('the help says how a new chat is named: the project.ingest after the turn, else the dashboard API', () => {
+    const help = usageText(readFileSync(DRIVER, 'utf8'))
+    expect(help).toMatch(/project\.ingest/)
+    expect(help).toMatch(/\/api\/projects\/<slug>\/chats/)
+  })
+})
+
+/**
+ * Live run 2 of 2026-10-13 finished at once (every picture already made) and
+ * its summary had chatFile null: the `project.ingest` (kind 'chat') that names
+ * a new chat comes when the engine indexes the chat after message.complete —
+ * fire-and-forget, so after the turn's end — and the driver's verdict had
+ * already gone out. These pin the pieces of the fix; the socket tests pin the
+ * wiring.
+ */
+describe('project-chat-drive: naming a new chat', () => {
+  // 2026-10-13 18:48:52 UTC: the second live run 3's chat was stamped with.
+  const AT = Date.UTC(2026, 9, 13, 18, 48, 52)
+  const OURS = '20261013T184852-show-me-the-three-tower-designs.jsonl'
+  const sentAt = AT + 700
+  const endedAt = AT + 72_000
+  const iso = (ms) => new Date(ms).toISOString()
+
+  it('waits 30 s at most for the frame', () => {
+    expect(CHAT_WAIT_MS).toBe(30_000)
+  })
+
+  it('reads the UTC second a chat file name is stamped with (newChatFile), null for a name without a real stamp', () => {
+    expect(chatStampMs(OURS)).toBe(AT)
+    expect(chatStampMs('20261013T235959-x.jsonl')).toBe(Date.UTC(2026, 9, 13, 23, 59, 59))
+    for (const f of ['chats/' + OURS, 'notes.jsonl', '2026-10-13-x.jsonl', '20261313T184852-x.jsonl', '20261013T254852-x.jsonl', '20261013T184852.jsonl', '', null, undefined]) {
+      expect(chatStampMs(f), String(f)).toBeNull()
+    }
+  })
+
+  describe('chatIngestNotOurs: is this project.ingest our chat?', () => {
+    const ev = (filePath, slug = 'front-yard-diorama') => ({ type: 'project.ingest', slug, filePath, kind: 'chat', indexed: true })
+    const run = { slug: 'front-yard-diorama', chatFile: null, sentAt, endedAt }
+    it('a new chat stamped in the second our message was sent, or later but not after the turn ended, is ours', () => {
+      expect(chatIngestNotOurs(ev(`chats/${OURS}`), run)).toBeNull()
+      expect(chatIngestNotOurs(ev('chats/20261013T184954-x.jsonl'), run)).toBeNull()
+      expect(chatIngestNotOurs(ev('chats/20261013T185100-x.jsonl'), { ...run, endedAt: null })).toBeNull() // the turn still running
+      expect(chatIngestNotOurs(ev('chats/no-stamp.jsonl'), run)).toBeNull() // nothing to tell it by
+    })
+    it('another project\'s, one before our message, one stamped before it or after our turn ended is not', () => {
+      expect(chatIngestNotOurs(ev(`chats/${OURS}`, 'front-yard-2'), run)).toBe("another project's (slug=front-yard-2)")
+      expect(chatIngestNotOurs(ev(`chats/${OURS}`), { ...run, sentAt: null })).toBe('before our message was sent')
+      expect(chatIngestNotOurs(ev('chats/20261013T184851-older.jsonl'), run)).toBe('created 2026-10-13T18:48:51.000Z, before our message')
+      expect(chatIngestNotOurs(ev('chats/20261013T185005-later.jsonl'), run)).toBe('created 2026-10-13T18:50:05.000Z, after our turn ended')
+    })
+    it('once the chat is named, only that chat is ours', () => {
+      expect(chatIngestNotOurs(ev(`chats/${OURS}`), { ...run, chatFile: OURS })).toBeNull()
+      expect(chatIngestNotOurs(ev('chats/20261013T184900-other.jsonl'), { ...run, chatFile: OURS })).toBe(`this run's chat is ${OURS}`)
+    })
+  })
+
+  describe('pickChat: the dashboard API fallback\'s rule', () => {
+    const chats = [ // newest first, as listChatsApi sends them
+      { file: '20261013T185134-another-tab.jsonl', title: 'b', createdAt: iso(endedAt + 30_000), messages: 2 },
+      { file: OURS, title: 'Show me the three tower designs', createdAt: iso(sentAt + 12), messages: 4 },
+      { file: '20261013T174852-earlier.jsonl', title: 'a', createdAt: iso(AT - 3_600_000), messages: 8 },
+    ]
+    it('takes the chat created between our message and the turn\'s end', () => {
+      expect(pickChat(chats, { sentAt, endedAt })).toEqual({ file: OURS, candidates: 1, total: 3 })
+    })
+    it('of several in the window the earliest: ours is created the moment our message lands', () => {
+      const more = [{ file: '20261013T184929-later.jsonl', createdAt: iso(sentAt + 37_000) }, ...chats]
+      expect(pickChat(more, { sentAt, endedAt })).toEqual({ file: OURS, candidates: 2, total: 4 })
+    })
+    it('with no turn end (the deadline, a closed socket) there is no upper bound; the very millisecond of sending counts', () => {
+      expect(pickChat(chats, { sentAt, endedAt: null })).toEqual({ file: OURS, candidates: 2, total: 3 })
+      expect(pickChat([{ file: OURS, createdAt: iso(sentAt) }], { sentAt, endedAt })).toEqual({ file: OURS, candidates: 1, total: 1 })
+      expect(pickChat([{ file: OURS, createdAt: iso(sentAt - 1) }], { sentAt, endedAt })).toEqual({ file: null, candidates: 0, total: 1 })
+    })
+    it('none in the window, nothing listed, or entries that are not chats: no file', () => {
+      expect(pickChat([chats[0], chats[2]], { sentAt, endedAt })).toEqual({ file: null, candidates: 0, total: 2 })
+      expect(pickChat([], { sentAt, endedAt })).toEqual({ file: null, candidates: 0, total: 0 })
+      expect(pickChat(null, { sentAt, endedAt })).toEqual({ file: null, candidates: 0, total: 0 })
+      const junk = [{ file: OURS, createdAt: 'yesterday' }, { file: 'chats/x.jsonl', createdAt: iso(sentAt + 1) }, { file: '..x.jsonl', createdAt: iso(sentAt + 1) }, { createdAt: iso(sentAt + 1) }, 'x', null]
+      expect(pickChat(junk, { sentAt, endedAt })).toEqual({ file: null, candidates: 0, total: 0 })
+    })
+  })
+
+  /**
+   * The engine indexes a chat only when a turn ends on its own: the ingestChat
+   * call at the natural end of runModelLoop, after that end's message.complete.
+   * A halt (stop=halted), the iteration budget (stop=max_iterations) and the
+   * stuck-loop halt (its "Session halted" notice and stop=end_turn, falling
+   * through to the iteration-budget exit's stop=max_iterations) end the
+   * turn elsewhere, and no project.ingest follows — a wait for one is 30 s
+   * spent for nothing.
+   */
+  describe('noChatIngestWhy: will a project.ingest still name the chat?', () => {
+    const ended = { at: endedAt, stopReason: null, error: null }
+    const complete = (stopReason) => ({ at: endedAt - 5, stopReason, usage: null })
+    const OWN = 'and the engine indexes a chat only when a turn ends on its own'
+    it('yes, wait for it: the turn ended on a model stop, with no stuck-loop halt, and the socket is open', () => {
+      for (const stop of ['end_turn', 'stop_sequence', 'max_tokens']) {
+        expect(noChatIngestWhy({ turnEnded: ended, complete: complete(stop) }), stop).toBeNull()
+        expect(noChatIngestWhy({ turnEnded: ended, complete: complete(stop), stuckHalt: null, socketOpen: true }), stop).toBeNull()
+      }
+    })
+    it('no, ask the API at once, naming the stop: halted, max_iterations, the stuck-loop halt, any stop that is not the model\'s', () => {
+      expect(noChatIngestWhy({ turnEnded: ended, complete: complete('halted') })).toBe(`the turn ended with stop=halted, ${OWN} (a model stop: end_turn, stop_sequence, max_tokens)`)
+      expect(noChatIngestWhy({ turnEnded: ended, complete: complete('max_iterations') })).toBe(`the turn ended with stop=max_iterations, ${OWN} (a model stop: end_turn, stop_sequence, max_tokens)`)
+      expect(noChatIngestWhy({ turnEnded: ended, complete: complete(null) })).toBe(`the turn ended with stop=null, ${OWN} (a model stop: end_turn, stop_sequence, max_tokens)`)
+      expect(noChatIngestWhy({ turnEnded: ended, complete: complete('max_iterations'), stuckHalt: { at: endedAt - 10 } })).toBe(`the turn ended in the stuck-loop halt (message.complete stop=max_iterations), ${OWN}`)
+    })
+    it('no: the turn did not end, ended with no message.complete, or the socket is closed', () => {
+      expect(noChatIngestWhy({ turnEnded: null, complete: null })).toBe('the turn did not end')
+      expect(noChatIngestWhy({ turnEnded: null, complete: complete('end_turn') })).toBe('the turn did not end')
+      expect(noChatIngestWhy({ turnEnded: ended, complete: null })).toBe('the turn ended with no message.complete, and the engine indexes a chat only after one')
+      expect(noChatIngestWhy({ turnEnded: ended, complete: complete('end_turn'), socketOpen: false })).toBe('the socket is closed')
+    })
+  })
+
+  describe('chatFromApi', () => {
+    const args = { base: 'http://127.0.0.1:9161', slug: 'front-yard-diorama', token: 'tok', sentAt, endedAt }
+    const URL_ = 'http://127.0.0.1:9161/api/projects/front-yard-diorama/chats'
+    const WINDOW = "created at or after the message was sent (2026-10-13T18:48:52.700Z) and no later than the turn's end (2026-10-13T18:50:04.000Z)"
+    const answer = (status, body) => async () => new Response(typeof body === 'string' ? body : JSON.stringify(body), { status })
+    it('asks GET /api/projects/<slug>/chats with the dashboard token as a Bearer header, and says which rule named the chat', async () => {
+      const calls = []
+      const fetchImpl = async (url, init) => { calls.push({ url, auth: init?.headers?.Authorization }); return answer(200, { chats: [{ file: OURS, createdAt: iso(sentAt + 12) }] })() }
+      expect(await chatFromApi({ ...args, fetchImpl })).toEqual({ file: OURS, how: `dashboard API: the earliest of 1 chat(s) ${WINDOW}` })
+      expect(calls).toEqual([{ url: URL_, auth: 'Bearer tok' }])
+      // No turn end: the window has no upper bound and says so.
+      expect(await chatFromApi({ ...args, endedAt: null, fetchImpl })).toEqual({ file: OURS, how: 'dashboard API: the earliest of 1 chat(s) created at or after the message was sent (2026-10-13T18:48:52.700Z)' })
+    })
+    it('says why when no chat fits, the API refuses, answers no list or cannot be reached', async () => {
+      expect(await chatFromApi({ ...args, fetchImpl: answer(200, { chats: [] }) })).toEqual({ file: null, why: `the dashboard API lists 0 chat(s), none ${WINDOW}` })
+      expect(await chatFromApi({ ...args, fetchImpl: answer(401, { error: 'token required' }) })).toEqual({ file: null, why: `GET ${URL_} answered HTTP 401: {"error":"token required"}` })
+      expect(await chatFromApi({ ...args, fetchImpl: answer(200, '<html>') })).toEqual({ file: null, why: `GET ${URL_} answered no chats list: "<html>"` })
+      expect(await chatFromApi({ ...args, fetchImpl: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:9161') } })).toEqual({ file: null, why: `GET ${URL_} failed: connect ECONNREFUSED 127.0.0.1:9161` })
+    })
+    it('a request that never answers is cut at its timeout', async () => {
+      const hang = (url, init) => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)))
+      const r = await chatFromApi({ ...args, fetchImpl: hang, timeoutMs: 50 })
+      expect(r.file).toBeNull()
+      expect(r.why).toMatch(new RegExp(`^GET ${URL_} failed: .*timeout`, 'i'))
+    })
   })
 })

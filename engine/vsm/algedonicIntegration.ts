@@ -48,12 +48,20 @@ export class AlgedonicIntegration {
    * nor clears, so a genuine failure streak cannot be laundered by interleaving
    * refusals. It still reaches the channel, so the pain ratio tells the truth
    * about how much of the run was being refused.
+   *
+   * `repeatInCall` marks a failure of a tool that already failed in the same
+   * model call with no counted success since, and takes the same neutral path.
+   * The calls the model fired together are one decision, so between successes
+   * the streak grows by at most one per tool per call (a success clears the
+   * streak, and then the tool's next failure is a pain again): five Reads of
+   * folders in one parallel batch were five consecutive pains and halted a
+   * project chat (F178).
    */
   recordToolResult(
     toolName: string,
     success: boolean,
     latencyMs: number,
-    opts?: { governanceDenial?: boolean },
+    opts?: { governanceDenial?: boolean; repeatInCall?: boolean },
   ): ReturnType<typeof algedonic.routeSignal> {
     const baseScore = success ? 0.15 : 0.7
     const latencyPenalty = latencyMs > 30000 ? 0.2 : latencyMs > 10000 ? 0.1 : 0
@@ -83,7 +91,7 @@ export class AlgedonicIntegration {
     } catch {}
 
     // Track consecutive pain for kill switch
-    if (opts?.governanceDenial) {
+    if (opts?.governanceDenial || opts?.repeatInCall) {
       // Neither arm nor clear — see the note on this method.
     } else if (signal.isPain()) {
       this.consecutivePainCount++

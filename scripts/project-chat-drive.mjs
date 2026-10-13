@@ -52,6 +52,20 @@
 // --hold-min keeps the socket open after that and logs each frame type the
 // engine still sends (one line per type a second at most; an engine restart
 // shows as a close) — for the restart test.
+// A new chat is named by the engine's project.ingest (kind chat), which it
+// sends when it indexes the chat — only when the turn ended on its own (a
+// message.complete with a model stop, no stuck-loop halt), after that
+// message.complete and fire-and-forget, so it can come after the turn has
+// ended and every picture is settled. When the turn ended so and the chat is
+// still unnamed, the driver waits for that frame (30 s at most, logged) before
+// the verdict and the summary. If it never comes — or, with no wait, when the
+// turn ended any other way (aborted, cut by an error, halted, max_iterations,
+// the stuck-loop halt; the log names which) — the driver asks the dashboard
+// API — GET /api/projects/<slug>/chats with the dashboard token as a Bearer
+// header — and takes the earliest chat created between our message and the
+// turn's end, naming that rule in the log; failing that, the log and the
+// summary say "chat file unknown". A run whose chat is known (--chat, or the
+// frame already came) never waits.
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -96,9 +110,27 @@ const NOT_EXECUTED_RE = /^Tool call "([^"]*)" was not executed: /
 export const NORMAL_STOPS = new Set(['end_turn', 'stop_sequence', 'max_tokens'])
 /** The largest delay a timer holds (2^31-1 ms); setTimeout fires a larger one at once. */
 const MAX_TIMER_MS = 2 ** 31 - 1
-/** The stuck-loop halt (Tier 4 in runModelLoop) ends the turn with stop=end_turn
- *  and says so only in its own stream.token. */
+/** The stuck-loop halt (Tier 4 in runModelLoop) says so only in its own
+ *  stream.token. Its message.complete is stop=end_turn, and its `break` falls
+ *  through to the iteration-budget exit after the loop: that exit's "[System]
+ *  Max tool call iterations reached" and a second message.complete,
+ *  stop=max_iterations, then runUserMessage's governance.session_fidelity. By
+ *  its stops alone the turn reads as the budget running out. */
 const STUCK_HALT_RE = /\*\*Session halted\*\* — stuck for \d+ turns/
+/** How long, once the turn has ended on its own, the driver waits for the
+ *  project.ingest (kind chat) that names a new chat. The engine indexes a chat
+ *  after the message.complete of a turn that ended on its own, fire-and-forget
+ *  (`ingestChat` at the natural end of runModelLoop), so the frame comes after
+ *  the turn's end: 0.23 s after session_fidelity in live run 3
+ *  of 2026-10-13, and after the verdict in run 2, which settled at once (every
+ *  picture already made) and whose summary had chatFile null. Indexing embeds
+ *  the transcript, so a cold embedder takes seconds; 30 s bounds it. */
+export const CHAT_WAIT_MS = 30_000
+/** The dashboard API request that names the chat when the frame did not. */
+const CHAT_API_TIMEOUT_MS = 10_000
+/** A new chat's file name starts with the UTC second its first message arrived
+ *  (`newChatFile`, engine/projects/chat.ts: `YYYYMMDDTHHMMSS-<title>.jsonl`). */
+const CHAT_STAMP_RE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})-/
 
 export function parseArgs(argv) {
   const o = { slug: 'front-yard-diorama', chat: null, fresh: false, message: null, base: DEFAULT_BASE, timeoutMin: DEFAULT_TIMEOUT_MIN, projectDir: null, summary: null, holdMin: 0, help: false }
@@ -330,13 +362,16 @@ export function mergePicture(prev, im, ref, now = Date.now()) {
 
 /**
  * The "the turn ended" criterion: `ended` is the governance.session_fidelity
- * after our message, `complete` the message.complete before it (its stop
+ * after our message, `complete` the last message.complete before it (its stop
  * reason), `error` the first session.error of the turn and `stuckHalt` the
  * stuck-loop halt's notice. `rel` turns a time into seconds since the start.
  * It passes only a message.complete with a model stop (NORMAL_STOPS) and no
  * error. session_fidelity alone is the abort exit (a Stop, or a project.open
  * from any tab aborting the turn in startProjectSession): no message.complete,
  * no session.error. stop=halted and stop=max_iterations are the loop giving up.
+ * The notice is read before the stop: the stuck-loop halt's stop=end_turn is
+ * followed by the stop=max_iterations of the budget exit it falls through to
+ * (STUCK_HALT_RE), and that turn is the halt, not the budget.
  */
 export function turnEvidence({ ended, complete, error, stuckHalt = null }, rel = (ms) => String(ms)) {
   if (error) return { ok: false, evidence: `session.error at +${rel(error.at)}s: ${String(error.text).slice(0, 300)}${ended ? '' : ' (no governance.session_fidelity followed)'}` }
@@ -381,6 +416,96 @@ export function frameBrief(ev) {
   return parts.join(' ')
 }
 
+/** The UTC time a chat file name is stamped with (CHAT_STAMP_RE), or null for a name without a real stamp. */
+export function chatStampMs(file) {
+  const m = CHAT_STAMP_RE.exec(String(file ?? ''))
+  if (!m) return null
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number)
+  const ms = Date.UTC(y, mo - 1, d, h, mi, s)
+  // Date.UTC rolls month 13 or hour 25 over into a real date: such a name has no stamp.
+  return new Date(ms).toISOString().replace(/[-:]/g, '').slice(0, 15) === m[0].slice(0, 15) ? ms : null
+}
+
+/**
+ * Is a project.ingest (kind chat) this run's chat? null when it is, else why
+ * not. Ours is in our project and comes after our message. Once the chat is
+ * named only that chat is ours; while it is not, a chat whose name is stamped
+ * (whole seconds) before the second our message was sent, or after our turn
+ * ended, is another one — an earlier chat's indexing still in flight, or
+ * another tab's chat.
+ */
+export function chatIngestNotOurs(ev, { slug, chatFile = null, sentAt = null, endedAt = null } = {}) {
+  if (ev?.slug !== slug) return `another project's (slug=${ev?.slug})`
+  if (sentAt === null) return 'before our message was sent'
+  const file = basename(String(ev?.filePath ?? ''))
+  if (chatFile) return file === chatFile ? null : `this run's chat is ${chatFile}`
+  const at = chatStampMs(file)
+  if (at === null) return null
+  if (at < Math.floor(sentAt / 1000) * 1000) return `created ${new Date(at).toISOString()}, before our message`
+  if (endedAt !== null && at > endedAt) return `created ${new Date(at).toISOString()}, after our turn ended`
+  return null
+}
+
+/**
+ * The dashboard API fallback's rule, over GET /api/projects/<slug>/chats
+ * (`listChatsApi`: { file, title, createdAt, messages }, newest first): the
+ * chats created at or after our message was sent and — when the turn ended —
+ * no later than its end; of those the EARLIEST, since ours is created the
+ * moment our message lands (`newChatFile` in runUserMessage) and any later one
+ * is another tab's. Entries that are not a transcript file name or have no
+ * readable createdAt are not counted.
+ */
+export function pickChat(chats, { sentAt, endedAt = null }) {
+  const list = (Array.isArray(chats) ? chats : []).filter(c => c && typeof c.file === 'string' && CHAT_RE.test(c.file) && !c.file.includes('..') && Number.isFinite(Date.parse(c.createdAt)))
+  const inWindow = list.filter(c => { const t = Date.parse(c.createdAt); return t >= sentAt && (endedAt === null || t <= endedAt) })
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt) || a.file.localeCompare(b.file))
+  return { file: inWindow.length ? inWindow[0].file : null, candidates: inWindow.length, total: list.length }
+}
+
+/**
+ * Ask the dashboard API which chat is ours (pickChat's rule), bounded by
+ * `timeoutMs`. Resolves { file, how } — `how` names the rule — or
+ * { file: null, why }; never throws.
+ */
+export async function chatFromApi({ base, slug, token, sentAt, endedAt = null, fetchImpl = globalThis.fetch, timeoutMs = CHAT_API_TIMEOUT_MS }) {
+  const url = `${base}/api/projects/${encodeURIComponent(slug)}/chats`
+  let res, body
+  try {
+    res = await fetchImpl(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) })
+    const text = await res.text()
+    try { body = JSON.parse(text) } catch { body = text }
+  } catch (e) {
+    return { file: null, why: `GET ${url} failed: ${e?.message ?? String(e)}` }
+  }
+  if (!res.ok) return { file: null, why: `GET ${url} answered HTTP ${res.status}: ${JSON.stringify(body).slice(0, 160)}` }
+  if (!body || typeof body !== 'object' || !Array.isArray(body.chats)) return { file: null, why: `GET ${url} answered no chats list: ${JSON.stringify(body).slice(0, 160)}` }
+  const p = pickChat(body.chats, { sentAt, endedAt })
+  const window = `created at or after the message was sent (${new Date(sentAt).toISOString()})${endedAt !== null ? ` and no later than the turn's end (${new Date(endedAt).toISOString()})` : ''}`
+  if (!p.file) return { file: null, why: `the dashboard API lists ${p.total} chat(s), none ${window}` }
+  return { file: p.file, how: `dashboard API: the earliest of ${p.candidates} chat(s) ${window}` }
+}
+
+/**
+ * Why no project.ingest will name the chat now, or null when one still can
+ * and is worth waiting for. The engine indexes a chat only when a turn ends
+ * on its own: the ingestChat call at the natural end of runModelLoop, after
+ * that end's message.complete with a model stop (NORMAL_STOPS). A halt
+ * (stop=halted), the iteration budget (stop=max_iterations) and the stuck-loop
+ * halt end the turn elsewhere, with no ingest. The stuck-loop halt sends its
+ * notice and stop=end_turn, then — its `break` falls through to the
+ * iteration-budget exit — stop=max_iterations, so `complete`, the turn's last,
+ * reads max_iterations; the notice names the halt and is read first.
+ */
+export function noChatIngestWhy({ turnEnded, complete, stuckHalt = null, socketOpen = true }) {
+  const own = 'and the engine indexes a chat only when a turn ends on its own'
+  if (!turnEnded) return 'the turn did not end'
+  if (!complete) return 'the turn ended with no message.complete, and the engine indexes a chat only after one'
+  if (stuckHalt) return `the turn ended in the stuck-loop halt (message.complete stop=${complete.stopReason}), ${own}`
+  if (!NORMAL_STOPS.has(complete.stopReason)) return `the turn ended with stop=${complete.stopReason}, ${own} (a model stop: ${[...NORMAL_STOPS].join(', ')})`
+  if (!socketOpen) return 'the socket is closed'
+  return null
+}
+
 /** The help: the header comment, up to the first line that is not a comment. */
 export function usageText(source) {
   const out = []
@@ -398,9 +523,10 @@ function usage() {
 /**
  * The run; resolves to the exit code. `env` is where the dashboard token is
  * read from (CYNCO_HOME); `settleMs` is the wait after the socket opens before
- * our project.open — a test against a scripted socket shortens it.
+ * our project.open, and `chatWaitMs` the wait for the frame that names a new
+ * chat — a test against a scripted socket shortens both.
  */
-export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {}) {
+export async function main(argv, { env = process.env, settleMs = SETTLE_MS, chatWaitMs = CHAT_WAIT_MS } = {}) {
   const opts = parseArgs(argv)
   if (opts.help) { console.log(usage()); return 0 }
   if (!opts.message) throw new Error('--message or --message-file is required')
@@ -414,6 +540,8 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
 
   const state = {
     opened: null, chatFile: opts.chat, openSentAt: null, messageSentAt: null,
+    chatFrom: opts.chat ? '--chat' : null, // how the chat was named: --chat, project.ingest, the dashboard API's rule, or "unknown: <why>"
+    waitingForChat: false,
     surfaces: new Map(), // toolId → { surfaceId, partials, final, finalAt, errors }
     pictures: new Map(), // key → { key, status, reason, elementIds, seed, promptLen, seenAt, runningAt, doneAt, requeues, earlier, alreadyMade }
     notGenerated: [],    // { surfaceId, elementId, status, reason }
@@ -436,6 +564,8 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
   let resolveDone = () => {}
   const done = new Promise(r => { resolveDone = r })
   let holdResolve = () => {}
+  /** Ends the wait for the frame that names the chat: the frame came, or the socket closed. */
+  let wakeChatWait = () => {}
   const timers = []
 
   function finish(reason, code) {
@@ -476,17 +606,22 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
     log(`[driver] socket closed code=${e?.code ?? '?'}${e?.reason ? ` reason=${e.reason}` : ''}`)
     if (!state.finished) finish('the socket closed before the turn settled', 3)
     else if (state.holding) { log('[driver] (holding: the engine went away under an open socket)'); holdResolve() }
+    // No frame can name the chat now.
+    wakeChatWait()
   })
 
   ws.addEventListener('message', (m) => {
     let ev
     try { ev = JSON.parse(typeof m.data === 'string' ? m.data : String(m.data)) } catch { log(`[driver] non-JSON frame (${String(m.data).length} chars)`); return }
     if (!ev || typeof ev.type !== 'string') return
-    if (state.afterVerdict) {
-      // After the verdict (the hold): one line per frame type a second at most,
-      // so a restart test sees what the engine still sent before the close.
+    // The frame that names the chat is handled below whenever it comes — it is
+    // what the wait after the turn's end is for.
+    if (state.afterVerdict && ev.type !== 'project.ingest') {
+      // After the run settled (the wait for the chat's name, then the hold): one
+      // line per frame type a second at most, so a restart test sees what the
+      // engine still sent before the close.
       const r = holdLine(ev.type)
-      if (r) { const brief = frameBrief(ev); log(`[driver] hold: ${ev.type}${brief ? ` ${brief}` : ''}${r.held ? ` (+${r.held} more since the last line)` : ''}`) }
+      if (r) { const brief = frameBrief(ev); log(`[driver] ${state.waitingForChat ? 'after the run' : 'hold'}: ${ev.type}${brief ? ` ${brief}` : ''}${r.held ? ` (+${r.held} more since the last line)` : ''}`) }
       // A card the engine waits on is still answered; nothing else is counted.
       if (ev.type !== 'approval.request' && ev.type !== 'ask.request') return
     }
@@ -497,14 +632,24 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
         if (answers) {
           state.opened = { at: Date.now(), chat: ev.chat ?? null, title: ev.title ?? null }
           if (ev.chat) state.chatFile = ev.chat
+          // Taken before the send: a new chat is created (and stamped) when the
+          // engine receives the message, never before this.
+          const sentAt = Date.now()
           send({ type: 'user.message', text: opts.message })
-          state.messageSentAt = Date.now()
+          state.messageSentAt = sentAt
           log(`[driver] sent user.message (${opts.message.length} chars): ${JSON.stringify(opts.message.slice(0, 120))}${opts.message.length > 120 ? '…' : ''}`)
         }
         break
       }
       case 'project.ingest': {
-        if (ev.kind === 'chat' && typeof ev.filePath === 'string') { state.chatFile = basename(ev.filePath); log(`project.ingest chat=${state.chatFile} indexed=${ev.indexed}${ev.reason ? ` reason=${ev.reason}` : ''}`) }
+        // The frame that names a chat: the engine indexed it after message.complete.
+        if (ev.kind !== 'chat' || typeof ev.filePath !== 'string') break
+        const file = basename(ev.filePath)
+        const status = `indexed=${ev.indexed}${ev.reason ? ` reason=${ev.reason}` : ''}`
+        const notOursWhy = chatIngestNotOurs(ev, { slug: opts.slug, chatFile: state.chatFile, sentAt: state.messageSentAt, endedAt: state.turnEnded?.at ?? null })
+        if (notOursWhy) { log(`project.ingest chat=${file} ${status} (${notOursWhy}; not this run's chat)`); break }
+        log(`project.ingest chat=${file} ${status}`)
+        if (!state.chatFile) { state.chatFile = file; state.chatFrom = 'project.ingest'; wakeChatWait() }
         break
       }
       case 'session.error': {
@@ -643,6 +788,8 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
         if (!state.messageSentAt) break
         // Another turn's (a queued click, the operator typing on the page): never ours.
         if (state.turnEnded) { notOurs('message.complete', `stop=${ev.stopReason ?? 'null'}`, 'after our turn ended'); break }
+        // The turn's last one is kept: the stuck-loop halt sends two (its
+        // end_turn, then the max_iterations of the budget exit after the loop).
         state.complete = { at: Date.now(), stopReason: ev.stopReason ?? null, usage: ev.usage ?? null }
         log(`message.complete stop=${ev.stopReason ?? 'null'}${ev.usage ? ` usage=${JSON.stringify(ev.usage)}` : ''}; pictures pending: ${pending().length}`)
         break
@@ -667,6 +814,34 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
 
   await done
   state.afterVerdict = true
+
+  // ── the chat's name ─────────────────────────────────────────
+  // A new chat is named by the project.ingest the engine sends when it indexes
+  // the chat after the message.complete of a turn that ended on its own —
+  // fire-and-forget, so it can come after the run settled (live run 2 of
+  // 2026-10-13: every picture already made, the verdict at once, chatFile
+  // null). A turn that ended any other way gets no ingest: no wait, the API at
+  // once. Nothing to do when the chat is known or no message went out.
+  if (!state.chatFile && state.messageSentAt !== null) {
+    const noFrame = noChatIngestWhy({ turnEnded: state.turnEnded, complete: state.complete, stuckHalt: state.stuckHalt, socketOpen: !state.closed && ws.readyState === 1 })
+    if (noFrame === null) {
+      log(`[driver] the turn ended before the chat was named: waiting up to ${chatWaitMs / 1000} s for the project.ingest that names it (the engine indexes a chat after message.complete)`)
+      const from = Date.now()
+      state.waitingForChat = true
+      await new Promise(r => { wakeChatWait = r; timers.push(setTimeout(r, chatWaitMs)) })
+      state.waitingForChat = false
+      wakeChatWait = () => {}
+      if (state.chatFile) log(`[driver] chat ${state.chatFile} named by project.ingest after ${((Date.now() - from) / 1000).toFixed(1)} s of waiting`)
+      else log(`[driver] ${state.closed ? 'the socket closed before a project.ingest named the chat' : `no project.ingest named the chat within ${chatWaitMs / 1000} s`}; asking the dashboard API`)
+    } else {
+      log(`[driver] the chat is not named and no project.ingest will name it now (${noFrame}); asking the dashboard API`)
+    }
+    if (!state.chatFile) {
+      const r = await chatFromApi({ base: opts.base, slug: opts.slug, token, sentAt: state.messageSentAt, endedAt: state.turnEnded?.at ?? null })
+      if (r.file) { state.chatFile = r.file; state.chatFrom = r.how; log(`[driver] chat ${r.file} — ${r.how}`) }
+      else { state.chatFrom = `unknown: ${r.why}`; log(`[driver] chat file unknown: ${r.why}`) }
+    }
+  }
 
   // ── the verdict ─────────────────────────────────────────────
   const checks = []
@@ -722,7 +897,7 @@ export async function main(argv, { env = process.env, settleMs = SETTLE_MS } = {
   log(`[driver] verdict: ${allPass ? 'PASS' : 'FAIL'} (${checks.filter(c => c.ok).length}/${checks.length} criteria), exit ${code}`)
 
   if (opts.summary) {
-    const summary = { startedAt: new Date(t0).toISOString(), base: opts.base, slug: opts.slug, chatFile: state.chatFile, message: opts.message, reason: state.reason, exitCode: code, checks, timeline, surfaces, pictures: pics.map(({ prompt, ...p }) => p), notGenerated: state.notGenerated, tools: state.tools.map(({ text, ...t }) => ({ ...t, textChars: text.length })), approvals: state.approvals, asks: state.asks, errors: state.errors, complete: state.complete, turnEnded: state.turnEnded, turnError: state.turnError, stuckHalt: state.stuckHalt, notOurs: state.notOurs, closed: state.closed, log: lines }
+    const summary = { startedAt: new Date(t0).toISOString(), base: opts.base, slug: opts.slug, chatFile: state.chatFile, chatFrom: state.chatFrom, message: opts.message, reason: state.reason, exitCode: code, checks, timeline, surfaces, pictures: pics.map(({ prompt, ...p }) => p), notGenerated: state.notGenerated, tools: state.tools.map(({ text, ...t }) => ({ ...t, textChars: text.length })), approvals: state.approvals, asks: state.asks, errors: state.errors, complete: state.complete, turnEnded: state.turnEnded, turnError: state.turnError, stuckHalt: state.stuckHalt, notOurs: state.notOurs, closed: state.closed, log: lines }
     mkdirSync(dirname(opts.summary), { recursive: true })
     writeFileSync(opts.summary, JSON.stringify(summary, null, 2))
     log(`[driver] summary written to ${opts.summary}`)

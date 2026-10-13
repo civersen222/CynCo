@@ -107,7 +107,7 @@ describe('the tool circuit breaker and the failure counters (F178)', () => {
     expect(r[3]).toMatch(/the real note/)
   }, 60000)
 
-  it('a Read that trips for a reason other than a wrong path is sent to Glob, never to Bash', async () => {
+  it('a Read that trips for a reason other than a wrong path is sent to Ls or Glob, never to Bash', async () => {
     const { home, slug, dir } = project()
     // a folder, not a file — three different ones, so the read-loop gate (which denies a repeat) stays out of it
     const folder = (name: string): ScriptBlock => { mkdirSync(join(dir, name), { recursive: true }); return { type: 'tool_use', name: 'Read', input: { file_path: join(dir, name) } } }
@@ -119,7 +119,14 @@ describe('the tool circuit breaker and the failure counters (F178)', () => {
     expect(r[2]).toMatch(/CIRCUIT BREAKER: Read has failed 3 consecutive times/)
     expect(r[2]).toMatch(/Glob/)
     expect(r[2]).toMatch(/never through Bash/)
+    expect(r[2]).toContain('by its full path (the folder joined with the path it shows)')
     expect(r[2]).not.toMatch(/COMPLETELY DIFFERENT approach/)
+    // The folder goes in `path`, never into the pattern: a project chat grades
+    // an absolute Glob pattern dangerous and refuses it (gradeProjectCall), and
+    // Bun's Glob answers files only, so "<folder>/*" listed no subfolder.
+    expect(r[2]).toContain('Ls (path "<folder>")')
+    expect(r[2]).toContain('Glob (path "<folder>", pattern "**/*")')
+    expect(r[2]).not.toMatch(/pattern "[^"]*<folder>/)
   }, 60000)
 
   it('a failure that counts takes one strike per model call: three in one call are one, a third call trips', async () => {

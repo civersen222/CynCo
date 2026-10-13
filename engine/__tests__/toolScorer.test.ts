@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import { ToolScorer } from '../tools/toolScorer.js'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { ToolExecutor } from '../tools/executor.js'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -233,5 +234,106 @@ describe('ToolScorer', () => {
     // successes=8, total=10 → (8+1)/(10+2) = 9/12 = 0.75
     expect(scorer.getConfidence('Grep')).toBeCloseTo(0.75, 5)
     expect(scorer.shouldDemote('Grep')).toBe(false)
+  })
+})
+
+// F178: a batch the model fired together is one decision. Three failed Edits
+// in one model call are one guess the model made three times at once, not
+// three pieces of evidence that Edit is broken — scored as three they demoted
+// Edit (0/3, confidence 0.2) for the calls that followed. The loop marks each
+// model call on the executor (`beginModelCall`), and the executor then scores
+// at most ONE success and ONE failure per tool per call: the unit is the model
+// call on both sides, so a mixed call counts one of each. Capping failures
+// alone skewed the score toward success — three good Reads in a call outweighed
+// three later calls that each failed. A caller that never marks a call — a
+// sub-agent's executor, a test — scores every call, as before.
+describe('the trust score takes at most one success and one failure per tool per model call (F178)', () => {
+  function setup() {
+    const dir = mkdtempSync(join(tmpdir(), 'toolscorer-batch-'))
+    writeFileSync(join(dir, 'real.txt'), 'the real note')
+    const scorer = new ToolScorer()
+    const executor = new ToolExecutor({ cwd: dir, requestApproval: async () => true, toolScorer: scorer })
+    return { dir, scorer, executor }
+  }
+  // A real failure, not a wrong path: the file exists and the text does not.
+  // Each input differs, so the doom-loop detector stays out of it.
+  async function failEdit(executor: ToolExecutor, dir: string, tag: string) {
+    const r = await executor.execute('Edit', { file_path: join(dir, 'real.txt'), old_string: `text ${tag} that is not in the file`, new_string: 'x' })
+    expect(r.isError).toBe(true)
+    expect(r.wrongPath).toBeUndefined()
+  }
+
+  it('three failed Edits in one model call are one failure: Edit is not demoted', async () => {
+    const { dir, scorer, executor } = setup()
+    executor.beginModelCall()
+    for (const tag of ['a', 'b', 'c']) await failEdit(executor, dir, tag)
+    expect(scorer.shouldDemote('Edit')).toBe(false)
+    expect(scorer.excludeForIteration()).not.toContain('Edit')
+    expect(scorer.getConfidence('Edit')).toBeCloseTo(1 / 3, 5) // one failure: (0+1)/(1+2)
+  })
+
+  it('one failed Edit in each of three model calls demotes it, as before', async () => {
+    const { dir, scorer, executor } = setup()
+    for (const tag of ['a', 'b', 'c']) {
+      executor.beginModelCall()
+      await failEdit(executor, dir, tag)
+    }
+    expect(scorer.shouldDemote('Edit')).toBe(true)
+    expect(scorer.excludeForIteration()).toContain('Edit')
+  })
+
+  it('a mixed call counts one of each: three good Reads and two failed ones in one call are one success and one failure', async () => {
+    const { dir, scorer, executor } = setup()
+    for (const name of ['a', 'b']) mkdirSync(join(dir, name))
+    executor.beginModelCall()
+    for (let i = 0; i < 3; i++) expect((await executor.execute('Read', { file_path: join(dir, 'real.txt') })).isError).toBe(false)
+    for (const name of ['a', 'b']) expect((await executor.execute('Read', { file_path: join(dir, name) })).isError).toBe(true) // a folder, not a file
+    expect(scorer.getConfidence('Read')).toBeCloseTo((1 + 1) / (2 + 2), 5) // one success, one failure
+  })
+
+  it('a call of three good Reads is one success: it does not outweigh three later calls that each failed', async () => {
+    const { dir, scorer, executor } = setup()
+    for (const name of ['a', 'b', 'c']) mkdirSync(join(dir, name))
+    executor.beginModelCall()
+    for (let i = 0; i < 3; i++) expect((await executor.execute('Read', { file_path: join(dir, 'real.txt') })).isError).toBe(false)
+    for (const name of ['a', 'b', 'c']) {
+      executor.beginModelCall()
+      expect((await executor.execute('Read', { file_path: join(dir, name) })).isError).toBe(true)
+    }
+    // One success, three failures: (1+1)/(4+2) = 0.33, under the 0.35 threshold.
+    // Capping failures alone scored it 3 of 6 (0.5) and kept Read offered.
+    expect(scorer.getConfidence('Read')).toBeCloseTo((1 + 1) / (4 + 2), 5)
+    expect(scorer.shouldDemote('Read')).toBe(true)
+  })
+
+  it('five calls of three failed Edits and one good one score one failure and one success each', async () => {
+    const { dir, scorer, executor } = setup()
+    for (let call = 0; call < 5; call++) {
+      executor.beginModelCall()
+      for (const tag of ['a', 'b', 'c']) await failEdit(executor, dir, `${call}${tag}`)
+      const ok = await executor.execute('Edit', { file_path: join(dir, 'real.txt'), old_string: `note${call === 0 ? '' : ` ${call - 1}`}`, new_string: `note ${call}` })
+      expect(ok.isError).toBe(false)
+    }
+    expect(scorer.getConfidence('Edit')).toBeCloseTo((5 + 1) / (10 + 2), 5)
+    expect(scorer.shouldDemote('Edit')).toBe(false)
+  })
+
+  it('the cap is per tool: a failed Edit and a failed Read in one call each count', async () => {
+    const { dir, scorer, executor } = setup()
+    mkdirSync(join(dir, 'a'))
+    executor.beginModelCall()
+    await failEdit(executor, dir, 'a')
+    expect((await executor.execute('Read', { file_path: join(dir, 'a') })).isError).toBe(true)
+    expect(scorer.getConfidence('Edit')).toBeCloseTo(1 / 3, 5)
+    expect(scorer.getConfidence('Read')).toBeCloseTo(1 / 3, 5)
+  })
+
+  it('an executor whose caller never marks a model call (a sub-agent, a test) scores every call, as before', async () => {
+    const { dir, scorer, executor } = setup()
+    for (const tag of ['a', 'b', 'c']) await failEdit(executor, dir, tag)
+    expect(scorer.getConfidence('Edit')).toBeCloseTo(1 / 5, 5) // three failures: (0+1)/(3+2)
+    expect(scorer.shouldDemote('Edit')).toBe(true)
+    for (let i = 0; i < 3; i++) expect((await executor.execute('Read', { file_path: join(dir, 'real.txt') })).isError).toBe(false)
+    expect(scorer.getConfidence('Read')).toBeCloseTo((3 + 1) / (3 + 2), 5) // three successes
   })
 })

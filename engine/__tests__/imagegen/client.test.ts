@@ -1,4 +1,7 @@
 import { describe, it, expect, afterEach } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { ComfyClient, ComfyError, probeComfy } from '../../imagegen/client.js'
 import { comfyConfig, type ComfyConfig } from '../../imagegen/config.js'
 import { RUN_ID } from '../../imagegen/store.js'
@@ -146,7 +149,7 @@ describe('probeComfy', () => {
   it('picks the alphabetically first Juggernaut checkpoint and checks every node', async () => {
     mock = await startMockComfy({ checkpoints: ['sd_xl_base_1.0.safetensors', 'juggernautXL_v9.safetensors', 'JuggernautXL_v10.safetensors'] })
     const r = await probeComfy(cfgFor(mock.url), fetch)
-    expect(r).toEqual({ ok: true, version: '0.3.60', device: 'cuda:0 NVIDIA GeForce RTX 4070 Ti SUPER : cudaMallocAsync', vramGB: 16, checkpoint: 'JuggernautXL_v10.safetensors', picked: true, checkpointCount: 3 })
+    expect(r).toEqual({ ok: true, version: '0.3.60', device: 'cuda:0 NVIDIA GeForce RTX 4070 Ti SUPER : cudaMallocAsync', vramGB: 16, checkpoint: 'JuggernautXL_v10.safetensors', picked: true, checkpointCount: 3, checkpoints: ['sd_xl_base_1.0.safetensors', 'juggernautXL_v9.safetensors', 'JuggernautXL_v10.safetensors'] })
     expect(mock.calls.filter(x => x.path.startsWith('/object_info/')).map(x => x.path)).toHaveLength(6)
   })
 
@@ -161,6 +164,26 @@ describe('probeComfy', () => {
     mock = await startMockComfy()
     expect(await probeComfy(cfgFor(mock.url, { LOCALCODE_COMFYUI_CHECKPOINT: 'sd15.safetensors' }))).toMatchObject({ ok: true, checkpoint: 'sd15.safetensors', picked: false })
     expect(await probeComfy(cfgFor(mock.url, { LOCALCODE_COMFYUI_CHECKPOINT: 'juggernaut.safetensors' }))).toEqual({ ok: false, reason: `ComfyUI at 127.0.0.1:${mock.port} has no checkpoint "juggernaut.safetensors" (it has: juggernautXL_v9.safetensors, sd15.safetensors)` })
+  })
+
+  // F179: the service checks the checkpoint a picture was keyed on against this list before it POSTs.
+  it("a good probe carries the server's checkpoint list as sent when the workflow has {{checkpoint}}, configured or picked; none when it has not", async () => {
+    mock = await startMockComfy({ checkpoints: ['sd_xl_base_1.0.safetensors', 'juggernautXL_v9.safetensors', 42 as unknown as string] })
+    expect(await probeComfy(cfgFor(mock.url))).toMatchObject({ ok: true, checkpoint: 'juggernautXL_v9.safetensors', picked: true, checkpointCount: 2, checkpoints: ['sd_xl_base_1.0.safetensors', 'juggernautXL_v9.safetensors'] })
+    expect(await probeComfy(cfgFor(mock.url, { LOCALCODE_COMFYUI_CHECKPOINT: 'sd_xl_base_1.0.safetensors' }))).toMatchObject({ ok: true, checkpoint: 'sd_xl_base_1.0.safetensors', picked: false, checkpoints: ['sd_xl_base_1.0.safetensors', 'juggernautXL_v9.safetensors'] })
+    const d = mkdtempSync(join(tmpdir(), 'cynco-imagegen-client-'))
+    try {
+      const wf = join(d, 'fixed.json')
+      writeFileSync(wf, JSON.stringify({ ...BUILTIN_WORKFLOW, '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'flux1-dev-fp8.safetensors' } } }))
+      const fixed = cfgFor(mock.url, { LOCALCODE_COMFYUI_WORKFLOW: wf })
+      expect(fixed.workflow.usesCheckpoint).toBe(false)
+      const before = mock.calls.length
+      const r = await probeComfy(fixed)
+      expect(r).toEqual({ ok: true, version: '0.3.60', device: 'cuda:0 NVIDIA GeForce RTX 4070 Ti SUPER : cudaMallocAsync', vramGB: 16, checkpoint: null, picked: false, checkpointCount: 0 })
+      expect(mock.calls.slice(before).some(c => c.path === '/models/checkpoints')).toBe(false)
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
   })
 
   it('a missing node is named', async () => {

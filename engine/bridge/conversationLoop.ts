@@ -524,8 +524,10 @@ export class ConversationLoop {
    */
   private recentToolOutcomes: { tool: string; success: boolean }[] = []
   private toolFailureCounts: Map<string, number> = new Map()
-  /** Tools that already took a strike in this model call's batch: three misses fired at once are one decision, not three (F178). */
+  /** Tools that already took a strike in this model call's batch: three misses fired at once are one decision, not three (F178). A success of the tool in the same call clears its mark. */
   private toolFailedThisCall = new Set<string>()
+  /** Tools whose counted failure in this model call is already on the algedonic streak; any counted success clears the streak, so it clears this too (F178). */
+  private toolPainedThisCall = new Set<string>()
   /**
    * Session-long tool accounting for the live POSIWID reading and the
    * IdentityGuard: every call by class (`classifyCall`) and how many counted
@@ -3221,6 +3223,10 @@ export class ConversationLoop {
       // only way to run the verification command the task's contract named.
       const scorer = this.executor.getToolScorer?.()
       const demoted = scorer ? new Set(scorer.excludeForIteration()) : new Set<string>()
+      // F178: a project chat never loses Read to the trust score either, as it never
+      // does to the overuse gate (`PROJECT_CHAT_NEVER_RESTRICT`): withholding Read while
+      // Bash stays offered only moves the reads to the shell. The score is untouched.
+      if (this.project && demoted.delete('Read')) console.log('[trust] Read stays offered in a project chat (its score is under the threshold)')
       let iterationTools = demoted.size > 0
         ? toolDefs.filter(t => !demoted.has(t.name))
         : toolDefs
@@ -3398,12 +3404,14 @@ export class ConversationLoop {
 
       // Final deterministic gate: attenuate overused/stuck tools out of the
       // offered set. Pure narrowing — applyToolGate never empties the set.
+      // In a project chat Read is never attenuated: withheld, the chat reads
+      // through Bash, which the gate never restricts (F178).
       if (currentStuck >= 2) {
         const recent = this.governance.getRecentToolNames()
         const lastTool = recent[recent.length - 1]
         if (lastTool) this.toolGating.recordStuckTurn(lastTool)
       }
-      const gated = this.toolGating.getRestrictedTools()
+      const gated = this.toolGating.getRestrictedTools({ projectChat: this.project !== null })
       if (gated.length > 0) {
         const narrowed = applyToolGate(iterationTools, gated)
         if (narrowed.length !== iterationTools.length) {
@@ -4270,7 +4278,14 @@ export class ConversationLoop {
       // Execute tool calls and feed results back
       // S1: Group read-only tools for parallel execution
       this.consecutiveNudges = 0
+      // One model call's batches are one decision (F178). Per tool per call:
+      // the breaker takes one strike (`toolFailedThisCall`), the kill switch one
+      // pain between successes (`toolPainedThisCall`), the overuse gate one use,
+      // the trust score one success and one failure.
       this.toolFailedThisCall.clear()
+      this.toolPainedThisCall.clear()
+      this.toolGating.beginCall()
+      this.executor.beginModelCall()
       const toolResults: Message['content'] = []
       const P_READ_ONLY = new Set(['Read', 'Grep', 'Glob', 'Ls', 'ImageView', 'Git'])
       const batches = classifyParallelBatches(toolUseBlocks, P_READ_ONLY)
@@ -5534,11 +5549,20 @@ export class ConversationLoop {
     // batch of three guessed Read paths tripped it inside one call, and "try a
     // COMPLETELY DIFFERENT approach" sent a project chat to Bash to read files.
     // (A wrong path no longer counts at all — `benignWrongPath` above.) A Read
-    // that trips is told the step that helps: list the folder with Glob.
+    // that trips is told the step that helps: list the folder with Ls or Glob,
+    // the folder in `path` (a project chat refuses an absolute Glob pattern).
+    // The same per-call rule holds for the algedonic pain below: a repeat
+    // failure in this call is neutral for the kill switch. Each mark lasts only
+    // while what it stands for does: a success of this tool clears its strike
+    // mark (its count is cleared too), and any counted success clears the pain
+    // marks (it clears the streak), so a failure after either counts again.
+    const repeatFailureThisCall = countsAsFailure && this.toolFailedThisCall.has(toolName)
+    const repeatPainThisCall = countsAsFailure && this.toolPainedThisCall.has(toolName)
+    if (countsAsFailure) this.toolPainedThisCall.add(toolName)
+    else this.toolPainedThisCall.clear()
     if (countsAsFailure) {
-      const firstThisCall = !this.toolFailedThisCall.has(toolName)
       this.toolFailedThisCall.add(toolName)
-      const count = (this.toolFailureCounts.get(toolName) ?? 0) + (firstThisCall ? 1 : 0)
+      const count = (this.toolFailureCounts.get(toolName) ?? 0) + (repeatFailureThisCall ? 0 : 1)
       this.toolFailureCounts.set(toolName, count)
       if (count >= 3) {
         console.log(`[loop] Circuit breaker: ${toolName} failed in ${count} consecutive calls — overriding result`)
@@ -5546,12 +5570,13 @@ export class ConversationLoop {
         const hint = toolName === 'Write'
           ? `\n- STOP trying to Write the entire file. Use Edit to make SMALL targeted changes instead.\n- Read the file first, find the specific line, use Edit to change just that line.${genericHint}`
           : toolName === 'Read'
-            ? '\n- List the folder with Glob (pattern "<folder>/*") and Read a file name it shows.\n- Files are read with Read, never through Bash (Get-Content, cat, type).'
+            ? '\n- List the folder with Ls (path "<folder>") or Glob (path "<folder>", pattern "**/*") and Read a file it shows by its full path (the folder joined with the path it shows).\n- Files are read with Read, never through Bash (Get-Content, cat, type).'
             : genericHint
         result.output = `CIRCUIT BREAKER: ${toolName} has failed ${count} consecutive times. STOP using ${toolName} this way.${hint}\n\nOriginal error: ${result.output.slice(0, 300)}`
       }
     } else {
       this.toolFailureCounts.delete(toolName)
+      this.toolFailedThisCall.delete(toolName)
     }
 
     // Generative UI: the final frame goes out before tool.complete so the
@@ -5582,8 +5607,13 @@ export class ConversationLoop {
     }
 
     // Governance: record tool result. A benign red test suite counts as a
-    // success for pain/kill-switch purposes (see benignTestFailure above).
-    this.governance.onToolResult(toolName, !countsAsFailure, Date.now() - toolStartMs, result.output, toolInput)
+    // success for pain/kill-switch purposes (see benignTestFailure above). A
+    // second counted failure of a tool in one model call is neutral for the
+    // kill switch, as a denial is (`repeatInCall`): five Reads of folders in one
+    // parallel batch were five consecutive pains and halted a project chat
+    // (F178). Every other measurement of the call is still recorded.
+    this.governance.onToolResult(toolName, !countsAsFailure, Date.now() - toolStartMs, result.output, toolInput,
+      repeatPainThisCall ? { repeatInCall: true } : undefined)
 
     // Deterministic tool gating: track usage so consecutive-overuse can be
     // attenuated out of the offered set on the next iteration (see runModelLoop).

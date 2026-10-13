@@ -107,6 +107,30 @@ describe('AlgedonicIntegration', () => {
     expect(alg.killSwitch.isHalted()).toBe(true)
   })
 
+  // F178: a batch the model fired together is one decision. Five Reads of
+  // folders in one parallel batch were five consecutive pains and halted a
+  // project chat. The loop marks a further counted failure of a tool that
+  // already failed in the same model call as `repeatInCall`: neutral for the
+  // counter like a denial (neither arms nor clears), still a pain signal on the
+  // channel.
+  it('a repeat failure of a tool within one model call neither arms nor clears the streak', () => {
+    alg.recordToolResult('Read', false, 0)
+    for (let i = 0; i < 10; i++) alg.recordToolResult('Read', false, 0, { repeatInCall: true })
+    expect(alg.killSwitch.isHalted()).toBe(false)
+    for (let i = 0; i < 3; i++) alg.recordToolResult('Edit', false, 100)
+    expect(alg.killSwitch.isHalted()).toBe(false) // four counted pains
+    alg.recordToolResult('Edit', false, 100)
+    expect(alg.killSwitch.isHalted()).toBe(true) // five: the repeats did not clear the streak
+  })
+
+  it('a repeat failure within one model call still reaches the channel as pain', () => {
+    alg.recordToolResult('Read', true, 50)
+    alg.recordToolResult('Read', false, 0)
+    alg.recordToolResult('Read', false, 0, { repeatInCall: true })
+    expect(alg.channel.signals()).toHaveLength(3)
+    expect(alg.getPainRatio()).toBeCloseTo(2 / 3, 5)
+  })
+
   it('tracks SLA violations', () => {
     alg.recordToolResult('Bash', false, 120000) // very slow
     expect(alg.getSlaViolationCount()).toBeGreaterThan(0)
