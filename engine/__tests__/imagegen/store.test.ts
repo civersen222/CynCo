@@ -1,17 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { createProject } from '../../projects/layout.js'
 import {
-  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
+  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, isProjectFile, isSvg, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
   readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, servedProjectFile, sidecarPath, storeFault, storedImageState, SVG_CAP_BYTES, writeSidecar, type ImageSidecar, type KeyFields,
 } from '../../imagegen/store.js'
 import type { UiSpec } from '../../bridge/protocol.js'
-import { canSymlinkFiles, PNG_1X1 } from './mockComfy.js'
+import { canHardLinkFiles, canSymlinkFiles, PNG_1X1 } from './mockComfy.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
+const CAN_HARD_LINK_FILES = canHardLinkFiles()
 
 let home: string, dir: string, slug: string
 beforeEach(() => {
@@ -351,6 +352,45 @@ describe('file Images: which Images show a project file, and their annotation', 
   })
 })
 
+// Review of the file route: the DOCTYPE scan took the first '>' as its end, so
+// a SYSTEM literal holding one hid an internal subset ("[<!ENTITY …>]") from
+// the check, and "<?xml-stylesheet …?>" passed as the XML declaration.
+describe('isSvg', () => {
+  const svg = (prologue: string) => isSvg(Buffer.from(`${prologue}<svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>`))
+
+  it('reads past the declaration, a DOCTYPE with quoted literals, and comments', () => {
+    expect(svg('')).toBe(true)
+    expect(svg('﻿<?xml version="1.0" encoding="UTF-8"?>\n')).toBe(true)
+    expect(svg('<?xml\tversion="1.0"?>')).toBe(true)
+    expect(svg('<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n')).toBe(true)
+    expect(svg("<!doctype svg PUBLIC '-//W3C//DTD SVG 1.1//EN' 'http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd'>")).toBe(true)
+    // '>' or '[' inside a quoted literal is part of the literal, not the DOCTYPE's end or an internal subset
+    expect(svg('<!DOCTYPE svg SYSTEM "a>b.dtd">')).toBe(true)
+    expect(svg('<!DOCTYPE svg SYSTEM "a[b].dtd">')).toBe(true)
+    expect(svg("<!DOCTYPE svg SYSTEM 'it\"s>.dtd'>")).toBe(true)
+    expect(svg('<?xml version="1.0"?><!-- a > b --><!DOCTYPE svg><!---->  ')).toBe(true)
+  })
+
+  it('refuses an internal subset however the DOCTYPE is spelled: the entity case, and a SYSTEM literal with ">" before the "["', () => {
+    expect(svg('<!DOCTYPE svg [<!ENTITY x "y">]>')).toBe(false)
+    expect(svg('<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY x "y"> ]>')).toBe(false)
+    expect(svg('<!DOCTYPE svg SYSTEM "a><!--" [<!ENTITY x "yyyyyyyy">]><!---->')).toBe(false)
+    expect(svg("<!DOCTYPE svg SYSTEM 'a>' [<!ENTITY x 'y'>]>")).toBe(false)
+    expect(svg('<!DOCTYPE svg SYSTEM "a" [')).toBe(false)
+    // an unclosed literal or DOCTYPE never reaches a root
+    expect(svg('<!DOCTYPE svg SYSTEM "unclosed>')).toBe(false)
+    expect(svg('<!DOCTYPE svg')).toBe(false)
+  })
+
+  it('skips only the XML declaration ("<?xml" then whitespace), not a processing instruction', () => {
+    expect(svg('<?xml-stylesheet href="x.css" type="text/css"?>')).toBe(false)
+    expect(svg('<?xml version="1.0"?><?xml-stylesheet href="x.css"?>')).toBe(false)
+    expect(svg('<?xmlfoo?>')).toBe(false)
+    expect(svg('<?xml?>')).toBe(false)
+    expect(svg('<?xml version="1.0"')).toBe(false)
+  })
+})
+
 describe('servedProjectFile', () => {
   const SVG = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">\n<!-- 1:1 template -->\n<svg xmlns="http://www.w3.org/2000/svg" width="30in" height="40in"><rect width="1" height="1"/></svg>\n'
   const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46])
@@ -404,10 +444,12 @@ describe('servedProjectFile', () => {
     write('page.svg', '<!DOCTYPE html><html><body><script>alert(1)</script></body></html>')
     write('renamed.svg', PNG_1X1)
     write('entities.svg', '<?xml version="1.0"?><!DOCTYPE svg [ <!ENTITY x "y"> ]><svg xmlns="http://www.w3.org/2000/svg"/>')
+    write('bypass.svg', '<!DOCTYPE svg SYSTEM "a><!--" [<!ENTITY x "yyyyyyyy">]><!----><svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>')
+    write('pi.svg', '<?xml-stylesheet href="x.css" type="text/css"?><svg xmlns="http://www.w3.org/2000/svg"/>')
     write('script.svg', '<script>alert(1)</script><svg/>')
     write('half.svg', '<sv')
     write('empty.svg', '')
-    for (const [rel, what] of [['fake.png', 'PNG'], ['fake.jpg', 'JPEG'], ['fake.gif', 'GIF'], ['fake.webp', 'WEBP'], ['page.svg', 'SVG'], ['renamed.svg', 'SVG'], ['entities.svg', 'SVG'], ['script.svg', 'SVG'], ['half.svg', 'SVG'], ['empty.svg', 'SVG']]) {
+    for (const [rel, what] of [['fake.png', 'PNG'], ['fake.jpg', 'JPEG'], ['fake.gif', 'GIF'], ['fake.webp', 'WEBP'], ['page.svg', 'SVG'], ['renamed.svg', 'SVG'], ['entities.svg', 'SVG'], ['bypass.svg', 'SVG'], ['pi.svg', 'SVG'], ['script.svg', 'SVG'], ['half.svg', 'SVG'], ['empty.svg', 'SVG']]) {
       expect(servedProjectFile(home, slug, rel), rel).toEqual({ status: 415, json: { error: `${rel} is not a ${what} file; refused` } })
     }
   })
@@ -434,6 +476,28 @@ describe('servedProjectFile', () => {
       expect(servedProjectFile(home, slug, 'linked.png')).toEqual({ status: 404, json: { error: 'no such file' } })
       symlinkSync(outside, join(dir, 'elsewhere'), 'junction')
       expect(servedProjectFile(home, slug, 'elsewhere/secret.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  // Review of the file route: realInside follows symlinks only. A hard link
+  // has no target to follow — its real path is the in-project name — so a
+  // file whose content lives outside the project was served; a file with
+  // more than one name is refused like a link out, and the note says so.
+  it.skipIf(!CAN_HARD_LINK_FILES)('a hard link to a file outside the project is 404 and "not in the project"; the file it names is untouched', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'cynco-imagegen-outside-'))
+    try {
+      writeFileSync(join(outside, 'secret.png'), PNG_1X1)
+      linkSync(join(outside, 'secret.png'), join(dir, 'hard.png'))
+      expect(servedProjectFile(home, slug, 'hard.png')).toEqual({ status: 404, json: { error: 'no such file' } })
+      expect(isProjectFile(dir, 'hard.png')).toBe(false)
+      // the same name with one link is served again
+      rmSync(join(dir, 'hard.png'))
+      writeFileSync(join(dir, 'hard.png'), PNG_1X1)
+      expect(servedProjectFile(home, slug, 'hard.png').status).toBe(200)
+      expect(isProjectFile(dir, 'hard.png')).toBe(true)
+      expect(readFileSync(join(outside, 'secret.png')).equals(PNG_1X1)).toBe(true)
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }

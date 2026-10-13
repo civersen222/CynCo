@@ -1602,6 +1602,62 @@ describe('dashboard genui: pictures from project files — every state', () => {
     expect(page.genuiImages[F('front.png')]).toMatchObject({ status: 'done', url: 'blob:page/2', stale: false, loading: false })
   })
 
+  // Review: a frame that showed the file while its read was still in flight
+  // was never marked stale (the entry had no url yet), so both frames shared
+  // the one read and a template rewritten between two quick calls kept
+  // showing the first bytes. The frame's own read is owed once the one in
+  // flight answers — whether that one succeeded or not.
+  it('a frame that shows a file while its read is in flight gets its own read once that one answers; the first bytes show meanwhile', async () => {
+    const answers: Array<(r: FakeReply) => void> = []
+    const { page, fetched, blobs } = harness({ fetch: () => new Promise<FakeReply>(resolve => { answers.push(resolve) }) })
+    const a = drawFile(page, 'a', fileState('front.png'))
+    expect(fetched).toHaveLength(1)
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ loading: true, url: '', stale: false })
+    // the model rewrote the file and showed it again before the first read answered: one read at a time, but the frame is remembered
+    const b = drawFile(page, 'b', fileState('front.png'))
+    expect(fetched).toHaveLength(1)
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ loading: true, stale: true })
+    expect(boxText(b)).toBe('Loading front.png…')
+    answers[0](reply(200, 'image/png', 'OLD-bytes'))
+    await tick()
+    // the first bytes are up in both figures, and the frame's own read went out at once
+    expect(a.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(b.querySelector('img')!.getAttribute('src')).toBe('blob:page/1')
+    expect(fetched).toEqual(['/api/projects/p/files/front.png', '/api/projects/p/files/front.png'])
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ loading: true, stale: false, url: 'blob:page/1' })
+    answers[1](reply(200, 'image/png', 'NEW-bytes'))
+    await tick()
+    expect(blobs.created).toEqual([{ blob: 'OLD-bytes' }, { blob: 'NEW-bytes' }])
+    expect(a.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(b.querySelector('img')!.getAttribute('src')).toBe('blob:page/2')
+    expect(blobs.revoked).toEqual(['blob:page/1'])
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ status: 'done', url: 'blob:page/2', stale: false, loading: false })
+    // nothing new showed it since: no third read
+    expect(fetched).toHaveLength(2)
+  })
+
+  it('a read that fails while a newer frame waits is made again for that frame instead of shown as failed', async () => {
+    const answers: Array<(r: FakeReply) => void> = []
+    const { page, fetched } = harness({ fetch: () => new Promise<FakeReply>(resolve => { answers.push(resolve) }) })
+    const a = drawFile(page, 'a', fileState('front.png'))
+    const b = drawFile(page, 'b', fileState('front.png'))
+    expect(fetched).toHaveLength(1)
+    // the file was not there when the first read went out; the model wrote it and showed it (frame b)
+    answers[0](reply(404, 'application/json'))
+    await tick()
+    expect(fetched).toHaveLength(2)
+    expect(boxText(a)).toBe('Loading front.png…')
+    expect(boxText(b)).toBe('Loading front.png…')
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ status: 'done', loading: true, stale: false, url: '' })
+    answers[1](reply(404, 'application/json'))
+    await tick()
+    // the frame's own read failed: a failure now, and no further read without a new frame
+    expect(boxText(a)).toBe('front.png could not be loaded (HTTP 404)')
+    expect(boxText(b)).toBe('front.png could not be loaded (HTTP 404)')
+    expect(page.genuiImages[F('front.png')]).toMatchObject({ status: 'failed', loading: false, stale: false })
+    expect(fetched).toHaveLength(2)
+  })
+
   it('off (a coding session): the reason in the box and no fetch; a bad reference draws as off', () => {
     const { page, fetched } = harness()
     const off = drawFile(page, 'off', { status: 'off', reason: 'files are shown in project chats only' })

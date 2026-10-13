@@ -379,10 +379,14 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
       else {
         // A file in the project, by its relative path: kept as written (trimmed,
         // a leading "./" removed). Whether it is shown is the loop's annotator's
-        // call (a project chat) and whether it exists the file route's.
+        // call (a project chat) and whether it exists the file route's. A src
+        // that is neither gets the hint for the form it tried: a path (no
+        // scheme) gets the path rule, so a file named with a backslash, a
+        // non-ASCII letter or a "?v=2" can be renamed; a scheme gets the URL
+        // forms (review: the URL hint named no cause and no way out).
         const path = projectImagePath(src)
         if (path !== null) p.src = path
-        else { delete p.src; report(ctx, `${at}.src: "${shown}" ${IMAGE_SRC_HINT}`) }
+        else { delete p.src; report(ctx, `${at}.src: "${shown}" ${src !== undefined && !URL_SCHEME.test(src) ? IMAGE_PATH_HINT : IMAGE_SRC_HINT}`) }
       }
     }
   }
@@ -411,6 +415,10 @@ export function projectImagePath(src: unknown): string | null {
 export const PROJECT_IMAGE_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*)*\.(?:png|jpe?g|gif|webp|svg)$/i
 export const PROJECT_IMAGE_PATH_MAX = 200
 const IMAGE_SRC_HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+/** For a src with no scheme: the rule above, so the model can rename its file to fit. */
+const IMAGE_PATH_HINT = `is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most ${PROJECT_IMAGE_PATH_MAX} characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it`
+/** Two or more letters before the colon: a URL scheme, where one letter ("C:") is a drive letter, a path form. */
+const URL_SCHEME = /^[a-z][a-z0-9+.-]+:/i
 
 /** The page's own URL rules (index.html `safeUrl` and its data: check): anything else would draw as a broken box. */
 const IMAGE_HTTP_URL = /^https?:\/\/[^\s<>"']+$/i

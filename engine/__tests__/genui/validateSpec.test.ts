@@ -275,6 +275,7 @@ describe('validateSpec', () => {
 // "image unavailable".
 describe('validateSpec: Image prompt or src', () => {
   const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+  const PATH_HINT = 'is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most 200 characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it'
 
   it('{prompt, alt} is clean, and the prompt is normalised', () => {
     const r = one('Image', { prompt: '  a tall green alien\n\n in a   silver suit ', alt: 'Tall alien' })
@@ -287,18 +288,18 @@ describe('validateSpec: Image prompt or src', () => {
     expect(one('Image', { src: 'data:image/png;base64,iVBORw0KGgo=', alt: 'a' }).errors).toEqual([])
   })
 
-  it('a fake src is dropped with the prompt hint, never turned into a prompt; with no prompt the element goes too', () => {
-    for (const src of ['aliens/a.bmp', 'javascript:alert(1)', 'file:///etc/passwd', 'https://exa mple.com/a.png', 'data:image/svg+xml;base64,PHN2Zz4=']) {
+  it('a fake src is dropped with the hint for the form it tried, never turned into a prompt; with no prompt the element goes too', () => {
+    for (const [src, hint] of [['aliens/a.bmp', PATH_HINT], ['javascript:alert(1)', HINT], ['file:///etc/passwd', HINT], ['https://exa mple.com/a.png', HINT], ['data:image/svg+xml;base64,PHN2Zz4=', HINT]]) {
       const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Alien' } } } })
       expect(r.spec?.elements.i, src).toBeUndefined()
       expect(r.errors, src).toEqual([
-        `i.src: "${src}" ${HINT}`,
+        `i.src: "${src}" ${hint}`,
         'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
         'c.children: "i" is not an element id — nothing was drawn for it (the element was dropped)',
       ])
     }
-    const num = one('Image', { src: 42, alt: 'a' })
-    expect(num.errors[0]).toBe(`x.src: "42" ${HINT}`)
+    const num = one('Image', { src: 42, alt: 'a' })   // a number reads as its digits: a path form
+    expect(num.errors[0]).toBe(`x.src: "42" ${PATH_HINT}`)
   })
 
   it('a fake src beside a prompt keeps the prompt and raises no src-URL note', () => {
@@ -331,7 +332,7 @@ describe('validateSpec: Image prompt or src', () => {
     const fake = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { Src: 'aliens/a.bmp', alt: 'Alien' } } } })
     expect(fake.spec?.elements.i).toBeUndefined()
     expect(fake.errors.slice(0, 2)).toEqual([
-      `i.src: "aliens/a.bmp" ${HINT}`,
+      `i.src: "aliens/a.bmp" ${PATH_HINT}`,
       'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
     ])
     expect(one('Image', { SRC: 'javascript:alert(1)', alt: 'a' }).errors[0]).toBe(`x.src: "javascript:alert(1)" ${HINT}`)
@@ -390,6 +391,11 @@ describe('validateSpec: Image prompt or src', () => {
 // chat and the dashboard fetches it from /api/projects/:slug/files/<path>.
 describe('validateSpec: Image src as a file in the project', () => {
   const HINT = 'is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it'
+  // Review: a path the model wrote that fails the rule (a backslash, a non-ASCII
+  // letter, "?v=2", 201 characters) was refused as "not an http(s) image URL …"
+  // with no cause and no way out but a painted picture; the hint now gives the
+  // rule, so the model can rename its file. A src with a scheme keeps the URL hint.
+  const PATH_HINT = 'is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most 200 characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it'
 
   it('a relative image path is kept as the src — trimmed, a leading "./" removed, the case as written — and no image state is set', () => {
     for (const [src, path] of [
@@ -412,20 +418,26 @@ describe('validateSpec: Image src as a file in the project', () => {
     expect(PROJECT_IMAGE_PATH_MAX).toBe(200)
   })
 
-  it('every other form is refused with the hint and the element is dropped: "..", absolute, a drive letter, a backslash, a dot-leading segment, a scheme, another extension, 201 characters', () => {
-    const refused = [
+  it('every other form is refused with the path rule as the hint and the element is dropped: "..", absolute, a drive letter, a backslash, a dot-leading segment, another extension, a query, 201 characters; a scheme gets the URL hint', () => {
+    const paths = [
       '../secret.png', 'a/../b.png', 'tower/..', '..', '/etc/passwd.png', '//host/x.png', 'C:/Users/x.png', 'C:\\x.png', 'tower\\x.svg', 'a//b.png',
-      '.git/x.png', '.cynco/tmp/x.png', 'tower/.hidden.png', 'x.png/', 'tower/', 'data:text/html,<script>', 'javascript:alert(1)', 'file:///x.png', 'ftp://h/x.png',
-      'x.html', 'x.svgz', 'x.png.exe', 'x', 'x.svg?v=2', 'x.svg#a', 'a%2fb.png', 'a\0.png', 'tower/\u2024\u2024/x.png', 'türme.png', 'x\n.png', 'a .png', 'a  b.png', '"x".png', "x'.png",
+      '.git/x.png', '.cynco/tmp/x.png', 'tower/.hidden.png', 'x.png/', 'tower/',
+      'x.html', 'x.svgz', 'x.png.exe', 'x', 'x.svg?v=2', 'x.svg#a', 'a%2fb.png', 'a\0.png', 'tower/\u2024\u2024/x.png', 'türme.png', 'tower/templates/tårn.svg', 'x\n.png', 'a .png', 'a  b.png', '"x".png', "x'.png",
       'a'.repeat(PROJECT_IMAGE_PATH_MAX - 3) + '.png',
     ]
-    for (const src of refused) {
+    const schemes = ['data:text/html,<script>', 'javascript:alert(1)', 'file:///x.png', 'ftp://h/x.png', 'DATA:image/png;base64,AAAA', 'http:/x.png', 'c0:/x.png']
+    for (const [list, hint] of [[paths, PATH_HINT], [schemes, HINT]] as Array<[string[], string]>) for (const src of list) {
       expect(projectImagePath(src), JSON.stringify(src)).toBeNull()
       const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Tower' } } } })
       expect(r.spec?.elements.i, JSON.stringify(src)).toBeUndefined()
-      expect(r.errors[0], JSON.stringify(src)).toBe(`i.src: "${src.slice(0, 60)}" ${HINT}`)
+      expect(r.errors[0], JSON.stringify(src)).toBe(`i.src: "${src.slice(0, 60)}" ${hint}`)
       expect(r.errors[1], JSON.stringify(src)).toBe('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
     }
+    // the rule the hint states is the one applied: the number it names is the cap
+    expect(PATH_HINT).toContain(`at most ${PROJECT_IMAGE_PATH_MAX} characters`)
+    // a number reads as its digits — no scheme, so the path rule; anything else is no src at all
+    expect(one('Image', { src: 42, alt: 'a' }).errors[0]).toBe(`x.src: "42" ${PATH_HINT}`)
+    expect(one('Image', { src: { a: 1 }, alt: 'a' }).errors[0]).toBe(`x.src: "{"a":1}" ${HINT}`)
     expect(projectImagePath(42)).toBeNull()
     expect(projectImagePath(null)).toBeNull()
     // the page copies this rule verbatim: a path that passes here must pass there

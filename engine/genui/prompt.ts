@@ -101,7 +101,7 @@ function withoutPictures(call: ExampleCall): ExampleCall {
  */
 const OPENING = {
   project: `You can draw UI right in this chat with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. When your answer offers options, designs, ideas, a comparison or a choice — or lays out figures or steps the user will act on — the surface IS the answer: call RenderUI first, with at most one sentence of prose before it, and put the details, your recommendation and your question inside the surface. Never also write the same options out as prose. Plain prose is for a short direct answer, a single open question, or a draft the user asked to read. One surface per answer.`,
-  session: `You can draw UI in the user's dashboard with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. Use it when structure helps — options to choose from, a comparison, a plan, figures. In a coding session the user may be in a terminal, which draws no surface: write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files. Pictures (an Image "prompt") are painted in project chats only; leave them out here.`,
+  session: `You can draw UI in the user's dashboard with the RenderUI tool: cards, tables, plans with steps, charts, key facts, forms and buttons. Use it when structure helps — options to choose from, a comparison, a plan, figures. In a coding session the user may be in a terminal, which draws no surface: write your answer in prose and add one surface alongside it, never instead of the text, and never instead of editing the files. Pictures (an Image "prompt") and files (an Image "src" path) are shown in project chats only; leave them out here.`,
 }
 
 export type GenuiPromptMode = keyof typeof OPENING
@@ -112,7 +112,10 @@ export type GenuiPromptMode = keyof typeof OPENING
  * in rule 5 or 11, not in the options example. A shared line there that gave
  * each design a prompted Image contradicted the session opening that says to
  * leave them out, and a model that followed it drew "not generated" in every
- * card: the F174 symptom. Static per mode, so each section stays byte-stable.
+ * card: the F174 symptom. The catalog's shared Image line also offers a file
+ * path in "src", which the engine shows in project chats only too, so the
+ * session opening names files beside pictures (review of the file Images).
+ * Static per mode, so each section stays byte-stable.
  */
 const PICTURES: Record<GenuiPromptMode, { shapes: string; url: string; wait: string; example: ExampleCall }> = {
   project: {

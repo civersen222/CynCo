@@ -10,16 +10,17 @@
  * no ACAO. The page fetches it with the token header into a blob URL.
  */
 import { describe, expect, it, beforeAll, afterAll } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
 import { createProject } from '../../projects/layout.js'
-import { canSymlinkFiles, PNG_1X1 } from '../imagegen/mockComfy.js'
+import { canHardLinkFiles, canSymlinkFiles, PNG_1X1 } from '../imagegen/mockComfy.js'
 import type { IngestEvent } from '../../projects/ingest.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
+const CAN_HARD_LINK_FILES = canHardLinkFiles()
 
 const tokenDir = mkdtempSync(join(tmpdir(), 'cynco-dash-files-tokens-'))
 const tokens = loadOrCreateTokens(tokenDir)
@@ -58,15 +59,17 @@ beforeAll(async () => {
   writeFileSync(join(dir, 'my tower (v2)', 'front view.png'), PNG_1X1)
   writeFileSync(join(dir, 'fake.png'), '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>', 'utf8')
   writeFileSync(join(dir, 'page.svg'), '<!DOCTYPE html><html><body><script>alert(1)</script></body></html>', 'utf8')
+  writeFileSync(join(dir, 'bypass.svg'), '<!DOCTYPE svg SYSTEM "a><!--" [<!ENTITY x "yyyyyyyy">]><!----><svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>', 'utf8')
   writeFileSync(join(dir, 'big.png'), PNG_1X1)
   truncateSync(join(dir, 'big.png'), 32 * 1024 * 1024 + 1)
   writeFileSync(join(dir, 'big.svg'), SVG)
   truncateSync(join(dir, 'big.svg'), 2 * 1024 * 1024 + 1)
+  writeFileSync(join(OUTSIDE, 'secret.png'), PNG_1X1)
   if (CAN_SYMLINK_FILES) {
-    writeFileSync(join(OUTSIDE, 'secret.png'), PNG_1X1)
     symlinkSync(join(OUTSIDE, 'secret.png'), join(dir, 'linked.png'))
     symlinkSync(OUTSIDE, join(dir, 'elsewhere'), 'junction')
   }
+  if (CAN_HARD_LINK_FILES) linkSync(join(OUTSIDE, 'secret.png'), join(dir, 'hard.png'))
   server = new DashboardServer({
     port: 0,
     tokens,
@@ -180,6 +183,10 @@ describe('anything else is refused, never read', () => {
     expect(svg.status).toBe(415)
     expect(svg.headers.get('content-type')).toBe('application/json')
     expect(await svg.json()).toEqual({ error: 'page.svg is not a SVG file; refused' })
+    // review: a DOCTYPE whose SYSTEM literal holds '>' hid its internal subset from the scan
+    const bypass = await get(file('bypass.svg'))
+    expect(bypass.status).toBe(415)
+    expect(await bypass.json()).toEqual({ error: 'bypass.svg is not a SVG file; refused' })
   })
 
   it('a raster over 32 MB and an svg over 2 MB answer 413, never their bytes', async () => {
@@ -194,6 +201,14 @@ describe('anything else is refused, never read', () => {
   it.skipIf(!CAN_SYMLINK_FILES)('a link out of the project answers 404, through a file link or a folder link', async () => {
     expect((await get(file('linked.png'))).status).toBe(404)
     expect((await get(file('elsewhere/secret.png'))).status).toBe(404)
+  })
+
+  // review: realInside follows symlinks only, so a hard link to a file outside the project was served with the outside bytes
+  it.skipIf(!CAN_HARD_LINK_FILES)('a hard link to a file outside the project answers 404, never its bytes', async () => {
+    const res = await get(file('hard.png'))
+    expect(res.status).toBe(404)
+    expect(res.headers.get('content-type')).toBe('application/json')
+    expect(await res.json()).toEqual({ error: 'no such file' })
   })
 
   it.each(['POST', 'PUT', 'DELETE', 'PATCH'])('%s answers 405', async (method) => {

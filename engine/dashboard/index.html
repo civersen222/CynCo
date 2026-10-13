@@ -4236,16 +4236,17 @@ function genuiBaseName(path) {
 /**
  * Fold a file Image into genuiImages as a done picture under
  * "<slug>/file:<path>". The file can change between frames (the model
- * rewrites a template and shows it again), so a frame that finds it shown
- * marks it stale: it is fetched again, and the old picture stays up until
- * the new one is in. A failed load is tried again.
+ * rewrites a template and shows it again), so a frame that finds it shown —
+ * or still being read — marks it stale: it is fetched again (once the read
+ * in flight has answered), and the old picture stays up until the new one
+ * is in. A failed load is tried again.
  */
 function genuiMergeFile(slug, path) {
   var key = 'file:' + path, id = genuiImageId(slug, key);
   var m = genuiImages[id];
   if (!m) return genuiImages[id] = { status: 'done', reason: '', slug: slug, key: key, path: path, url: '', loading: false, stale: false };
   if (m.status === 'failed') { m.status = 'done'; m.reason = ''; }
-  else if (m.url && !m.loading) m.stale = true;
+  else if (m.url || m.loading) m.stale = true;
   return m;
 }
 
@@ -4341,19 +4342,23 @@ function genuiFillImages(slug, key) {
  * reply must be 200 image/png (a file: 200 and any image type); it is shown
  * as a blob URL. Any failure marks the picture failed with the HTTP status —
  * the one way a done goes back, and a later done fetches it again. A file
- * that fails names itself: "<path> could not be loaded (HTTP n)".
+ * that fails names itself: "<path> could not be loaded (HTTP n)". One read
+ * at a time: a frame that shows the file while a read is in flight marks
+ * it stale, and that frame's own read goes out once this one has answered,
+ * whatever the answer — the last frame's read is always the last one made.
  */
 function genuiLoadImage(slug, key) {
   var id = genuiImageId(slug, key);
   var m = genuiImages[id];
   if (!m || m.status !== 'done' || (m.url && !m.stale) || m.loading) return;
   m.loading = true;
+  m.stale = false;   // this read is as fresh as any frame so far; a frame that lands while it runs marks it stale again
   var name = m.path || key.slice(0, 8);
   var failed = function(why) {
     m.loading = false;
     if (genuiImages[id] !== m) return;
+    if (m.stale) { genuiLoadImage(slug, key); return; }   // a newer frame's read is owed; its answer is the one that counts
     m.status = 'failed';
-    m.stale = false;
     if (m.url) { genuiRevoke(m.url, name); m.url = ''; }
     m.reason = m.path ? m.path + ' could not be loaded (' + why + ')' : 'could not load the picture (' + why + ')';
     genuiFillImages(slug, key);
@@ -4370,11 +4375,11 @@ function genuiLoadImage(slug, key) {
     return res.blob().then(function(blob) {
       m.loading = false;
       if (genuiImages[id] !== m) return;   // the chat was cleared while it loaded
-      var old = m.stale ? m.url : '';
+      var old = m.url;   // a file read again: the picture this one replaces
       m.url = URL.createObjectURL(blob);
-      m.stale = false;
       if (old) genuiRevoke(old, name);
       genuiFillImages(slug, key);
+      if (m.stale) genuiLoadImage(slug, key);   // a frame showed the file while this read ran: read it again for that frame
     });
   }).catch(function(e) {
     console.warn('[genui] loading picture ' + name + ': ' + (e && e.message ? e.message : e));

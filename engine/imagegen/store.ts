@@ -111,11 +111,12 @@ function bytesAt(b: Uint8Array, at: number, sig: number[]): boolean {
 
 /**
  * Whether `b` is an SVG document: after an optional BOM, whitespace, an XML
- * declaration, a DOCTYPE (one without an internal subset — entities are not
- * served) and comments, the first tag is <svg. Only the head is read. An
- * <img> runs no script and loads no external resource from an SVG and the
- * route adds a sandbox CSP for a direct open; this check keeps a renamed
- * HTML page or PNG from going out as image/svg+xml at all.
+ * declaration ("<?xml" then whitespace — not an "<?xml-stylesheet" or any
+ * other processing instruction), a DOCTYPE (one without an internal subset —
+ * entities are not served) and comments, the first tag is <svg. Only the
+ * head is read. An <img> runs no script and loads no external resource from
+ * an SVG and the route adds a sandbox CSP for a direct open; this check
+ * keeps a renamed HTML page or PNG from going out as image/svg+xml at all.
  */
 export function isSvg(b: Uint8Array): boolean {
   let s = Buffer.from(b.subarray(0, 4096)).toString('utf8')
@@ -123,12 +124,31 @@ export function isSvg(b: Uint8Array): boolean {
   let i = 0
   for (;;) {
     while (i < s.length && /\s/.test(s[i])) i++
-    if (s.startsWith('<?xml', i)) { const e = s.indexOf('?>', i); if (e < 0) return false; i = e + 2; continue }
-    if (s.slice(i, i + 9).toUpperCase() === '<!DOCTYPE') { const e = s.indexOf('>', i); if (e < 0 || s.slice(i, e).includes('[')) return false; i = e + 1; continue }
+    if (/^<\?xml\s/.test(s.slice(i, i + 6))) { const e = s.indexOf('?>', i); if (e < 0) return false; i = e + 2; continue }
+    if (s.slice(i, i + 9).toUpperCase() === '<!DOCTYPE') { const e = doctypeEnd(s, i + 9); if (e < 0) return false; i = e + 1; continue }
     if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i); if (e < 0) return false; i = e + 3; continue }
     break
   }
   return /^<svg[\s>/]/i.test(s.slice(i, i + 5))
+}
+
+/**
+ * The index of the '>' that ends a DOCTYPE whose name starts at `from`, or
+ * -1 when it is unclosed or a '[' (an internal subset) comes first. A '>' or
+ * '[' inside one of its quoted literals (SYSTEM "a>b.dtd") is part of the
+ * literal: taking the first '>' as the end let a literal holding one hide
+ * the subset after it (review of the file route).
+ */
+function doctypeEnd(s: string, from: number): number {
+  let quote = ''
+  for (let i = from; i < s.length; i++) {
+    const c = s[i]
+    if (quote) { if (c === quote) quote = '' }
+    else if (c === '"' || c === "'") quote = c
+    else if (c === '[') return -1
+    else if (c === '>') return i
+  }
+  return -1
 }
 
 /** Whether the bytes carry the signature of the format the extension names. */
@@ -516,13 +536,20 @@ export function servedImage(home: string, slug: string, name: string): { status:
   return { status: 200, bytes }
 }
 
-/** `<dir>/<rel>` when it is a regular file whose real path is inside the project (links followed), else null; logged unless simply absent. */
+/**
+ * `<dir>/<rel>` when it is a regular file whose real path is inside the
+ * project (symlinks followed) and that has no other name, else null; logged
+ * unless simply absent. A hard link has no target to follow — its real path
+ * is the in-project name — so its content may live outside the project: a
+ * file with more than one link is refused like a link out (review of the
+ * file route). The model's own file has one name.
+ */
 function regularFileInside(dir: string, rel: string, label: string): { file: string; size: number } | null {
   const file = join(dir, rel)
   if (!realInside(dir, file).inside) return null
   try {
     const st = statSync(file)
-    return st.isFile() ? { file, size: st.size } : null
+    return st.isFile() && !(st.nlink > 1) ? { file, size: st.size } : null
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code !== 'ENOENT' && code !== 'ENOTDIR') console.log(`[imagegen] stat ${label} failed: ${(e as Error).message}`)
@@ -540,10 +567,10 @@ export function isProjectFile(dir: string, rel: string): boolean {
  * bytes and their fixed type, or a JSON body. The decoded path must pass the
  * validator's own rule (`projectImagePath`: 400 otherwise, so `..`, a
  * backslash, a NUL or a dot-leading segment never reaches a join), the file
- * must really be inside the project (links followed; 404 otherwise, like a
- * missing one), a regular file, at most 32 MB (an SVG 2 MB; 413), and carry
- * its format's signature (415) — an SVG must start with <svg after the
- * optional BOM, XML declaration, DOCTYPE and comments.
+ * must really be inside the project (symlinks followed, a hard link refused;
+ * 404 otherwise, like a missing one), a regular file, at most 32 MB (an SVG
+ * 2 MB; 413), and carry its format's signature (415) — an SVG must start
+ * with <svg after the optional BOM, XML declaration, DOCTYPE and comments.
  */
 export function servedProjectFile(home: string, slug: string, path: string): { status: number; bytes?: Uint8Array; type?: string; json?: unknown } {
   if (!SLUG_RE.test(slug)) return { status: 400, json: { error: 'bad slug' } }

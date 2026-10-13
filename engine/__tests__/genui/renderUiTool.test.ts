@@ -80,7 +80,7 @@ describe('RenderUI tool', () => {
       'Rendered 3 elements.',
       'Notes (already shown to the user — call RenderUI again only for an element that was dropped or a spec that was cut off):',
       '- a: an Image takes "prompt" or "src", not both — the prompt was kept',
-      '- b.src: "aliens/b.bmp" is not an http(s) image URL or the path of a png/jpg/gif/webp/svg file in the project — dropped; describe the picture in "prompt" and the engine generates it',
+      '- b.src: "aliens/b.bmp" is not a path the engine can show — a file path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most 200 characters, ending in png/jpg/gif/webp/svg — dropped; rename the file to fit, or describe the picture in "prompt" and the engine generates it',
       '- b (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
       '- c.children: "b" is not an element id — nothing was drawn for it (the element was dropped)',
     ])

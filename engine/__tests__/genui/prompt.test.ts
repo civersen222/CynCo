@@ -122,9 +122,14 @@ describe('genui prompt section', () => {
   // picture contradicted the session opening's "leave them out", and a coding
   // session that followed them drew a "not generated" box in every card on
   // every call — the F174 symptom. Nothing in a session's section asks for one.
-  it('never asks a coding session for a prompted picture, and says why in its opening', () => {
-    expect(session.split('\n\n')[0]).toMatch(/Pictures \(an Image "prompt"\) are painted in project chats only; leave them out here\./)
-    expect(text).not.toMatch(/painted in project chats only/)
+  // Review: the shared catalog line offers a file path in "src" too, and the
+  // engine turns every such Image off in a coding session ("files are shown in
+  // project chats only"), so the opening must say so for files as well as for
+  // prompted pictures — the F174 shape otherwise.
+  it('never asks a coding session for a prompted picture or a file, and says why in its opening', () => {
+    expect(session.split('\n\n')[0]).toMatch(/Pictures \(an Image "prompt"\) and files \(an Image "src" path\) are shown in project chats only; leave them out here\./)
+    expect(text).not.toMatch(/in project chats only/)
+    expect(session).toMatch(/"src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote/)
     expect(session).not.toMatch(/Each design gets a picture/)
     expect(session).not.toMatch(/describe the picture in the Image's "prompt"/)
     expect(session).not.toMatch(/wait for pictures/)

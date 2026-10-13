@@ -10,7 +10,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -209,6 +209,21 @@ export function canSymlinkFiles(): boolean {
     return true
   } catch (e) {
     console.log(`file symlinks need privileges here: ${(e as Error).message}`)
+    return false
+  } finally {
+    rmSync(d, { recursive: true, force: true })
+  }
+}
+
+/** A hard link needs the two names on one filesystem, and some filesystems have none. */
+export function canHardLinkFiles(): boolean {
+  const d = mkdtempSync(join(tmpdir(), 'cynco-imagegen-hardlink-'))
+  try {
+    writeFileSync(join(d, 'a'), '')
+    linkSync(join(d, 'a'), join(d, 'b'))
+    return true
+  } catch (e) {
+    console.log(`hard links are not possible here: ${(e as Error).message}`)
     return false
   } finally {
     rmSync(d, { recursive: true, force: true })
