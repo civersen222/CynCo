@@ -50,7 +50,13 @@ export const readTool: ToolImpl = {
     }
     const stat = statSync(filePath)
     if (stat.isDirectory()) {
-      return { output: `Error: ${filePath} is a directory, not a file. Use Glob or Bash ls.`, isError: true }
+      // Only file tools every session is offered (a project chat's PROJECT_TOOL_NAMES
+      // and the coding core set): "Use Glob or Bash ls" sent a project chat to the
+      // shell, the path F178 closed. Ls names subfolders too; Bun's Glob yields files
+      // only, so pattern "*" listed nothing for a folder of folders — "**/*" reaches
+      // the files inside them. The folder goes in `path`, never into a pattern,
+      // where a name holding glob characters ("[2]") would match nothing.
+      return { output: `Error: ${filePath} is a directory, not a file. List it with Ls (path "${filePath}") or Glob (path "${filePath}", pattern "**/*"), then Read a file it shows by its full path (the folder joined with the path it shows).`, isError: true }
     }
 
     const ext = filePath.toLowerCase().split('.').pop() ?? ''

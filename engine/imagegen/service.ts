@@ -6,7 +6,12 @@
  * RenderUI call in a project chat. Each Image with a `prompt` gets an
  * engine-only `image` state on its element — a placeholder the surface draws
  * at once — and, unless the picture is already made or already in flight, a
- * job. `start()`, run after the final frame is emitted, kicks the worker. The
+ * job. `start()`, run after the final frame is emitted, kicks the worker.
+ * `warm()`, run at the start of every project-chat turn, probes in the
+ * background (at most every 30 s), so the checkpoint a key names is the one
+ * the server has when the turn's pictures are asked; a failed probe never
+ * replaces a good one still inside its 10 minutes, so a blip at a turn's
+ * warm-up fails no queued job. The
  * worker probes the server when its last answer is stale, fills the workflow,
  * writes the sidecar `running` BEFORE the POST, polls `/history`, downloads
  * the one saved PNG into `images/<key>.png`, writes the sidecar `done`,
@@ -46,8 +51,8 @@ export type AnnotateAt = {
 }
 /** `note` goes after "(surface: id)" in the tool result; `start` runs after the final frame is emitted. */
 export type Annotation = { note: string | null; start(): void }
-/** What `ConversationLoop` holds. */
-export type ImageAnnotator = { annotate(spec: UiSpec, at: AnnotateAt): Annotation }
+/** What `ConversationLoop` holds; it calls `warm` at the start of every project-chat turn (synchronous, never throws). */
+export type ImageAnnotator = { annotate(spec: UiSpec, at: AnnotateAt): Annotation; warm?(): void }
 
 export type ImageServiceDeps = {
   env?: NodeJS.ProcessEnv
@@ -69,6 +74,8 @@ const STOPPING_REASON = 'the engine is shutting down'
 
 const PROBE_FAIL_TTL_MS = 60_000
 const PROBE_OK_TTL_MS = 10 * 60_000
+/** `warm` starts no probe while the last one finished less than this long ago, whatever it answered. */
+export const WARM_MIN_AGE_MS = 30_000
 const SHUTDOWN_BOUND_MS = 3000
 /** Consecutive failed /history polls before the job fails with the last one's reason. */
 const POLL_FAILURES_TOLERATED = 3
@@ -82,6 +89,12 @@ type Job = {
   sidecar: ImageSidecar
   queuedAt: number
   status: 'queued' | 'running'
+  /**
+   * The checkpoint an ask keyed on it pinned this queued `'auto'` job to (`autoTwin`, F179), also written into
+   * `sidecar.checkpoint`, which `runJob` paints; null while unpinned. Unpinned when that checkpoint is found gone — the
+   * job's probe no longer lists it (`runJob`) or ComfyUI refuses it (`dropVanished`) — so the job takes its probe's pick.
+   */
+  pinned: string | null
   /**
    * Set when the POST goes out: resolves to the id of the prompt ComfyUI may
    * hold for this job (the server's once it answers, else the one sent), or
@@ -155,6 +168,16 @@ function reasonOf(e: unknown): string {
   return e instanceof ComfyError ? e.reason : `the engine failed while making this picture (${errText(e)})`
 }
 
+/**
+ * A good probe `r` with `name` taken off its checkpoint list (and its count); `r` itself when it is a failure or its
+ * list does not name it. For a list read before `name` left the server while the pick was already another (F179).
+ */
+function withoutCheckpoint(r: ProbeResult, name: string): ProbeResult {
+  if (!r.ok || !r.checkpoints?.includes(name)) return r
+  const checkpoints = r.checkpoints.filter(c => c !== name)
+  return { ...r, checkpoints, checkpointCount: checkpoints.length }
+}
+
 export class ImageService implements ImageAnnotator {
   private readonly config: { ok: true; cfg: ComfyConfig } | { ok: false; reason: string }
   private readonly client: ComfyClient | null
@@ -164,8 +187,31 @@ export class ImageService implements ImageAnnotator {
   private readonly fetchFn: typeof fetch
   private readonly pollMs: number
   private readonly timeoutMs: number
+  /**
+   * The probe a job trusts (`ensureReady`): a failure for 60 s, a success for 10 minutes, which no failure replaces (F179).
+   * `dropVanished` clears it when it unsets the pick, and takes a gone checkpoint off a good one's list, `at` unchanged.
+   */
   private probeCache: { result: ProbeResult; at: number } | null = null
+  /** The last probe that finished and what it answered, whether or not the cache took it: `warm`'s clock and the note's last check. */
+  private lastProbe: { result: ProbeResult; at: number } | null = null
+  /** The checkpoint the last good probe resolved, kept through later failures: what a key names when none is configured (F179). */
+  private lastCheckpoint: string | null = null
   private probing: Promise<ProbeResult> | null = null
+  /** Probes started so far: the one `startProbe` starts is number `probeSeq` (F179). */
+  private probeSeq = 0
+  /**
+   * Every checkpoint `dropVanished` found gone, each with the number of the last probe started before it was found gone
+   * (F179): a probe numbered up to that read the list from before it left, so `startProbe` discards a good answer from
+   * one that still picks any of them (a fresh probe follows) and takes all of them off the list of one that only lists
+   * them. A map, not one slot: a second drop while a probe runs must not make that probe's answer forget the first.
+   */
+  private readonly vanished = new Map<string, number>()
+  /**
+   * The number of the probe that was running when `dropVanished` unset the pick (F179): if that probe fails, a fresh one
+   * follows it (`startProbe`; a good answer is used unless it still picks the dropped checkpoint, `vanished`). Never set
+   * when the drop only trimmed the cached probe's list.
+   */
+  private reprobeAfter: number | null = null
   private lastStateLine: string | null = null
   private readonly queue: Job[] = []
   private readonly jobs = new Map<string, Job>()
@@ -211,15 +257,50 @@ export class ImageService implements ImageAnnotator {
     return this.runProbe(this.config.cfg)
   }
 
+  /**
+   * Refresh the pick in the background (F179): the loop calls this at the start of every project-chat turn, and the
+   * turn's RenderUI is annotated tens of seconds later, so a key names the checkpoint the server has now — one added or
+   * removed since is seen at the next turn that starts 30 s or more after the last probe, not after the 10-minute reuse.
+   * Starts a probe unless one is running or the last one finished, whatever it answered, less than 30 s ago
+   * (`WARM_MIN_AGE_MS`, measured from `lastProbe`, so a server that keeps failing is not asked at every turn); nothing
+   * when the config is refused or the engine is shutting down. Synchronous, never throws; a failed probe logs its own
+   * `not ready` line and leaves a good probe still inside its 10 minutes trusted (`runProbe`).
+   */
+  warm(): void {
+    try {
+      if (!this.config.ok || this.stopped || this.probing) return
+      const last = this.lastProbe
+      if (last && this.now() - last.at < WARM_MIN_AGE_MS) return
+      this.runProbe(this.config.cfg).catch(e => this.log(`[imagegen] warm-up probe failed: ${errText(e)}`))
+    } catch (e) {
+      this.log(`[imagegen] warm-up threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+    }
+  }
+
   private logState(line: string): void {
     if (line === this.lastStateLine) return
     this.lastStateLine = line
     this.log(line)
   }
 
+  /** The probe running, joined; else a new one. */
   private runProbe(cfg: ComfyConfig): Promise<ProbeResult> {
-    if (this.probing) return this.probing
-    this.probing = (async () => {
+    return this.probing ?? this.startProbe(cfg)
+  }
+
+  /**
+   * Probe number `++probeSeq`, which becomes `probing`. A probe numbered up to the one `dropVanished` recorded
+   * (`vanished`) started before that checkpoint left and read the server's list from before (F179): a good answer that
+   * still picks it is not used — neither `lastCheckpoint` nor the cache — and a fresh probe follows; a good answer that
+   * picks another but still lists it is used with that name taken off its list (`withoutCheckpoint`), so a job keyed on
+   * it fails before any POST and one keyed on the pick paints. The probe that was running when a drop unset the pick
+   * (`reprobeAfter`) is followed by a fresh probe when it fails too, and that failure is not cached. A fresh probe
+   * replaces the one it follows as `probing` before that one settles, so whoever waits on it (a job's `ensureReady`,
+   * `whenIdle`) gets the fresh answer.
+   */
+  private startProbe(cfg: ComfyConfig): Promise<ProbeResult> {
+    const n = ++this.probeSeq
+    const run = (async (): Promise<ProbeResult> => {
       let result: ProbeResult
       try {
         result = await probeComfy(cfg, this.fetchFn)
@@ -227,21 +308,53 @@ export class ImageService implements ImageAnnotator {
         this.log(`[imagegen] probe threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
         result = { ok: false, reason: `checking ComfyUI at ${cfg.host} failed: ${errText(e)}` }
       }
-      this.probeCache = { result, at: this.now() }
-      if (result.ok) {
-        const ckpt = result.checkpoint ? `checkpoint ${result.checkpoint} (${result.picked ? `picked from ${result.checkpointCount}` : 'configured'})` : 'checkpoint set by the workflow'
-        this.logState(`[imagegen] ready: ComfyUI ${result.version} at ${cfg.host} — ${result.device}, ${result.vramGB ?? '?'} GB; ${ckpt}; ${cfg.width}x${cfg.height}, ${cfg.steps} steps, cfg ${cfg.cfg}, ${cfg.sampler}/${cfg.scheduler}`)
-      } else {
-        this.logState(`[imagegen] not ready: ${result.reason}`)
+      const at = this.now()
+      // Every checkpoint found gone after this probe started: it read the server from before they left.
+      const goneNames = [...this.vanished].filter(([, seq]) => n <= seq).map(([name]) => name)
+      // An answer picking one of them is not used; one that only lists them (the pick another) is used without them —
+      // dropping that answer for another probe would let one failed probe fail every picture behind for 60 s (F179).
+      const gone = result.ok ? goneNames.find(name => result.ok && result.checkpoint === name) ?? null : null
+      const stale = gone !== null
+      if (!stale) {
+        for (const name of goneNames) {
+          const trimmed = withoutCheckpoint(result, name)
+          if (trimmed !== result) this.log(`[imagegen] a probe started before ${name} left the server still lists it; used without it`)
+          result = trimmed
+        }
       }
+      this.lastProbe = { result, at }
+      // A probe running when a drop unset the pick started before it; only a failed one is followed by a fresh probe.
+      const follow = stale || (this.reprobeAfter === n && !result.ok)
+      if (this.reprobeAfter === n) this.reprobeAfter = null
+      if (stale) {
+        this.log(`[imagegen] a probe started before ${gone} left the server still picks it; not used${this.stopped ? '' : ' — probing again'}`)
+      } else {
+        // A failure never replaces a good probe still inside its 10 minutes (F179): one blip at a turn's warm-up would
+        // otherwise fail, with no POST, every job that starts in the next 60 s while the server answers. `ensureReady`
+        // starts a probe only once the cache is stale and `dropVanished` only after clearing it, so only a probe `warm`
+        // or `probe` starts, or one that follows a stale answer, can meet such a probe.
+        const trusted = this.probeCache
+        if (!follow && (result.ok || !trusted?.result.ok || at - trusted.at >= PROBE_OK_TTL_MS)) this.probeCache = { result, at }
+        if (result.ok && result.checkpoint) this.lastCheckpoint = result.checkpoint
+        if (result.ok) {
+          const ckpt = result.checkpoint ? `checkpoint ${result.checkpoint} (${result.picked ? `picked from ${result.checkpointCount}` : 'configured'})` : 'checkpoint set by the workflow'
+          this.logState(`[imagegen] ready: ComfyUI ${result.version} at ${cfg.host} — ${result.device}, ${result.vramGB ?? '?'} GB; ${ckpt}; ${cfg.width}x${cfg.height}, ${cfg.steps} steps, cfg ${cfg.cfg}, ${cfg.sampler}/${cfg.scheduler}`)
+        } else {
+          this.logState(`[imagegen] not ready: ${result.reason}`)
+        }
+      }
+      if (follow && !this.stopped) return this.startProbe(cfg)
       return result
     })()
-    const settled = this.probing
-    settled.finally(() => { if (this.probing === settled) this.probing = null }).catch(e => this.log(`[imagegen] probe bookkeeping failed: ${errText(e)}`))
-    return settled
+    this.probing = run
+    run.finally(() => { if (this.probing === run) this.probing = null }).catch(e => this.log(`[imagegen] probe bookkeeping failed: ${errText(e)}`))
+    return run
   }
 
-  /** The cached probe while it is fresh (a failure for 60 s, a success for 10 minutes), else a new one. */
+  /**
+   * The cached probe while it is fresh (a failure for 60 s, a success for 10 minutes), else a new one — so a probe
+   * started here never meets a trusted success: a failure it returns is the one the cache now holds.
+   */
   private ensureReady(cfg: ComfyConfig): Promise<ProbeResult> {
     const c = this.probeCache
     if (c && this.now() - c.at < (c.result.ok ? PROBE_OK_TTL_MS : PROBE_FAIL_TTL_MS)) return Promise.resolve(c.result)
@@ -330,6 +443,8 @@ export class ImageService implements ImageAnnotator {
     const decided = new Map<string, UiImageState>()
     const newJobs: Job[] = []
     const origins: Array<[string, string]> = []
+    // Queued 'auto' jobs an ask keyed on a pick joins, with that pick (autoTwin): pinned once every element is decided.
+    const pins: Array<[Job, string]> = []
     let distinct = 0, overCap = false, queueFull = 0
     let q = 0, c = 0, o = 0, firstOff: string | null = null
     // Distinct pictures, for the note: Images that repeat a prompt and seed are one picture (the log's counts are per Image).
@@ -350,9 +465,14 @@ export class ImageService implements ImageAnnotator {
           const job = this.jobs.get(`${dir}|${key}`)
           const inFlight = job && !job.settled ? job : null
           const sc = inFlight ? null : readSidecar(dir, key)
+          const made = !!sc && sc.status === 'done' && existsSync(pngPath(dir, key))
+          const twin = inFlight || made ? null : this.autoTwin(dir, fields)
           if (inFlight) state = { status: inFlight.status, ...base }
-          else if (sc && sc.status === 'done' && existsSync(pngPath(dir, key))) state = { status: 'done', ...base }
-          else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
+          else if (made) state = { status: 'done', ...base }
+          else if (twin) {
+            state = { ...base, key: twin.key, status: twin.status }
+            if (twin.pin) pins.push([twin.pin, fields.checkpoint])
+          } else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
             newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }))
             state = { status: 'queued', ...base }
@@ -366,7 +486,8 @@ export class ImageService implements ImageAnnotator {
         firstOff ??= state.reason
         if (state.reason === QUEUE_FULL_REASON) queueFull++
       } else {
-        origins.push([originKey({ chatFile, toolId: at.toolId, elementId: im.id }), key])
+        // The key shown, which is an 'auto' twin's when the picture was found under it.
+        origins.push([originKey({ chatFile, toolId: at.toolId, elementId: im.id }), 'key' in state ? state.key : key])
         if (repeat) dup++
         if (state.status === 'done') { c++; if (!repeat) cd++ }
         else { q++; if (!repeat) qd++ }
@@ -381,6 +502,7 @@ export class ImageService implements ImageAnnotator {
       recordOrigins(dir, origins)
     }
     for (const j of newJobs) { this.queue.push(j); this.jobs.set(j.id, j) }
+    for (const [j, ckpt] of pins) { j.sidecar.checkpoint = ckpt; j.pinned = ckpt }
     summary(q, c, o, firstOff)
     // Every picture already made: no job of this call will commit the origins just recorded.
     if (origins.length && q === 0) this.commitAside(dir, `images: ${c} shown again`)
@@ -389,12 +511,13 @@ export class ImageService implements ImageAnnotator {
     if (qd > 0) {
       // The server's address is the engine log's, never the model's: the prompt says never to call it, and the fence refuses a command at it.
       let s = `Pictures: ${qd} generating${cd ? `, ${cd} already made` : ''} — they appear in their cards by themselves; do not call RenderUI again for them.`
-      // More than three is minutes of GPU (three designs × six takes ≈ 6 min, F176): say how long, so the wait is not read as a failure.
+      // More than three is minutes of GPU (three designs × six takes ≈ 3 min at ~10 s a picture, measured 2026-10-13, F176): say how long, so the wait is not read as a failure.
       if (qd > 3) {
         if (this.lastGenMs === null) s += ' The first takes longer while the model loads.'
         else s += ` About ${newJobs.length + ahead}×${Math.max(1, Math.round(this.lastGenMs / 1000))} s at the last measured pace${ahead ? ` (${ahead} ahead in the queue)` : ''}.`
       }
-      const last = this.probeCache?.result
+      // The last check, even one that left a trusted good probe in place: the server may be away.
+      const last = this.lastProbe?.result
       if (last && !last.ok) s += ` The last check of ComfyUI failed (${last.reason}); if it still fails, the cards will say so.`
       parts.push(s)
     } else if (cd > 0) parts.push(`Pictures: ${cd} already made — shown in their cards.`)
@@ -415,14 +538,42 @@ export class ImageService implements ImageAnnotator {
     }
   }
 
-  /** The seed is the model's when the Image gave one (another take, F176), else derived from the prompt (one prompt, one picture). */
+  /**
+   * The seed is the model's when the Image gave one (another take, F176), else derived from the prompt (one prompt, one picture).
+   * The checkpoint is the one that will paint (F179): the configured one, else the last good probe's pick, else 'auto' before
+   * any probe has picked. Annotate asks the server nothing: the pick is the one known now, kept current by `warm` at each
+   * project-chat turn (at most every 30 s), by a job's probe, and by `dropVanished`, which unsets it when the checkpoint
+   * found gone is the pick and starts a probe at once — or, with one running, takes that one's answer, a fresh probe
+   * following it only when it fails or still picks the gone checkpoint; `runJob` paints with the one the key names.
+   */
   private keyFields(cfg: ComfyConfig, prompt: string, seed?: number): KeyFields {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,
-      // An auto-picked checkpoint keys as 'auto': the pick is not known until the server is probed.
-      checkpoint: cfg.checkpoint ?? 'auto', workflow: cfg.workflow.sha256,
+      checkpoint: cfg.checkpoint ?? (cfg.workflow.usesCheckpoint ? this.lastCheckpoint : null) ?? 'auto', workflow: cfg.workflow.sha256,
     }
+  }
+
+  /**
+   * The same picture under the key it was asked with before any probe had picked (F179): the `'auto'` key of `f`,
+   * when its job will paint, is painting, or painted with the checkpoint `f` names — so a picture asked before the
+   * first probe, or made before F179, is shown again instead of painted again. A queued `'auto'` job has taken no
+   * pick yet: joining it pins it to `f`'s checkpoint (`pin`, applied by annotate once every element is decided), so
+   * it paints that one whatever its own probe picks — unless that checkpoint is found gone first (its probe's list
+   * lacks it, or ComfyUI refuses it), which unpins it. A running or finished one from another checkpoint is not the
+   * same picture and never counts. Null when a checkpoint is configured (its keys always named it).
+   */
+  private autoTwin(dir: string, f: KeyFields): { key: string; status: 'queued' | 'running' | 'done'; pin: Job | null } | null {
+    if (!this.config.ok || this.config.cfg.checkpoint || f.checkpoint === 'auto') return null
+    const key = imageKey({ ...f, checkpoint: 'auto' })
+    const job = this.jobs.get(`${dir}|${key}`)
+    if (job && !job.settled) {
+      // A running job has its checkpoint on the record; a queued one still saying 'auto' paints what this join pins.
+      const pin = job.status === 'queued' && job.sidecar.checkpoint === 'auto'
+      return pin || job.sidecar.checkpoint === f.checkpoint ? { key, status: job.status, pin: pin ? job : null } : null
+    }
+    const sc = readSidecar(dir, key)
+    return sc && sc.status === 'done' && sc.checkpoint === f.checkpoint && existsSync(pngPath(dir, key)) ? { key, status: 'done', pin: null } : null
   }
 
   private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }): Job {
@@ -437,7 +588,7 @@ export class ImageService implements ImageAnnotator {
       queuedAt: iso(queuedAt),
       origin: { chatFile: p.chatFile, ...o },
     }
-    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', onServer: null, settled: false }
+    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', pinned: null, onServer: null, settled: false }
   }
 
   // ─── worker ─────────────────────────────────────────────────────────
@@ -446,11 +597,11 @@ export class ImageService implements ImageAnnotator {
     if (!this.pumping && !this.stopped) this.pumpRun = this.pump()
   }
 
-  /** Resolves once the worker has nothing left to do, commits included (tests, check.ts). */
+  /** Resolves once the worker has nothing left to do, commits and a probe still running (a `warm`'s) included (tests, check.ts). */
   async whenIdle(): Promise<void> {
-    while (this.pumpRun || this.asideCommits.size) {
+    while (this.pumpRun || this.asideCommits.size || this.probing) {
       const run = this.pumpRun
-      if (!run) { await Promise.all([...this.asideCommits]); continue }
+      if (!run) { await Promise.all([...this.asideCommits, this.probing?.then(noop, noop)]); continue }
       await run
       if (this.pumpRun === run) this.pumpRun = null
     }
@@ -496,13 +647,39 @@ export class ImageService implements ImageAnnotator {
     const fault = storeFault(job.dir)
     if (fault) return this.finish(job, { status: 'failed', reason: fault })
 
+    // The key names the checkpoint that paints (F179), so a key and its picture always agree: only a job still saying
+    // 'auto' (asked before any probe, and pinned by no join, or unpinned since) takes the probe's pick. The probe's list
+    // is the first check that the checkpoint is still on the server: a pin it no longer holds is let go (the key says
+    // 'auto', so the job paints on the pick), and a key's checkpoint it no longer holds fails the job here, before any
+    // POST, with our own reason. Either drops that checkpoint (`dropVanished`). ComfyUI's 400 refusing it
+    // (`'<name>' not in`) is the check for a list read before it left, and drops it the same way.
+    const listed = cfg.workflow.usesCheckpoint && !cfg.checkpoint ? ready.checkpoints : undefined
+    if (listed && job.pinned !== null && !listed.includes(job.pinned)) {
+      const gone = job.pinned
+      job.pinned = null
+      sc.checkpoint = 'auto'
+      this.log(`[imagegen] ${job.key.slice(0, 8)}: ComfyUI no longer lists ${gone}, which an ask pinned this 'auto' picture to; it paints on the probe's pick, ${ready.checkpoint}`)
+      this.dropVanished(job.key, gone)
+    }
+    if (listed && sc.checkpoint !== 'auto' && !listed.includes(sc.checkpoint)) {
+      const gone = sc.checkpoint
+      this.dropVanished(job.key, gone)
+      // What the same ask keys on now (`keyFields`); none when the drop unset the pick.
+      const pick = this.lastCheckpoint
+      return this.finish(job, { status: 'failed', reason: `the checkpoint ${gone} this picture was keyed on is no longer on the image server${pick ? ` — ask again and it is painted on ${pick}` : ''}` })
+    }
+    const keyed = sc.checkpoint === 'auto' ? null : sc.checkpoint
+    if (keyed && cfg.workflow.usesCheckpoint && ready.checkpoint && ready.checkpoint !== keyed) {
+      this.log(`[imagegen] ${job.key.slice(0, 8)}: painting with ${keyed}, the pick when it was asked (the probe now picks ${ready.checkpoint})`)
+    }
+    const ckpt = keyed ?? ready.checkpoint ?? ''
     const graph = fillWorkflow(cfg.workflow.graph, {
       prompt: sc.prompt, negative: sc.negative, seed: sc.seed, width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg,
-      sampler: sc.sampler, scheduler: sc.scheduler, checkpoint: ready.checkpoint ?? cfg.checkpoint ?? '', filename_prefix: `cynco/${job.key}`,
+      sampler: sc.sampler, scheduler: sc.scheduler, checkpoint: ckpt, filename_prefix: `cynco/${job.key}`,
     })
     sc.status = 'running'
     sc.startedAt = iso(this.now())
-    if (ready.checkpoint) sc.checkpoint = ready.checkpoint
+    if (!keyed && ready.checkpoint) sc.checkpoint = ready.checkpoint
     sc.apiPrompt = graph
     sc.comfy = { ...sc.comfy, host: client.host }
     job.status = 'running'
@@ -517,8 +694,15 @@ export class ImageService implements ImageAnnotator {
     } catch (e) {
       this.log(`[imagegen] ${job.key.slice(0, 8)}: submit failed: ${reasonOf(e)}`)
       if (this.stopped) return
-      // Unless ComfyUI refused it, the POST may have been queued with its answer lost: withdraw it before the next job goes out.
-      if (!(e instanceof ComfyError && e.refused)) await this.withdraw(client, job, sent)
+      if (e instanceof ComfyError && e.refused) {
+        // ComfyUI queued nothing. A refusal of the checkpoint painted with says it has left the server: its
+        // value_not_in_list detail, `<input>: '<name>' not in [...]` (or `(list of length N)`), puts the refused value,
+        // quoted, before `not in`, so only that form counts — a refusal of another loader whose list merely names it does not.
+        if (cfg.workflow.usesCheckpoint && !cfg.checkpoint && ckpt && e.reason.includes(`'${ckpt}' not in`)) this.dropVanished(job.key, ckpt)
+      } else {
+        // The POST may have been queued with its answer lost: withdraw it before the next job goes out.
+        await this.withdraw(client, job, sent)
+      }
       return this.finish(job, { status: 'failed', reason: reasonOf(e) })
     }
     const submitAt = this.now()
@@ -587,6 +771,56 @@ export class ImageService implements ImageAnnotator {
     sc.sha256 = sha256Of(bytes)
     sc.bytes = bytes.byteLength
     await this.finish(job, { status: 'done' })
+  }
+
+  /**
+   * Checkpoint `ckpt` has left the server (F179): the probe a job trusts no longer lists it, or ComfyUI refused a job's
+   * POST naming it (both found in `runJob`). The drop is always recorded with the number of the last probe started
+   * (`vanished`): a probe started before it read the list from before, so when it finishes `startProbe` discards a good
+   * answer that still picks `ckpt` (a fresh probe follows) and takes `ckpt` off the list of one that only lists it.
+   * Every queued job pinned to it goes back to `'auto'` and paints what its own probe at job start picks.
+   * While `ckpt` is still the pick, the pick is dropped — `lastCheckpoint` and the cached probe: until a probe answers
+   * with a pick, a picture asked is keyed `'auto'`, and one painted on the checkpoint under its `'auto'` key still reads
+   * as made; once one picks another, that picture keys on it and is painted again. A probe then starts at once; one
+   * already running is joined instead, its answer judged by `startProbe` as above, and a fresh probe follows it too
+   * when it fails (`reprobeAfter`).
+   * A pick that already names another checkpoint (a probe since) is kept, and so is a cached good probe whose list still
+   * names `ckpt` (read before it left): `ckpt` is only taken off that list, its `at` unchanged, so a job keyed on `ckpt`
+   * fails in `runJob` before any POST while one keyed on the pick still paints, and no probe is started — dropping that
+   * probe and probing again let one failed probe fail every picture behind for 60 s. With no pick to drop, no pin to undo
+   * and no cached list naming `ckpt`, nothing else is done and nothing is logged.
+   */
+  private dropVanished(key: string, ckpt: string): void {
+    this.vanished.set(ckpt, this.probeSeq)
+    let unpinned = 0
+    for (const j of this.queue) {
+      if (j.pinned !== ckpt) continue
+      j.pinned = null
+      j.sidecar.checkpoint = 'auto'
+      unpinned++
+    }
+    const drop = this.lastCheckpoint === ckpt
+    // The cached good probe's list still names it (the pick already another): that list was read before it left.
+    const cached = this.probeCache
+    const trimmed = cached && !drop ? { result: withoutCheckpoint(cached.result, ckpt), at: cached.at } : null
+    const staleList = !!trimmed && trimmed.result !== cached?.result
+    if (!drop && !staleList && unpinned === 0) return
+    const pins = unpinned ? `; ${unpinned} queued picture${unpinned === 1 ? '' : 's'} pinned to it ${unpinned === 1 ? 'goes' : 'go'} back to 'auto' and ${unpinned === 1 ? "paints on the pick its job's probe makes" : "paint on the picks their jobs' probes make"}` : ''
+    if (drop) {
+      this.lastCheckpoint = null
+      this.probeCache = null
+    } else if (staleList) {
+      this.probeCache = trimmed
+    }
+    const pick = this.lastCheckpoint
+    const what = drop ? "; probing again for the pick (until it answers, a picture asked is keyed 'auto')" : staleList ? `; the trusted probe still listed it — taken off that list${pick ? ` (the pick stays ${pick})` : ''}` : ''
+    this.log(`[imagegen] ${key.slice(0, 8)}: ComfyUI no longer has ${ckpt}${what}${pins}`)
+    if (drop && this.config.ok && !this.stopped) {
+      // A probe running now may have read the list before the checkpoint left: `startProbe` judges its answer, and a
+      // fresh probe follows it too if it fails.
+      if (this.probing) this.reprobeAfter = this.probeSeq
+      else this.startProbe(this.config.cfg).catch(e => this.log(`[imagegen] the probe after dropping ${ckpt} failed: ${errText(e)}`))
+    }
   }
 
   /** The worker gives up on a prompt ComfyUI may hold: it is the worker's to cancel now, not shutdown's. */

@@ -35,13 +35,30 @@ function levenshtein(a: string, b: string): number {
 
 const MAX_LISTED = 15
 
+/** How every file tool's answer to a missing path begins (`missingFileHint`). */
+export const MISSING_FILE_PREFIX = 'Error: file not found: '
+
+/** The tools that answer a missing path with `missingFileHint`. */
+const MISSING_FILE_TOOLS: ReadonlySet<string> = new Set(['Read', 'Edit', 'MultiEdit', 'ReplaceFunction'])
+
+/**
+ * Is this result a file tool's answer to a path that does not exist? That is
+ * the model's guess, not the tool failing — the answer lists the folder — so
+ * the trust score leaves it out (F178: three guessed names in one parallel Read
+ * batch demoted Read, and a project chat read its files through Bash instead).
+ * A command's output can say anything, so only the file tools qualify.
+ */
+export function isWrongPathAnswer(toolName: string, output: string, isError: boolean): boolean {
+  return isError && MISSING_FILE_TOOLS.has(toolName) && output.startsWith(MISSING_FILE_PREFIX)
+}
+
 /**
  * Build the error message for a path that does not exist. Includes the
  * contents of the nearest existing ancestor directory and, when a sibling
  * name is close to the requested one, a direct "did you mean" pointer.
  */
 export function missingFileHint(filePath: string): string {
-  const base = `Error: file not found: ${filePath}`
+  const base = `${MISSING_FILE_PREFIX}${filePath}`
 
   // Walk up to the nearest directory that actually exists.
   let dir = dirname(filePath)

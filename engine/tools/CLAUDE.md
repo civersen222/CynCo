@@ -20,9 +20,9 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | `resultCap.ts` | Truncates long tool output to fit the model's context budget. |
 | `sealedPaths.ts` | Four-layer defense keeping held-out gate scripts unreachable (reference/enumeration/location/content). |
 | `shellInfo.ts` | Detects the real shell (bash/pwsh/PowerShell 5.1) and translates POSIX-isms into its dialect. |
-| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints (off in a project chat, which has no CodeIndex: `ToolExecutor.setCodeIndexHints`, `executor.ts:151`). |
+| `toolHints.ts` | Inline nudges appended to output: prefer Read/Edit over shell string-surgery; CodeIndex adoption hints (off in a project chat, which has no CodeIndex: `ToolExecutor.setCodeIndexHints`, `executor.ts:154`). |
 | `toolRouter.ts` | Two-stage tool-category routing to shrink the schema sent to small-context local models. |
-| `toolScorer.ts` | `ToolScorer` — per-tool success-rate tracking with probation-based demotion/reinstatement. |
+| `toolScorer.ts` | `ToolScorer` — per-tool success-rate tracking with probation-based demotion/reinstatement; fed by `ToolExecutor`, at most one success and one failure per tool per model call once the loop marks calls. |
 | `types.ts` | `ToolImpl`/`ToolResult` — the contract every tool and the executor share. |
 | `impl/applyPatch.ts` | `ApplyPatch` tool: applies a unified diff via `git apply` (optionally `--check` only). |
 | `impl/bash.ts` | `Bash` tool: shell execution, safety check, dialect translation, timeout clamp, failure formatting. |
@@ -39,7 +39,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | `impl/mfl.ts` | `Mfl` tool: read-only MyFantasyLeague API client with a query allowlist and secret redaction. |
 | `impl/multiEdit.ts` | `MultiEdit` tool: batched string replacements across files, same CRLF/near-miss handling as Edit. |
 | `impl/notebookEdit.ts` | `NotebookEdit` tool: replaces a Jupyter notebook cell's source/type. |
-| `impl/pathHint.ts` | `missingFileHint` — "did you mean" + directory listing for a not-found path. |
+| `impl/pathHint.ts` | `missingFileHint` — "did you mean" + directory listing for a not-found path; `isWrongPathAnswer`, which keeps that answer out of the trust score (F178). |
 | `impl/read.ts` | `Read` tool: line-numbered file read with BOM-aware decoding and an image short-circuit. |
 | `impl/replaceFunction.ts` | `ReplaceFunction` tool: replaces a whole function/method body by name, with class-qualified disambiguation. |
 | `impl/saveLearning.ts` | `SaveLearning` tool: persists a user preference/correction to the global SQLite LearningStore. |
@@ -51,10 +51,11 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 | (consumes) `../genui/renderUiTool.ts` | `RenderUI` tool: validates a model-authored UI spec against `../genui/catalog.ts` and answers with what will draw; registered in `registry.ts`, routed with the write category, always in `PROJECT_TOOL_NAMES`. |
 
 ## Important types & functions
-- **`ToolImpl`** (`types.ts:29`) — the contract every tool exports: name, description, input schema, approval tier, core/extended flag, `execute`. Implemented by every file under `impl/`.
+- **`ToolImpl`** (`types.ts:39`) — the contract every tool exports: name, description, input schema, approval tier, core/extended flag, `execute`. Implemented by every file under `impl/`.
 - **`ALL_TOOLS`** (`registry.ts:34`) — the flat tool registry every lookup/filter function in this file reads.
 - **`getToolByName`** (`registry.ts:61`) — registry lookup used by `ToolExecutor`, `approvalGate.ts`, and `load_tools` to resolve a call by name.
-- **`ToolExecutor`** (`executor.ts:117`) — turns `(toolName, input)` into a `ToolResult`: sealed check, immutable-path check, download gate, approval, execute, doom-loop check, redaction/cap. With a `Grader` set (`setGrader`, projects mode) one grade replaces the download gate and tier approval: `dangerous` is refused with its reason, `risky` asks, `safe` runs.
+- **`ToolExecutor`** (`executor.ts:118`) — turns `(toolName, input)` into a `ToolResult`: sealed check, immutable-path check, download gate, approval, execute, doom-loop check, redaction/cap. With a `Grader` set (`setGrader`, projects mode) one grade replaces the download gate and tier approval: `dangerous` is refused with its reason, `risky` asks, `safe` runs.
+- **`ToolExecutor.beginModelCall`** (`executor.ts:172`) — the loop calls it before each model call's tool batches; from then on the trust score takes at most one success and one failure per tool per call. A caller that never calls it — a sub-agent's executor, a test — scores every call, as before (F178).
 - **`bashTool`** (`engine/tools/impl/bash.ts:129`) — the Bash implementation: safety check, shell-dialect translation, timeout clamp, failure formatting.
 - **`bashMaxTimeoutMs`** (`engine/tools/impl/bash.ts:91`) — the hard ceiling any Bash timeout is clamped to, env-raisable up to `HARD_MAX_BASH_TIMEOUT_MS`.
 - **`bashDefaultTimeoutMs`** (`engine/tools/impl/bash.ts:121`) — the timeout a Bash call gets when the model doesn't ask for one.
@@ -77,7 +78,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 8. `tool.execute(input, cwd)` runs the tool's own implementation (e.g. `bashTool`, `editTool`, `codeIndexTool`).
 9. A successful workspace-mutating call clears `DoomLoopDetector` state; a failed repeat is checked via `doomLoop.check`.
 10. Output is redacted (`redactSealed`), capped (`capToolResult`), and given a CodeIndex-adoption nudge before returning as the final `ToolResult`; `arbiterVerdict` passes through unchanged.
-11. `toolScorer.record` logs success/failure for later demotion/probation decisions.
+11. `toolScorer.record` logs success/failure for later demotion/probation decisions — except a file tool's answer to a path that does not exist (`isWrongPathAnswer`, `engine/tools/impl/pathHint.ts:51`), which is recorded neither way (F178); once the loop has marked a model call (`beginModelCall`), a second success or a second failure of the same tool in that call is not recorded either (F178).
 
 ## Gotchas
 - `bashSafety.ts` is explicitly "NOT a sandbox — trivially bypassed... The real protection is Bash tier='approval'" — pinned by `bashSafety.test.ts`.
@@ -91,4 +92,6 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - Bash timeouts have two ceilings, not one: `bashDefaultTimeoutMs` (what a call gets unasked) and `bashMaxTimeoutMs` (hard clamp on any override) — F142 was an operator raising one env var while a separate constant still capped it.
 - The Bash tool's shell never inherits the harness's keys: `bashToolEnv` (`impl/bash.ts`) drops `LOCALCODE_MISSION_*` and `CYNCO_MARKER_CHECK*` (the driver's marker check, Phase 7 final review I1) while the engine process keeps them. Pinned by `bash.test.ts`.
 - `Write` refuses to shrink a git-tracked file below half its size unless the file is untracked; delete-then-write is the deliberate escape hatch. Pinned by `writeShrinkGuard.test.ts`.
+- A path that does not exist is the model's guess, not the tool failing: Read, Edit, MultiEdit and ReplaceFunction answer it with `missingFileHint` (the folder's listing and a "did you mean", F136), and `ToolExecutor` leaves that answer out of `ToolScorer` (`isWrongPathAnswer`, `engine/tools/impl/pathHint.ts:51`, keyed on `MISSING_FILE_PREFIX` at `engine/tools/impl/pathHint.ts:39` and checked on the tool's own output, before the cap or a nudge). Scored as a failure, three guessed prompt-file names in one parallel Read batch demoted Read in a live project chat, and with Read withheld the model read its files through Bash `Get-Content` (F178, 2026-10-13). A refusal that is not a wrong path — a folder given to Read, an Edit whose `old_string` is not there — is scored as before. Pinned by `engine/__tests__/tools/wrongPathTrust.test.ts`.
+- A batch the model fired together is one decision: once the caller marks model calls (`ToolExecutor.beginModelCall` (`executor.ts:172`), called by the loop where it clears the circuit breaker's per-call strikes), the trust score records at most ONE success and ONE failure per tool per model call (`executor.ts:286`): a call that both succeeded and failed with a tool counts one of each. Scored per call in the batch, three failed Edits in one call made Edit 0/3 (confidence 0.2, under the 0.35 threshold) and `excludeForIteration` withheld it from the calls that followed, the same shape as the wrong-path demotion above (an F178 open item). The unit is the model call on both sides: capping failures alone let a call of three good Reads outweigh three later calls that each failed (3 of 6, 0.5, kept offered; one of each per call it is 1 of 4, 0.33, demoted). A sub-agent's executor and the tests never mark a call and score every call, as before. Pinned by `engine/__tests__/toolScorer.test.ts`.
 - `Edit`/`MultiEdit` normalize CRLF to LF before matching and restore CRLF on write — without it a multi-line `old_string` never matches a CRLF file. Pinned by `edit.test.ts`, `editNearMiss.test.ts`, `multiEdit.test.ts`.
