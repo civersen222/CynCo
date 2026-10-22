@@ -55,7 +55,7 @@ describe('GET /api/session', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       model: 'qwen.gguf', contextLength: 65536, tier: 'advanced', projectPath: 'C:/code',
-      processing: true, toolCalls: 7, turns: 3, contextUsed: 12000, project: null,
+      processing: true, toolCalls: 7, turns: 3, contextUsed: 12000, project: null, pending: null,
     })
   })
 
@@ -75,7 +75,7 @@ describe('GET /api/session', () => {
 
   it('an engine that wired nothing answers nulls, not zeros', async () => {
     expect(await (await get(bare.base)).json()).toEqual({
-      model: null, contextLength: null, processing: null, toolCalls: null, turns: null, contextUsed: null, project: null,
+      model: null, contextLength: null, processing: null, toolCalls: null, turns: null, contextUsed: null, project: null, pending: null,
     })
   })
 

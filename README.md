@@ -331,6 +331,7 @@ record shape carrying a scope vector, not one key type per capability:
 | `bridge` | The TUI command channel on the bridge port — this drives the agent, and the agent has Bash | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
 | `inference` | Every dashboard read route, plus the dashboard WebSocket — session transcripts, thinking tokens, governance, and the Chat tab's own send path | Injected into the dashboard page at request time. |
 | `management` | `POST /config/*` and `/api/brain/layer` — anything that changes engine or governance configuration | Printed once at engine startup and pasted by hand. Never handed to a page. |
+| `inference`, held by a paired device (`device-…`) | The same read routes, socket and Chat send path as the page — and nothing else: off this machine only a device record authenticates, so management is refused there whatever is presented | Minted when a phone pairs with the single-use code; kept in that browser's local storage; revoked from Config → Phone access |
 
 The split is not ceremony. The inference token is delivered to a browser, so it
 is the secret most likely to escape; flipping `ablation` or
@@ -361,8 +362,44 @@ Two more things follow from this that are easy to get wrong:
   it at all, and `Content-Type: text/plain` makes a POST a "simple" request that
   lands without a preflight. The tokens are the control; loopback binding is a
   floor, and a browser is already inside loopback.
-- **Binding to `0.0.0.0` puts the token in front of the network.** That is a
-  64-hex secret in a file on one machine, not an auth system. Don't.
+- **Off this machine the shared token is never handed out.** A client that is
+  not a loopback peer on the loopback listener gets the page with no token in
+  it and must pair (see [Phone access](#phone-access)); the `dashboard` and
+  `admin` secrets are refused there as unknown. `0.0.0.0` is still the wrong
+  bind — it would put the pairing gate on every network you are on — so bind
+  the Tailscale address and nothing else. Pinned by
+  `engine/__tests__/dashboard/phoneAccess.test.ts`.
+
+### Phone access
+
+The dashboard is the phone client: the same page and the same engine, over your
+Tailscale tailnet — the posture the liveness daemon already uses (no public port,
+never `0.0.0.0`, never Funnel). Design and rejected alternatives:
+[docs/decisions/2026-10-22-phone-access.md](docs/decisions/2026-10-22-phone-access.md).
+
+1. Tailscale on the CynCo box and on the phone ([docs/liveness-setup.md](docs/liveness-setup.md) §2);
+   `tailscale ip -4` gives the box's address.
+2. Start the engine with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,<that address>`. On the desk,
+   **Config → Phone access** (management token) shows the phone URL and a six-digit pairing code;
+   the engine's log prints both too (`.cynco-engine.log` in the project folder when the TUI
+   launched it).
+3. On the phone, open the phone URL, type the code once, name the device, bookmark that exact
+   address (a different spelling is a different origin and pairs again). The engine appends a
+   `device-…` record to `~/.cynco/tokens.json` (`inference` scope) and the browser keeps its secret
+   in local storage. Each code works once; five wrong codes close pairing for ten minutes.
+
+What a paired phone can do is what the desk page can do: chat, watch tool activity, answer
+approval cards and AskUser questions, press **Stop**. It cannot change configuration — management
+is refused off this machine whatever token is presented — and it is never asked for the
+management token. A paired phone is therefore equivalent to a terminal on this machine, Bash
+approvals included: revoke a lost phone under Config → Phone access, and its page returns to
+pairing at once.
+
+If the phone cannot connect: the Config panel (or the `[dashboard] phone listener` line in the
+engine's log) says whether the address bound (Tailscale down at start is retried every 15 s); a
+bridge port that walked to `+1` moves the dashboard port, and the phone URL, with it; and Windows Firewall must allow `bun.exe` inbound on
+the Tailscale interface (the Config panel's "last phone request" says whether anything got
+through). HTTPS, an installable page and push notifications are later increments.
 
 ### The Brain
 
@@ -524,7 +561,7 @@ Setting a variable overrides the profile for that one field and nothing else.
 | `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | **Opt-in.** Let the S5 policy engine proactively pre-load task-relevant tools (e.g. surface `Bash`, `Grep`, `Read` for a debugging request) before the model asks. Append-only — never restricts. |
 | `LOCALCODE_SEARXNG_URL` | — | SearXNG instance URL for research |
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
-| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address. `0.0.0.0` puts the session transcripts and the event stream on the network, behind nothing but the inference token — see [Local tokens](#local-tokens). |
+| `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address, or a comma-separated list: the first entry is the desk's listener, each further one (your Tailscale address) a phone listener on the same port whose clients must pair — see [Phone access](#phone-access). Never `0.0.0.0`. |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI bridge bind address. `0.0.0.0` puts the agent's command channel on the network, behind nothing but the bridge token — see [Local tokens](#local-tokens). |
 | `LOCALCODE_CACHE_RAM` | derived — `21504` at the default context | llama-server host prompt-cache RAM (MiB), a ceiling on **system** memory, not VRAM. Derived as `ctx-checkpoints × (149.65 MiB + 4.02 KiB × context)`, the measured cost of one checkpoint, so the budget always holds one complete conversation's checkpoints. The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6/3.8) — don't set to `0`. Setting it explicitly overrides the derivation, which also means you own the F91 arithmetic. |
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. `64` killed llama-server with `bad allocation` against a fixed 8192 MiB cache (F91); `LOCALCODE_CACHE_RAM` is now derived from this value, so raising it raises the budget with it — unless you pin `LOCALCODE_CACHE_RAM` too, which re-creates F91 by hand. |

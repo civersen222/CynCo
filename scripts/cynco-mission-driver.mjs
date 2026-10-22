@@ -434,7 +434,13 @@ function onMissionMessage(ev) {
       lastActivityAt = Date.now()
     }
     if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now(); messageCompletes++ }
-    if (m.type === 'session.error' && !engineError) {
+    if (m.type === 'session.error' && /^busy:/.test(String(m.error ?? ''))) {
+      // F180: the engine now answers a message sent while another turn runs,
+      // instead of dropping it. Not a crash — the dispatch met an interactive
+      // turn already in flight; the silence heuristic still ends this run as
+      // never dispatched, which is what it is.
+      console.log(`[driver] dispatch REFUSED — the engine is busy with another turn: ${String(m.error)}`)
+    } else if (m.type === 'session.error' && !engineError) {
       // Terminal for this mission: conversationLoop only emits this after the
       // model loop has thrown and unwound. Recorded, not thrown away, so the
       // ledger can tell a repeated llama-server exit from a one-off.

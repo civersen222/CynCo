@@ -19,7 +19,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { mkdirSync, readFileSync, writeFileSync, chmodSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, renameSync, readdirSync, unlinkSync } from 'fs'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
 import { cyncoHome } from '../paths.js'
@@ -37,7 +37,23 @@ export type LocalToken = {
   name: string
   scopes: TokenScope[]
   secret: string
+  /** A paired device (phone): what the owner called it when pairing. */
+  label?: string
+  /** A paired device: when it was paired, ISO 8601. */
+  createdAt?: string
 }
+
+/**
+ * Every paired device's record is named `device-<8 hex>`. The prefix is the
+ * whole of the distinction: a device holds the same `inference` scope as the
+ * dashboard page, and is told apart only so that it can be listed and revoked
+ * one at a time. The three minted records keep their fixed names.
+ */
+export const DEVICE_PREFIX = 'device-'
+export const DEVICE_LABEL_MAX = 40
+
+/** What the dashboard shows about a paired device — never its secret. */
+export type DeviceSummary = { name: string; label: string; createdAt: string | null }
 
 type TokenFile = { version: 1; tokens: LocalToken[] }
 
@@ -99,7 +115,12 @@ function restrictToOwner(path: string): void {
 }
 
 export class TokenSet {
-  constructor(private readonly file: TokenFile) {}
+  /**
+   * `path` is where the set was read from, and where `addDevice`/`revokeDevice`
+   * write it back. A set built without one (tests that never pair) can still
+   * verify; it just cannot persist, and says so.
+   */
+  constructor(private readonly file: TokenFile, private readonly path: string | null = null) {}
 
   /** The secret to present for `scope`, or null if nothing holds it. */
   tokenFor(scope: TokenScope): string | null {
@@ -128,18 +149,104 @@ export class TokenSet {
   }
 
   private match(presented: string | null | undefined, eligible: (t: LocalToken) => boolean): boolean {
-    if (!presented) return false
+    return this.holderMatching(presented, eligible) !== null
+  }
+
+  /**
+   * The record `presented` is the secret of, or null. Same constant-time walk
+   * as `verify`; this is what lets the dashboard know WHICH device opened a
+   * socket, so revoking that device can close it.
+   */
+  holderOf(presented: string | null | undefined): LocalToken | null {
+    return this.holderMatching(presented, () => true)
+  }
+
+  private holderMatching(presented: string | null | undefined, eligible: (t: LocalToken) => boolean): LocalToken | null {
+    if (!presented) return null
     const given = Buffer.from(presented, 'utf-8')
-    let ok = false
+    let hit: LocalToken | null = null
     for (const t of this.file.tokens) {
       if (!eligible(t)) continue
       const expected = Buffer.from(t.secret, 'utf-8')
       if (expected.length !== given.length) continue
       // No early return: keep comparing so the work does not depend on which
       // holder matched.
-      if (timingSafeEqual(expected, given)) ok = true
+      if (timingSafeEqual(expected, given)) hit = t
     }
-    return ok
+    return hit
+  }
+
+  // ── Paired devices ────────────────────────────────────────────────
+
+  /** Every paired device, oldest first, without secrets. */
+  devices(): DeviceSummary[] {
+    return this.file.tokens
+      .filter(t => t.name.startsWith(DEVICE_PREFIX))
+      .map(t => ({ name: t.name, label: t.label ?? '', createdAt: t.createdAt ?? null }))
+  }
+
+  /**
+   * Mint an `inference`-scoped record for a device that just paired, write the
+   * file, and return the record (the caller hands the secret to that device
+   * once). `inference` and nothing more: a phone drives the agent through the
+   * same allowlisted frames as the dashboard page and never changes config.
+   */
+  addDevice(label: string, now: Date = new Date()): LocalToken {
+    const clean = label.replace(/[^\x20-\x7e]/g, '').trim().slice(0, DEVICE_LABEL_MAX) || 'phone'
+    let name = ''
+    do { name = DEVICE_PREFIX + randomBytes(4).toString('hex') } while (this.file.tokens.some(t => t.name === name))
+    const record: LocalToken = {
+      name,
+      scopes: ['inference'],
+      secret: randomBytes(32).toString('hex'),
+      label: clean,
+      createdAt: now.toISOString(),
+    }
+    // Written first, remembered second: a write that fails leaves no phantom
+    // device in memory (counted, listed, and flushed to disk by a later write
+    // with a secret nobody holds).
+    const next = [...this.file.tokens, record]
+    this.persist(next)
+    this.file.tokens = next
+    return record
+  }
+
+  /**
+   * Forget a device. True when a record went; false when no device of that name
+   * exists (the three minted records cannot be revoked here — they are not
+   * devices, and removing one would strand the TUI or the page).
+   */
+  revokeDevice(name: string): boolean {
+    if (!name.startsWith(DEVICE_PREFIX)) return false
+    const before = this.file.tokens.length
+    // Memory first — the device is refused from this instant whatever the
+    // file does — then the write, whose failure is thrown to the caller to say.
+    this.file.tokens = this.file.tokens.filter(t => t.name !== name)
+    if (this.file.tokens.length === before) return false
+    this.persist(this.file.tokens)
+    return true
+  }
+
+  /**
+   * Write the whole file: to a sibling temp file, then rename over the
+   * original, so the TUI — which reads this file at connect time — and a child
+   * engine never see a half-written set. Owner-only permissions are re-applied
+   * because the renamed file is a new file.
+   */
+  private persist(tokens: LocalToken[]): void {
+    if (this.path === null) {
+      console.warn('[tokens] token set has no file path — a device change was not persisted')
+      return
+    }
+    const next: TokenFile = { version: 1, tokens }
+    if (!isUsable(next)) throw new Error('refusing to write a token file the engine could not load again')
+    // Restricted BEFORE the rename: the ACL travels with the file, so a crash
+    // between write and rename leaves a straggler that is already owner-only
+    // (and `loadOrCreateTokens` sweeps stragglers).
+    const tmp = `${this.path}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
+    restrictToOwner(tmp)
+    renameSync(tmp, this.path)
   }
 }
 
@@ -151,14 +258,30 @@ export class TokenSet {
  * alternative is refusing to start, and a bad token file must not be the thing
  * that stops the engine coming up.
  */
+/** A `tokens.json.<pid>.tmp` left by a crash between write and rename holds every secret; remove it. */
+function sweepStragglers(base: string): void {
+  let names: string[]
+  try { names = readdirSync(base) } catch (e) {
+    console.warn(`[tokens] could not list ${base}: ${e instanceof Error ? e.message : String(e)}`)
+    return
+  }
+  for (const n of names) {
+    if (!n.startsWith(TOKEN_FILENAME + '.') || !n.endsWith('.tmp')) continue
+    try { unlinkSync(join(base, n)); console.warn(`[tokens] removed straggler ${n}`) } catch (e) {
+      console.warn(`[tokens] could not remove straggler ${n}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+}
+
 export function loadOrCreateTokens(dir?: string): TokenSet {
   const base = dir ?? cyncoHome()
   mkdirSync(base, { recursive: true })
   const path = join(base, TOKEN_FILENAME)
+  sweepStragglers(base)
 
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8'))
-    if (isUsable(parsed)) return new TokenSet(parsed)
+    if (isUsable(parsed)) return new TokenSet(parsed, path)
   } catch (e) {
     // ENOENT on a first run is the ordinary path and says nothing. Anything else
     // means a token file exists and could not be read, and minting over it will
@@ -172,5 +295,5 @@ export function loadOrCreateTokens(dir?: string): TokenSet {
   const file = mint()
   writeFileSync(path, JSON.stringify(file, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
   restrictToOwner(path)
-  return new TokenSet(file)
+  return new TokenSet(file, path)
 }

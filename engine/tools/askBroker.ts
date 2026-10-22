@@ -21,6 +21,8 @@ type PendingAsk = {
   resolve: (answer: string) => void
   reject: (err: AskCancelledError) => void
   timer: ReturnType<typeof setTimeout>
+  /** The question as it was asked, so a client that connects (or reconnects) while it is open can draw the card. */
+  request: AskRequest
 }
 
 /** A pending question withdrawn by the engine (`cancelAll`) — not a timeout, not an answer. */
@@ -78,8 +80,13 @@ export class AskBroker {
           entry.resolve('')
         }
       }, this.timeoutMs)
-      this.pending.set(requestId, { resolve, reject, timer })
+      this.pending.set(requestId, { resolve, reject, timer, request: { requestId, question, options } })
     })
+  }
+
+  /** Every question still waiting on a person, oldest first — what `/api/session` replays to a reconnecting page. */
+  pendingRequests(): AskRequest[] {
+    return [...this.pending.values()].map(e => e.request)
   }
 
   /**

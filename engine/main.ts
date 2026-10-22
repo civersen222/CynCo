@@ -44,6 +44,7 @@ import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer, countUserTurns } from './dashboard/server.js'
+import { isLoopbackAddress } from './dashboard/access.js'
 import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
@@ -497,6 +498,10 @@ try {
       // /api/session: a reloaded page seeds Turns and the context gauge from
       // these instead of waiting for the next event (projects-fix-1 D).
       getSessionCounters: () => ({ turns: countUserTurns(loop.getMessages()), contextUsed: loop.contextUsed }),
+      // /api/session `pending`: the approval cards and AskUser questions still
+      // open, so a page that connects mid-turn (a phone after its screen locked)
+      // can draw what it never saw — the frames are broadcast once, never replayed.
+      getPendingDecisions: () => loop.pendingDecisions(),
     },
   })
   const dashboardHost = dashboardServer.getHostname()
@@ -504,6 +509,16 @@ try {
   // The bound port, asked of the server, not the number we asked it for. A URL
   // computed from the request is a guess printed as a fact.
   console.log(`[dashboard] Governance dashboard on http://${dashboardDisplayHost}:${dashboardServer.getPort()}`)
+  // Phone access (docs/decisions/2026-10-22-phone-access.md): every extra
+  // listener on its own line, and the single-use code a new phone types.
+  const extras = dashboardServer.listeners().filter(l => !l.primary)
+  for (const l of extras) {
+    console.log(`[dashboard] phone listener http://${l.host}:${l.port} — ${l.bound ? 'bound' : 'NOT bound yet; retrying every 15 s (is Tailscale up?)'}`)
+  }
+  // Any listener a phone can reach — an extra, or a primary that is not loopback.
+  if (extras.length > 0 || !isLoopbackAddress(dashboardServer.getHostname())) {
+    console.log(`[dashboard] pairing code for a new phone: ${dashboardServer.pairingCode()} (single-use; the next one is printed when this one is used, or under Config → Phone access)`)
+  }
 } catch (e) {
   // Not console.warn. The dashboard is the only window onto governance, and a
   // warn among a hundred startup lines reads as noise — the failure mode this

@@ -356,6 +356,20 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .chat-send { background:#264f78; color:#d4d4d4; border:none; padding:12px 20px; border-radius:6px;
   cursor:pointer; font-size:13px; font-weight:600; height:fit-content; }
 .chat-send:hover { background:#2d5a8a; }
+.chat-stop { display:none; background:#5a2d2d; color:#d4d4d4; border:none; padding:12px 16px; border-radius:6px;
+  cursor:pointer; font-size:13px; font-weight:600; height:fit-content; }
+.chat-stop.visible { display:inline-block; }
+.chat-stop:hover { background:#6e3636; }
+.brain-badge .status-dot { margin-right:4px; }
+.brain-label.offline { color:#f44747; }
+.brain-label.offline::after { content:' offline'; }
+/* Config → Phone access */
+.phone-note { color:#a0a0a0; font-size:12px; margin:6px 0 10px; line-height:1.5; }
+.phone-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+.phone-row { display:flex; gap:10px; align-items:center; padding:5px 0; border-bottom:1px solid #2a2a2a; font-size:12px; flex-wrap:wrap; }
+.phone-k { color:#808080; min-width:130px; }
+.phone-v { color:#d4d4d4; font-family:'Cascadia Code','Fira Code',monospace; overflow-wrap:anywhere; }
+.phone-row .ap-no { margin-left:auto; }
 .chat-msg { margin-bottom:8px; line-height:1.6; }
 .chat-msg-user { color:#808080; }
 .chat-msg-user span { color:#4ec9b0; font-weight:600; }
@@ -517,6 +531,43 @@ body.mission-mode #historyPanel { display: none; }
   .tab-content { overflow-x: auto; }
   input, textarea, select { font-size: 14px; }
   #tab-projects input[type=text], #tab-projects input[type=search], #tab-projects textarea, .chat-input, .cwd-input { font-size: 14px; }
+}
+
+/* ── A phone (docs/decisions/2026-10-22-phone-access.md). The chat fills what
+   is left under the header, banner and tab bar, whatever they wrap to, instead
+   of a 100vh guess; controls are 16px so iOS does not zoom on focus; tap
+   targets are 44px. ── */
+@media (max-width: 600px) {
+  html, body { height: 100%; }
+  body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+  .header, .reconnect-banner, .tab-bar { flex: 0 0 auto; }
+  .header { padding: 8px 12px; gap: 8px; }
+  .header h1 { font-size: 14px; }
+  .header .subtitle { display: none; }
+  .tab-bar { flex-wrap: nowrap; overflow-x: auto; padding: 0 4px; margin-bottom: 6px; scrollbar-width: none; }
+  .tab-bar::-webkit-scrollbar { display: none; }
+  .tab-btn { flex: 0 0 auto; padding: 8px 10px; font-size: 12px; white-space: nowrap; }
+  .tab-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  #tab-chat.active { display: flex; flex-direction: column; padding: 0 12px; overflow: hidden; }
+  .chat-container { flex: 1 1 auto; height: auto; min-height: 0; }
+  .chat-header { padding: 6px 0; gap: 6px; }
+  .cwd-input { flex: 1 1 120px; min-width: 0; width: auto; }
+  .brain-badge canvas { width: 52px; height: 30px; }
+  .chat-messages { min-height: 0; }
+  .chat-msg, .chat-approval .ap-desc, .chat-tool-detail { overflow-wrap: anywhere; }
+  .chat-msg-assistant table, .genui-md table { display: block; overflow-x: auto; }
+  .chat-input-area { gap: 6px; padding: 8px 0 calc(8px + env(safe-area-inset-bottom)); }
+  .chat-input { min-height: 44px; max-height: 160px; padding: 8px 10px; font-size: 16px; }
+  .chat-send, .chat-stop { padding: 10px 14px; min-height: 44px; }
+  .chat-approval button, .genui-btn { min-height: 40px; }
+  .chat-ask .ask-free { flex-wrap: wrap; }
+  .chat-ask .ask-input, .genui-input, .genui-select, .genui-textarea { font-size: 16px; }
+  .chat-tool-detail { margin-left: 8px; }
+  .genui-metric { min-width: 0; }
+  .proj-toast { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); max-width: none; }
+  /* The Config tab's action bar follows the tabs in the DOM; in the column layout it would sit under every tab. */
+  .bottom-bar { display: none; }
+  #tab-config.active ~ .bottom-bar { display: flex; }
 }
 
 /* ── Markdown in assistant prose and genui Markdown blocks ── */
@@ -822,6 +873,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
       <label style="color:#808080;font-size:11px;">CWD:</label>
       <input class="cwd-input" id="chatCwd" value="" placeholder="Working directory">
       <div class="brain-badge" title="Engine activity">
+        <span class="status-dot disconnected" id="chatConnDot"></span>
         <canvas id="brainCanvas" width="76" height="44"></canvas>
         <span class="brain-label" id="brainLabel">idle</span>
       </div>
@@ -834,7 +886,8 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div id="chatCitations"></div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
-             onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage()}"></textarea>
+             onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!chatEnterInsertsNewline()){event.preventDefault();sendChatMessage()}"></textarea>
+      <button class="chat-stop" id="chatStop" onclick="abortTurn()" title="Stop the running turn">Stop</button>
       <button class="chat-send" onclick="sendChatMessage()">Send</button>
     </div>
   </div>
@@ -1156,6 +1209,19 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
   </div>
 </div>
 
+<!-- ── Phone access (docs/decisions/2026-10-22-phone-access.md) ─── -->
+<div class="controls-section" id="phonePanel">
+  <div class="control-panel">
+    <div class="control-panel-title teal">Phone access</div>
+    <p class="phone-note">A phone on your Tailscale tailnet opens the phone URL, pairs once with a single-use code, and then holds a token of its own: it can chat and read, never change configuration. Showing the code needs the management token (printed when the engine started).</p>
+    <div class="phone-actions">
+      <button class="chat-send" id="phoneShow" onclick="loadPhoneAccess()">Show pairing code &amp; devices</button>
+      <button class="chat-send" id="phoneRotate" onclick="rotatePairingCode()" style="display:none">New code</button>
+    </div>
+    <div id="phoneBody"></div>
+  </div>
+</div>
+
 <!-- ── Advanced Section ────────────────────────────────────── -->
 <div class="advanced-section">
   <div class="advanced-toggle">
@@ -1300,6 +1366,9 @@ const state = {
   trajectoryTaskId: null,
   bestOfN: null,
   subsystems: null,
+  // What /api/session last said about the run: false gates the F143 ticker
+  // after a reconnect found the turn over; null means "live frames decide".
+  engineProcessing: null,
 };
 
 const TOOL_ORDER = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', 'CodeIndex', 'Git', 'Agent',
@@ -1317,6 +1386,7 @@ const HYPOTHESIS_NAMES = {
 
 let ws = null;
 let reconnectDelay = 1000;
+let reconnectTimer = null;
 let sessionTimer = null;
 let standaloneTimeout = null;
 
@@ -1350,8 +1420,11 @@ function connectWS() {
     state.connected = false;
     render();
     document.getElementById('reconnectBanner').classList.add('visible');
-    setTimeout(connectWS, reconnectDelay);
+    reconnectTimer = setTimeout(connectWS, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    // A revoked device's socket closes and would retry forever: one HTTP ask,
+    // whose 401 sends this page back to pair (the injected fetch wrapper).
+    if (window.__CYNCO_REMOTE) fetch('/api/session').catch(function() {});
   };
 
   ws.onerror = function() {
@@ -1586,12 +1659,16 @@ function handleEvent(event) {
       mdFlushStream();
       finalizeGenuiSurfaces(); // a surface still partial here never got its final frame
       brainViz.setActive(false);
+      // The engine's own word that a Stop took effect (the loop returns at its
+      // signal check and says so), so no client has to guess when it did.
+      if (event.stopReason === 'aborted') appendChatMsg('system', 'Stopped.');
       markSaveableReplies();
       break;
 
     case 'approval.request':
       appendApprovalCard(event);
       brainViz.setActive(false); // engine is now waiting on you, not computing
+      if (typeof showChatStop === 'function') showChatStop(true); // but the turn is still open: Stop still means something
       break;
 
     // The model's AskUser question. Without this arm the question was never
@@ -1599,6 +1676,7 @@ function handleEvent(event) {
     case 'ask.request':
       appendAskCard(event);
       brainViz.setActive(false); // engine is now waiting on you, not computing
+      if (typeof showChatStop === 'function') showChatStop(true);
       break;
 
     case 'control.signals':
@@ -1642,14 +1720,24 @@ function handleEvent(event) {
     // A refused project.open (unknown slug, missing chat, a frame the command
     // schema refuses) arrives as session.error; without this arm the page
     // showed nothing at all and the next message went to the coding session.
-    case 'session.error':
-      appendChatMsg('system', 'error: ' + (event.error || 'unknown engine error'));
-      if (String(event.error || '').indexOf('project.open') >= 0) projStatus('projectsStatus', 'err', event.error);
+    case 'session.error': {
+      var errText = String(event.error || 'unknown engine error');
+      // The busy guard's answer to a message sent mid-turn (this page gates its
+      // own box, so this one came from another client) and a refused frame do
+      // not end the turn in flight; an engine error does.
+      var errBusy = /^busy:/.test(errText);
+      var errRefusal = /^(command frame|project\.open) refused/.test(errText);
+      appendChatMsg('system', errBusy ? 'Not sent: ' + errText : 'error: ' + errText);
+      if (errText.indexOf('project.open') >= 0) projStatus('projectsStatus', 'err', event.error);
+      if (!errBusy && !errRefusal) brainViz.setActive(false);
       // A re-open this page sent to a restarted engine, refused: the pane must
       // not keep its strip over the coding session.
       onProjectOpenRefused(event.error);
-      finalizeGenuiSurfaces();
+      // A busy answer to another client's message does not end the turn this
+      // page may be drawing a surface for.
+      if (!errBusy) finalizeGenuiSurfaces();
       break;
+    }
 
     // A RenderUI surface (engine/genui): partial frames while the call streams,
     // one final frame per call, spec:null when the call was withdrawn.
@@ -1717,6 +1805,11 @@ function renderConnection() {
     dot.className = 'status-dot disconnected';
     label.textContent = 'No active session';
   }
+  // The Chat tab shows the same dot, and says so when the socket is down.
+  var chatDot = document.getElementById('chatConnDot');
+  if (chatDot) chatDot.className = dot.className;
+  var brainLbl = document.getElementById('brainLabel');
+  if (brainLbl) brainLbl.classList.toggle('offline', !state.connected);
   document.getElementById('connModel').textContent = state.model || '\u2014';
   document.getElementById('connTurns').textContent = String(state.turnCount);
   document.getElementById('connTier').textContent = state.tier || '\u2014';
@@ -2725,6 +2818,9 @@ function fetchSessionState() {
         activateSession(data.contextLength);
       }
       if (data) { seedSessionCounters(data); render(); }
+      // Is a turn running, and what is it waiting on? After a reconnect this is
+      // the only source: the frames that went by were not replayed.
+      if (typeof applyRunState === 'function') applyRunState(data);
       // What the engine holds — `project` (null: none, as after a restart) and
       // whether it is busy in the coding session — against the chat this pane shows.
       reconcileProjectBinding(seq, data || undefined);
@@ -2757,7 +2853,7 @@ function fetchSessionState() {
     for (var i = 0; i < state.toolFeed.length; i++) {
       if (state.toolFeed[i].status === 'running') { running = true; break; }
     }
-    if (running) { renderToolFeed(); brainViz.setActive(true); }
+    if (running) { renderToolFeed(); if (!state || state.engineProcessing !== false) brainViz.setActive(true); }
   }, 1000);
 
   // Mission mode: when dispatch launched this engine, show the Mission panel
@@ -3189,6 +3285,8 @@ var brainViz = (function() {
     target = on ? 1 : 0;
     var lbl = document.getElementById('brainLabel');
     if (lbl) { lbl.textContent = on ? 'thinking' : 'idle'; lbl.classList.toggle('active', !!on); }
+    if (typeof showChatStop === 'function') showChatStop(on);
+    if (on && typeof state === 'object' && state) state.engineProcessing = null; // live frames decide again
     if (on) {
       if (watchdog) clearTimeout(watchdog);
       // safety: if we somehow miss the end signal, settle back to idle
@@ -3273,6 +3371,14 @@ renderPredictions();
 connectWS();
 startSessionTimer();
 brainViz.init();
+// A phone's screen lock suspends the socket; on wake, reconnect now rather than
+// at the end of the backoff (up to 30 s). CLOSED only: a CONNECTING socket is left alone.
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'visible' && ws && ws.readyState === 3) { clearTimeout(reconnectTimer); reconnectDelay = 1000; connectWS(); }
+});
+if (window.__CYNCO_REMOTE) { var phonePanelEl = document.getElementById('phonePanel'); if (phonePanelEl) phonePanelEl.style.display = 'none'; }
+// On a touch-only device Enter inserts a newline; say so where the desk's hint said the opposite.
+if (chatEnterInsertsNewline()) { var chatInputEl = document.getElementById('chatInput'); if (chatInputEl) chatInputEl.placeholder = 'Type a message... (/plan, /tdd, /debug for workflows)' + String.fromCharCode(10) + String.fromCharCode(10) + 'The Send button sends'; }
 
 // Enter standalone mode after 2 seconds if no session arrives
 standaloneTimeout = setTimeout(function() {
@@ -3425,6 +3531,10 @@ function sendChatMessage() {
     }
   }
 
+  // A turn is running (or the engine waits on a card): the engine would refuse
+  // this with `busy:` and the text would look sent. Keep it in the box.
+  if (typeof chatTurnRunning === 'function' && chatTurnRunning()) { input.value = text; appendChatMsg('system', 'A turn is still running. Press Stop, or wait for it to finish.'); return; }
+
   // While a project is bound the box shows the project folder read-only and the
   // frame carries no cwd; only a coding turn sends one.
   var frame = { type: 'user.message', text: text };
@@ -3472,6 +3582,153 @@ function respondApproval(requestId, approved) {
     if (btns) btns.innerHTML = '<span class="ap-status">' + (approved ? '\u2713 approved' : '\u2717 denied') + '</span>';
   }
   if (approved) brainViz.setActive(true); // work resumes
+}
+
+// ── Run control for a page that may be a phone (docs/decisions/2026-10-22-phone-access.md) ──
+
+/** The Stop button follows the working indicator: shown while a turn runs or the engine waits on a card. */
+function showChatStop(on) {
+  var b = document.getElementById('chatStop');
+  if (b) b.classList.toggle('visible', !!on);
+}
+
+/** True while this page believes a turn is open (the Stop button is showing). */
+function chatTurnRunning() {
+  var b = document.getElementById('chatStop');
+  return !!(b && b.classList.contains('visible'));
+}
+
+/** On a touch-only device Enter inserts a newline and the Send button sends: a phone keyboard has no Shift+Enter. */
+function chatEnterInsertsNewline() {
+  try { return window.matchMedia('(hover: none) and (pointer: coarse)').matches; } catch (e) { return false; }
+}
+
+/**
+ * Stop the running turn. The engine ends it with message.complete
+ * { stopReason: 'aborted' } once it has really stopped — a tool already
+ * executing finishes first — and that frame closes the turn here. Pressed
+ * when nothing runs, abort is a no-op and nothing arrives, so the page asks
+ * /api/session a moment later and settles from the answer.
+ */
+function abortTurn() {
+  if (!ws || ws.readyState !== 1) { appendChatMsg('system', 'Not connected to the engine; nothing was stopped.'); return; }
+  ws.send(JSON.stringify({ type: 'abort' }));
+  appendChatMsg('system', 'Stop requested. The engine stops at its next step; a tool already running finishes first.');
+  setTimeout(function() {
+    fetch('/api/session').then(function(r) { return r.json(); }).then(function(d) {
+      // The engine's session-end tail may still hold `processing` for a moment
+      // after it said "aborted": a turn this page has already closed is not
+      // reopened by the re-sync.
+      if (d && d.processing === true && !chatTurnRunning()) d.processing = null;
+      applyRunState(d);
+    }).catch(function() {});
+  }, 1500);
+}
+
+/**
+ * Settle the page's idea of the run from /api/session (on connect, on
+ * reconnect, after Stop). processing:false while this page still shows a
+ * turn means it ended while the page was away: close what is open and say
+ * so. The decisions the engine is waiting on are drawn if this page has no
+ * card for them — the request frames are broadcast once, never replayed.
+ */
+function applyRunState(data) {
+  if (!data) return;
+  if (data.processing === false) {
+    var wasBusy = chatTurnRunning();
+    state.engineProcessing = false;
+    closeChatThinking(); mdFlushStream(); finalizeGenuiSurfaces();
+    brainViz.setActive(false);
+    if (wasBusy) appendChatMsg('system', 'The turn ended while this page was away; anything streamed meanwhile is not shown here.');
+  } else if (data.processing === true) {
+    brainViz.setActive(true);
+  }
+  if (Array.isArray(data.pending)) replayPendingDecisions(data.pending);
+}
+
+function replayPendingDecisions(pending) {
+  for (var i = 0; i < pending.length; i++) {
+    var d = pending[i];
+    if (!d || !d.requestId) continue;
+    if (d.kind === 'approval') {
+      if (!document.querySelector('.chat-approval[data-req="' + d.requestId + '"]')) {
+        appendApprovalCard({ requestId: d.requestId, toolName: d.toolName, description: d.description, risk: d.risk });
+      }
+    } else if (d.kind === 'ask') {
+      appendAskCard({ requestId: d.requestId, question: d.question, options: d.options });
+    }
+  }
+  if (pending.length) { brainViz.setActive(false); showChatStop(true); }
+}
+
+// ── Config → Phone access: the pairing code, the phone URL, the paired devices ──
+// Management scope (the fetch wrapper asks for the token on 403), so the code —
+// which mints credentials — is never shown to a page holding only the read token.
+
+function loadPhoneAccess() {
+  fetch('/api/phone')
+    .then(function(r) { if (!r.ok) throw new Error(r.status === 403 ? 'management token required' : 'HTTP ' + r.status); return r.json(); })
+    .then(function(data) { renderPhoneAccess(data, null); })
+    .catch(function(err) { renderPhoneAccess(null, err.message); });
+}
+
+function rotatePairingCode() {
+  fetch('/api/phone/rotate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(function() { loadPhoneAccess(); }).catch(function(err) { renderPhoneAccess(null, err.message); });
+}
+
+function revokePhone(name) {
+  if (!window.confirm('Revoke ' + name + '? Its page stops working at once.')) return;
+  fetch('/api/phone/revoke', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) })
+    .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+    .then(function(res) {
+      loadPhoneAccess();
+      // A revoke the engine could not write to disk is said, not swallowed.
+      if (!res.ok && res.body && res.body.error) window.alert('Revoke: ' + res.body.error);
+    })
+    .catch(function(err) { renderPhoneAccess(null, err.message); });
+}
+
+/** Everything is set with textContent: device labels are typed on the phone and are data, not markup. */
+function renderPhoneAccess(data, error) {
+  var body = document.getElementById('phoneBody');
+  if (!body) return;
+  while (body.firstChild) body.removeChild(body.firstChild);
+  var rotate = document.getElementById('phoneRotate');
+  function row(label, value) {
+    var r = document.createElement('div'); r.className = 'phone-row';
+    var k = document.createElement('span'); k.className = 'phone-k'; k.textContent = label;
+    var v = document.createElement('span'); v.className = 'phone-v'; v.textContent = value;
+    r.appendChild(k); r.appendChild(v); body.appendChild(r);
+    return r;
+  }
+  if (!data) {
+    if (rotate) rotate.style.display = 'none';
+    row('Unavailable', error || 'no answer');
+    return;
+  }
+  if (rotate) rotate.style.display = '';
+  row('Pairing code', data.lockedForMs > 0
+    ? 'locked for ' + Math.ceil(data.lockedForMs / 60000) + ' min after wrong codes'
+    : String(data.code) + '   (single-use)');
+  var extras = (data.listeners || []).filter(function(l) { return !l.primary; });
+  if (!extras.length) row('Phone URL', 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.');
+  for (var i = 0; i < extras.length; i++) {
+    row('Phone URL', 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)'));
+  }
+  row('Last phone request', data.lastRemoteRequestAt
+    ? new Date(data.lastRemoteRequestAt).toLocaleString()
+    : 'none yet. If the phone cannot connect: Tailscale on the phone, then Windows Firewall for bun.exe.');
+  var devs = data.devices || [];
+  if (!devs.length) row('Paired devices', 'none');
+  for (var j = 0; j < devs.length; j++) {
+    (function(d) {
+      var r = row(d.label || d.name, d.name + (d.createdAt ? '   paired ' + new Date(d.createdAt).toLocaleDateString() : ''));
+      var b = document.createElement('button'); b.className = 'ap-no'; b.textContent = 'Revoke';
+      b.onclick = function() { revokePhone(d.name); };
+      r.appendChild(b);
+    })(devs[j]);
+  }
 }
 
 /**
