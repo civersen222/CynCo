@@ -12,3 +12,7 @@ local LLMs — no cloud, no API key. Built on Stafford Beer's Viable System Mode
 
 **Start here:** new users → USER_GUIDE; contributors → MANUAL; evaluating whether
 it works → BENCHMARKS.
+
+Working *on* CynCo rather than with it: [`AGENTS.md`](../AGENTS.md) (subsystem map,
+invariants, how to change CynCo) and [`NOW.md`](./NOW.md) (the one current objective,
+next, backlog, deferred).
