@@ -17,6 +17,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFile } from 'child_process'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
+import type { PendingDecision } from '../bridge/conversationLoop.js'
 import { validateCommand } from '../bridge/commandSchema.js'
 import { setParam, GOVERNANCE_PARAMS, exportParamMetadata } from '../vsm/governanceParams.js'
 import { globalContract } from '../tools/contract.js'
@@ -27,7 +28,14 @@ import {
   evaluateReadiness,
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
-import type { TokenSet, TokenScope } from '../security/localToken.js'
+import { DEVICE_PREFIX, type TokenSet, type TokenScope } from '../security/localToken.js'
+import {
+  classifyClient, hostRefusal, originMismatch, parseListenHosts, isWildcardHost,
+  PairingGate, MAX_DEVICES, pairingPage, DEVICE_TOKEN_STORAGE_KEY, type ClientKind,
+} from './access.js'
+
+/** Both pages refuse to be framed: a hostile page could otherwise overlay Send or an approval card's Approve. */
+const NO_FRAMING = { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' }
 import {
   type ProjectsDeps,
   listProjects,
@@ -92,6 +100,12 @@ export interface DashboardDeps {
   getRunState?: () => { processing: boolean; toolCalls?: number }
   /** Test seam: run one git command asynchronously and resolve its stdout. Default: child_process.execFile. */
   missionGit?: (args: string[]) => Promise<string>
+  /**
+   * Test seam: the peer address a request came from. Default: Bun's
+   * `server.requestIP(req)`. Under the suite every peer is loopback, so a test
+   * that plays a phone on the tailnet passes `() => '100.64.0.9'`.
+   */
+  remoteAddress?: (req: Request) => string | null
   applyEngineConfig?: (patches: Record<string, unknown>) => { applied: Record<string, unknown>; errors: { field: string; message: string }[] }
   setToolRouting?: (enabled: boolean) => void
   getToolRouting?: () => boolean
@@ -120,6 +134,15 @@ export interface DashboardDeps {
    * count), null before any turn has run — never 0 (F16).
    */
   getSessionCounters?: () => { turns: number; contextUsed: number | null }
+  /**
+   * The approval cards and AskUser questions the engine is waiting on right
+   * now (`ConversationLoop.pendingDecisions`). Served as `pending` on
+   * `/api/session`: `approval.request` / `ask.request` are broadcast once and
+   * never replayed, so a page that connects while one is open — a phone whose
+   * screen locked mid-turn — would otherwise show "thinking" with nothing to
+   * answer until the 5-minute auto-deny.
+   */
+  getPendingDecisions?: () => PendingDecision[]
 }
 
 /**
@@ -148,6 +171,8 @@ export type SessionSnapshot = {
   turns: number | null
   contextUsed: number | null
   project: { slug: string; chat: string | null; title: string | null } | null
+  /** Decisions waiting on a person; null when the engine did not wire the dep. */
+  pending: PendingDecision[] | null
   [extra: string]: unknown
 }
 
@@ -281,10 +306,10 @@ export function dashboardCommandRefusal(frame: unknown): string | null {
 // The response is unreadable but the mutation already happened. Only a token or
 // an Origin check stops that; the management-scope gate below is what does it.
 
-function jsonResponse(data: unknown, status = 200): Response {
+function jsonResponse(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
   })
 }
 
@@ -337,12 +362,17 @@ function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; js
   return jsonResponse(r.json ?? { error: 'no such file' }, r.status)
 }
 
-function htmlResponse(body: string, status = 200): Response {
+function htmlResponse(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     status,
-    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8', ...headers },
   })
 }
+
+/** What a dashboard socket remembers about its client: which token record opened it (its name, never the secret). */
+export type DashboardSocketData = { holder: string | null }
+/** The names a paired device's record may have — the only records a remote client may authenticate with. */
+const DEVICE_NAME_RE = /^device-[0-9a-f]{8}$/
 
 // ---------------------------------------------------------------------------
 // Session-id validation (no path separators, no shell-special chars)
@@ -470,8 +500,26 @@ interface CampaignSummary {
 // ---------------------------------------------------------------------------
 
 export class DashboardServer {
-  private server: Server
-  private clients: Set<ServerWebSocket<unknown>> = new Set()
+  private server: Server<DashboardSocketData>
+  /**
+   * Further listeners on the same port — the Tailscale address, for the phone.
+   * Each may fail to bind (the adapter is absent when Tailscale is off, or not
+   * yet up at login) without costing the dashboard; it is retried on a timer
+   * and reported by `listeners()`.
+   */
+  private extraServers = new Map<string, Server<DashboardSocketData>>()
+  private listenHosts: string[]
+  private extraRetry: ReturnType<typeof setInterval> | null = null
+  private extraAttempts = 0
+  private serveOptions: Record<string, unknown> | null = null
+  /** The single-use code a new phone types; printed by main.ts, rotated on use. */
+  private readonly pairing = new PairingGate(Date.now, undefined, (code, why) => {
+    const because = why === 'used' ? 'the last one was used' : why === 'locked' ? 'pairing locked after too many wrong codes' : 'a new one was asked for'
+    console.log(`[dashboard] pairing code for a new phone: ${code} (single-use; ${because})`)
+  })
+  /** When a request last arrived from off this machine — the cheapest "did anything get through the firewall" fact. */
+  private lastRemoteRequestAt: string | null = null
+  private clients: Set<ServerWebSocket<DashboardSocketData>> = new Set()
   /** Last broadcast per replayable type, resent to late-joining clients.
    *  brain.tier fires once at engine startup — browsers always connect later. */
   private readonly replayCache = new Map<string, string>()
@@ -491,7 +539,15 @@ export class DashboardServer {
     this.deps = deps
     this.tokens = tokens
     this._port = port
-    this._hostname = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
+    // One address, or a comma-separated list whose first entry is the primary
+    // listener (the scanner behind README's inventory reads the default off
+    // this expression — keep the literal where it is).
+    const rawHosts = process.env.LOCALCODE_DASHBOARD_HOST || '127.0.0.1'
+    this.listenHosts = parseListenHosts(rawHosts)
+    this._hostname = this.listenHosts[0]!
+    for (const h of this.listenHosts) {
+      if (isWildcardHost(h)) console.warn(`[dashboard] LOCALCODE_DASHBOARD_HOST includes ${h}: the dashboard listens on EVERY interface. Clients off this machine get the pairing gate, not the shared token — but bind the Tailscale address instead of ${h}.`)
+    }
 
     // Read index.html once at startup
     const __dir = import.meta.dir ?? dirname(fileURLToPath(import.meta.url))
@@ -521,15 +577,43 @@ export class DashboardServer {
         const pathname = url.pathname
         const method = req.method
 
+        // Where this request came from decides what it may get: a loopback
+        // peer on the loopback listener is `local` (the desk); anything else —
+        // a phone on the tailnet, the desk opening its own Tailscale address,
+        // a proxy, an address Bun could not read — is `remote` and must hold a
+        // paired device's token. See engine/dashboard/access.ts.
+        const peer = this.peerAddress(req, server)
+        // A listener that does not say which it is counts as "not the loopback
+        // one": the fail-closed default must hold here too.
+        const listenerHost = (server as { hostname?: string }).hostname ?? 'unknown-listener'
+        const kind: ClientKind = classifyClient({ peer, listenerHost })
+        if (kind === 'remote') this.lastRemoteRequestAt = new Date().toISOString()
+        // DNS rebinding: a page at evil.example whose name resolves to this
+        // machine (or to the Tailscale address) is same-origin to the browser,
+        // so it could read the reply to GET / or keep a pairing typed into it.
+        // The Host header names the lie, on every listener.
+        const badHost = hostRefusal(req.headers.get('host'), kind, listenerHost)
+        if (badHost) {
+          console.warn(`[dashboard] refused ${method} ${pathname} from ${peer ?? 'unknown'}: ${badHost}`)
+          return new Response('unknown host', { status: 421 })
+        }
+
         // WebSocket upgrade at /ws. The stream carries the same conversation
         // content as the transcript route, so it takes the same scope — but a
         // browser cannot set headers on a WebSocket handshake, which is why this
         // one route reads the token from the query string. Refused before
         // server.upgrade: an accepted-then-closed socket has already run `open`.
+        // The handshake carries no bearer header of its own, so a browser's
+        // Origin must be this origin (a non-browser client sends none).
         if (pathname === '/ws') {
-          const denied = this.requireScope(req, 'inference', { allowQueryToken: true })
-          if (denied) return denied
-          const success = server.upgrade(req)
+          const badOrigin = originMismatch(req.headers.get('origin'), req.headers.get('host'))
+          if (badOrigin) {
+            console.warn(`[dashboard] refused /ws from ${peer ?? 'unknown'}: ${badOrigin}`)
+            return new Response('origin refused', { status: 403 })
+          }
+          const auth = this.authenticate(req, 'inference', kind, { allowQueryToken: true })
+          if (!auth.ok) return auth.response
+          const success = server.upgrade(req, { data: { holder: auth.holder } })
           if (success) return undefined
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
@@ -541,12 +625,23 @@ export class DashboardServer {
           return new Response(null, { status: 204 })
         }
 
-        // GET / is the one ungated route: it is how the inference token reaches
-        // the page, so it cannot itself require one. With no ACAO on the reply a
-        // cross-origin page cannot read what it delivers — that is what makes
-        // this safe, and why the CORS removal had to come first.
+        // GET / is the one ungated route: on the desk it is how the inference
+        // token reaches the page, so it cannot itself require one — with no
+        // ACAO on the reply a cross-origin page cannot read what it delivers,
+        // and the Host check above refuses a rebound name. Off this machine
+        // the same page is served with NO token in it: the prelude reads the
+        // device token the browser stored when it paired, or sends it to /pair.
         if (method === 'GET' && pathname === '/') {
-          return this.serveIndex()
+          return kind === 'local'
+            ? this.serveIndex({ token: this.tokens.tokenFor('inference') ?? '', remote: false })
+            : this.serveIndex({ token: null, remote: true })
+        }
+
+        // Pairing: only for clients off this machine (the desk's page needs
+        // none, and a loopback target for guessing the code is pointless risk).
+        if (pathname === '/pair' || pathname === '/api/pair') {
+          if (kind === 'local') return jsonResponse({ error: 'Not found' }, 404)
+          return await this.handlePairing(req, method, pathname, url, peer)
         }
 
         // Projects mode (R5): every /api/projects* and /api/project-search
@@ -555,15 +650,25 @@ export class DashboardServer {
         // configuration, and they must gate BEFORE the generic method-based
         // split below or every POST here would wrongly demand management.
         if (pathname === '/api/projects' || pathname.startsWith('/api/projects/') || pathname === '/api/project-search') {
-          const denied = this.requireScope(req, 'inference')
+          const denied = this.requireScope(req, 'inference', kind)
           if (denied) return denied
           return await this.handleProjects(req, method, pathname, url)
+        }
+
+        // Phone administration (the Config tab's panel): the pairing code, the
+        // listeners, the paired devices, and revocation. Management scope for
+        // the read as well as the write — the code mints credentials — which
+        // with the remote rule in `authenticate` makes it desk-only.
+        if (pathname === '/api/phone' || pathname === '/api/phone/revoke' || pathname === '/api/phone/rotate') {
+          const denied = this.requireScope(req, 'management', kind)
+          if (denied) return denied
+          return await this.handlePhoneAdmin(req, method, pathname)
         }
 
         // Everything else is gated, including unknown paths: a 404 that answers
         // before the token check turns the route table into public information.
         const scope: TokenScope = method === 'GET' ? 'inference' : 'management'
-        const denied = this.requireScope(req, scope)
+        const denied = this.requireScope(req, scope, kind)
         if (denied) return denied
 
         // GET routes
@@ -722,7 +827,14 @@ export class DashboardServer {
         return jsonResponse({ error: 'Method not allowed' }, 405)
       },
       websocket: {
-        open: (ws: ServerWebSocket<unknown>) => {
+        open: (ws: ServerWebSocket<DashboardSocketData>) => {
+          // A device revoked between its handshake and this open would survive
+          // the revoke loop, which only sees `clients`. Re-check the record.
+          const holder = ws.data?.holder ?? null
+          if (holder && holder.startsWith(DEVICE_PREFIX) && !this.tokens.devices().some(d => d.name === holder)) {
+            try { ws.close(4001, 'revoked') } catch (err) { console.log('[dashboard] close of a revoked socket failed:', err) }
+            return
+          }
           this.clients.add(ws)
           for (const json of this.replayCache.values()) {
             try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
@@ -732,7 +844,10 @@ export class DashboardServer {
             try { ws.send(JSON.stringify({ type: 'project.opened', ...project })) } catch (err) { console.log('[dashboard] project.opened on connect failed:', err) }
           }
         },
-        message: (ws: ServerWebSocket<unknown>, message: string | Buffer) => {
+        message: (ws: ServerWebSocket<DashboardSocketData>, message: string | Buffer) => {
+          // A socket already closed by a revoke (or refused at open) may still
+          // have frames buffered: none of them is forwarded.
+          if (!this.clients.has(ws)) return
           // Forward commands from dashboard chat to engine — but only the ones
           // a read-scoped browser is allowed to send. See
           // DASHBOARD_ALLOWED_SLASH above for why this list exists.
@@ -762,28 +877,184 @@ export class DashboardServer {
           console.log(`[dashboard] Forwarding command: ${(parsed as { type: string }).type}`)
           this.deps.onCommand(parsed)
         },
-        close: (ws: ServerWebSocket<unknown>) => {
+        close: (ws: ServerWebSocket<DashboardSocketData>) => {
           this.clients.delete(ws)
         },
       },
     }
+    this.serveOptions = serveOptions as unknown as Record<string, unknown>
 
     // port 0 means "OS, pick one" — never walk that, it always succeeds.
     const candidates = port === 0 ? [0] : [port, port + 1, port + 2, port + 3]
     let lastErr: unknown = null
     for (const p of candidates) {
       try {
-        this.server = Bun.serve({ ...serveOptions, port: p })
+        this.server = Bun.serve({ ...serveOptions, port: p }) as Server<DashboardSocketData>
         if (p !== port) {
           console.log(`[dashboard] Port ${port} was taken; bound ${p} instead.`)
         }
         this._port = p
+        this.bindExtras()
         return
       } catch (e) {
         lastErr = e
       }
     }
     throw lastErr
+  }
+
+  // ── Extra listeners (phone access) ──────────────────────────────
+
+  /**
+   * Bind every extra host on the port the primary ended up with — the same
+   * port, never a walk of its own, so one URL serves both. A host that cannot
+   * be bound now (Tailscale down, or its adapter not yet up at login) is
+   * retried every 15 seconds until it binds or `stop()`; the primary is never
+   * affected. Said once on failure and once on success, not every tick.
+   */
+  private bindExtras(): void {
+    const port = this.getPort()
+    let pending = false
+    for (const host of this.listenHosts.slice(1)) {
+      if (this.extraServers.has(host)) continue
+      try {
+        const srv = Bun.serve({ ...(this.serveOptions ?? {}), hostname: host, port } as Parameters<typeof Bun.serve>[0]) as Server<DashboardSocketData>
+        this.extraServers.set(host, srv)
+        console.log(`[dashboard] phone listener bound: http://${host}:${port}${this.extraAttempts > 0 ? ` (after ${this.extraAttempts} retries)` : ''}`)
+      } catch (e) {
+        pending = true
+        const reason = e instanceof Error ? e.message : String(e)
+        if (this.extraAttempts === 0 || this.extraAttempts % 20 === 0) {
+          console.error(`[dashboard] cannot bind phone listener ${host}:${port} (${reason}) — retrying every 15 s. Is Tailscale up? Is another engine holding the port?`)
+        }
+      }
+    }
+    if (pending && this.extraRetry === null) {
+      this.extraRetry = setInterval(() => { this.extraAttempts++; this.bindExtras() }, 15_000)
+      // A timer must never keep an engine that is otherwise done alive.
+      ;(this.extraRetry as { unref?: () => void }).unref?.()
+    } else if (!pending && this.extraRetry !== null) {
+      clearInterval(this.extraRetry)
+      this.extraRetry = null
+    }
+  }
+
+  /** Every configured listener with whether it is bound right now; the primary first. */
+  listeners(): { host: string; port: number; bound: boolean; primary: boolean }[] {
+    const port = this.getPort()
+    return this.listenHosts.map((host, i) => ({ host, port, bound: i === 0 || this.extraServers.has(host), primary: i === 0 }))
+  }
+
+  /** The code a new phone must type right now (main.ts prints it at startup). */
+  pairingCode(): string {
+    return this.pairing.code
+  }
+
+  /** The peer address of a request: the test seam, else Bun's `server.requestIP`; unknown is null, which classifies as remote. */
+  private peerAddress(req: Request, server: unknown): string | null {
+    if (this.deps.remoteAddress) return this.deps.remoteAddress(req)
+    try {
+      const ip = (server as { requestIP?: (r: Request) => { address: string } | null }).requestIP?.(req)
+      return ip?.address ?? null
+    } catch (e) {
+      console.log(`[dashboard] requestIP failed: ${e instanceof Error ? e.message : String(e)}`)
+      return null
+    }
+  }
+
+  // ── Pairing routes ─────────────────────────────────────────────
+
+  private async handlePairing(req: Request, method: string, pathname: string, url: URL, peer: string | null): Promise<Response> {
+    const noStore = { 'Cache-Control': 'no-store' }
+    if (method === 'GET' && pathname === '/pair') {
+      const lockedFor = this.pairing.lockedForMs()
+      return htmlResponse(pairingPage({ locked: lockedFor > 0, retryAfterMs: lockedFor, revoked: url.searchParams.get('revoked') === '1' }), 200, { ...noStore, ...NO_FRAMING })
+    }
+    if (method === 'POST' && pathname === '/api/pair') {
+      // No bearer token of its own, so the browser's ambient state is all a
+      // hostile page could lean on: an Origin that is not this origin is
+      // refused, and so is a "simple" body type that would skip the preflight
+      // the OPTIONS branch answers without a grant.
+      const badOrigin = originMismatch(req.headers.get('origin'), req.headers.get('host'))
+      if (badOrigin) {
+        console.warn(`[dashboard] refused POST /api/pair from ${peer ?? 'unknown'}: ${badOrigin}`)
+        return jsonResponse({ error: 'origin refused' }, 403)
+      }
+      if (!/^application\/json/i.test(req.headers.get('content-type') ?? '')) {
+        return jsonResponse({ error: 'application/json required' }, 415)
+      }
+      const body = (await this.jsonBody(req)) as { code?: unknown; label?: unknown }
+      // A full device list is refused before the code is spent on nothing.
+      if (this.tokens.devices().length >= MAX_DEVICES) {
+        return jsonResponse({ error: `too many paired devices (${MAX_DEVICES}) — revoke one under Config → Phone access first` }, 429, noStore)
+      }
+      const attempt = this.pairing.attempt(body.code)
+      if (!attempt.ok) {
+        const minutes = Math.max(1, Math.ceil(attempt.retryAfterMs / 60_000))
+        console.warn(`[dashboard] pairing refused from ${peer ?? 'unknown'}: ${attempt.reason}${attempt.reason === 'wrong' ? ` (${attempt.attemptsLeft} attempts left)` : ''}`)
+        return attempt.reason === 'locked'
+          ? jsonResponse({ error: `too many wrong codes — pairing is closed for about ${minutes} minute${minutes === 1 ? '' : 's'}`, retryAfterMs: attempt.retryAfterMs }, 429, noStore)
+          : jsonResponse({ error: `wrong code (${attempt.attemptsLeft} attempt${attempt.attemptsLeft === 1 ? '' : 's'} left)`, attemptsLeft: attempt.attemptsLeft }, 401, noStore)
+      }
+      let record
+      try {
+        record = this.tokens.addDevice(typeof body.label === 'string' ? body.label : '')
+      } catch (e) {
+        console.error(`[dashboard] device could not be saved: ${e instanceof Error ? e.message : String(e)}`)
+        return jsonResponse({ error: 'the engine could not save the pairing — see its log' }, 503, noStore)
+      }
+      console.log(`[dashboard] paired ${record.name} ("${record.label}") from ${peer ?? 'unknown'}`)
+      return jsonResponse({ ok: true, name: record.name, token: record.secret }, 200, noStore)
+    }
+    return jsonResponse({ error: 'Method not allowed' }, 405)
+  }
+
+  // ── Phone administration (management scope, which the remote rule keeps on the desk) ──
+
+  private async handlePhoneAdmin(req: Request, method: string, pathname: string): Promise<Response> {
+    if (method === 'GET' && pathname === '/api/phone') {
+      return jsonResponse({
+        code: this.pairing.code,
+        lockedForMs: this.pairing.lockedForMs(),
+        listeners: this.listeners(),
+        devices: this.tokens.devices(),
+        lastRemoteRequestAt: this.lastRemoteRequestAt,
+        maxDevices: MAX_DEVICES,
+      }, 200, { 'Cache-Control': 'no-store' })
+    }
+    if (method === 'POST' && pathname === '/api/phone/rotate') {
+      return jsonResponse({ ok: true, code: this.pairing.rotate('asked') }, 200, { 'Cache-Control': 'no-store' })
+    }
+    if (method === 'POST' && pathname === '/api/phone/revoke') {
+      const body = (await this.jsonBody(req)) as { name?: unknown }
+      const name = typeof body.name === 'string' ? body.name : ''
+      if (!DEVICE_NAME_RE.test(name)) return jsonResponse({ error: 'name must be a paired device (device-xxxxxxxx)' }, 400)
+      // The record leaves memory first (the device is refused from now on
+      // whatever happens to the file), then the file is rewritten. A write
+      // that fails must not stop the sockets from closing, and must be said:
+      // until a write succeeds, the device would be back at the next start.
+      let removed = false
+      let persistError: string | null = null
+      try {
+        removed = this.tokens.revokeDevice(name)
+      } catch (e) {
+        removed = true
+        persistError = e instanceof Error ? e.message : String(e)
+      }
+      let closed = 0
+      for (const ws of [...this.clients]) {
+        if (ws.data?.holder !== name) continue
+        this.clients.delete(ws)
+        try { ws.close(4001, 'revoked'); closed++ } catch (err) { console.log('[dashboard] close of a revoked socket failed:', err) }
+      }
+      if (persistError !== null) {
+        console.error(`[dashboard] device ${name} revoked in memory, ${closed} socket(s) closed, but tokens.json could not be rewritten: ${persistError}`)
+        return jsonResponse({ ok: false, closed, error: `revoked for now, but tokens.json could not be rewritten (${persistError}) — retry; until a write succeeds the device returns at the next engine start` }, 503)
+      }
+      console.log(`[dashboard] device ${name} ${removed ? 'revoked' : 'was not paired'}; ${closed} socket(s) closed`)
+      return jsonResponse({ ok: removed, closed }, removed ? 200 : 404)
+    }
+    return jsonResponse({ error: 'Not found' }, 404)
   }
 
   // ── Authorization ───────────────────────────────────────────────
@@ -804,22 +1075,44 @@ export class DashboardServer {
   private requireScope(
     req: Request,
     scope: TokenScope,
-    { allowQueryToken = false }: { allowQueryToken?: boolean } = {},
+    kind: ClientKind,
+    opts: { allowQueryToken?: boolean } = {},
   ): Response | null {
+    const auth = this.authenticate(req, scope, kind, opts)
+    return auth.ok ? null : auth.response
+  }
+
+  /**
+   * Who presented the token, when it opens `scope` from `kind`.
+   *
+   * Off this machine only a paired device's record may authenticate. The
+   * shared `dashboard` secret sits in every desk tab's page and the `admin`
+   * secret in the startup log; neither was ever meant to cross the network,
+   * and refusing them here (as unknown — 401, not 403) is what makes
+   * management desk-only by construction rather than route by route.
+   */
+  private authenticate(
+    req: Request,
+    scope: TokenScope,
+    kind: ClientKind,
+    { allowQueryToken = false }: { allowQueryToken?: boolean } = {},
+  ): { ok: true; holder: string } | { ok: false; response: Response } {
     const authz = req.headers.get('authorization') ?? ''
     let presented = authz.startsWith('Bearer ') ? authz.slice(7) : null
     if (presented === null && allowQueryToken) {
       presented = new URL(req.url).searchParams.get('token')
     }
 
-    if (presented === null) return jsonResponse({ error: 'token required' }, 401)
-    if (this.tokens.verify(presented, scope)) return null
+    if (presented === null) return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
+    const holder = this.tokens.holderOf(presented)
+    if (holder === null) return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
+    if (kind === 'remote' && !DEVICE_NAME_RE.test(holder.name)) {
+      return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
+    }
+    if (holder.scopes.includes(scope)) return { ok: true, holder: holder.name }
     // A real token lacking the scope is told so; anything else is not
     // acknowledged as a token at all.
-    if (this.tokens.isKnown(presented)) {
-      return jsonResponse({ error: `scope '${scope}' required` }, 403)
-    }
-    return jsonResponse({ error: 'token required' }, 401)
+    return { ok: false, response: jsonResponse({ error: `scope '${scope}' required` }, 403) }
   }
 
   // ── Projects mode routes (Task 8) ────────────────────────────────
@@ -998,11 +1291,31 @@ export class DashboardServer {
    * the current token file, and rather than fetched by the page from an endpoint
    * — an endpoint handing out tokens to anyone who asks is the hole this closes.
    */
-  private serveIndex(): Response {
-    const token = this.tokens.tokenFor('inference') ?? ''
+  private serveIndex({ token, remote }: { token: string | null; remote: boolean }): Response {
     const inject = `<script>
 window.__CYNCO_TOKEN = ${JSON.stringify(token)};
+window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
 (function () {
+  // Off this machine the page carries no secret: the device token the browser
+  // stored when it paired is read here, and a browser that holds none is sent
+  // to pair. A token the engine no longer knows (revoked) is dropped on the
+  // first 401 and the browser is sent to pair again.
+  // One navigation at a time: once this page is leaving for /pair, nothing
+  // else may redirect it again (a never-paired phone used to land on
+  // "no longer paired") and no request goes out with no token.
+  var leaving = false;
+  function unpaired() {
+    if (leaving) return;
+    leaving = true;
+    try { localStorage.removeItem(${JSON.stringify(DEVICE_TOKEN_STORAGE_KEY)}); } catch (e) { console.log('[cynco] storage unavailable; nothing to drop'); }
+    location.replace('/pair?revoked=1');
+  }
+  if (window.__CYNCO_REMOTE) {
+    var stored = null;
+    try { stored = localStorage.getItem(${JSON.stringify(DEVICE_TOKEN_STORAGE_KEY)}); } catch (e) { stored = null; }
+    if (!stored) { leaving = true; location.replace('/pair'); }
+    window.__CYNCO_TOKEN = stored;
+  }
   var raw = window.fetch;
   function sameOrigin(input) {
     // A relative URL, or an absolute one naming this origin. Anything else is a
@@ -1019,7 +1332,13 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
   }
   window.fetch = function (input, init) {
     if (!sameOrigin(input)) return raw(input, init);
+    if (leaving) return Promise.reject(new Error('leaving the page to pair'));
     return raw(input, withAuth(init, input, window.__CYNCO_TOKEN)).then(function (res) {
+      // A phone never holds the management token and is never asked for it:
+      // the engine refuses management from off this machine whatever is
+      // presented, so the prompt below would only collect the secret into a
+      // device that cannot use it.
+      if (window.__CYNCO_REMOTE) { if (res.status === 401) unpaired(); return res; }
       // 403 means the route wants the management scope, which is never handed to
       // a page: the engine prints it once at startup and it is pasted by hand.
       // Held in sessionStorage so one paste covers a sitting and none survives
@@ -1047,7 +1366,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
     const body = this.indexHtml.includes('<head>')
       ? this.indexHtml.replace('<head>', `<head>${inject}`)
       : inject + this.indexHtml
-    return htmlResponse(body)
+    return htmlResponse(body, 200, remote ? { 'Cache-Control': 'no-store', ...NO_FRAMING } : { ...NO_FRAMING })
   }
 
   private getGovernance(): Response {
@@ -1076,6 +1395,7 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
       turns: counters ? counters.turns : null,
       contextUsed: counters?.contextUsed ?? null,
       project: this.deps.currentProject?.() ?? null,
+      pending: this.deps.getPendingDecisions?.() ?? null,
     }
   }
 
@@ -1825,6 +2145,11 @@ window.__CYNCO_TOKEN = ${JSON.stringify(token)};
   // ── Lifecycle ───────────────────────────────────────────────────
 
   stop(): void {
+    if (this.extraRetry !== null) { clearInterval(this.extraRetry); this.extraRetry = null }
+    for (const [host, srv] of this.extraServers) {
+      try { srv.stop() } catch (e) { console.log(`[dashboard] stopping listener ${host} failed: ${e instanceof Error ? e.message : String(e)}`) }
+    }
+    this.extraServers.clear()
     this.server.stop()
   }
 

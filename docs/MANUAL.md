@@ -56,7 +56,8 @@ CynCo is two cooperating processes connected by a WebSocket.
 - **Bridge**: a Bun WebSocket server (`engine/bridge/server.ts`) on
   `127.0.0.1:9160` by default. Binds to `LOCALCODE_BRIDGE_HOST`; falls back to
   9161/9162 if the port is taken. A browser **dashboard** is served on
-  `port + 1` (default 9161).
+  `port + 1` (default 9161), bound to `LOCALCODE_DASHBOARD_HOST` (README → Phone
+  access for the phone listener).
 
 The protocol is defined twice in parallel and must stay in sync:
 `engine/bridge/protocol.ts` (TypeScript) and `tui/localcode_tui/protocol.py`
@@ -104,6 +105,7 @@ data, and write the audit log before exit.
 | `LOCALCODE_BASE_URL` | Backend URL (default `http://localhost:11434`) |
 | `LOCALCODE_WS_PORT` | Bridge port (default 9160) |
 | `LOCALCODE_BRIDGE_HOST` | Bridge bind host (default `127.0.0.1`) |
+| `LOCALCODE_DASHBOARD_HOST` | Dashboard bind host(s) (default `127.0.0.1`) — see README → Phone access |
 | `LOCALCODE_CONTEXT_LENGTH` | Override context window (tokens) |
 | `LOCALCODE_PROFILE` | YAML profile name |
 | `LOCALCODE_S5_MODEL` | Fine-tuned LoRA S5 model (else rule-based) |

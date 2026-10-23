@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import type { EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource, UiActionCommand, UiSpec } from './protocol.js'
+import type { ApprovalRequestEvent, EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource, UiActionCommand, UiSpec } from './protocol.js'
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
@@ -317,6 +317,17 @@ export function candidateEmit(emit: (event: any) => void): (event: any) => void 
   }
 }
 
+/** An approval card the engine is waiting on: the resolver, and the request as it was emitted (replayed on /api/session). */
+type PendingApproval = {
+  resolve: (approved: boolean) => void
+  request: { requestId: string; toolName: string; description: string; risk: ApprovalRequestEvent['risk'] }
+}
+
+/** What `/api/session` reports as waiting on a person — see `ConversationLoop.pendingDecisions`. */
+export type PendingDecision =
+  | { kind: 'approval'; requestId: string; toolName: string; description: string; risk: ApprovalRequestEvent['risk'] }
+  | { kind: 'ask'; requestId: string; question: string; options?: string[] }
+
 export class ConversationLoop {
   private messages: Message[] = []
   /**
@@ -497,7 +508,13 @@ export class ConversationLoop {
   // Grounding trigger: concepts fired on, awaiting a re-edit to judge intervention success
   private pendingGroundingConcepts = new Set<string>()
   private groundingRatesLoaded = false
-  private pendingApprovals = new Map<string, (approved: boolean) => void>()
+  private pendingApprovals = new Map<string, PendingApproval>()
+  /**
+   * Stop pressed in the window between `processing = true` and the creation of
+   * the turn's AbortController (skills load in between). `abort()` has nothing
+   * to signal then; the controller honours this the moment it exists.
+   */
+  private abortRequested = false
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
   private governance: GovernanceLayer
@@ -667,9 +684,10 @@ export class ConversationLoop {
     const requestApproval: RequestApprovalFn = async (toolName, input, risk) => {
       const requestId = randomUUID()
       const description = this.formatToolDescription(toolName, input)
-      this.emit({ type: 'approval.request', requestId, toolName, description, risk })
+      const request = { requestId, toolName, description, risk }
+      this.emit({ type: 'approval.request', ...request })
       return new Promise<boolean>((resolve) => {
-        this.pendingApprovals.set(requestId, resolve)
+        this.pendingApprovals.set(requestId, { resolve, request })
         // Auto-deny after 5 minutes if no response
         setTimeout(() => {
           if (this.pendingApprovals.has(requestId)) {
@@ -911,14 +929,45 @@ export class ConversationLoop {
     return this.lastContextUsed
   }
 
-  abort(): void {
+  abort(reason = 'the turn was stopped'): void {
     if (this.abortController) {
       this.abortController.abort()
+      // A turn parked on an approval card or an AskUser question never reaches
+      // the loop's signal checks until the card is answered — Stop was inert
+      // there for up to the 5-minute auto-deny. Stopping answers them: the
+      // card is denied, the question withdrawn (askUser turns the cancel into
+      // a tool result), and the loop ends at its next check.
+      for (const [id, entry] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); entry.resolve(false) }
+      globalAskBroker.cancelAll(reason)
       // Don't null the controller — the model loop checks signal.aborted
       // Setting it to null makes the check `this.abortController?.signal.aborted`
       // return undefined instead of true, so the loop never stops.
-      this.processing = false
+      //
+      // `processing` is NOT cleared here. It is the run itself (F57), and the
+      // run is not over: a Bash child may still be executing and the stream
+      // yields its next event before the loop notices the signal. Clearing it
+      // early let a message sent right after Esc start a second turn beside
+      // the unwinding one, whose `finally` then wiped the new turn's flags.
+      // runTurn's finally clears it when the turn has really ended; until
+      // then the busy guard answers `busy:` on the wire, and the turn's end is
+      // marked by `message.complete { stopReason: 'aborted' }`.
+    } else if (this.processing) {
+      this.abortRequested = true
     }
+  }
+
+  /**
+   * What the engine is waiting on a person for, right now: approval cards and
+   * AskUser questions that have been asked and not answered. Served on
+   * `/api/session` so a page that connects (or a phone that reconnects after
+   * its screen locked) can draw the cards it never saw — the frames themselves
+   * are broadcast once and never replayed.
+   */
+  pendingDecisions(): PendingDecision[] {
+    const out: PendingDecision[] = []
+    for (const entry of this.pendingApprovals.values()) out.push({ kind: 'approval', ...entry.request })
+    for (const q of globalAskBroker.pendingRequests()) out.push({ kind: 'ask', ...q })
+    return out
   }
 
   updateModel(model: string): void {
@@ -926,10 +975,10 @@ export class ConversationLoop {
   }
 
   handleApprovalResponse(requestId: string, approved: boolean): void {
-    const resolve = this.pendingApprovals.get(requestId)
-    if (resolve) {
+    const entry = this.pendingApprovals.get(requestId)
+    if (entry) {
       this.pendingApprovals.delete(requestId)
-      resolve(approved)
+      entry.resolve(approved)
     }
   }
 
@@ -1123,12 +1172,9 @@ export class ConversationLoop {
       return
     }
     if (this.processing || this.currentTurn) {
-      this.abort()
-      // A turn parked on an approval card would otherwise hold the switch until
-      // the card's 5-minute auto-deny; the user has left that chat, so deny it.
-      for (const [id, resolve] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); resolve(false) }
-      // Same for a turn parked on an AskUser question (300 s timeout otherwise).
-      globalAskBroker.cancelAll('the user switched to another conversation')
+      // Stops the turn and, with it, denies a parked approval card and
+      // withdraws a parked AskUser question — the user has left that chat.
+      this.abort('the user switched to another conversation')
       // Clicks queued for the conversation being left belong to it, not to the next one.
       this.pendingUiActions = []
       try { await this.currentTurn } catch (e) { console.log(`[projects] aborted turn ended with: ${e instanceof Error ? e.message : String(e)}`) }
@@ -1426,7 +1472,12 @@ export class ConversationLoop {
         this.queueOperatorNote(text, opts?.unattended === true ? 'driver' : 'operator')
         return
       }
-      console.log('[loop] Already processing, ignoring message')
+      // On the wire, not only in this process's stdout (F32's lesson, and F11's
+      // shape): a phone has no terminal to read, and its page has already drawn
+      // the message as sent. The frame is an existing type, so no client needs
+      // a new arm; the dashboard page keeps the text in its box.
+      console.log('[loop] Already processing — refusing the message and saying so')
+      this.emit({ type: 'session.error', error: 'busy: a turn is still running — press Stop or wait for it to finish, then send again' })
       return
     }
     // `processing` MUST clear on every exit, not just the happy one. It is set
@@ -1459,6 +1510,7 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      this.abortRequested = false
       this.uiForce = null
       // A surface left partial by an abort, halt or error gets its terminal
       // frame, and a click queued behind this turn that the natural end did
@@ -1670,6 +1722,10 @@ export class ConversationLoop {
     this._lastExternalUserText = text
 
     this.abortController = new AbortController()
+    if (this.abortRequested) {
+      this.abortRequested = false
+      this.abortController.abort()
+    }
     this.toolFailureCounts.clear()
     // Fresh request = fresh bounded retry: a discard last turn must not rob
     // the first malformed call of this turn of its retry (P1.8).
@@ -2523,6 +2579,13 @@ export class ConversationLoop {
         this.emit({ type: 'session.error', error: msg })
       }
     }
+    // An aborted loop returns at its signal check without a terminal frame.
+    // Every client — the TUI's Esc, the dashboard's Stop, a phone — closes the
+    // turn on message.complete, so say that this one ended, and how.
+    // (Not when best-of-N already closed the turn with its winner's frame.)
+    if (this.abortController?.signal.aborted && !bestOfNRan) {
+      this.emit({ type: 'message.complete', messageId: '', stopReason: 'aborted' })
+    }
     // F158: every exit path gets the session-level fidelity + IdentityGuard
     // frame, not only the natural turn end — the mission driver reads the
     // ledger's `identityGuard` / `regulatorFidelity` from it, and a mission that
@@ -2968,6 +3031,9 @@ export class ConversationLoop {
     }
 
     for (let i = 0; i < maxIterations; i++) {
+      // A Stop that landed while the last tool batch ran: end here, before a
+      // model call that would only be abandoned at its first event.
+      if (this.abortController?.signal.aborted) return
       // ── Operator notes (Phase 2c-i) ──
       // FIRST statement of the iteration, before the stuck-loop tiers and
       // before the model call, because this is the only instant at which

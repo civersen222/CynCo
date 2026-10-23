@@ -30,12 +30,32 @@ interface BunServerLike {
   stop: (force?: boolean) => void
   hostname?: string
   readonly port: number
+  /** Bun's `server.requestIP(req)`: the peer address of the socket `req` came in on. */
+  requestIP?: (req: Request) => { address: string; family: 'IPv4' | 'IPv6'; port: number } | null
 }
 
 interface BunWS {
   send: (data: string) => void
-  close: () => void
+  /** Bun's `ws.close(code?, reason?)`: the code reaches the peer (a revoked device is told 4001). */
+  close: (code?: number, reason?: string) => void
+  /** What `server.upgrade(req, { data })` attached, as in Bun. */
   data: unknown
+  /** Bun's `ws.remoteAddress`. */
+  remoteAddress?: string
+}
+
+/**
+ * The peer address each shimmed Request arrived from, keyed by the Request
+ * object itself, so `server.requestIP(req)` can answer like Bun does. Under the
+ * suite every peer is 127.0.0.1; a test that needs to look like a phone on the
+ * tailnet uses the dashboard's `deps.remoteAddress` seam, not this map.
+ */
+const peerOf = new WeakMap<Request, string>()
+const addressOf = (a: string | undefined) => a ?? '127.0.0.1'
+const requestIPFor = (req: Request) => {
+  const address = peerOf.get(req)
+  if (address === undefined) return null
+  return { address, family: (address.includes(':') ? 'IPv6' : 'IPv4') as 'IPv4' | 'IPv6', port: 0 }
 }
 
 /**
@@ -49,7 +69,7 @@ interface BunWS {
  * for. Tracking our own bindings reproduces Bun's contract for the case that
  * matters here: two servers asking for one port inside one process.
  */
-const boundPorts = new Set<number>()
+const boundPorts = new Set<string>()
 
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden',
@@ -64,11 +84,13 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
       if (typeof v === 'string') headers[k] = v
       else if (Array.isArray(v)) headers[k] = v.join(', ')
     }
-    return new Request(`http://localhost:${options.port}${req.url ?? '/'}`, {
+    const request = new Request(`http://localhost:${options.port}${req.url ?? '/'}`, {
       method: req.method ?? 'GET',
       headers,
       body: body && body.length > 0 ? body : undefined,
     })
+    peerOf.set(request, addressOf(req.socket?.remoteAddress))
+    return request
   }
 
   const httpServer = http.createServer(async (req, res) => {
@@ -84,6 +106,9 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     const serverLike: BunServerLike = {
       upgrade: (_req: Request) => false,
       stop: () => { httpServer.close() },
+      requestIP: requestIPFor,
+      hostname: options.hostname ?? '0.0.0.0',
+      get port() { return (httpServer.address() as { port?: number } | null)?.port ?? options.port },
     }
 
     const response = await options.fetch(request, serverLike)
@@ -120,9 +145,16 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
 
   httpServer.on('upgrade', async (req, socket, head) => {
     let upgradeRequested = false
+    // Bun hands `server.upgrade(req, { data })`'s `data` to the socket as
+    // `ws.data`; the dashboard keeps the presenting token there so a revoked
+    // device's socket can be found and closed. Carried the same way here.
+    let upgradeData: unknown = undefined
     const serverLike: BunServerLike = {
-      upgrade: (_req: Request) => { upgradeRequested = true; return true },
+      upgrade: (_req: Request, extra?: { data?: unknown }) => { upgradeRequested = true; upgradeData = extra?.data; return true },
       stop: () => { httpServer.close() },
+      requestIP: requestIPFor,
+      hostname: options.hostname ?? '0.0.0.0',
+      get port() { return (httpServer.address() as { port?: number } | null)?.port ?? options.port },
     }
 
     let response: Response | undefined
@@ -134,7 +166,8 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     }
 
     if (upgradeRequested) {
-      wss.handleUpgrade(req, socket as any, head, ws => wss.emit('connection', ws, req))
+      const data = upgradeData
+      wss.handleUpgrade(req, socket as any, head, ws => wss.emit('connection', ws, req, data))
       return
     }
 
@@ -150,11 +183,12 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
     socket.destroy()
   })
 
-  wss.on('connection', (ws: WsWebSocket) => {
+  wss.on('connection', (ws: WsWebSocket, req: http.IncomingMessage, data: unknown) => {
     const bunWs: BunWS = {
       send: (data: string) => ws.send(data),
-      close: () => ws.close(),
-      data: undefined,
+      close: (code?: number, reason?: string) => (code === undefined ? ws.close() : ws.close(code, reason)),
+      data,
+      remoteAddress: addressOf(req?.socket?.remoteAddress),
     }
 
     options.websocket?.open?.(bunWs)
@@ -170,18 +204,21 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
 
   const bindHost = options.hostname ?? '0.0.0.0'
   // Match Bun: a taken port is a synchronous throw, not a later 'error' event.
-  // Port 0 means "OS, pick one" and is never a conflict.
-  if (options.port !== 0 && boundPorts.has(options.port)) {
+  // Port 0 means "OS, pick one" and is never a conflict. Keyed by host AND
+  // port, as the OS keys it: the dashboard binds one port on loopback and
+  // again on the Tailscale address, and Bun allows exactly that.
+  const bindKey = `${bindHost}:${options.port}`
+  if (options.port !== 0 && boundPorts.has(bindKey)) {
     throw new Error(`Failed to start server. Is port ${options.port} in use?`)
   }
   // exclusive: false → SO_REUSEADDR on Windows, allowing bind when prior
   // connections are in TIME_WAIT (common in rapid test re-runs).
   httpServer.listen({ port: options.port, host: bindHost, exclusive: false })
-  if (options.port !== 0) boundPorts.add(options.port)
+  if (options.port !== 0) boundPorts.add(bindKey)
   // A squatter outside this process still fails asynchronously. Surface it as a
   // console line rather than an uncaught exception that fails an unrelated test.
   httpServer.on('error', (err) => {
-    if (options.port !== 0) boundPorts.delete(options.port)
+    if (options.port !== 0) boundPorts.delete(bindKey)
     console.log(`[bunShim] listen failed on ${bindHost}:${options.port}: ${err}`)
   })
 
@@ -191,8 +228,9 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
   return {
     hostname: bindHost,
     upgrade: () => false,
+    requestIP: requestIPFor,
     stop: () => {
-      if (options.port !== 0) boundPorts.delete(options.port)
+      if (options.port !== 0) boundPorts.delete(bindKey)
       wss.close()
       httpServer.close()
     },

@@ -233,14 +233,28 @@ to) to record durable lessons.
 
 ## 10. The Browser Dashboard
 
-While a session runs, open **http://localhost:9161** for a richer view:
+While a session runs, open the URL the engine printed at startup
+(`[dashboard] Governance dashboard on http://127.0.0.1:9161` when the bridge got its
+default port; after a restart it is often one higher) for a richer view:
 
-- **Chat** — same conversation in the browser, with expandable tool outputs and
-  visible thinking tokens.
+- **Chat** — same conversation in the browser, with expandable tool outputs,
+  visible thinking tokens, approval and question cards, and a **Stop** button
+  while a turn runs.
 - **Governance** — live VSM graphs (S3/S4 balance, tool success, stuck turns,
   rule log).
 - **History** — per-session analytics.
-- **Config** — live parameter sliders.
+- **Config** — live parameter sliders, and **Phone access**.
+
+### From your phone
+
+The same page works from a phone on your Tailscale tailnet. Set-up (the engine's
+listener, the pairing code, revocation, troubleshooting): README → Phone access.
+
+On the phone, Enter inserts a newline and the Send button sends. The red Stop button
+ends the running turn (a tool that is already running finishes first). If the screen
+locks mid-turn the page reconnects on wake, redraws any approval card still waiting,
+and says so if the turn ended meanwhile. Configuration changes stay on the computer.
+The security boundary and troubleshooting: README → Local tokens → Phone access.
 
 ---
 
