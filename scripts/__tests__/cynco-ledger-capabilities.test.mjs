@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createMissionCollector, buildMissionRecord } from '../cynco-ledger.mjs'
 
 /**
@@ -27,5 +30,19 @@ describe('engineCapabilities on the row', () => {
     const c = createMissionCollector()
     c.ingest({ type: 'session.ready', capabilities: [] })
     expect(c.engineCapabilities).toEqual([])
+  })
+})
+
+describe('the arm is visible where the operator looks', () => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  it('dispatch-mission.sh prints the raw LOCALCODE_HOUSE_CONDUCT it saw', () => {
+    const sh = readFileSync(join(here, '..', 'dispatch-mission.sh'), 'utf8')
+    expect(sh).toMatch(/echo "\[dispatch\] house conduct: \$\{LOCALCODE_HOUSE_CONDUCT:-unset\}/)
+  })
+  it('the driver\'s [refusals] line ends with the arm read from the row, with unknown named', () => {
+    const driver = readFileSync(join(here, '..', 'cynco-mission-driver.mjs'), 'utf8')
+    expect(driver).toContain('record.engineCapabilities')
+    expect(driver).toMatch(/prompt arm: \$\{arm\}/)
+    expect(driver).toContain("'unknown (engine said no capabilities)'")
   })
 })
