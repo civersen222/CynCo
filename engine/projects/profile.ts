@@ -11,7 +11,7 @@
  * open (instructions are read once by the loop), so the prompt is
  * byte-identical across turns and the prefix cache holds.
  */
-import { VSM_GOVERNANCE } from '../engine/systemPromptText.js'
+import { HOUSE_CONDUCT, VSM_GOVERNANCE } from '../engine/systemPromptText.js'
 import type { ToolImpl } from '../tools/types.js'
 import { getShellInfo } from '../tools/shellInfo.js'
 
@@ -39,7 +39,9 @@ export function projectTools(all: readonly ToolImpl[]): ToolImpl[] {
     .map(t => (PROJECT_TOOL_DESCRIPTIONS[t.name] ? { ...t, description: PROJECT_TOOL_DESCRIPTIONS[t.name] } : t))
 }
 
-export type ProjectPromptInput = { name: string; description: string; instructions: string; toolNames: string; cwd: string }
+/** `houseConduct`: the engine's HOUSE_CONDUCT section after the role (the loop
+ *  passes `isHouseConductEnabled()`); absent or false, the prompt is as before. */
+export type ProjectPromptInput = { name: string; description: string; instructions: string; toolNames: string; cwd: string; houseConduct?: boolean }
 
 const PROJECT_ROLE = `<ROLE>
 You are CynCo, a local assistant working inside one of the user's projects. A project is a folder the user keeps for a piece of non-code work — a build, a plan, a recipe book, a piece of research — with their instructions, the sources they have gathered (knowledge), the conversations so far (chats) and the things you have produced for them (artifacts). You help them think, plan, research and draft, and you show options, designs and comparisons as UI in this chat with RenderUI. You are not a coding assistant here: do not assume there is code, tests or a repository to work on.
@@ -83,6 +85,7 @@ Learnings from previous sessions appear under "## Learnings from previous sessio
 export function assembleProjectPrompt(p: ProjectPromptInput): string[] {
   const parts: string[] = [
     PROJECT_ROLE, '',
+    ...(p.houseConduct ? [HOUSE_CONDUCT, ''] : []),
     `<TOOLS>\nYou have access to these tools:\n${p.toolNames}\n</TOOLS>`, '',
     PROJECT_WORK, '',
     `<PROJECT>\nName: ${p.name}\nDescription: ${p.description || '(none)'}` + (p.instructions.trim() ? `\n\n## Project instructions\n${p.instructions.trim()}` : '') + `\n</PROJECT>`, '',

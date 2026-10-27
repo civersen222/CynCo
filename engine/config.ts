@@ -52,6 +52,21 @@ export function isProactiveToolsEnabled(): boolean {
   return process.env.LOCALCODE_S5_PROACTIVE_TOOLS === 'true'
 }
 
+/**
+ * House conduct in the static system prompt (slice 2 of "runs refusal-free",
+ * docs/reviews/2026-10-27-locally-uncensored-review.md §2). Default OFF. When
+ * true, `HOUSE_CONDUCT` (engine/engine/systemPromptText.ts) rides right after
+ * ROLE in the coding prompt and the project-chat prompt: answer the request
+ * that was made, no unasked-for disclaimers or lectures, every subject the user
+ * brings up is theirs to have answered. Off → the prompt is byte-identical to
+ * before the section existed. Opt-in until the ledger's `refusals` field has
+ * compared missions with and without it; a profile cannot set it yet — the
+ * environment is the one switch, so the A/B is one variable.
+ */
+export function isHouseConductEnabled(): boolean {
+  return process.env.LOCALCODE_HOUSE_CONDUCT === 'true'
+}
+
 export type TierSetting = 'auto' | 'basic' | 'standard' | 'advanced'
 
 export type RuntimeConfig = {

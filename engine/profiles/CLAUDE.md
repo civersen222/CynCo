@@ -22,7 +22,7 @@ Defines and resolves the YAML profile schema LocalCode reads from `.cynco/profil
 1. A YAML profile file sits in `.cynco/profiles/<name>.yml`, `~/.cynco/profiles/<name>.yml`, or `engine/profiles/templates/<name>.yaml`.
 2. `engine/config.ts::loadConfig()` calls `loadProfileConfig()`, which calls `resolveProfile(LOCALCODE_PROFILE ?? 'default')`.
 3. `resolveProfile()` (`resolver.ts`) calls `loadProfile()` (`loader.ts`) to walk the `extends:` chain, then `mergeChain()` flattens it into a `ResolvedProfile`.
-4. `loadConfig()` maps the profile's snake_case `runtime` block onto the camelCase `RuntimeConfig` (`engine/config.ts:161`) and layers `LOCALCODE_*` env vars over every field, env winning.
+4. `loadConfig()` maps the profile's snake_case `runtime` block onto the camelCase `RuntimeConfig` (`engine/config.ts:176`) and layers `LOCALCODE_*` env vars over every field, env winning.
 5. `bootstrapProvider.ts` reads `config.runtime` (`rt`) and passes each field — `cacheRam`, `ctxCheckpoints`, `checkpointMinStep`, `chatTemplateFile`, `cacheTypeK/V`, `chatTemplateKwargs`, etc. — into `new ProcessManager({...})`, with `config.contextLength ?? DEFAULT_CTX_SIZE` for the context window.
 6. `ProcessManager` (`engine/llama/processManager.ts`) turns those fields into `llama-server` CLI flags, including the F91-aware `--cache-ram` derivation from context size and checkpoint count.
 

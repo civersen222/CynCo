@@ -60,7 +60,9 @@ merge of PR #173 on GitHub and, once the owner is satisfied, making the variable
   section 5 has the ranked list with file refs).** Running refusal-free, in the order measure →
   prompt → weights: (1) refusal counter in the ledger — built 2026-10-27 (`scripts/cynco-refusal.mjs`,
   the `refusals` row field, ledger README); (2) a house-conduct section
-  in the static system prompt behind a `LOCALCODE_*` switch, A/B'd by the counter; (3) an
+  in the static system prompt behind `LOCALCODE_HOUSE_CONDUCT=true` — built 2026-10-27
+  (`HOUSE_CONDUCT` in `engine/engine/systemPromptText.ts`, both prompts), the A/B against the
+  counter is the next wave's job: one mission set with the variable, one without; (3) an
   abliterated profile beside the default (`bartowski/orcarouter_Qwen3.8-27B-Uncensored-GGUF`),
   pre-staged with owner approval, tool-call rate compared in the ledger before it may become a
   default; in-app Heretic abliteration deliberately not now. Engine gaps verified in our source:

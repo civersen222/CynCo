@@ -9,7 +9,7 @@ import type { ApprovalRequestEvent, EngineEvent, TUICommand, DiffHunk, DiffLine,
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { LocalCodeConfig } from '../config.js'
-import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled } from '../config.js'
+import { isS5EnforcementEnabled, isAllToolsEnabled, isProactiveToolsEnabled, isHouseConductEnabled } from '../config.js'
 import { classifyTaskClass } from '../s5/proactiveSurfacing.js'
 import type { Provider } from '../provider.js'
 import { localCallModel, type CallModelDeps } from '../engine/callModel.js'
@@ -2082,9 +2082,13 @@ export class ConversationLoop {
     let toolDefs = toToolDefs(activeTools)
     const toolNames = activeTools.map(t => `- ${t.name}: ${t.description}`).join('\n')
 
+    // LOCALCODE_HOUSE_CONDUCT (opt-in): the house-conduct section after the role
+    // in both prompts. Read from the environment, which does not change while
+    // the engine runs, so the prefix stays byte-identical across turns.
+    const houseConduct = isHouseConductEnabled()
     const promptParts = this.project
-      ? assembleProjectPrompt({ name: this.project.name, description: this.project.description, instructions: this.project.instructions, toolNames, cwd: this.executor['cwd'] })
-      : assembleBasePrompt(toolNames, this.executor['cwd'])
+      ? assembleProjectPrompt({ name: this.project.name, description: this.project.description, instructions: this.project.instructions, toolNames, cwd: this.executor['cwd'], houseConduct })
+      : assembleBasePrompt(toolNames, this.executor['cwd'], { houseConduct })
 
     // Generative UI: the RENDER_UI section rides only on turns where the tool
     // is offered — every project chat, a coding session once it is loaded —
