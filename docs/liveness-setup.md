@@ -108,9 +108,11 @@ The owner's MFL dynasty team is run by a scripted runbook in `C:\Users\civer\fan
 `python dynasty/mfl.py gate cynco --pass <name>`, which refuses (prints `skip: ...`) until
 `cynco_enabled` is `true` in `fantasyman/dynasty/config.json`; adds, drops, bids and every trade
 message go to the owner's phone for a tap before they execute, so the model's `Bash` access cannot
-change the team on its own. This mission does not use the daemon's ntfy channel (no
-`CYNCO_NTFY_*` needed): the fantasyman approval listener owns the phone. Autostart the daemon with
-the section 5 command minus the two `CYNCO_NTFY_*` variables.
+change the team on its own. This mission does not use the daemon's ntfy channel for its proposals (the fantasyman approval
+listener owns the phone), but the daemon still requires `CYNCO_NTFY_URL` at startup for its own
+halt/failure alerts: point it at the same server (`http://100.101.192.101:8090`); no token is needed
+on a server without auth, and the daemon's topics (`cynco-alerts`, `cynco-commands`) do not collide
+with the runbook's `dynasty` topics. Autostart with the section 5 command minus `CYNCO_NTFY_TOKEN`.
 
 ## 5. Daemon autostart (Windows Task Scheduler)
 
