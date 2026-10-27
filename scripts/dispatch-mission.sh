@@ -100,6 +100,11 @@ fi
 # exported LOCALCODE_CONTEXT_LENGTH still reaches the engine through the normal
 # environment; re-stating it here is what let the two drift apart before.
 echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS bash-timeout=${CYNCO_BASH_TIMEOUT_MS}ms (ctx and cache-ram come from the profile and the derivation — confirmed below)"
+# The house-conduct A/B (benchmark/conduct-ab/README.md)
+# reaches the engine through ordinary inheritance, like LOCALCODE_CONTEXT_LENGTH
+# above. Printed raw so a value that is set and ignored ("1", "TRUE") is visible
+# here; the engine's session.ready capabilities say which arm was actually served.
+echo "[dispatch] house conduct: ${LOCALCODE_HOUSE_CONDUCT:-unset} (on only when exactly 'true'; the engine's session.ready says which)"
 echo "[dispatch] engine log $ENGINE_LOG"
 # The engine's startup auto-index covers only its own process.cwd() (localcode);
 # the mission repo never got indexed, so every CodeIndex call degraded to regex.
