@@ -25,7 +25,7 @@
  * silence can be caught.
  */
 import { callTouchesSealed, setTaskSealedPaths } from '../tools/sealedPaths.js'
-import { isS5EnforcementEnabled } from '../config.js'
+import { isHouseConductEnabled, isS5EnforcementEnabled } from '../config.js'
 import { isUnattendedMission } from '../missionEnv.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
@@ -56,6 +56,17 @@ export const CAP_S5_ADVISORY = 's5-advisory'
 export const CAP_S5_EARNED_ONLY = 's5-earned-only'
 
 /**
+ * The house-conduct section (`HOUSE_CONDUCT`, engine/engine/systemPromptText.ts)
+ * is in this process's prompts. Said so that a mission's ledger row can name
+ * the prompt arm the ENGINE served rather than the label an operator typed —
+ * the A/B in docs/superpowers/plans/2026-10-27-house-conduct-ab.md groups rows
+ * by this word, and an engine too old to say it reads as unknown, never as
+ * "off". Read from the same `isHouseConductEnabled` the loop reads (F42: one
+ * predicate, or the advertised arm and the served arm are two arms).
+ */
+export const CAP_HOUSE_CONDUCT = 'house-conduct'
+
+/**
  * A path that cannot collide with a real instrument, and says what it is to
  * anyone who finds it in a log. The probe must never seal a file that exists:
  * `setTaskSealedPaths` reads the parent directory to decide whether to seal it
@@ -71,6 +82,8 @@ type Wiring = {
   s5Enforcing: () => boolean
   /** Same predicate `RuleAuthority.authorityOf` reads; optional so a wiring without it never claims earned-only. */
   unattended?: () => boolean
+  /** Same predicate the loop passes to `assembleBasePrompt`; optional so a wiring without it never claims the word. */
+  houseConduct?: () => boolean
 }
 
 const LIVE: Wiring = {
@@ -82,6 +95,7 @@ const LIVE: Wiring = {
   // limits, and the one the operator sets is whichever is not the enforcing one.
   s5Enforcing: () => isS5EnforcementEnabled(),
   unattended: () => isUnattendedMission(),
+  houseConduct: () => isHouseConductEnabled(),
 }
 
 /**
@@ -118,6 +132,13 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
     else if (wiring.unattended?.() === true) caps.push(CAP_S5_EARNED_ONLY)
   } catch (e) {
     console.log(`[capability] ${CAP_S5_ADVISORY}/${CAP_S5_EARNED_ONLY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
+  }
+  // The prompt arm. Its own try for the same reason as the S5 words': a
+  // guarantee that shares a failure path with another is not its own guarantee.
+  try {
+    if (wiring.houseConduct?.() === true) caps.push(CAP_HOUSE_CONDUCT)
+  } catch (e) {
+    console.log(`[capability] ${CAP_HOUSE_CONDUCT} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }
