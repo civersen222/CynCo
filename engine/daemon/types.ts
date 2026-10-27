@@ -21,6 +21,10 @@ export interface TriggerSpec {
   prompt: string
   /** 'prompt' (default): single governed run of `prompt`. 'trade-scan': multi-pass orchestrator (engine/daemon/tradeScan.ts). */
   taskType?: 'prompt' | 'trade-scan'
+  /** Tool pin for this trigger's runs; overrides MissionConfig.allowedTools; default DEFAULT_TOOLS (read-only). */
+  allowedTools?: string[]
+  /** Loop workspace for this trigger's runs (Bash cwd); overrides MissionConfig.cwd; default: where the daemon runs. */
+  cwd?: string
 }
 
 export interface MflLeagueRef {
@@ -39,6 +43,10 @@ export interface MissionConfig {
   trustLadder: Record<string, { mode: 'ask' | 'auto'; promoteAt: number }>
   /** On-demand phone command prompt templates, e.g. { lineup: "...for {week}..." }. */
   commands?: Record<string, string>
+  /** Tool pin for every trigger's runs unless the trigger sets its own. Adding Bash/Write makes runs non-read-only. */
+  allowedTools?: string[]
+  /** Loop workspace for every trigger's runs unless the trigger sets its own. */
+  cwd?: string
 }
 
 export interface Recommendation {
@@ -58,6 +66,8 @@ export interface TaskFileInput {
   context: string
   /** Tool names the one-shot run may use, e.g. ['Mfl', 'WebSearch', 'WebFetch', 'Read']. */
   allowedTools: string[]
+  /** Loop workspace root for the run (runGovernedLoop.cwd). Absent = the engine process's cwd. */
+  cwd?: string
   timeoutMs: number
   /** Where the engine writes the TaskOutcome JSON. */
   outcomePath: string
