@@ -20,7 +20,7 @@ shaped the retry-error classifier.
 | `messageConvert.ts` | Converts internal messages/tools to the Provider's `CompletionRequest` shape; handles simulated-tool-use serialization to `<tool_call>` XML. |
 | `sessionExtras.ts` | Per-conversation cache so handoff+recalled-memory prompt text is computed once and re-appended byte-identically on every later turn. |
 | `streamTranslator.ts` | Translates a raw Provider stream into the structured `message_start`/`content_block_*`/`message_stop` event lifecycle, in both native and simulated tool-use modes. |
-| `systemPromptText.ts` | Static system-prompt section constants (ROLE, TOOL_USE, WORKFLOW, etc.) assembled by `assembleBasePrompt`. |
+| `systemPromptText.ts` | Static system-prompt section constants (ROLE, TOOL_USE, WORKFLOW, etc.) assembled by `assembleBasePrompt`; `HOUSE_CONDUCT` rides after ROLE only when the loop passes `houseConduct` (`LOCALCODE_HOUSE_CONDUCT=true`, `engine/config.ts` `isHouseConductEnabled`) — ported from locally-uncensored, names no category, measured by the ledger's `refusals` field. |
 | `toolCallRepair.ts` | Single source of truth for parsing tool-call argument JSON: strict parse → jsonrepair salvage → malformed marker (never dropped). |
 | `toolFilter.ts` | Applies profile allow/deny scoping rules to a tool list before it reaches the model. |
 
