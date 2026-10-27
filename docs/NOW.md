@@ -56,6 +56,27 @@ merge of PR #173 on GitHub and, once the owner is satisfied, making the variable
   `window.__CYNCO_REMOTE`.
 - The management-token prompt on the desk is a `window.prompt`; a small inline field would be
   friendlier.
+- **From the locally-uncensored review (2026-10-27, `docs/reviews/2026-10-27-locally-uncensored-review.md`,
+  section 5 has the ranked list with file refs).** Running refusal-free, in the order measure →
+  prompt → weights: (1) refusal counter in the ledger — built 2026-10-27 (`scripts/cynco-refusal.mjs`,
+  the `refusals` row field, ledger README); (2) a house-conduct section
+  in the static system prompt behind a `LOCALCODE_*` switch, A/B'd by the counter; (3) an
+  abliterated profile beside the default (`bartowski/orcarouter_Qwen3.8-27B-Uncensored-GGUF`),
+  pre-staged with owner approval, tool-call rate compared in the ledger before it may become a
+  default; in-app Heretic abliteration deliberately not now. Engine gaps verified in our source:
+  (4) background Bash with status/kill under the F131 job; (5) search failure semantics —
+  tri-state tier outcome, DDG bot-check = Failed, shared deadline, `[Tried: …]` line; (6)
+  resolve-then-pin SSRF in `WebFetch` (a boundary change, owner's yes first); (7) per-repo rules
+  file (`AGENTS.md`/`CLAUDE.md` of the target repo) into the system prompt; (8) sub-agent wake via
+  `SteeringQueue`; (9) cursor-based event buffer for phone reconnect (= Next 4); (10) abort
+  threading + Bash child kill with a cancel tombstone (= Next 2); (11) compaction merge +
+  verbatim-loss check; (12) age-based tool-result decay; (13) stderr failure classifier + GGUF
+  precheck + health timeout by file size; (14) `mmproj` sibling pairing in `resolveModel`; (15)
+  per-turn memory recall as a turn note with ADD/UPDATE/NOOP; (16) device hygiene (= Next 6);
+  (17) phone uploads at `inference` scope (= Next 1); (18) GPU pin by name, only once a second
+  card lands in the 5090 box. Side findings: Bash safety does not refuse `--no-verify`; the
+  README's kraken/spark personas cannot write (every sub-agent tier is read-only), so the README
+  overstates them; `Git` sits in the read-only sub-agent tool set although it can commit.
 
 ## Deferred (decided not now, and why)
 

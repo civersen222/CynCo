@@ -1047,6 +1047,14 @@ try {
   const shard = activeShardPath()
   appendFileSync(shard, JSON.stringify(record) + '\n')
   console.log(`[ledger] ${outcome} record ${missionId} appended (${collector.turns.length} turns, ${collector.s5Decisions.length} S5 decisions) → ${shard}`)
+  // A count on the row that says nothing at the console has to be read to be
+  // seen (F57). Printed with the first sample, because the number cannot tell
+  // a refusal of the brief from a report that reads like one and the sample can.
+  {
+    const r = record.refusals
+    const sample = r.samples[0] ? ` — first: ${JSON.stringify(r.samples[0].opening)}` : ''
+    console.log(`[refusals] ${r.declined} declined of ${r.judged} tool-less answer(s) judged (${r.markerHits} with a Heretic marker, ${r.toolMessages} tool message(s) not judged)${sample}`)
+  }
   if (!MARKER.command) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
   // `verified` is one check command's exit code. It cannot say whether the new
   // tests BITE — only a withheld mutation set can, and those run later. Say so
