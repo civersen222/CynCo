@@ -1,4 +1,5 @@
 import { bashEffect } from '../engine/tools/bashEffect.js'
+import { looksLikeRefusal, hasRefusalMarker, refusalSample, REFUSAL_SAMPLE_CAP } from './cynco-refusal.mjs'
 
 // Mission outcome ledger (governance falsification program, step 1).
 //
@@ -160,6 +161,24 @@ export function createMissionCollector(now = () => Date.now()) {
     // frame arrives — so `null` is "best-of-N never started this mission" and
     // `[]` is "it ran and selected no winner", never the same reading.
     bestOfN: null,
+    // 2026-10-27 (docs/reviews/2026-10-27-locally-uncensored-review.md §2,
+    // slice 1 of "runs refusal-free"): did the model DECLINE, and how often.
+    // The engine streams text (`stream.token`), then the tool calls of that
+    // model call (`tool.start`), and emits ONE `message.complete` at the end
+    // of the turn — there is no per-model-call frame. So a "message" here is
+    // the text between tool boundaries: one that ends in a tool call is a
+    // tool message and is NOT judged (a short "I can't see the file yet" before
+    // a Read is narration, not a refusal — LU's isModelAnswer rule); one that
+    // ends at message.complete is the answer and is. `judged` is that
+    // denominator; `declined` is scripts/cynco-refusal.mjs's short-and-opens-
+    // with verdict; `markerHits` is Heretic's substring list on the same
+    // answers (the noisier count, kept in its own field); `toolMessages` is
+    // what was skipped; `samples` keeps the first REFUSAL_SAMPLE_CAP declined
+    // openings verbatim, because the count cannot tell a refusal of the brief
+    // from a report that reads like one and the sample can. Always present,
+    // never null: an empty mission judged nothing, which is a measurement.
+    refusals: { judged: 0, declined: 0, markerHits: 0, toolMessages: 0, samples: [] },
+    _answerText: '',
 
     ingest(m) {
       const t = now()
@@ -339,11 +358,32 @@ export function createMissionCollector(now = () => Date.now()) {
           // `input` IS carried through: it is how observeToolCall tells what a
           // Bash call actually DID (bashByEffect below), not just that it ran.
           this.observeToolCall({ name: m.toolName ?? 'unknown', input: m.input })
+          // The text streamed before this call belongs to a tool message.
+          if (this._answerText.trim()) this.refusals.toolMessages++
+          this._answerText = ''
           break
         }
         case 'tool.complete':
           if (m.isError) this.toolStats.errors++
           break
+        case 'stream.token':
+          if (typeof m.text === 'string') this._answerText += m.text
+          break
+        case 'message.complete': {
+          // The turn's answer: whatever streamed since the last tool call.
+          const answer = this._answerText
+          this._answerText = ''
+          if (!answer.trim()) break
+          this.refusals.judged++
+          if (hasRefusalMarker(answer)) this.refusals.markerHits++
+          if (looksLikeRefusal(answer)) {
+            this.refusals.declined++
+            if (this.refusals.samples.length < REFUSAL_SAMPLE_CAP) {
+              this.refusals.samples.push({ t, stopReason: m.stopReason ?? null, opening: refusalSample(answer) })
+            }
+          }
+          break
+        }
       }
     },
 
@@ -945,6 +985,9 @@ export function buildMissionRecord(collector, meta) {
     bestOfN: collector.bestOfN ?? null,
     toolTransport: collector.toolTransport,
     toolStats: collector.toolStats,
+    // Refusal counts on the mission's tool-less answers — see the collector.
+    // Never null; a row written before 2026-10-27 has no field at all.
+    refusals: collector.refusals,
     // Measured token totals (session.tokenStats) or null — see the collector.
     tokenStats: collector.tokenStats ?? null,
     // P4.3/4(e): session-level regulator fidelity (not per-turn); null when the

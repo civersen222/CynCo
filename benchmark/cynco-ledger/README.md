@@ -320,6 +320,27 @@ decisions still recorded here).
   // regulator counting by tool name while 233 read-shaped Bash calls slipped
   // past it uncounted. Every Bash call increments exactly one bucket; the
   // sums must equal `byName.Bash`.
+  //
+  // 2026-10-27, slice 1 of "runs refusal-free" (the locally-uncensored review,
+  // docs/reviews/2026-10-27-locally-uncensored-review.md §2): did the model
+  // DECLINE. The engine streams a model call's text, then its tool calls, and
+  // one `message.complete` per turn, so a "message" is the text between tool
+  // boundaries. `judged` = answers that ended at message.complete (the
+  // denominator); `declined` = scripts/cynco-refusal.mjs's verdict on them, a
+  // SHORT answer (under 60 words, reasoning stripped) that OPENS with a refusal
+  // phrase — LU's detector, measured on 188 hosted answers, plus our
+  // `find|locate|reproduce` exclusion for a coding agent's reports;
+  // `markerHits` = Heretic's own `refusal_markers` substring list on the same
+  // answers, the noisier count an abliteration before/after is scored in,
+  // kept in its own field; `toolMessages` = text that ended in a tool call and
+  // was therefore not judged ("I can't see the file yet" before a Read is
+  // narration). `samples` keeps the first three declined openings verbatim
+  // (160 chars, `{ t, stopReason, opening }`), because the count cannot tell a
+  // refusal of the brief from a report that reads like one and the sample can.
+  // Always present, never null — a mission that judged nothing measured zero.
+  // Rows before 2026-10-27 have no field. DATA, not authority: nothing gates on
+  // it until the measure → prompt → weights comparison has run (F7's lesson).
+  "refusals": { "judged": 1, "declined": 0, "markerHits": 0, "toolMessages": 12, "samples": [] },
   // F57. How the drive loop resolved. "timeout" is the only value assigned by
   // fallback; "never_dispatched" means no turn ever ran.
   "exitReason": "engine_closed_the_turn",
