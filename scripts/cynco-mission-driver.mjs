@@ -1053,7 +1053,11 @@ try {
   {
     const r = record.refusals
     const sample = r.samples[0] ? ` — first: ${JSON.stringify(r.samples[0].opening)}` : ''
-    console.log(`[refusals] ${r.declined} declined of ${r.judged} tool-less answer(s) judged (${r.markerHits} with a Heretic marker, ${r.toolMessages} tool message(s) not judged)${sample}`)
+    // The arm is the ENGINE's word (session.ready capabilities), so the line
+    // and the row agree with what was served, not with what the shell exported.
+    const caps = record.engineCapabilities
+    const arm = caps === null ? 'unknown (engine said no capabilities)' : caps.includes('house-conduct') ? 'house-conduct on' : 'house-conduct off'
+    console.log(`[refusals] ${r.declined} declined of ${r.judged} tool-less answer(s) judged (${r.markerHits} with a Heretic marker, ${r.toolMessages} tool message(s) not judged)${sample} — prompt arm: ${arm}`)
   }
   if (!MARKER.command) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')
   // `verified` is one check command's exit code. It cannot say whether the new

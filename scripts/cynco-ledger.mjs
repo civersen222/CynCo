@@ -178,11 +178,20 @@ export function createMissionCollector(now = () => Date.now()) {
     // from a report that reads like one and the sample can. Always present,
     // never null: an empty mission judged nothing, which is a measurement.
     refusals: { judged: 0, declined: 0, markerHits: 0, toolMessages: 0, samples: [] },
+    // What the serving engine declared on session.ready — its guarantees and,
+    // since the house-conduct A/B (docs/superpowers/plans/2026-10-27-house-conduct-ab.md),
+    // its prompt arm (`house-conduct`). Last frame wins. null = the engine never
+    // sent the field (pre-F41), which is not the same fact as `[]` (it measured
+    // and could say nothing); a comparison must exclude null, never read it as off.
+    engineCapabilities: null,
     _answerText: '',
 
     ingest(m) {
       const t = now()
       switch (m.type) {
+        case 'session.ready':
+          if (Array.isArray(m.capabilities)) this.engineCapabilities = m.capabilities.slice()
+          break
         case 'governance.status':
           this.turns.push({
             t,
@@ -866,6 +875,9 @@ export function buildMissionRecord(collector, meta) {
     // built from the brief's filename, and `brief-4-1790216986923` names no
     // campaign at all. Reading the ledger by campaign was a grep over briefFile.
     campaignId: meta.campaignId ?? process.env.CYNCO_CAMPAIGN_ID ?? null,
+    // What the engine declared at session.ready (see the collector field): the
+    // prompt arm a row ran under is read from here, never from a typed label.
+    engineCapabilities: collector.engineCapabilities ?? null,
     briefFile: meta.briefFile,
     marker: meta.marker,
     // Whether the marker actually appeared in the commit subject. It is NOT what

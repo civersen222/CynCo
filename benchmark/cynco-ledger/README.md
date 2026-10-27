@@ -341,6 +341,12 @@ decisions still recorded here).
   // Rows before 2026-10-27 have no field. DATA, not authority: nothing gates on
   // it until the measure → prompt → weights comparison has run (F7's lesson).
   "refusals": { "judged": 1, "declined": 0, "markerHits": 0, "toolMessages": 12, "samples": [] },
+  // What the serving engine declared at session.ready (engine/bridge/capabilities.ts):
+  // its guarantees and, when LOCALCODE_HOUSE_CONDUCT=true, its prompt arm
+  // ("house-conduct"). The house-conduct A/B groups rows by this word. null = an
+  // engine that said nothing (pre-F41) — unknown, never "off"; [] = measured empty.
+  // Rows before 2026-10-27 have no field.
+  "engineCapabilities": ["sealed-gates", "s5-earned-only", "house-conduct"],
   // F57. How the drive loop resolved. "timeout" is the only value assigned by
   // fallback; "never_dispatched" means no turn ever ran.
   "exitReason": "engine_closed_the_turn",
