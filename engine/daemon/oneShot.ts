@@ -217,7 +217,8 @@ export async function runOneShotTask(
         timeoutMs: task.timeoutMs,
         provider,
         config,
-        cwd,
+        // explicit override (tests) > the mission's workspace from the task file > engine cwd
+        cwd: cwd ?? task.cwd,
       })
     }
 

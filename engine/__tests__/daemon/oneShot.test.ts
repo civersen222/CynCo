@@ -1,6 +1,6 @@
 // engine/__tests__/daemon/oneShot.test.ts
 import { describe, expect, it } from 'bun:test'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask, countAssistantTurns } from '../../daemon/oneShot.js'
@@ -261,6 +261,27 @@ describe('runOneShotTask trade-scan dispatch', () => {
       expect(outcome.error).toBe('too few passes')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
+
+  it("uses task.cwd as the loop workspace when the caller passes no override", async () => {
+    const outer = mkdtempSync(join(tmpdir(), 'cynco-cwd-'))
+    const workspace = join(outer, 'ws')
+    mkdirSync(workspace)
+    try {
+      const task: TaskFileInput = {
+        missionId: 'm1', triggerId: 'dynasty-trades', prompt: 'Run the gate', context: 'ctx',
+        allowedTools: ['Bash', 'Read'], timeoutMs: 5000, outcomePath: join(outer, 'out.json'),
+        cwd: workspace,
+      }
+      const taskPath = join(outer, 'task.json')
+      writeFileSync(taskPath, JSON.stringify(task), 'utf-8')
+      await runOneShotTask(taskPath, noopProvider, makeConfig() as any)
+      // The loop initSnapshot()s its cwd and `git init`s a workspace that has no
+      // repo yet: the marker proves the loop ran in task.cwd, not in process.cwd().
+      expect(existsSync(join(workspace, '.git'))).toBe(true)
+      expect(existsSync(join(process.cwd(), 'cynco-cwd-marker-should-not-exist'))).toBe(false)
+    } finally { rmSync(outer, { recursive: true, force: true }) }
+  })
+
 })
 
 describe('runOneShotTask (governed conversation loop)', () => {

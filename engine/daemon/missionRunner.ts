@@ -126,12 +126,17 @@ export class MissionRunner {
     }
     const context = [handoffYaml.trimEnd(), ...rosterSections].join('\n\n')
 
+    // Tool pin and workspace: trigger > mission > read-only default (engine/daemon/CLAUDE.md
+    // "Per-mission tools and workspace"). Copied so a run cannot mutate the config's array.
+    const allowedTools = [...(trigger.allowedTools ?? this.ledger.config.allowedTools ?? DEFAULT_TOOLS)]
+    const cwd = trigger.cwd ?? this.ledger.config.cwd
     const input: TaskFileInput = {
       missionId: this.ledger.config.id,
       triggerId: trigger.id,
       prompt: trigger.prompt,
       context,
-      allowedTools: DEFAULT_TOOLS,
+      allowedTools,
+      ...(cwd ? { cwd } : {}),
       timeoutMs: trigger.taskType === 'trade-scan' ? TRADE_SCAN_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
       outcomePath: '', // TaskRunner fills this in
       ...(trigger.taskType ? { taskType: trigger.taskType } : {}),

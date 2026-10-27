@@ -526,3 +526,38 @@ describe('MissionRunner entropy digest on RunRecord', () => {
     }
   })
 })
+
+describe('MissionRunner allowedTools and cwd plumbing', () => {
+  const fireNews = async (missionConfig: MissionConfig) => {
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(missionConfig), 'utf-8')
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    for (const t of missionConfig.triggers) {
+      ledger.setNextFire(t.id, t.id === 'news' ? new Date(2026, 5, 11, 11, 59).toISOString() : new Date(2026, 5, 12).toISOString())
+    }
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    return ranTasks[0]
+  }
+
+  it('with nothing set, a run gets the read-only default tool pin and no cwd', async () => {
+    const input = await fireNews(config)
+    expect(input.allowedTools).toEqual(['Mfl', 'WebSearch', 'WebFetch', 'Read'])
+    expect(input.cwd).toBeUndefined()
+  })
+
+  it('mission-level allowedTools and cwd apply to every trigger', async () => {
+    const input = await fireNews({ ...config, allowedTools: ['Bash', 'Write', 'Read'], cwd: 'C:/Users/civer/fantasyman' })
+    expect(input.allowedTools).toEqual(['Bash', 'Write', 'Read'])
+    expect(input.cwd).toBe('C:/Users/civer/fantasyman')
+  })
+
+  it('a trigger-level allowedTools / cwd overrides the mission-level one', async () => {
+    const triggers = config.triggers.map((t) =>
+      t.id === 'news' ? { ...t, allowedTools: ['Read'], cwd: 'D:/elsewhere' } : t)
+    const input = await fireNews({ ...config, triggers, allowedTools: ['Bash', 'Write', 'Read'], cwd: 'C:/Users/civer/fantasyman' })
+    expect(input.allowedTools).toEqual(['Read'])
+    expect(input.cwd).toBe('D:/elsewhere')
+  })
+})
