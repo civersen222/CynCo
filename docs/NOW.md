@@ -5,7 +5,7 @@ Changing the first section is the owner's decision. Rules: `AGENTS.md` → "How 
 
 ## Current objective
 
-**Phone access, slice 1 — built on 2026-10-22, awaiting the owner's phone test.**
+**Phone access, slice 1 — built 2026-10-22, verified on the owner's phone 2026-10-27.**
 
 Use CynCo's existing engine and dashboard from the owner's phone over the owner's Tailscale
 tailnet. Done when, on the phone: open the phone URL → pair once with the printed code → see
@@ -14,9 +14,12 @@ running turn. Nothing is bound beyond loopback by default; no second engine, cha
 or client codebase. Design and rejected alternatives: `docs/decisions/2026-10-22-phone-access.md`;
 how to use it: README → Phone access.
 
-What remains of the objective is the owner's: confirm the access model (tailnet only, plain HTTP
-inside the tunnel), start the engine with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,<Tailscale IP>`,
-pair the real phone, and report what the phone's browser does with the layout and the keyboard.
+Verified 2026-10-27 on the owner's Pixel 7 Pro over the tailnet: the engine launched from the TUI
+with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,100.101.192.101`, the phone paired on the first code,
+a prompt streamed and Stop ended a turn; no firewall change was needed. The access model (tailnet
+only, plain HTTP inside the tunnel) is confirmed by use. What is left of this objective is the
+merge of PR #173 on GitHub and, once the owner is satisfied, making the variable permanent
+(`setx`). The next objective is the owner's choice; Next 1 below is the candidate.
 
 ## Next (in rough order)
 

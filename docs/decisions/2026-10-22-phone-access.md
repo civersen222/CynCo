@@ -1,7 +1,7 @@
 # Reach the dashboard from the phone over the tailnet, behind pairing — not a second client, not a public port
 
 **Date:** 2026-10-22
-**Status:** Accepted (slice 1 built; the owner's phone test and the access-model confirmation are the next step)
+**Status:** Accepted; verified on the owner's phone 2026-10-27 (paired on the first code, chat streamed, Stop ended a turn; no firewall change needed)
 **Guard:** `engine/__tests__/dashboard/phoneAccess.test.ts`, `engine/__tests__/dashboard/access.test.ts`, `engine/__tests__/bridge/abortIsATurnEnd.test.ts`, `engine/__tests__/security/deviceTokens.test.ts`
 
 ## What was there
