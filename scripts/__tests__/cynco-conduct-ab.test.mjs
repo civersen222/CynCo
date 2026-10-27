@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { planRuns, runEnv, runOutcome, waitForRun, seedRepo, TASKS, ARMS, armOf, selectRows, compareRows, verdictOf, regressionSuspect, reportLines } from '../cynco-conduct-ab.mjs'
+import { planRuns, runEnv, runOutcome, waitForRun, seedRepo, runSet, TASKS, ARMS, armOf, selectRows, compareRows, verdictOf, regressionSuspect, reportLines } from '../cynco-conduct-ab.mjs'
 import { runSync } from '../cynco-spawn.mjs'
 
 /**
@@ -174,5 +174,30 @@ describe('regressionSuspect / reportLines', () => {
     expect(text).toContain('REGRESSION-SUSPECT')
     expect(text).toContain('I cannot write that')
     expect(text).toContain('excluded (arm unknown): 0')
+  })
+})
+
+describe('runSet', () => {
+  it('records a failed dispatch and a capped wait, and goes on to the next run', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'conduct-ab-root-')).replace(/\\/g, '/')
+    const runs = [
+      { task: 'sack', arm: 'off', cwd: `${root}/off/sack`, briefFile: 'brief-a' },
+      { task: 'plague', arm: 'on', cwd: `${root}/on/plague`, briefFile: 'brief-b' },
+    ]
+    const seen = []
+    const io = {
+      dispatch: (args, env) => { seen.push({ args, flag: env.LOCALCODE_HOUSE_CONDUCT }); if (args[0] === 'brief-a') throw new Error('dispatch failed (exit 1): boom') },
+      wait: async () => ({ outcome: 'no-row', lastLine: 'driver never wrote a row' }),
+      bootIdleEngine: () => { seen.push('idle') },
+    }
+    expect(await runSet({ env: { PATH: 'p' }, io, runs, root })).toBe(0)
+    const lines = readFileSync(`${root}/runs.jsonl`, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    expect(lines.map(l => [l.task, l.arm, l.outcome])).toEqual([['sack', 'off', 'dispatch-failed'], ['plague', 'on', 'no-row']])
+    expect(lines[0].lastLine).toMatch(/boom/)
+    expect(lines[0].baseSha).toBe(lines[1].baseSha)
+    expect(seen[0].flag).toBeUndefined()
+    expect(seen[1].flag).toBe('true')
+    expect(seen[1].args).toEqual(['brief-b', '[conduct-ab]', `${root}/on/plague`, '1800', 'python -m pytest -q tests'])
+    expect(seen.at(-1)).toBe('idle')
   })
 })

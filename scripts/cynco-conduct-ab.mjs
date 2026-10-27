@@ -158,8 +158,8 @@ const defaultIo = {
 }
 
 /** Seed, dispatch and wait for every planned run, one at a time; one JSON line per run in runs.jsonl. */
-export async function runSet({ env = process.env, io = defaultIo, runs = planRuns() } = {}) {
-  mkdirSync(`${ROOT}/logs`, { recursive: true })
+export async function runSet({ env = process.env, io = defaultIo, runs = planRuns(), root = ROOT } = {}) {
+  mkdirSync(`${root}/logs`, { recursive: true })
   for (const r of runs) {
     const baseSha = seedRepo(r.cwd)
     const startedAt = new Date().toISOString()
@@ -171,7 +171,7 @@ export async function runSet({ env = process.env, io = defaultIo, runs = planRun
       ending = { outcome: 'dispatch-failed', lastLine: e?.message ?? String(e) }
     }
     const rec = { task: r.task, arm: r.arm, cwd: r.cwd, baseSha, ...ending, startedAt, endedAt: new Date().toISOString(), driverLog: logsFor(r.task, r.arm).driver }
-    appendFileSync(`${ROOT}/runs.jsonl`, JSON.stringify(rec) + '\n')
+    appendFileSync(`${root}/runs.jsonl`, JSON.stringify(rec) + '\n')
     console.log(`[conduct-ab] ${r.task} ${r.arm} → ${rec.outcome}${rec.outcome === 'row' ? '' : ` (${rec.lastLine})`}`)
   }
   io.bootIdleEngine(env)
