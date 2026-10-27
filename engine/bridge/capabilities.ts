@@ -59,7 +59,7 @@ export const CAP_S5_EARNED_ONLY = 's5-earned-only'
  * The house-conduct section (`HOUSE_CONDUCT`, engine/engine/systemPromptText.ts)
  * is in this process's prompts. Said so that a mission's ledger row can name
  * the prompt arm the ENGINE served rather than the label an operator typed —
- * the A/B in docs/superpowers/plans/2026-10-27-house-conduct-ab.md groups rows
+ * the A/B in benchmark/conduct-ab/README.md groups rows
  * by this word, and an engine too old to say it reads as unknown, never as
  * "off". Read from the same `isHouseConductEnabled` the loop reads (F42: one
  * predicate, or the advertised arm and the served arm are two arms).

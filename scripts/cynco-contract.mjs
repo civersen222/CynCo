@@ -304,6 +304,14 @@ export const CAP_S5_ADVISORY = 's5-advisory'
 export const CAP_S5_EARNED_ONLY = 's5-earned-only'
 
 /**
+ * The house-conduct section is in the engine's prompts (`CAP_HOUSE_CONDUCT` in
+ * engine/bridge/capabilities.ts; pinned equal by scripts/__tests__/cynco-conduct-ab.test.mjs).
+ * The driver prints the arm from it and the A/B runner groups ledger rows by it,
+ * so the word is spelled once on the scripts side.
+ */
+export const CAP_HOUSE_CONDUCT = 'house-conduct'
+
+/**
  * F59: may this mission be measured on THIS engine? Null to dispatch, a sentence
  * to print and refuse on.
  *

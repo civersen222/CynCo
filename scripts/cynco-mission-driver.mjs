@@ -76,7 +76,7 @@ import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCh
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
-import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
 import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut, withHeldOutRestored, driverInstrumentAssertions } from './cynco-held-out.mjs'
@@ -1056,7 +1056,7 @@ try {
     // The arm is the ENGINE's word (session.ready capabilities), so the line
     // and the row agree with what was served, not with what the shell exported.
     const caps = record.engineCapabilities
-    const arm = caps === null ? 'unknown (engine said no capabilities)' : caps.includes('house-conduct') ? 'house-conduct on' : 'house-conduct off'
+    const arm = caps === null ? 'unknown (engine said no capabilities)' : `${CAP_HOUSE_CONDUCT} ${caps.includes(CAP_HOUSE_CONDUCT) ? 'on' : 'off'}`
     console.log(`[refusals] ${r.declined} declined of ${r.judged} tool-less answer(s) judged (${r.markerHits} with a Heretic marker, ${r.toolMessages} tool message(s) not judged)${sample} — prompt arm: ${arm}`)
   }
   if (!MARKER.command) console.log('[ledger] no check-cmd given — patch "verified": true|false after independent verification')

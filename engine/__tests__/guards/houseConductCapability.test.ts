@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { governanceCapabilities, CAP_HOUSE_CONDUCT, CAP_S5_ADVISORY } from '../../bridge/capabilities.js'
 
 /**
- * The house-conduct A/B (docs/superpowers/plans/2026-10-27-house-conduct-ab.md)
+ * The house-conduct A/B (benchmark/conduct-ab/README.md)
  * compares ledger rows by the prompt arm the ENGINE declared, not by a label
  * the operator typed. So the engine must say `house-conduct` on session.ready
  * exactly when the section is in its prompt, read from the one predicate the

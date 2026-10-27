@@ -179,7 +179,7 @@ export function createMissionCollector(now = () => Date.now()) {
     // never null: an empty mission judged nothing, which is a measurement.
     refusals: { judged: 0, declined: 0, markerHits: 0, toolMessages: 0, samples: [] },
     // What the serving engine declared on session.ready — its guarantees and,
-    // since the house-conduct A/B (docs/superpowers/plans/2026-10-27-house-conduct-ab.md),
+    // since the house-conduct A/B (benchmark/conduct-ab/README.md),
     // its prompt arm (`house-conduct`). Last frame wins. null = the engine never
     // sent the field (pre-F41), which is not the same fact as `[]` (it measured
     // and could say nothing); a comparison must exclude null, never read it as off.

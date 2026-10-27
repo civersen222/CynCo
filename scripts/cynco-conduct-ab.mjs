@@ -5,7 +5,7 @@
 //   bun scripts/cynco-conduct-ab.mjs compare   # both arms from the ledger, with the pre-registered verdict
 //
 // Does LOCALCODE_HOUSE_CONDUCT=true change what the mission ledger's `refusals`
-// field records? (docs/superpowers/plans/2026-10-27-house-conduct-ab.md; the
+// field records? (benchmark/conduct-ab/README.md; the
 // order measure → prompt → weights is docs/reviews/2026-10-27-locally-uncensored-review.md §2.)
 //
 // The arm a row ran under is read from the row itself — `engineCapabilities`,
@@ -19,11 +19,11 @@
 import { cpSync, mkdirSync, readFileSync, appendFileSync, existsSync, readdirSync } from 'node:fs'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawn } from 'node:child_process'
-import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
+import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { runDispatch, dispatchEnv } from './cynco-campaign.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { wilson } from './cynco-signal-validation.mjs'
+import { CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
 
 /** The six briefs: three nobody would refuse (the control for the prompt itself), three where a model-maker refusal would show. */
 export const TASKS = ['harvest-festival', 'trade-fair', 'royal-wedding', 'sack', 'plague', 'inquisition']
@@ -64,13 +64,19 @@ export function planRuns(tasks = TASKS) {
 /**
  * The environment one dispatch gets. `dispatchEnv` strips the ntfy and GitHub
  * keys (the worker has a Bash tool). The flag is SET for `on` and DELETED for
- * `off` — never left to the shell, which may have exported it.
+ * `off` — never left to the shell, which may have exported it. Every run but
+ * the last skips dispatch-mission.sh's idle-engine boot (the next dispatch's
+ * kill sweep would only remove it); the last run leaves it on, so the script
+ * boots the idle engine the way it does after every mission — after the driver
+ * has exited and 9161 has gone quiet — and the dashboard keeps answering
+ * (F141/F143). Booting one from here would race the mission engine that still
+ * holds the ports while the driver tears it down.
  */
-export function runEnv(base, arm, { task }) {
+export function runEnv(base, arm, { task, last = false }) {
   const logs = logsFor(task, arm)
   const env = dispatchEnv(base, {
     LOCALCODE_MAX_ITERATIONS: String(MAX_ITERATIONS),
-    CYNCO_SKIP_IDLE_ENGINE: '1',
+    ...(last ? {} : { CYNCO_SKIP_IDLE_ENGINE: '1' }),
     ENGINE_LOG: logs.engine,
     DRIVER_LOG: logs.driver,
   })
@@ -95,22 +101,39 @@ export function seedRepo(dest, { template = TEMPLATE_DIR, git = runSync } = {}) 
   if (existsSync(dest) && readdirSync(dest).length > 0) throw new Error(`seed: ${dest} is not empty — remove it first (a finished mission lives there)`)
   mkdirSync(dest, { recursive: true })
   cpSync(template, dest, { recursive: true, filter: (src) => !CACHE_DIRS.has(src.split(/[\\/]/).pop()) })
-  const g = (args) => {
-    const r = git('git', args, { cwd: dest, env: SEED_IDENTITY, timeoutMs: 30_000 })
+  const g = (args, opts = {}) => {
+    const r = git('git', args, { cwd: dest, env: SEED_IDENTITY, timeoutMs: 30_000, ...opts })
     if (r.fault || r.status !== 0) throw new Error(`seed: git ${args[0]} in ${dest} failed: ${r.fault ? faultSummary(r.fault) : `exit ${r.status}`} ${r.stderr ?? ''}`.trim())
     return r.stdout.trim()
   }
-  g(['init', '-q'])
+  // F155: on every run after the first, this `git init` is the FIRST spawn in
+  // this process after a 30-minute idle (the wait makes none), which bun's
+  // spawnSync kills with a stale ETIMEDOUT in milliseconds. runSync retries an
+  // ETIMEDOUT that provably spent no time exactly once, and only when asked:
+  // `git init` on an empty directory is idempotent, so asking is safe here.
+  g(['init', '-q'], { retryImpossibleTimeout: true })
   g(['add', '-A'])
   g(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed'])
   return g(['rev-parse', 'HEAD'])
 }
 
-/** How a driver log ended: the ledger line, a refusal at the ready gate, or neither yet. */
+const LEDGER_LINE = /^\[ledger\] \S+ record (\S+) appended/m
+
+/**
+ * How a driver log ended: the ledger line, a refusal at the ready gate, or
+ * neither yet. The refusal form is `[driver] REFUSED: …` (the ready-gate and
+ * capability refusals); `[driver] REFUSED TO STOP — …` is the abort path, printed
+ * BEFORE the gate and the ledger append, and must read as "not yet".
+ */
 export function runOutcome(text) {
-  if (/^\[ledger\] .* record .* appended/m.test(text)) return 'row'
-  if (/^\[driver\] REFUSED/m.test(text)) return 'refused'
+  if (LEDGER_LINE.test(text)) return 'row'
+  if (/^\[driver\] REFUSED: /m.test(text)) return 'refused'
   return 'no-row'
+}
+
+/** The missionId the ledger line names, so `compare` can select exactly this set's rows. */
+export function missionIdOf(text) {
+  return LEDGER_LINE.exec(text)?.[1] ?? null
 }
 
 const lastLineOf = (text) => text.split('\n').filter(l => l.trim()).pop() ?? ''
@@ -132,49 +155,53 @@ export async function waitForRun(driverLog, { readFile = (p) => readFileSync(p, 
       unreadable = `driver log unreadable: ${e?.message ?? e}`
     }
     const outcome = runOutcome(text)
-    if (outcome !== 'no-row') return { outcome, lastLine: lastLineOf(text) }
-    if (now() - t0 >= capMs) return { outcome: 'no-row', lastLine: lastLineOf(text) || unreadable }
+    if (outcome !== 'no-row') return { outcome, lastLine: lastLineOf(text), missionId: missionIdOf(text) }
+    if (now() - t0 >= capMs) return { outcome: 'no-row', lastLine: lastLineOf(text) || unreadable, missionId: null }
     await sleep(everyMs)
   }
 }
 
-/**
- * After the set the dashboard on 9161 would go dark (every run was dispatched
- * with CYNCO_SKIP_IDLE_ENGINE=1, so no dispatch booted one). Boot a plain idle
- * engine the way dispatch-mission.sh does, detached, so the URL keeps answering.
- */
-function bootIdleEngine(env) {
-  mkdirSync(`${ROOT}/logs`, { recursive: true })
-  const child = spawn(bashExe(), ['-c', `LOCALCODE_EMBED_MODEL="\${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > ${ROOT}/logs/idle-engine.log 2>&1`],
-    { cwd: REPO_ROOT, env: dispatchEnv(env, {}), detached: true, stdio: 'ignore', windowsHide: true })
-  child.unref()
-  console.log(`[conduct-ab] set over — idle engine booted so the dashboard on 9161 keeps answering (log ${ROOT}/logs/idle-engine.log)`)
-}
-
 const defaultIo = {
+  seed: (cwd) => seedRepo(cwd),
   dispatch: (args, env) => runDispatch(args, env),
   wait: (driverLog) => waitForRun(driverLog),
-  bootIdleEngine,
 }
 
-/** Seed, dispatch and wait for every planned run, one at a time; one JSON line per run in runs.jsonl. */
+const nonEmpty = (dir) => existsSync(dir) && readdirSync(dir).length > 0
+
+/**
+ * Seed, dispatch and wait for every planned run, one at a time; one JSON line
+ * per run in runs.jsonl (`missionId` filled from the ledger line, so `compare`
+ * selects exactly these rows). Refuses the whole set up front when any run
+ * directory is already in use — a finished mission lives there — rather than
+ * dispatching half a set and then stopping. A seed or dispatch that fails is
+ * recorded and the loop goes on: one bad run must not cost the other eleven.
+ */
 export async function runSet({ env = process.env, io = defaultIo, runs = planRuns(), root = ROOT } = {}) {
+  const inUse = runs.map(r => r.cwd).filter(nonEmpty)
+  if (inUse.length) throw new Error(`run: ${inUse.length} run director${inUse.length === 1 ? 'y is' : 'ies are'} not empty (${inUse[0]}${inUse.length > 1 ? ', …' : ''}) — remove ${root} first; a finished set lives there`)
   mkdirSync(`${root}/logs`, { recursive: true })
-  for (const r of runs) {
-    const baseSha = seedRepo(r.cwd)
+  for (const [i, r] of runs.entries()) {
     const startedAt = new Date().toISOString()
+    let baseSha = null
     let ending
     try {
-      io.dispatch([r.briefFile, MARKER, r.cwd, String(TIMEOUT_S), CHECK_CMD], runEnv(env, r.arm, r))
-      ending = await io.wait(logsFor(r.task, r.arm).driver)
+      baseSha = io.seed(r.cwd)
     } catch (e) {
-      ending = { outcome: 'dispatch-failed', lastLine: e?.message ?? String(e) }
+      ending = { outcome: 'seed-failed', lastLine: e?.message ?? String(e), missionId: null }
+    }
+    if (!ending) {
+      try {
+        io.dispatch([r.briefFile, MARKER, r.cwd, String(TIMEOUT_S), CHECK_CMD], runEnv(env, r.arm, { task: r.task, last: i === runs.length - 1 }))
+        ending = await io.wait(logsFor(r.task, r.arm).driver)
+      } catch (e) {
+        ending = { outcome: 'dispatch-failed', lastLine: e?.message ?? String(e), missionId: null }
+      }
     }
     const rec = { task: r.task, arm: r.arm, cwd: r.cwd, baseSha, ...ending, startedAt, endedAt: new Date().toISOString(), driverLog: logsFor(r.task, r.arm).driver }
     appendFileSync(`${root}/runs.jsonl`, JSON.stringify(rec) + '\n')
-    console.log(`[conduct-ab] ${r.task} ${r.arm} → ${rec.outcome}${rec.outcome === 'row' ? '' : ` (${rec.lastLine})`}`)
+    console.log(`[conduct-ab] ${r.task} ${r.arm} → ${rec.outcome}${rec.outcome === 'row' ? ` ${rec.missionId}` : ` (${rec.lastLine})`}`)
   }
-  io.bootIdleEngine(env)
   return 0
 }
 
@@ -184,19 +211,33 @@ export async function runSet({ env = process.env, io = defaultIo, runs = planRun
 export function armOf(row) {
   const caps = row?.engineCapabilities
   if (!Array.isArray(caps)) return null
-  return caps.includes('house-conduct') ? 'on' : 'off'
+  return caps.includes(CAP_HOUSE_CONDUCT) ? 'on' : 'off'
 }
 
 const SET_ROW = new RegExp(`^conduct-ab-(${TASKS.join('|')})-\\d+$`)
 
-/** This set's rows (by missionId, which the driver builds from the brief's basename), each with its `task`. */
-export function selectRows(rows) {
+/**
+ * This set's rows, each with its `task`. With `ids` (the missionIds a run file
+ * recorded) exactly those rows; without, every row under the set's missionId
+ * prefix — which also catches a smoke dispatch or a superseded rerun, so the
+ * run file is the selection to trust.
+ */
+export function selectRows(rows, { ids = null } = {}) {
+  const wanted = ids ? new Set(ids) : null
   const out = []
   for (const r of rows) {
     const m = SET_ROW.exec(r?.missionId ?? '')
-    if (m) out.push({ ...r, task: m[1] })
+    if (!m) continue
+    if (wanted && !wanted.has(r.missionId)) continue
+    out.push({ ...r, task: m[1] })
   }
   return out
+}
+
+/** The missionIds a runs.jsonl recorded (rows that got a ledger line), or null when the file is absent. */
+export function idsFromRunFile(path, { readFile = (p) => readFileSync(p, 'utf8'), exists = existsSync } = {}) {
+  if (!exists(path)) return null
+  return readFile(path).split('\n').filter(Boolean).map(l => JSON.parse(l).missionId).filter(Boolean)
 }
 
 const emptyAgg = () => ({ missions: 0, judged: 0, declined: 0, markerHits: 0, declinedCI: [0, 1], landed: 0, verifiedTrue: 0, meanDurationS: null, meanToolTotal: null, meanSourceEdit: null, samples: [], tasks: {} })
@@ -307,7 +348,7 @@ export function reportLines(cmp, { date = new Date().toISOString().slice(0, 10) 
   return lines
 }
 
-const USAGE = 'usage: bun scripts/cynco-conduct-ab.mjs seed | run | compare [--json]'
+const USAGE = 'usage: bun scripts/cynco-conduct-ab.mjs seed | run | compare [--runs <runs.jsonl>] [--json]'
 
 export async function main(argv, { env = process.env, io = defaultIo } = {}) {
   const cmd = argv[0]
@@ -317,8 +358,13 @@ export async function main(argv, { env = process.env, io = defaultIo } = {}) {
   }
   if (cmd === 'run') return runSet({ env, io })
   if (cmd === 'compare') {
-    const cmp = compareRows(selectRows(readLedger()))
-    console.log(argv.includes('--json') ? JSON.stringify(cmp, null, 2) : reportLines(cmp).join('\n'))
+    const at = argv.indexOf('--runs')
+    const runFile = at >= 0 ? argv[at + 1] : `${ROOT}/runs.jsonl`
+    const ids = idsFromRunFile(runFile)
+    const cmp = compareRows(selectRows(readLedger(), { ids }))
+    if (argv.includes('--json')) { console.log(JSON.stringify(cmp, null, 2)); return 0 }
+    console.log(ids ? `selection: the ${ids.length} missionId(s) in ${runFile}` : `selection: every ledger row under the conduct-ab- prefix (no run file at ${runFile})`)
+    console.log(reportLines(cmp).join('\n'))
     return 0
   }
   console.error(USAGE)

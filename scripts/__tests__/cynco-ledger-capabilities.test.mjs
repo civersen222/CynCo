@@ -7,7 +7,7 @@ import { createMissionCollector, buildMissionRecord } from '../cynco-ledger.mjs'
 /**
  * A ledger row names the prompt arm the ENGINE declared on session.ready
  * (`house-conduct`, engine/bridge/capabilities.ts), so the house-conduct A/B
- * (docs/superpowers/plans/2026-10-27-house-conduct-ab.md) compares arms the
+ * (benchmark/conduct-ab/README.md) compares arms the
  * engine served rather than labels the operator typed. `null` means the engine
  * never said — an engine older than F41 — and is never read as "off".
  */
