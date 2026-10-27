@@ -43,6 +43,7 @@ merge of PR #173 on GitHub and, once the owner is satisfied, making the variable
 
 ## Backlog (worth doing, not started)
 
+- **Dynasty runbook mission (2026-10-27).** CynCo is now the default runner of the owner's MFL team through `C:/Users/civer/fantasyman/dynasty` (per-mission `allowedTools`/`cwd` landed for it; `docs/liveness-setup.md` -> "Dynasty runbook mission"). In the smoke run the model kept going after its first command said `skip:` (the runbook's `done` now refuses in that case). A daemon-side way to end a one-shot run when the prompt's first command says stop would save a model turn per idle trigger.
 - `CYNCO.md` still carries an architecture sketch that trails `docs/MANUAL.md`; decide whether it
   stays a conventions file only.
 - Repository root carries stray artefacts: eight `preflight_l4*.ts` files, a `Userscivercivkings/`
