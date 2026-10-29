@@ -95,26 +95,41 @@ describe('TaskRunner', () => {
 
 describe('isGpuBusy', () => {
   const noGpuApps = async () => ''
+  // Every probe is injected: the real port probe would see whatever model server this machine is running.
+  const noServer = async () => false
+  it('a model server answering on the engine port means busy even when tasklist and nvidia-smi miss it (2026-10-28: the daemon killed a live hand-started run)', async () => {
+    expect(await isGpuBusy(async () => 'explorer.exe\n', noGpuApps, async () => true)).toBe(true)
+    expect(await isGpuBusy(async () => { throw new Error('tasklist timed out') }, async () => { throw new Error('no nvidia-smi') }, async () => true)).toBe(true)
+  })
+  it("an embedding-only llama-server (Ollama's nomic-embed, under 1 GB) does not make the GPU busy", async () => {
+    const ollamaEmbed = 'C:/Users/x/AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe --model blob --port 55770 --embedding -b 2048\n'
+    expect(await isGpuBusy(async () => ollamaEmbed, noGpuApps, noServer)).toBe(false)
+    const cyncoChat = 'C:/Users/x/.cynco/bin-brain/llama-server.exe --model qwen.gguf --port 8081 --ctx-size 131072\n'
+    expect(await isGpuBusy(async () => ollamaEmbed + cyncoChat, noGpuApps, noServer)).toBe(true)
+  })
+  it('a port probe that throws counts as no server', async () => {
+    expect(await isGpuBusy(async () => 'explorer.exe\n', noGpuApps, async () => { throw new Error('ECONNREFUSED') })).toBe(false)
+  })
   it('detects llama-server in the process list', async () => {
-    expect(await isGpuBusy(async () => 'bun.exe\nllama-server.exe\n', noGpuApps)).toBe(true)
+    expect(await isGpuBusy(async () => 'bun.exe\nllama-server.exe\n', noGpuApps, noServer)).toBe(true)
   })
   it('returns false when no llama-server is running', async () => {
-    expect(await isGpuBusy(async () => 'explorer.exe\ncode.exe\n', noGpuApps)).toBe(false)
+    expect(await isGpuBusy(async () => 'explorer.exe\ncode.exe\n', noGpuApps, noServer)).toBe(false)
   })
   it('returns false when the process list is unavailable', async () => {
-    expect(await isGpuBusy(async () => { throw new Error('no tasklist') }, noGpuApps)).toBe(false)
+    expect(await isGpuBusy(async () => { throw new Error('no tasklist') }, noGpuApps, noServer)).toBe(false)
   })
   it('nvidia-smi: a compute app holding serious VRAM means busy even when tasklist is clean (spec §2)', async () => {
     const queryGpu = async () => '12345, 21504\n' // pid, used MiB
-    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu)).toBe(true)
+    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu, noServer)).toBe(true)
   })
   it('nvidia-smi: small compute apps (browsers etc.) do not count as busy', async () => {
     const queryGpu = async () => '901, 350\n1402, 512\n'
-    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu)).toBe(false)
+    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu, noServer)).toBe(false)
   })
   it('nvidia-smi unavailable falls back to the tasklist heuristic alone', async () => {
     const queryGpu = async () => { throw new Error('nvidia-smi not found') }
-    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu)).toBe(false)
-    expect(await isGpuBusy(async () => 'llama-server\n', queryGpu)).toBe(true)
+    expect(await isGpuBusy(async () => 'explorer.exe\n', queryGpu, noServer)).toBe(false)
+    expect(await isGpuBusy(async () => 'llama-server\n', queryGpu, noServer)).toBe(true)
   })
 })

@@ -25,6 +25,8 @@ export interface TriggerSpec {
   allowedTools?: string[]
   /** Loop workspace for this trigger's runs (Bash cwd); overrides MissionConfig.cwd; default: where the daemon runs. */
   cwd?: string
+  /** Wall-clock kill for this trigger's runs, in ms; overrides MissionConfig.timeoutMs; default 15 min (60 for trade-scan). */
+  timeoutMs?: number
 }
 
 export interface MflLeagueRef {
@@ -47,6 +49,8 @@ export interface MissionConfig {
   allowedTools?: string[]
   /** Loop workspace for every trigger's runs unless the trigger sets its own. */
   cwd?: string
+  /** Wall-clock kill for every prompt trigger's runs unless the trigger sets its own (trade-scan keeps 60 min). */
+  timeoutMs?: number
 }
 
 export interface Recommendation {

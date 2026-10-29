@@ -457,6 +457,64 @@ describe('MissionRunner taskType plumbing', () => {
   })
 })
 
+describe('MissionRunner per-mission and per-trigger timeoutMs', () => {
+  async function fireNews(cfg: MissionConfig) {
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(cfg), 'utf-8')
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await new MissionRunner(ledger, deps as any).tick()
+    return ranTasks
+  }
+
+  it('a mission timeoutMs replaces the 15-minute default for its prompt triggers', async () => {
+    const ran = await fireNews({ ...config, timeoutMs: 45 * 60 * 1000 })
+    expect(ran[0].timeoutMs).toBe(45 * 60 * 1000)
+  })
+
+  it('a trigger timeoutMs beats the mission timeoutMs', async () => {
+    const triggers = config.triggers.map(t => t.id === 'news' ? { ...t, timeoutMs: 25 * 60 * 1000 } : t)
+    const ran = await fireNews({ ...config, timeoutMs: 45 * 60 * 1000, triggers })
+    expect(ran[0].timeoutMs).toBe(25 * 60 * 1000)
+  })
+
+  it('a non-positive or non-numeric timeoutMs is ignored and the default applies', async () => {
+    const triggers = config.triggers.map(t => t.id === 'news' ? { ...t, timeoutMs: 0 } : t)
+    const ran = await fireNews({ ...config, timeoutMs: 'soon' as any, triggers })
+    expect(ran[0].timeoutMs).toBe(15 * 60 * 1000)
+  })
+
+  it('trade-scan keeps its 60-minute default unless the trigger itself sets one', async () => {
+    const scan: MissionConfig = {
+      ...config,
+      timeoutMs: 20 * 60 * 1000,
+      triggers: [{ id: 'trade-scan', kind: 'weekly', day: 'tue', at: '09:00', precheck: 'none', missedPolicy: 'skip', prompt: 'Rank trades', taskType: 'trade-scan' }],
+    }
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(scan), 'utf-8')
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('trade-scan', new Date(2026, 5, 11, 11, 59).toISOString())
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks[0].timeoutMs).toBe(60 * 60 * 1000)
+  })
+})
+
+describe('MissionRunner skipped triggers are visible', () => {
+  it('a skip-policy trigger missed past the grace window is logged with its id and due time, not dropped silently', async () => {
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 30).toISOString())   // 30 min late at the 12:00 tick
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: any[]) => { lines.push(a.join(' ')) }
+    try { await new MissionRunner(ledger, deps as any).tick() } finally { console.log = orig }
+    expect(ranTasks.length).toBe(0)
+    expect(lines.some(l => l.includes('skipped') && l.includes('"news"') && l.includes('missedPolicy skip'))).toBe(true)
+  })
+})
+
 describe('MissionRunner entropy digest on RunRecord', () => {
   /** Write two thinking records for a given sessionId into a temp sessions dir. */
   function writeThinkingFile(sessionsDir: string, sessionId: string): void {

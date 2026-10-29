@@ -14,17 +14,48 @@ export class GpuBusyError extends Error {
 const GPU_VRAM_BUSY_MIB = 4096
 
 /**
- * GPU guard (spec §2): nvidia-smi compute apps PLUS the tasklist heuristic
- * for an interactive CynCo session (llama-server). Either signal → busy.
- * Both probes fail open: can't tell → let the run proceed; engine startup
+ * Any HTTP answer from the engine's model port means a model server is up there. This is the
+ * strongest busy signal: it is exactly the server a new one-shot's ProcessManager.ensureRunning()
+ * would kill as "stale" (2026-10-28: the daemon's run killed a live hand-started run's server
+ * after the tasklist probe missed it; nvidia-smi reports [N/A] memory under WDDM).
+ */
+async function modelServerAnswering(): Promise<boolean> {
+  const port = parseInt(process.env.LOCALCODE_PORT ?? '8081', 10)
+  await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })
+  return true // any response, even 503 while a model loads, is a live server
+}
+
+/**
+ * GPU guard (spec §2): a model server answering on the engine port, nvidia-smi compute apps,
+ * and the tasklist heuristic for an interactive CynCo session (llama-server). Any signal → busy.
+ * Each probe fails open: can't tell → let the run proceed; engine startup
  * will fail loudly if truly contended.
  */
 export async function isGpuBusy(
   listProcesses?: () => Promise<string>,
   queryGpuApps?: () => Promise<string>,
+  probeModelServer?: () => Promise<boolean>,
 ): Promise<boolean> {
+  // A refused connection is the normal idle answer, so a throwing probe means "no server", not an error.
+  const serverUp = await (probeModelServer ?? modelServerAnswering)().catch(() => false)
+  if (serverUp) return true
+
+  // Command lines where the OS gives them (so an embedding-only server can be told apart), else the bare
+  // process list. Ollama runs its embedding model as its own llama-server.exe (`--embedding`, under 1 GB)
+  // and keeps it a few minutes after any embed call; counting it deferred every trigger that followed a
+  // pass that embedded anything (2026-10-28).
   const list = listProcesses ?? (async () => {
     const { execSync } = require('child_process')
+    if (process.platform === 'win32') {
+      try {
+        return execSync(
+          'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'llama-server.exe\'\\" | ForEach-Object { $_.CommandLine }"',
+          { timeout: 15000, encoding: 'utf-8' },
+        ) as string
+      } catch (e) {
+        console.log(`[daemon] llama-server command lines unavailable, falling back to tasklist: ${e instanceof Error ? e.message : e}`)
+      }
+    }
     return execSync('tasklist', { timeout: 10000, encoding: 'utf-8' }) as string
   })
   const queryGpu = queryGpuApps ?? (async () => {
@@ -36,7 +67,8 @@ export async function isGpuBusy(
 
   try {
     const out = await list()
-    if (out.toLowerCase().includes('llama-server')) return true
+    const chatServer = out.toLowerCase().split('\n').some(l => l.includes('llama-server') && !l.includes('--embedding'))
+    if (chatServer) return true
   } catch {}
 
   try {

@@ -17,6 +17,11 @@ const DEFAULT_TOOLS = ['Mfl', 'WebSearch', 'WebFetch', 'Read']
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000
 const TRADE_SCAN_TIMEOUT_MS = 60 * 60 * 1000
 
+/** A configured timeout counts only when it is a positive finite number; anything else falls back. */
+function validTimeout(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : undefined
+}
+
 type FireResult = { status: 'ran' } | { status: 'gpu-deferred'; retryAtMs: number }
 
 export interface MissionRunnerDeps {
@@ -47,12 +52,24 @@ export class MissionRunner {
   ) {}
 
   /** One scheduler tick: evaluate every trigger, fire due ones sequentially. */
+  /** Wall-clock kill: trigger > mission > default (trade-scan keeps its own 60-min default unless the trigger sets one). */
+  private timeoutFor(trigger: TriggerSpec): number {
+    if (trigger.taskType === 'trade-scan') return validTimeout(trigger.timeoutMs) ?? TRADE_SCAN_TIMEOUT_MS
+    return validTimeout(trigger.timeoutMs) ?? validTimeout(this.ledger.config.timeoutMs) ?? DEFAULT_TIMEOUT_MS
+  }
+
   async tick(): Promise<void> {
     const now = this.deps.now()
     await this.drainOnDemand(now)
     for (const trigger of this.ledger.config.triggers) {
-      const evaln = evaluateTrigger(trigger, this.ledger.state.nextFire[trigger.id], now)
+      const due = this.ledger.state.nextFire[trigger.id]
+      const evaln = evaluateTrigger(trigger, due, now)
       if (evaln.action === 'wait') continue
+      if (evaln.action === 'skip') {
+        // Usually another run held the daemon past this trigger's grace window. Say so: a silent skip of a
+        // game-day pass is indistinguishable from the trigger never having been scheduled.
+        console.log(`[mission:${this.ledger.config.id}] skipped trigger "${trigger.id}": due ${due}, missed by more than the grace window (missedPolicy skip); next ${evaln.next.toISOString()}`)
+      }
       this.ledger.setNextFire(trigger.id, evaln.next.toISOString())
       // Persist BEFORE firing: a crash mid-run must not re-fire the trigger
       // on restart with the old nextFire still on disk.
@@ -137,7 +154,7 @@ export class MissionRunner {
       context,
       allowedTools,
       ...(cwd ? { cwd } : {}),
-      timeoutMs: trigger.taskType === 'trade-scan' ? TRADE_SCAN_TIMEOUT_MS : DEFAULT_TIMEOUT_MS,
+      timeoutMs: this.timeoutFor(trigger),
       outcomePath: '', // TaskRunner fills this in
       ...(trigger.taskType ? { taskType: trigger.taskType } : {}),
       leagues: this.ledger.config.leagues,

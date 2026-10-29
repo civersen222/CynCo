@@ -104,9 +104,17 @@ function collectAssistantText(messages: Message[]): string {
 
 /** Headless emit-sink that remembers whether the loop was halted by the
  *  algedonic kill switch, and the best available reason (P1.1). */
-export function makeHaltCapture(): { emit: (e: EngineEvent) => void; haltReason: () => string | null } {
+export function makeHaltCapture(): {
+  emit: (e: EngineEvent) => void
+  haltReason: () => string | null
+  /** An engine error the loop swallowed, or the iteration limit (where the stuck-15 halt also lands): the run did
+   *  not finish, whatever text it left. Before 2026-10-28 both fell through to extractOutcome's ok:true fallback. */
+  endedEarly: () => string | null
+} {
   let lastCriticalMsg: string | null = null
   let halted = false
+  let engineError: string | null = null
+  let iterationLimit = false
   return {
     emit: (e: EngineEvent) => {
       if (e.type === 'governance.alert' && e.severity === 'critical' && e.message) {
@@ -115,8 +123,16 @@ export function makeHaltCapture(): { emit: (e: EngineEvent) => void; haltReason:
       if (e.type === 'message.complete' && e.stopReason === 'halted') {
         halted = true
       }
+      if (e.type === 'message.complete' && e.stopReason === 'max_iterations') {
+        iterationLimit = true
+      }
+      if (e.type === 'session.error') {
+        engineError = String((e as any).error ?? 'unknown error')
+      }
     },
     haltReason: () => (halted ? (lastCriticalMsg ?? 'algedonic kill switch halted the loop') : null),
+    endedEarly: () => engineError ? `Engine error: ${engineError}`
+      : iterationLimit ? 'Iteration limit reached before the run finished' : null,
   }
 }
 
@@ -183,7 +199,7 @@ export async function runGovernedLoop(opts: {
     timedOut ? 'Internal deadline exceeded'
     : haltReason ? `HALTED: ${haltReason}`
     : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
-    : null
+    : haltCapture.endedEarly() ?? null
   if (failure) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: failure, ...meta }
   }
