@@ -3830,3 +3830,33 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Why:** `processing` was cleared early so the TUI user could type again after Esc; the terminal showed the drop and the end, so neither needed a frame. A client that cannot read the engine's stdout has only the wire.
 
 **Fix:** `processing` holds until the turn has unwound; Stop denies a parked approval card and withdraws a parked AskUser question (found in review: with the early clear gone, Stop was inert while a card was open); the loop ends at its next step after a Stop instead of issuing another model call; `message.complete { stopReason: 'aborted' }` marks the end; the busy guard emits `session.error "busy: …"`; `pendingDecisions()` lists the open approval cards and AskUser questions and `/api/session` serves them as `pending`, which the page redraws on connect. Pinned by `engine/__tests__/bridge/abortIsATurnEnd.test.ts`. Open: a Stop still waits for a running Bash child and does not cancel the provider's generation (the abort signal is not forwarded into the fetch) — `docs/NOW.md` Next.
+
+## F181 — Daemon missions pinned to WebSearch, WebFetch and Mfl were never offered them: the fantasy card passes could not research news, hunted for `load_tools`, and scraped a search engine through Bash (fantasy-digest and mfl-dynasty missions, live runs on the operator's machine 2026-10-28)
+
+**Where:** `engine/bridge/conversationLoop.ts` — the constructor seeded `loadedTools` with core tools only; each turn the offered set was `ALL_TOOLS` filtered to that loaded set and then intersected with the caller pin (`allowedTools`). The system prompt still carried the "Loadable on demand — call load_tools" block, and the pin itself filtered `load_tools` out and blocked a call to it.
+
+**How:** the mission pins `['Bash','Write','Read','WebSearch','WebFetch','Mfl']`; every call logged "3 tools". The model's own thinking said WebSearch was not available, it tried `load_tools`, then ran `python -c urllib … duckduckgo.com` through Bash. The daemon's default read-only pin `['Mfl','WebSearch','WebFetch','Read']` was offered Read alone, and the trade-scan ranking pass (`['Mfl','WebSearch','WebFetch']`) nothing.
+
+**Why:** e7ad57f1 (2026-07-23, core-by-default tool loading) replaced the pin's base `ALL_TOOLS` with the core-only loaded set and kept the pin as an intersection, which can only remove. The only end-to-end pin test pinned a core tool and was integration-gated, so a plain test run never saw it.
+
+**Fix:** a caller pin's tools are loaded up front in the constructor; under a pin the prompt shows no `load_tools` block, no skill index unless `run_skill` is pinned, and no category routing (it intersected with categories that do not cover Mfl); the nudge and BLOCKED messages list the tools actually offered. Pinned by `engine/__tests__/bridge/pinnedExtendedTools.test.ts` (not gated).
+
+## F182 — The daemon killed a live hand-started one-shot's llama-server as "stale" and took its port: the Tin card run died mid-generation and its outcome said ok:true "(unstructured output)" (fantasy-digest, operator's machine 2026-10-28 18:00)
+
+**Where:** `engine/daemon/taskRunner.ts` `isGpuBusy` (tasklist + nvidia-smi probes, both fail open) and `engine/llama/processManager.ts` `ensureRunning`, which kills whatever answers on the engine port; `engine/daemon/oneShot.ts` `runGovernedLoop`, whose failure gate ignored a swallowed engine error.
+
+**How:** a run started by `fantasyman/digest/ops/run_trigger_now.py` was 49 s into a model call when the daemon's deferred `dynasty-bronze-trades` retried, passed the busy check, logged "Killing stale server on port 8081 / Killed stale process PID 40372" and started its own server. The killed run's loop caught the stream error (`session.error`), wrote `endedInEngineError: true` to its reward file, and the outcome still said ok:true. nvidia-smi reports `[N/A]` per-process memory under WDDM, so only tasklist guarded, and it missed.
+
+**Why:** the busy check asked indirect questions (a process name, VRAM) instead of the one that matters — is something answering on the port the new run will take over — and the outcome gate trusted any run that left assistant text.
+
+**Fix:** `isGpuBusy` first probes `/health` on `LOCALCODE_PORT` (any answer is busy); `makeHaltCapture` records `session.error` and `stopReason: 'max_iterations'` (where the stuck-15 halt also lands), and the gate reports them ok:false. Pinned by `isGpuBusy` and `makeHaltCapture` cases in `engine/__tests__/daemon/taskRunner.test.ts` and `oneShot.test.ts`. The softer contract miss (a finished run without the json block) keeps its deliberate ok:true.
+
+## F183 — Web search routed sports-news queries to GitHub and Hugging Face because keywords matched as substrings: 'repo' inside 'report', 'ai' inside 'Raiders' (research engine router, found tracing F181 2026-10-28)
+
+**Where:** `engine/research/engineRouter.ts` `routeQuery` — `q.includes(kw)`.
+
+**How:** 'Deebo Samuel injury report' ranked github first; 'Raiders RB depth chart' ranked huggingface first. Auto mode searches only the top two engines, so general web results were halved. The first fix (whole words) overcorrected: plurals ('papers', 'datasets', 'libraries') and versioned names ('llama3') stopped routing to their specialist engines, in the interactive TUI too — caught by the review of that commit.
+
+**Why:** substring matching was the simplest thing that worked on the queries it was written for.
+
+**Fix:** keywords match as whole words with an inflection suffix (y→ies/ied, e→d, else s/es/ed) and a digit may follow; 'report', 'Raiders' and 'aid' stay unmatched. Pinned by `engine/__tests__/research/engineRouter.test.ts`.
