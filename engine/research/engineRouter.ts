@@ -24,13 +24,23 @@ const DOMAIN_KEYWORDS: Record<string, string[]> = {
   ai: ['ai', 'artificial intelligence', 'llm', 'language model', 'chatbot'],
 }
 
-/** Whole word or phrase match, case-insensitive: 'repo' must not match inside 'report', nor 'ai' inside 'Raiders'. */
+/**
+ * Whole word or phrase match, case-insensitive: 'repo' must not match inside 'report', nor 'ai' inside 'Raiders'.
+ * Plurals and -ed forms still count ('papers', 'libraries', 'fine-tuned'), and so does a version number right
+ * after the keyword ('llama3'); no keyword ends in a digit. The -d ending is only for keywords ending in 'e', so
+ * 'aid' is not 'ai' + 'd'.
+ */
 const keywordPatterns = new Map<string, RegExp>()
+function inflected(kw: string): string {
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (/[^aeiou]y$/.test(kw)) return `${escaped.slice(0, -1)}(?:y|ies|ied)`
+  if (kw.endsWith('e')) return `${escaped}(?:s|d)?`
+  return `${escaped}(?:s|es|ed)?`
+}
 function hasKeyword(q: string, kw: string): boolean {
   let re = keywordPatterns.get(kw)
   if (!re) {
-    const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    re = new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`)
+    re = new RegExp(`(^|[^a-z0-9])${inflected(kw)}($|[^a-z])`)
     keywordPatterns.set(kw, re)
   }
   return re.test(q)

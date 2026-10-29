@@ -57,6 +57,25 @@ describe('Engine router', () => {
     expect(routeQuery('what is a monad', engines)[0].name).toBe('wikipedia')
   })
 
+  // Whole words, but plurals, -ed forms and a trailing version number still count (the overcorrection the
+  // 2026-10-28 review caught: 'papers', 'datasets', 'libraries', 'llama3' had stopped routing).
+  it('plural and inflected keyword forms still route', () => {
+    const all = [...engines, mockEngine('huggingface', ['models', 'datasets', 'ml', 'ai']), mockEngine('pubmed', ['biomedical', 'medicine'])]
+    expect(routeQuery('recent papers on diffusion', all)[0].name).toBe('arxiv')
+    expect(routeQuery('datasets for named entity recognition', all)[0].name).toBe('huggingface')
+    expect(routeQuery('best python libraries for scraping', all)[0].name).toBe('github')
+    expect(routeQuery('drugs for hypertension', all)[0].name).toBe('pubmed')
+    expect(routeQuery('fine-tuned checkpoints', all)[0].name).toBe('huggingface')
+  })
+  it('a version number right after a keyword still matches', () => {
+    expect(routeQuery('llama3 release notes', engines)[0].name).toBe('github')
+  })
+  it('the inflection allowance does not reopen the substring bugs', () => {
+    const all = [...engines, mockEngine('huggingface', ['models', 'datasets', 'ml', 'ai'])]
+    for (const q of ['Deebo Samuel injury report', 'Raiders RB depth chart', 'first aid kit', 'again and again'])
+      expect(routeQuery(q, all).map(e => e.name)).toEqual(['wikipedia', 'duckduckgo'])
+  })
+
   it('returns empty for empty engine list', () => {
     expect(routeQuery('test', [])).toEqual([])
   })
