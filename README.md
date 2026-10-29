@@ -648,7 +648,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_NATIVE_TOOLS` | `false` | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_NO_SCOUTS` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_OPTIMIZED_PARAMS` | *not derived* | — | `engine/vsm/cyberneticsGovernance.ts` |
-| `LOCALCODE_PORT` | `8081` | — | `engine/config.ts` |
+| `LOCALCODE_PORT` | `8081` | — | `engine/config.ts`, `engine/daemon/taskRunner.ts` |
 | `LOCALCODE_PROFILE` | *not derived* | — | `engine/config.ts`, `engine/main.ts` |
 | `LOCALCODE_PROJECTS_EMBED_MODEL` | `nomic-embed-text` | — | `engine/projects/ingest.ts` |
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | — | `engine/projects/layout.ts` |

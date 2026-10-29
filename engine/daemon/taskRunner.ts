@@ -36,9 +36,9 @@ export async function isGpuBusy(
   queryGpuApps?: () => Promise<string>,
   probeModelServer?: () => Promise<boolean>,
 ): Promise<boolean> {
-  try {
-    if (await (probeModelServer ?? modelServerAnswering)()) return true
-  } catch {}
+  // A refused connection is the normal idle answer, so a throwing probe means "no server", not an error.
+  const serverUp = await (probeModelServer ?? modelServerAnswering)().catch(() => false)
+  if (serverUp) return true
 
   const list = listProcesses ?? (async () => {
     const { execSync } = require('child_process')
