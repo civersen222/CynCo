@@ -40,8 +40,22 @@ export async function isGpuBusy(
   const serverUp = await (probeModelServer ?? modelServerAnswering)().catch(() => false)
   if (serverUp) return true
 
+  // Command lines where the OS gives them (so an embedding-only server can be told apart), else the bare
+  // process list. Ollama runs its embedding model as its own llama-server.exe (`--embedding`, under 1 GB)
+  // and keeps it a few minutes after any embed call; counting it deferred every trigger that followed a
+  // pass that embedded anything (2026-10-28).
   const list = listProcesses ?? (async () => {
     const { execSync } = require('child_process')
+    if (process.platform === 'win32') {
+      try {
+        return execSync(
+          'powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"Name=\'llama-server.exe\'\\" | ForEach-Object { $_.CommandLine }"',
+          { timeout: 15000, encoding: 'utf-8' },
+        ) as string
+      } catch (e) {
+        console.log(`[daemon] llama-server command lines unavailable, falling back to tasklist: ${e instanceof Error ? e.message : e}`)
+      }
+    }
     return execSync('tasklist', { timeout: 10000, encoding: 'utf-8' }) as string
   })
   const queryGpu = queryGpuApps ?? (async () => {
@@ -53,7 +67,8 @@ export async function isGpuBusy(
 
   try {
     const out = await list()
-    if (out.toLowerCase().includes('llama-server')) return true
+    const chatServer = out.toLowerCase().split('\n').some(l => l.includes('llama-server') && !l.includes('--embedding'))
+    if (chatServer) return true
   } catch {}
 
   try {

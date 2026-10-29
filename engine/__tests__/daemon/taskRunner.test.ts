@@ -101,6 +101,12 @@ describe('isGpuBusy', () => {
     expect(await isGpuBusy(async () => 'explorer.exe\n', noGpuApps, async () => true)).toBe(true)
     expect(await isGpuBusy(async () => { throw new Error('tasklist timed out') }, async () => { throw new Error('no nvidia-smi') }, async () => true)).toBe(true)
   })
+  it("an embedding-only llama-server (Ollama's nomic-embed, under 1 GB) does not make the GPU busy", async () => {
+    const ollamaEmbed = 'C:/Users/x/AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe --model blob --port 55770 --embedding -b 2048\n'
+    expect(await isGpuBusy(async () => ollamaEmbed, noGpuApps, noServer)).toBe(false)
+    const cyncoChat = 'C:/Users/x/.cynco/bin-brain/llama-server.exe --model qwen.gguf --port 8081 --ctx-size 131072\n'
+    expect(await isGpuBusy(async () => ollamaEmbed + cyncoChat, noGpuApps, noServer)).toBe(true)
+  })
   it('a port probe that throws counts as no server', async () => {
     expect(await isGpuBusy(async () => 'explorer.exe\n', noGpuApps, async () => { throw new Error('ECONNREFUSED') })).toBe(false)
   })
