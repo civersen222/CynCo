@@ -125,6 +125,26 @@ describe('makeHaltCapture', () => {
     expect(cap.haltReason()).toBe('5 consecutive failures — system halted for safety')
   })
 
+  it('records a swallowed engine error so the run is not reported ok (2026-10-28: a killed model server ended a run as "(unstructured output)" ok:true)', () => {
+    const cap = makeHaltCapture()
+    expect(cap.endedEarly()).toBeNull()
+    cap.emit({ type: 'session.error', error: 'fetch failed: ECONNRESET' } as any)
+    expect(cap.endedEarly()).toMatch(/engine error.*ECONNRESET/i)
+    expect(cap.haltReason()).toBeNull()
+  })
+
+  it('records hitting the iteration limit (also where the stuck-15 halt lands)', () => {
+    const cap = makeHaltCapture()
+    cap.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })
+    expect(cap.endedEarly()).toMatch(/iteration limit/i)
+  })
+
+  it('a normal end_turn is not an early end', () => {
+    const cap = makeHaltCapture()
+    cap.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
+    expect(cap.endedEarly()).toBeNull()
+  })
+
   it('a critical alert without a halt is not a halt', () => {
     const cap = makeHaltCapture()
     cap.emit({ type: 'governance.alert', severity: 'critical', message: 'model error', source: 'algedonic' })
