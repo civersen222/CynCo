@@ -741,6 +741,11 @@ export class ConversationLoop {
       console.log(this.ruleAuthority.logLine())
     }
     this.allowedTools = opts.allowedTools
+    // A caller pin names this run's tools exactly, extended ones included: load them up front. Without this the
+    // core-only seed (loadedTools above) was intersected with the pin, which can only remove, so pinned WebSearch,
+    // WebFetch and Mfl never reached a daemon mission run (pinnedExtendedTools.test.ts). There is no load_tools
+    // under a pin, so this is the only way they can load.
+    if (opts.allowedTools) this.loadedTools.surface(opts.allowedTools.filter(n => ALL_TOOLS.some(t => t.name === n)))
     this.getBrain = opts.getBrain
     this.agentRunner = new SubAgentRunner(async (task) => {
       // Simplified sub-agent execution — full execution comes later
@@ -1441,6 +1446,11 @@ export class ConversationLoop {
    * half-finished conversation, label it, and clear recorder.taskId so the real
    * finalize became a no-op.
    */
+  /** Tools the model was actually offered last turn (trust demotion and gating can narrow below a pin); the pin before any turn. */
+  private offeredToolList(): string {
+    return [...(this.offeredToolNames ?? new Set(this.allowedTools ?? []))].join(', ')
+  }
+
   async handleUserMessage(text: string, opts?: TaskOpts): Promise<void> {
     if (this.processing) {
       // Phase 2c-i. The busy guard is the ONE place both callers meet: the
@@ -2108,7 +2118,9 @@ export class ConversationLoop {
     // shown when gating is active (LOCALCODE_ALL_TOOLS loads everything up
     // front, so there is nothing left to load). Never in a project chat: its
     // tool set is fixed.
-    if (!this.project && !isAllToolsEnabled()) {
+    // Not under a caller pin either: the pin filters load_tools out and blocks a call to it, so the block would
+    // only invite a call that cannot work (2026-10-28: a pinned run spent turns hunting for load_tools).
+    if (!this.project && !isAllToolsEnabled() && !this.allowedTools) {
       const loadable = getExtendedTools().filter(t => !this.loadedTools.has(t.name))
       if (loadable.length > 0) {
         promptParts.push('')
@@ -2124,7 +2136,9 @@ export class ConversationLoop {
     // prefix. run_skill loads a skill's body + surfaces its tools on demand.
     // Not in a project chat: run_skill is not in its tool set, and the block
     // tells the model to call it.
-    const skillIndexBlock = this.project ? '' : formatSkillIndexBlock(getSkillIndex())
+    // Under a caller pin only when run_skill is pinned: otherwise the block names a tool the run cannot call.
+    const skillIndexBlock = this.project || (this.allowedTools && !this.allowedTools.includes('run_skill'))
+      ? '' : formatSkillIndexBlock(getSkillIndex())
     if (skillIndexBlock) {
       promptParts.push('')
       promptParts.push(skillIndexBlock)
@@ -3320,7 +3334,9 @@ export class ConversationLoop {
       // Two-stage tool routing for small context models
       try {
         const { shouldUseRouting, getToolsForCategory, applyCategoryRouting, CATEGORY_SELECTOR_TOOL } = await import('../tools/toolRouter.js')
-        if (!this.routingDeclined && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
+        // Not under a caller pin: the pin is already the exact tool set, and category routing intersects it with
+        // categories that do not cover every tool (Mfl is in none), so it could drop a pinned tool.
+        if (!this.routingDeclined && !this.allowedTools && shouldUseRouting(this.config.contextLength ?? 32768) && iterationTools.length > 5) {
           // Stage 1: send only category selector
           let routed = false
           const routingGen = localCallModel({
@@ -4149,7 +4165,7 @@ export class ConversationLoop {
         this.unproductiveNudges++
         if (this.consecutiveNudges <= 5) {
           const nudgeText = this.allowedTools
-            ? `Do not narrate. Either call one of your available tools (${this.allowedTools.join(', ')}) to gather missing data, or produce your final structured outcome (the \`\`\`json block) now.`
+            ? `Do not narrate. Either call one of your available tools (${this.offeredToolList()}) to gather missing data, or produce your final structured outcome (the \`\`\`json block) now.`
             : this.consecutiveNudges <= 1
             ? 'Do not describe what you will do. Call a tool now. If you need to read a file, call Read. If you need to write, call Write. If you need to search, call Grep. Act, do not narrate.'
             : this.consecutiveNudges <= 3
@@ -4994,7 +5010,7 @@ export class ConversationLoop {
     // were never offered in the prompt, and approveAll would run them.
     if (this.allowedTools && !this.allowedTools.includes(toolName)) {
       console.log(`[loop] BLOCKED (not in allowedTools): ${toolName}`)
-      const msg = `Tool "${toolName}" is not available in this run. Available tools: ${this.allowedTools.join(', ')}.`
+      const msg = `Tool "${toolName}" is not available in this run. Available tools: ${this.offeredToolList()}.`
       this.emit({ type: 'tool.start', toolId, toolName, input: toolInput })
       this.emit({ type: 'tool.complete', toolId, toolName, result: msg, isError: true })
       toolResults.push({
