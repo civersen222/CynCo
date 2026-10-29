@@ -500,6 +500,21 @@ describe('MissionRunner per-mission and per-trigger timeoutMs', () => {
   })
 })
 
+describe('MissionRunner skipped triggers are visible', () => {
+  it('a skip-policy trigger missed past the grace window is logged with its id and due time, not dropped silently', async () => {
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 30).toISOString())   // 30 min late at the 12:00 tick
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: any[]) => { lines.push(a.join(' ')) }
+    try { await new MissionRunner(ledger, deps as any).tick() } finally { console.log = orig }
+    expect(ranTasks.length).toBe(0)
+    expect(lines.some(l => l.includes('skipped') && l.includes('"news"') && l.includes('missedPolicy skip'))).toBe(true)
+  })
+})
+
 describe('MissionRunner entropy digest on RunRecord', () => {
   /** Write two thinking records for a given sessionId into a temp sessions dir. */
   function writeThinkingFile(sessionsDir: string, sessionId: string): void {

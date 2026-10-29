@@ -62,8 +62,14 @@ export class MissionRunner {
     const now = this.deps.now()
     await this.drainOnDemand(now)
     for (const trigger of this.ledger.config.triggers) {
-      const evaln = evaluateTrigger(trigger, this.ledger.state.nextFire[trigger.id], now)
+      const due = this.ledger.state.nextFire[trigger.id]
+      const evaln = evaluateTrigger(trigger, due, now)
       if (evaln.action === 'wait') continue
+      if (evaln.action === 'skip') {
+        // Usually another run held the daemon past this trigger's grace window. Say so: a silent skip of a
+        // game-day pass is indistinguishable from the trigger never having been scheduled.
+        console.log(`[mission:${this.ledger.config.id}] skipped trigger "${trigger.id}": due ${due}, missed by more than the grace window (missedPolicy skip); next ${evaln.next.toISOString()}`)
+      }
       this.ledger.setNextFire(trigger.id, evaln.next.toISOString())
       // Persist BEFORE firing: a crash mid-run must not re-fire the trigger
       // on restart with the old nextFire still on disk.
