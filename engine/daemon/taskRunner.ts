@@ -14,15 +14,32 @@ export class GpuBusyError extends Error {
 const GPU_VRAM_BUSY_MIB = 4096
 
 /**
- * GPU guard (spec §2): nvidia-smi compute apps PLUS the tasklist heuristic
- * for an interactive CynCo session (llama-server). Either signal → busy.
- * Both probes fail open: can't tell → let the run proceed; engine startup
+ * Any HTTP answer from the engine's model port means a model server is up there. This is the
+ * strongest busy signal: it is exactly the server a new one-shot's ProcessManager.ensureRunning()
+ * would kill as "stale" (2026-10-28: the daemon's run killed a live hand-started run's server
+ * after the tasklist probe missed it; nvidia-smi reports [N/A] memory under WDDM).
+ */
+async function modelServerAnswering(): Promise<boolean> {
+  const port = parseInt(process.env.LOCALCODE_PORT ?? '8081', 10)
+  await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) })
+  return true // any response, even 503 while a model loads, is a live server
+}
+
+/**
+ * GPU guard (spec §2): a model server answering on the engine port, nvidia-smi compute apps,
+ * and the tasklist heuristic for an interactive CynCo session (llama-server). Any signal → busy.
+ * Each probe fails open: can't tell → let the run proceed; engine startup
  * will fail loudly if truly contended.
  */
 export async function isGpuBusy(
   listProcesses?: () => Promise<string>,
   queryGpuApps?: () => Promise<string>,
+  probeModelServer?: () => Promise<boolean>,
 ): Promise<boolean> {
+  try {
+    if (await (probeModelServer ?? modelServerAnswering)()) return true
+  } catch {}
+
   const list = listProcesses ?? (async () => {
     const { execSync } = require('child_process')
     return execSync('tasklist', { timeout: 10000, encoding: 'utf-8' }) as string
