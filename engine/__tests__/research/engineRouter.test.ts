@@ -39,6 +39,24 @@ describe('Engine router', () => {
     const names = result.map(e => e.name)
     expect(names).toContain('duckduckgo')
   })
+  // Keywords are whole words or phrases, not substrings (2026-10-28: fantasy news searches went to GitHub
+  // because 'repo' is inside 'report', and to Hugging Face because 'ai' is inside 'Raiders').
+  it('a keyword inside a longer word does not route: "injury report" is not a code query', () => {
+    const result = routeQuery('Deebo Samuel injury report', engines)
+    expect(result.map(e => e.name)).not.toContain('github')
+    expect(result.map(e => e.name)).toEqual(['wikipedia', 'duckduckgo'])   // general engines only, in listed order
+  })
+  it('"Raiders" does not match the ai keyword', () => {
+    const withHf = [...engines, mockEngine('huggingface', ['models', 'datasets', 'ml', 'ai'])]
+    expect(routeQuery('Raiders RB depth chart', withHf).map(e => e.name)).not.toContain('huggingface')
+    expect(routeQuery('best AI coding model', withHf).map(e => e.name)).toContain('huggingface')
+  })
+  it('phrases and hyphenated keywords still match as whole phrases', () => {
+    const withHf = [...engines, mockEngine('huggingface', ['models', 'datasets', 'ml', 'ai'])]
+    expect(routeQuery('how to fine-tune with lora', withHf)[0].name).toBe('huggingface')
+    expect(routeQuery('what is a monad', engines)[0].name).toBe('wikipedia')
+  })
+
   it('returns empty for empty engine list', () => {
     expect(routeQuery('test', [])).toEqual([])
   })
