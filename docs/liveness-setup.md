@@ -95,8 +95,10 @@ mission can set `"allowedTools": [...]` at the top level, and a trigger can over
 `allowedTools`. Adding `Bash` or `Write` lets the model run commands and change files, so only do it
 for a prompt that confines the model to a known command surface, and say what that surface is in the
 mission `goal`. `"cwd": "<folder>"` (mission or trigger) makes that folder the run's workspace: the
-`Bash` tool runs there and the loop snapshots it. Both are read by the daemon at startup — restart it
-after editing the mission file.
+`Bash` tool runs there and the loop snapshots it. `"timeoutMs": <ms>` (mission or trigger) replaces the
+15-minute kill for that mission's prompt triggers (a trigger's own value wins; trade-scan keeps 60 minutes
+unless its trigger sets one). All three are read by the daemon at startup — restart it after editing the
+mission file.
 
 ### Dynasty runbook mission
 
