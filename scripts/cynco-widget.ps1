@@ -85,7 +85,7 @@ function Refresh {
   if ($tsHost -and $local) { $remote = Test-Http "http://$tsHost`:$dashPort/" }
   if ($local) {
     $ui.dotCynco.Fill = if ($remote) { '#3fb950' } else { '#d29922' }
-    $ui.txtCynco.Text = if ($remote) { "on · remote ok ($tsHost)" } elseif ($tsHost) { 'on · remote NOT reachable' } else { 'on · local only' }
+    $ui.txtCynco.Text = if ($remote) { "on - remote ok ($tsHost)" } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }
     $ui.btnCynco.Content = 'Stop'
   } else {
     $ui.dotCynco.Fill = '#666'
@@ -97,7 +97,7 @@ function Refresh {
   $ntfyRemote = $tsHost -and (Test-Tcp $tsHost 8090)
   if ($f.Count -eq 3) {
     $ui.dotFantasy.Fill = if ($ts -and $ntfyRemote) { '#3fb950' } else { '#d29922' }
-    $ui.txtFantasy.Text = if ($ts -and $ntfyRemote) { 'on · phone ok' } elseif (-not $ts) { 'on · Tailscale down' } else { 'on · ntfy not listening' }
+    $ui.txtFantasy.Text = if ($ts -and $ntfyRemote) { 'on - phone ok' } elseif (-not $ts) { 'on - Tailscale down' } else { 'on - ntfy not listening' }
     $ui.btnFantasy.Content = 'Stop'
   } elseif ($f.Count -gt 0) {
     $ui.dotFantasy.Fill = '#d29922'
@@ -111,8 +111,9 @@ function Refresh {
 
   $note = "checked $(Get-Date -Format 'HH:mm:ss')"
   if ($script:state.oneShot) {
-    $m = [regex]::Match($script:state.oneShot.CommandLine, '([^\\/]+)\.task\.json'); $name = if ($m.Success) { $m.Groups[1].Value } else { 'a task' }
-    $note = "daemon is running $name on the GPU · $note"
+    # taskRunner.ts names the file task-<triggerId>-<stamp>.json
+    $m = [regex]::Match($script:state.oneShot.CommandLine, 'task-(.+)-\d[^\\/]*\.json'); $name = if ($m.Success) { $m.Groups[1].Value } else { 'a task' }
+    $note = "daemon is running $name on the GPU - $note"
   }
   $ui.txtNote.Text = $note
 }
@@ -134,7 +135,7 @@ $ui.btnCynco.Add_Click({
 $ui.btnFantasy.Add_Click({
   $action = if ($script:state.fantasy.Count -eq 3) { 'stop' } else { 'start' }
   $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $services $action 2>&1
-  $ui.txtNote.Text = ($out -join ' · ')
+  $ui.txtNote.Text = ($out -join ' - ')
   Start-Sleep -Milliseconds 800; Refresh
 })
 
