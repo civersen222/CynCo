@@ -455,6 +455,23 @@ describe('MissionRunner taskType plumbing', () => {
     expect(ranTasks[0].taskType).toBeUndefined()
     expect(ranTasks[0].leagues).toEqual([{ leagueId: '12345', year: 2026, franchiseId: '0005' }])
   })
+
+  // The fantasy-digest mission has no `leagues` (it is not MFL-bound). Before
+  // 2026-11-04 every tick threw "undefined is not an object (evaluating
+  // 'this.ledger.config.leagues')" and no digest ever ran (F184).
+  it('a mission without leagues fires its due trigger with leagues: []', async () => {
+    const { leagues: _omit, ...noLeagues } = config
+    mkdirSync(join(dir, 'fantasy-digest'))
+    writeFileSync(join(dir, 'fantasy-digest', 'mission.json'), JSON.stringify({ ...noLeagues, id: 'fantasy-digest' }), 'utf-8')
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'fantasy-digest'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 11, 11, 59).toISOString()) // mfl-delta precheck over no leagues
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    expect(ranTasks.length).toBeGreaterThanOrEqual(1)
+    expect(ranTasks[0].leagues).toEqual([])
+  })
 })
 
 describe('MissionRunner per-mission and per-trigger timeoutMs', () => {

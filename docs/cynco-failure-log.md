@@ -3860,3 +3860,13 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Why:** substring matching was the simplest thing that worked on the queries it was written for.
 
 **Fix:** keywords match as whole words with an inflection suffix (y→ies/ied, e→d, else s/es/ed) and a digit may follow; 'report', 'Raiders' and 'aid' stay unmatched. Pinned by `engine/__tests__/research/engineRouter.test.ts`.
+
+## F184 — The daemon threw on every tick once a mission without `leagues` was loaded, so the fantasy-digest cards never ran and no ntfy digest was sent (fantasy-digest, operator's machine 2026-11-02..04)
+
+**Where:** `engine/daemon/missionRunner.ts` `fire` and `buildContext` — `for (const league of this.ledger.config.leagues)`; `MissionConfig.leagues` was typed required but the digest mission has none.
+
+**How:** `daemon.log` filled with `Tick error: undefined is not an object (evaluating 'this.ledger.config.leagues')` thirty seconds apart. The lineup still changed (the Python "lineup safety net" scheduled tasks run without the daemon), so from the phone it looked as if CynCo had run and chosen not to write the card. Nothing told the operator which of the three logon tasks (daemon, ntfy, approval listener) were up; after the 2026-11-03 reboots all three were down.
+
+**Why:** the fantasy-digest mission was the first non-MFL mission; `leagues` became optional in use without becoming optional in the type, and the tick's catch logs and continues, so the same throw repeated forever instead of stopping the daemon.
+
+**Fix:** `leagues?` with every reader using `?? []`; pinned by `a mission without leagues fires its due trigger with leagues: []` in `missionRunner.test.ts`. `scripts/cynco-services.ps1` shows status / starts / stops the three services by name.
