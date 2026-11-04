@@ -39,7 +39,7 @@ export interface MflLeagueRef {
 export interface MissionConfig {
   id: string
   goal: string
-  leagues: MflLeagueRef[]
+  leagues?: MflLeagueRef[] // absent for a mission that is not MFL-bound (fantasy-digest); every reader treats it as []
   triggers: TriggerSpec[]
   /** Per action-type trust ladder. mode stays 'ask' in Phase B; 'auto' is Phase C. */
   trustLadder: Record<string, { mode: 'ask' | 'auto'; promoteAt: number }>

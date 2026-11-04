@@ -103,7 +103,7 @@ export class MissionRunner {
     // Cheap pre-check: skip the model entirely when MFL hasn't changed
     if (trigger.precheck === 'mfl-delta') {
       let anyDelta = false
-      for (const league of this.ledger.config.leagues) {
+      for (const league of this.ledger.config.leagues ?? []) {
         try {
           const hash = await this.deps.fetchMflSnapshot(league.leagueId, league.year)
           if (this.ledger.state.lastSeen[league.leagueId] !== hash) {
@@ -129,7 +129,7 @@ export class MissionRunner {
       ),
     })
     const rosterSections: string[] = []
-    for (const league of this.ledger.config.leagues) {
+    for (const league of this.ledger.config.leagues ?? []) {
       let snapshot: string
       try {
         snapshot = await this.deps.fetchRosterSnapshot(league.leagueId, league.year, league.franchiseId)
@@ -157,7 +157,7 @@ export class MissionRunner {
       timeoutMs: this.timeoutFor(trigger),
       outcomePath: '', // TaskRunner fills this in
       ...(trigger.taskType ? { taskType: trigger.taskType } : {}),
-      leagues: this.ledger.config.leagues,
+      leagues: this.ledger.config.leagues ?? [],
     }
 
     let outcome: TaskOutcome
