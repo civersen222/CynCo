@@ -27,7 +27,7 @@ shaped the retry-error classifier.
 ## Important types & functions
 - **`localCallModel`** (`callModel.ts:244`) — the main async generator: resolves deps/model/capabilities, checks context budget, converts messages/tools, builds system prompt + session extras, retries transport failures, and yields `StreamEvent`/`AssistantMessage`/`api_retry` events. Called by `conversationLoop.ts` and `subAgent.ts`.
 - **`isRetryableError`** (`callModel.ts:189`) — classifies an error as a retryable transport failure (both Node/libuv and Bun error-code vocabularies, plus a 503 "loading model" window). Used inside `localCallModel`'s retry loop.
-- **`checkBudget`** / **`checkBudgetAsync`** (`contextBudget.ts:138`, `contextBudget.ts:111`) — sync/async context-budget classifiers; `checkBudgetAsync` is what `hooks/contextCheck.ts` calls with a real tokenizer.
+- **`checkBudget`** / **`checkBudgetAsync`** (`contextBudget.ts:111`, `contextBudget.ts:111`) — sync/async context-budget classifiers; `checkBudgetAsync` is what `hooks/contextCheck.ts` calls with a real tokenizer.
 - **`convertMessages`** (`messageConvert.ts:62`) — converts internal `Message[]` to Provider format, serializing tool blocks to text when `simulatedToolUse` is set.
 - **`convertTools`** (`messageConvert.ts:156`) — converts tool-like objects to `ToolDefinition[]`; reads `inputJSONSchema` specifically (a past drift to `input_schema` sent schema-less tools to the model).
 - **`translateStream`** (`streamTranslator.ts:36`) — dispatches to native or simulated stream translation based on `options.simulatedToolUse`.

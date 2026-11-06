@@ -14,7 +14,7 @@ The Ollama `Provider` implementation plus a capability-probe table shared with t
 
 ## Important types & functions
 - **`OllamaProvider`** (`client.ts:17`) — implements `Provider`; called by `engine/providers/factory.ts` (construction) and `engine/engine/callModel.ts` (generation).
-- **`toOpenAIMessages`** (`format.ts:24`) — converts internal `Message[]` to OpenAI chat messages; splits `tool_result` blocks into separate `role:'tool'` messages, strips thinking/image/document blocks.
+- **`toOpenAIMessages`** (`format.ts:96`) — converts internal `Message[]` to OpenAI chat messages; splits `tool_result` blocks into separate `role:'tool'` messages, strips thinking/image/document blocks.
 - **`fromOpenAIStreamChunk`** (`format.ts:234`) — converts one OpenAI SSE chunk into zero or more internal `StreamEvent`s (text/thinking deltas, tool-call start/delta, usage `message_delta`). Called from `client.ts:137` per parsed SSE line.
 - **`parseTurnCost`** (`format.ts:169`) — extracts `TurnCost` from a response/chunk's `usage`/`timings`; source is `'server-timings'` only when a `timings` block is present (llama-server), `'usage-only'` when only token counts are present (Ollama's shim), `'none'` otherwise.
 - **`resolveCapabilities`** (`probe.ts:119`) — resolves `ModelCapabilities` via known table → probe result → safe basic-tier defaults. Called from `client.ts:47/52`, `engine/bootstrapProvider.ts`, `engine/engine/callModel.ts`, and `engine/llama/provider.ts`.
@@ -24,7 +24,7 @@ The Ollama `Provider` implementation plus a capability-probe table shared with t
 
 ## Data flow
 1. `engine/engine/callModel.ts` builds a `CompletionRequest` and calls `OllamaProvider.stream()` (`client.ts:66`).
-2. `buildRequestBody()` (`client.ts:180`) converts it via `toOpenAIMessages`/`toOpenAITools` (`format.ts:24`/`format.ts:96`), prepends a system message, sets `options.num_ctx` only when the resolved context exceeds Ollama's 32K default, and adds `logprobs`/`top_logprobs` when streaming.
+2. `buildRequestBody()` (`client.ts:180`) converts it via `toOpenAIMessages`/`toOpenAITools` (`format.ts:96`/`format.ts:96`), prepends a system message, sets `options.num_ctx` only when the resolved context exceeds Ollama's 32K default, and adds `logprobs`/`top_logprobs` when streaming.
 3. `client.ts:90` POSTs the body to `${baseUrl}/v1/chat/completions`.
 4. The response body reader splits on `\n`, and `parseSSELine` (`format.ts:362`) parses each `data: ` line to JSON (or signals `[DONE]`/non-data lines).
 5. `fromOpenAIStreamChunk` (`format.ts:234`) turns each parsed chunk into `StreamEvent`s; `client.ts` yields `message_start` before the loop and `message_stop` after.

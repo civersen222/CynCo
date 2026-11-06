@@ -62,7 +62,7 @@ Defines every tool the model can call in an agent turn — file I/O, Bash, Git, 
 - **`codeIndexTool`** (`engine/tools/impl/codeIndex.ts:67`) — semantic/symbol code search; falls back to `regexFallback` when the vector index returns nothing.
 - **`verifyAssertion`** (`contractVerify.ts:169`) — checks a contract assertion against actual repo state; the ground truth behind `ContractAssertPass`.
 - **`checkBashSafety`** (`bashSafety.ts:39`) — best-effort blocklist for destructive/blocking commands; explicitly not a sandbox.
-- **`ContractState`** (`contract.ts:90`) — Definition-of-Done state machine backing the four Contract* tools; distinguishes unreplaceable `harness` contracts from `auto` ones.
+- **`ContractState`** (`contract.ts:100`) — Definition-of-Done state machine backing the four Contract* tools; distinguishes unreplaceable `harness` contracts from `auto` ones.
 - **`callTouchesSealed`** (`sealedPaths.ts:191`) — refuses any call whose path or Bash text names a withheld gate instrument, its basename, or its gates directory.
 - **`shouldAutoApprove`** (`approvalGate.ts:18`) — decides whether a call skips the human approval prompt, given trust profile / approve-all / tool tier.
 - **`DoomLoopDetector`** (`doomLoop.ts:11`) — flags a tool call repeated 3+ times with identical input and no intervening workspace change.

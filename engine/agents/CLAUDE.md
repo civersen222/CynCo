@@ -27,7 +27,7 @@ Implements sub-agents — bounded, forked conversation loops that the main loop 
 - **`getToolsForTier`** (`trustTier.ts:9`) — returns the `ToolImpl[]` allowed for a given `TrustTier`; currently `specialist`/`full` both fall back to the readonly set (Phase 2/3 not yet implemented).
 - **`makeSubAgentConfig`** (`types.ts:108`) — factory that fills in `SubAgentConfig` defaults (tool list, maxIterations, maxTokenBudget) per trust tier; called by `spawnAgent.ts` and `conversationLoop.ts`.
 - **`makeS2Decision`** (`types.ts:132`) — stamps an `S2Decision` with a timestamp; used throughout `s2Coordinator.ts`.
-- **`getVocabulary`** / **`formatVocabularyPrompt`** (`vocabulary.ts:296`, `vocabulary.ts:305`) — look up a persona's domain-term clusters and render them as a prompt line; called by `SubAgent.run`.
+- **`getVocabulary`** / **`formatVocabularyPrompt`** (`vocabulary.ts:305`, `vocabulary.ts:305`) — look up a persona's domain-term clusters and render them as a prompt line; called by `SubAgent.run`.
 
 ## Data flow
 1. The `SubAgent` tool (`tools/impl/spawnAgent.ts`) validates a `persona`/`task` request and calls `makeSubAgentConfig` (`types.ts`) to build a `SubAgentConfig`; it returns a JSON payload rather than running the agent itself. `conversationLoop.ts` also builds scout configs directly via `makeSubAgentConfig` for orientation/exploration scouting.

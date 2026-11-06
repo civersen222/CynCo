@@ -1,6 +1,6 @@
 // engine/__tests__/daemon/missionRunner.test.ts
 import { beforeEach, afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MissionRunner } from '../../daemon/missionRunner.js'
@@ -634,5 +634,111 @@ describe('MissionRunner allowedTools and cwd plumbing', () => {
     const input = await fireNews({ ...config, triggers, allowedTools: ['Bash', 'Write', 'Read'], cwd: 'C:/Users/civer/fantasyman' })
     expect(input.allowedTools).toEqual(['Read'])
     expect(input.cwd).toBe('D:/elsewhere')
+  })
+})
+
+describe('MissionRunner precheck command', () => {
+  const cmdConfig: MissionConfig = {
+    ...config,
+    triggers: [{ id: 'trades', kind: 'interval', everyMinutes: 120, precheck: 'command', missedPolicy: 'skip',
+                 precheckCommand: 'python dynasty/mfl.py gate cynco --pass trades --check', prompt: 'Answer offers', cwd: 'C:/repo' }],
+  }
+  function setup(stdout: string, extra: Partial<any> = {}) {
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(cmdConfig), 'utf-8')
+    const prechecks: any[] = []
+    const made = makeDeps({ runPrecheck: async (command: string, cwd?: string) => { prechecks.push({ command, cwd }); return { code: 0, stdout } }, ...extra })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('trades', new Date(2026, 5, 11, 11, 59).toISOString())
+    return { ...made, prechecks, ledger, runner: new MissionRunner(ledger, made.deps as any) }
+  }
+
+  it('a precheck that prints skip records the run and never loads the model or pings the phone', async () => {
+    const { runner, ranTasks, published, prechecks, ledger } = setup('skip: no incoming offers\n')
+    await runner.tick()
+    expect(prechecks).toEqual([{ command: 'python dynasty/mfl.py gate cynco --pass trades --check', cwd: 'C:/repo' }])
+    expect(ranTasks.length).toBe(0)
+    expect(published.length).toBe(0)
+    const runs = ledger.recentRuns(1)
+    expect(runs[0].ok).toBe(true)
+    expect(runs[0].summary).toBe('precheck: skip: no incoming offers')
+    expect(ledger.state.failureStreak).toBe(0)
+  })
+
+  it('a precheck that prints go runs the pass as usual', async () => {
+    const { runner, ranTasks } = setup('go\n')
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].triggerId).toBe('trades')
+  })
+
+  it('a throwing precheck lets the pass run — a broken gate cannot silence a mission', async () => {
+    const { runner, ranTasks } = setup('', { runPrecheck: async () => { throw new Error('python not found') } })
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+  })
+})
+
+describe('MissionRunner pause and resume', () => {
+  const pausedOutcome: TaskOutcome = { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { sessionId: 'session-77', elapsedMs: 10 * 60 * 1000 } }
+
+  it('a paused run is remembered in state, not counted as a failure, and not pinged', async () => {
+    const { deps, published } = makeDeps({ runTask: async () => pausedOutcome })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ledger.state.paused?.triggerId).toBe('news')
+    expect(ledger.state.paused?.sessionId).toBe('session-77')
+    expect(ledger.state.paused?.remainingMs).toBe(5 * 60 * 1000) // 15-min default minus 10 elapsed
+    expect(ledger.state.paused?.input.prompt).toBe('Check news')
+    expect(ledger.state.failureStreak).toBe(0)
+    expect(published.length).toBe(0)
+    expect(ledger.recentRuns(1)[0].summary).toContain('paused on request after 10 min')
+    expect(JSON.parse(readFileSync(join(dir, 'mfl-dynasty', 'state.json'), 'utf-8')).paused.triggerId).toBe('news')
+  })
+
+  it('while the control file says paused, nothing fires and nextFire is untouched', async () => {
+    const { deps, ranTasks } = makeDeps({ isPaused: () => true })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    const due = new Date(2026, 5, 11, 11, 59).toISOString()
+    ledger.setNextFire('news', due)
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks.length).toBe(0)
+    expect(ledger.state.nextFire['news']).toBe(due)
+  })
+
+  it('once the pause lifts, the next tick relaunches the run with its journal and the clock it had left, then clears it', async () => {
+    const { deps, ranTasks, published } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 12).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    ledger.state.paused = {
+      triggerId: 'news', remainingMs: 7 * 60 * 1000, sessionId: 'session-77', pausedAt: '2026-06-11T18:00:00.000Z',
+      input: { missionId: 'mfl-dynasty', triggerId: 'news', prompt: 'Check news', context: 'ctx', allowedTools: ['Mfl'], timeoutMs: 15 * 60 * 1000, outcomePath: '', leagues: [] },
+    }
+    ledger.saveState()
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks[0].resumeSessionId).toBe('session-77')
+    expect(ranTasks[0].timeoutMs).toBe(7 * 60 * 1000)
+    expect(ledger.state.paused).toBeUndefined()
+    expect(ledger.state.pending['rec-1']).toBeDefined()
+    expect(published.length).toBe(1)
+    expect(ledger.recentRuns(1)[0].triggerId).toBe('news')
+  })
+
+  it('a resumed run gets at least five minutes, and no journal means a fresh start', async () => {
+    const { deps, ranTasks } = makeDeps()
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 12).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    ledger.state.paused = {
+      triggerId: 'news', remainingMs: 30 * 1000, pausedAt: '2026-06-11T18:00:00.000Z',
+      input: { missionId: 'mfl-dynasty', triggerId: 'news', prompt: 'Check news', context: 'ctx', allowedTools: ['Mfl'], timeoutMs: 15 * 60 * 1000, outcomePath: '', leagues: [] },
+    }
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks[0].timeoutMs).toBe(5 * 60 * 1000)
+    expect(ranTasks[0].resumeSessionId).toBeUndefined()
   })
 })

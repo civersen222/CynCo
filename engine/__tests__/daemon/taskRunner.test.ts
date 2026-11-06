@@ -133,3 +133,40 @@ describe('isGpuBusy', () => {
     expect(await isGpuBusy(async () => 'llama-server\n', queryGpu, noServer)).toBe(true)
   })
 })
+
+describe('TaskRunner pause', () => {
+  it('kills the engine when shouldPause flips, reporting the journal id and the time spent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      let paused = false
+      const runner = new TaskRunner({
+        workDir: dir,
+        spawnCmd: [process.execPath, STUB],
+        isGpuBusyImpl: async () => false,
+        shouldPause: () => paused,
+        pausePollMs: 100,
+      })
+      setTimeout(() => { paused = true }, 700)
+      const started = Date.now()
+      const outcome = await runner.run({ ...makeInput(dir, 'PAUSEME now'), timeoutMs: 20000 })
+      expect(Date.now() - started).toBeLessThan(10000)
+      expect(outcome.ok).toBe(false)
+      expect(outcome.error).toBe('PAUSED')
+      expect(outcome.paused?.sessionId).toBe('session-424242')
+      expect(outcome.paused?.elapsedMs).toBeGreaterThanOrEqual(600)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('a task that finishes normally is not paused even when asked late', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const runner = new TaskRunner({
+        workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false,
+        shouldPause: () => true, pausePollMs: 60000,
+      })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      expect(outcome.paused).toBeUndefined()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})

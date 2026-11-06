@@ -34,6 +34,15 @@ export function buildOneShotPrompt(context: string, prompt: string): string {
   ].join('\n')
 }
 
+/** What a resumed run is told instead of the task prompt: its own earlier messages carry the task. */
+export function buildResumePrompt(): string {
+  return [
+    'The daemon paused this task to free the GPU and has now resumed it. Everything above is your own work so far.',
+    'Continue from the last tool result: do not repeat steps that already completed, re-issue only the tool call that was interrupted if you still need it,',
+    'and finish exactly as the original task asked, ending your FINAL message with the ```json outcome block.',
+  ].join(' ')
+}
+
 export function extractOutcome(text: string): TaskOutcome {
   const blocks = [...text.matchAll(/```json\s*\n([\s\S]*?)```/g)].map((m) => m[1])
   for (let i = blocks.length - 1; i >= 0; i--) {
@@ -155,6 +164,8 @@ export async function runGovernedLoop(opts: {
   /** Loop workspace root — the constructor initSnapshot()s this dir.
    *  Defaults to process.cwd() (daemon runs from the mission workspace). */
   cwd?: string
+  /** Journal of a paused run to continue from (TaskFileInput.resumeSessionId). */
+  resumeSessionId?: string
 }): Promise<TaskOutcome> {
   // Same S5 selection as interactive startup (main.ts): LoRA-trained
   // decision model when configured, rule-based otherwise.
@@ -175,11 +186,21 @@ export async function runGovernedLoop(opts: {
     allowedTools: opts.allowedTools,
   })
 
+  // A paused run continues its own journal (resume() repairs an interrupted tool call); if the
+  // journal is gone or empty the task simply starts over with the time it has.
+  let resumed = false
+  if (opts.resumeSessionId) {
+    resumed = loop.resume(opts.resumeSessionId)
+    console.log(resumed
+      ? `[one-shot] resumed ${opts.resumeSessionId}`
+      : `[one-shot] could not resume ${opts.resumeSessionId} (no journal) — starting the task over`)
+  }
+
   // Internal deadline backstop (the daemon also enforces a hard kill).
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; loop.abort() }, opts.timeoutMs)
   try {
-    await loop.handleUserMessage(buildOneShotPrompt(opts.context, opts.prompt))
+    await loop.handleUserMessage(resumed ? buildResumePrompt() : buildOneShotPrompt(opts.context, opts.prompt))
   } finally {
     clearTimeout(timer)
   }
@@ -235,6 +256,7 @@ export async function runOneShotTask(
         config,
         // explicit override (tests) > the mission's workspace from the task file > engine cwd
         cwd: cwd ?? task.cwd,
+        ...(task.resumeSessionId ? { resumeSessionId: task.resumeSessionId } : {}),
       })
     }
 
