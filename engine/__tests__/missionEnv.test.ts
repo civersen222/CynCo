@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { MISSION_ENV_KEYS, isUnattendedMission } from '../missionEnv.js'
+import { MISSION_ENV_KEYS, isUnattendedMission, uncertaintyTraceEnabled } from '../missionEnv.js'
 import { isUnattendedMission as reexported } from '../bootstrapProvider.js'
 
 // Read at file load, before any test sets a key: the suite setup
@@ -42,5 +42,24 @@ describe('missionEnv', () => {
 
   it('bootstrapProvider re-exports the same predicate', () => {
     expect(reexported).toBe(isUnattendedMission)
+  })
+})
+
+describe('uncertaintyTraceEnabled', () => {
+  // 2026-11-06: the Brain's per-token top-8 logprobs took the daemon's passes from 114 to 44 tok/s
+  // (standalone llama-server benchmark, same flags). Nobody watches the trace in a one-shot or an
+  // unattended mission, so it is off there unless LOCALCODE_ENTROPY_TRACE says otherwise.
+  it('is on by default for an interactive engine', () => {
+    expect(uncertaintyTraceEnabled({}, ['bun', 'engine/main.ts'])).toBe(true)
+  })
+  it('is off for a daemon one-shot (--run-task)', () => {
+    expect(uncertaintyTraceEnabled({}, ['bun', 'engine/main.ts', '--run-task', 'C:/x/task.json'])).toBe(false)
+  })
+  it('is off for an unattended mission', () => {
+    expect(uncertaintyTraceEnabled({ LOCALCODE_MISSION_MARKER: 'm' }, ['bun', 'engine/main.ts'])).toBe(false)
+  })
+  it('LOCALCODE_ENTROPY_TRACE overrides both ways', () => {
+    expect(uncertaintyTraceEnabled({ LOCALCODE_ENTROPY_TRACE: '1' }, ['bun', 'engine/main.ts', '--run-task', 't.json'])).toBe(true)
+    expect(uncertaintyTraceEnabled({ LOCALCODE_ENTROPY_TRACE: '0' }, ['bun', 'engine/main.ts'])).toBe(false)
   })
 })
