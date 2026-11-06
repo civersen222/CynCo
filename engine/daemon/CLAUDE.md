@@ -51,7 +51,7 @@ A mission may widen or narrow the tool pin of its one-shot runs: `MissionConfig.
 
 ## Precheck by command (`precheck: 'command'`, `precheckCommand`)
 
-A trigger can ask its own gate before the model is loaded: `fire()` runs `precheckCommand` (via `deps.runPrecheck`, `exec` in the trigger's `cwd` then the mission's, two-minute cap) and reads the first stdout line. `skip...` records an ok run whose summary is `precheck: <line>` and spawns nothing; `go`, anything else, a non-zero exit or a throw lets the pass run, so a broken gate can never silence a mission. Added 2026-11-06: fantasyman's two-hourly trade passes were loading the 30 GB model 47 times a day to hear `skip: no incoming offers`; they now run `python dynasty/mfl.py gate cynco --pass trades --check`.
+A trigger can ask its own gate before the model is loaded: `fire()` runs `precheckCommand` (via `deps.runPrecheck`, `exec` in the trigger's `cwd` then the mission's, two-minute cap) and reads the first stdout line. `skip...` records an ok run whose summary quotes the line (`precheck skipped the pass: "<line>"`, sanitized by `sanitizePrecheckLine`: bounded plain text, no fences, tags or role markers, since recent summaries ride into the next run's context) and spawns nothing; `go`, anything else, a non-zero exit or a throw lets the pass run, so a broken gate can never silence a mission. Added 2026-11-06: fantasyman's two-hourly trade passes were loading the 30 GB model 47 times a day to hear `skip: no incoming offers`; they now run `python dynasty/mfl.py gate cynco --pass trades --check`.
 
 ## Pause and resume (`daemon-control.json`)
 

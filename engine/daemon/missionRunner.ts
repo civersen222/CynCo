@@ -26,6 +26,23 @@ function validTimeout(v: unknown): number | undefined {
 
 type FireResult = { status: 'ran' } | { status: 'gpu-deferred'; retryAtMs: number }
 
+const PRECHECK_LINE_MAX = 120
+
+/**
+ * A precheck's stdout is untrusted (it comes from a command that talks to the network) and its
+ * summary is shown to the model in the next run's context, so it is stored as bounded plain text:
+ * control characters, fences, tags, braces and role/tool markers removed, whitespace collapsed.
+ */
+export function sanitizePrecheckLine(line: string): string {
+  return line
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/[`<>{}\[\]|\\]/g, '')
+    .replace(/\b(system|assistant|user|tool_call|tool_result|tool)\s*:/gi, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, PRECHECK_LINE_MAX)
+}
+
 export interface MissionRunnerDeps {
   runTask: (input: TaskFileInput) => Promise<TaskOutcome>
   publish: (p: { title: string; message: string; priority?: number }) => Promise<boolean>
@@ -153,10 +170,11 @@ export class MissionRunner {
       } catch (err) {
         console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}" threw (${err instanceof Error ? err.message : err}) — running the pass anyway`)
       }
-      const firstLine = (verdict?.stdout ?? '').trim().split(/\r?\n/)[0] ?? ''
+      const firstLine = sanitizePrecheckLine((verdict?.stdout ?? '').trim().split(/\r?\n/)[0] ?? '')
       if (/^skip\b/i.test(firstLine)) {
         console.log(`[mission:${this.ledger.config.id}] precheck skipped "${trigger.id}": ${firstLine}`)
-        this.ledger.recordRun({ ts: now.toISOString(), triggerId: trigger.id, ok: true, summary: `precheck: ${firstLine}`, recommendationIds: [], entropy: null })
+        // Quoted: in the next run's context this is a report of what a command printed, not an instruction.
+        this.ledger.recordRun({ ts: now.toISOString(), triggerId: trigger.id, ok: true, summary: `precheck skipped the pass: "${firstLine}"`, recommendationIds: [], entropy: null })
         return { status: 'ran' }
       }
       if (verdict) console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}": ${firstLine || `(exit ${verdict.code}, no output)`} — running the pass`)
