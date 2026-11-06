@@ -174,9 +174,10 @@ function Get-GpuState($oneShot) {
   $nextText = if ($next) { "next $(Format-When $next.At) $($next.TriggerId)" } else { 'nothing scheduled' }
   if ($ctlPaused) {
     # paused with nothing interrupted: the GPU is free but the daemon fires nothing until Resume
-    return @{ Mode = 'held'; Dot = '#58a6ff'; Text = "paused - daemon holds $nextText"; Button = 'Resume'; Stop = $false; Pid = $null }
+    return @{ Mode = 'held'; Dot = '#58a6ff'; Text = "held - daemon starts nothing ($nextText)"; Button = 'Release'; Stop = $false; Pid = $null }
   }
-  return @{ Mode = 'free'; Dot = '#3fb950'; Text = "free - $nextText"; Button = '-'; Stop = $false; Pid = $null }
+  # Hold: nothing is running, but the owner wants the card for a while - the daemon fires nothing until Release
+  return @{ Mode = 'free'; Dot = '#3fb950'; Text = "free - $nextText"; Button = 'Hold'; Stop = $false; Pid = $null }
 }
 function Write-DaemonControl([bool]$paused) {
   # atomic: temp file in the same folder, then Move-Item -Force over the control file
@@ -308,6 +309,12 @@ $ui.btnGpu.Add_Click({
     if ($g.Button -eq 'Pause') {
       Write-DaemonControl $true
       $ui.txtNote.Text = 'pause asked: the daemon kills the running pass (freeing the GPU) and fires nothing until Resume...'
+    } elseif ($g.Button -eq 'Hold') {
+      Write-DaemonControl $true
+      $ui.txtNote.Text = 'hold asked: the GPU stays yours - the daemon starts no pass until Release (missed passes fire late or skip)...'
+    } elseif ($g.Button -eq 'Release') {
+      Write-DaemonControl $false
+      $ui.txtNote.Text = 'released: the daemon goes back to its schedule...'
     } else {
       Write-DaemonControl $false
       $ui.txtNote.Text = 'resume asked: the daemon relaunches the interrupted pass from its journal...'
