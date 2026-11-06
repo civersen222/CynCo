@@ -10,6 +10,10 @@ const task = JSON.parse(readFileSync(taskPath, 'utf-8'))
 if (task.prompt.includes('HANG')) {
   // never exits — used to test the timeout kill
   setInterval(() => {}, 1000)
+} else if (task.prompt.includes('PAUSEME')) {
+  // announces its journal like the real engine, then runs until killed — the pause test
+  console.log('[session] Journal: C:/Users/x/.cynco/sessions/session-424242.jsonl')
+  setInterval(() => {}, 1000)
 } else if (task.prompt.includes('CRASH')) {
   process.exit(1)
 } else if (task.prompt.includes('ECHO_ENV')) {

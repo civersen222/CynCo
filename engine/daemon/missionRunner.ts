@@ -6,7 +6,7 @@ import { evaluateTrigger, computeNextFire } from './scheduler.js'
 import { GpuBusyError } from './taskRunner.js'
 import { serializeHandoff } from '../memory/handoff.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
-import type { ApprovalCommand, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
+import type { ApprovalCommand, PausedRun, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
 // GPU-busy defer backoff (spec §2/§7): 5 → 10 → 20 → 40 → 60 min, capped.
 // In-memory by design — a daemon restart starting fresh at 5 min is fine.
@@ -16,6 +16,8 @@ const FAILURE_ALERT_THRESHOLD = 3
 const DEFAULT_TOOLS = ['Mfl', 'WebSearch', 'WebFetch', 'Read']
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000
 const TRADE_SCAN_TIMEOUT_MS = 60 * 60 * 1000
+/** A resumed run gets at least this much clock, however little was left when it was paused. */
+const MIN_RESUME_MS = 5 * 60 * 1000
 
 /** A configured timeout counts only when it is a positive finite number; anything else falls back. */
 function validTimeout(v: unknown): number | undefined {
@@ -23,6 +25,23 @@ function validTimeout(v: unknown): number | undefined {
 }
 
 type FireResult = { status: 'ran' } | { status: 'gpu-deferred'; retryAtMs: number }
+
+const PRECHECK_LINE_MAX = 120
+
+/**
+ * A precheck's stdout is untrusted (it comes from a command that talks to the network) and its
+ * summary is shown to the model in the next run's context, so it is stored as bounded plain text:
+ * control characters, fences, tags, braces and role/tool markers removed, whitespace collapsed.
+ */
+export function sanitizePrecheckLine(line: string): string {
+  return line
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/[`<>{}\[\]|\\]/g, '')
+    .replace(/\b(system|assistant|user|tool_call|tool_result|tool)\s*:/gi, '$1')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, PRECHECK_LINE_MAX)
+}
 
 export interface MissionRunnerDeps {
   runTask: (input: TaskFileInput) => Promise<TaskOutcome>
@@ -33,6 +52,10 @@ export interface MissionRunnerDeps {
   /** Returns a compact text snapshot of the franchise's current roster. */
   fetchRosterSnapshot: (leagueId: string, year: number, franchiseId: string) => Promise<string>
   now: () => Date
+  /** Runs a trigger's precheckCommand (precheck 'command'); stdout decides, a throw lets the run proceed. */
+  runPrecheck?: (command: string, cwd?: string) => Promise<{ code: number | null; stdout: string }>
+  /** The control file says pause: fire nothing, resume nothing (control.ts). */
+  isPaused?: () => boolean
 }
 
 export class MissionRunner {
@@ -42,6 +65,7 @@ export class MissionRunner {
   /** Queued on-demand phone requests, drained by tick(). In-memory by design —
    *  a daemon restart drops them; the user just resends the command. */
   private onDemand: { week?: number; notBefore?: number }[] = []
+  private pauseLogged = false
 
   constructor(
     private ledger: MissionLedger,
@@ -60,6 +84,14 @@ export class MissionRunner {
 
   async tick(): Promise<void> {
     const now = this.deps.now()
+    if (this.deps.isPaused?.()) {
+      if (!this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] paused by the control file — firing nothing until it clears`)
+      this.pauseLogged = true
+      return
+    }
+    if (this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] pause lifted`)
+    this.pauseLogged = false
+    if (this.ledger.state.paused) await this.resumePaused(this.ledger.state.paused, now)
     await this.drainOnDemand(now)
     for (const trigger of this.ledger.config.triggers) {
       const due = this.ledger.state.nextFire[trigger.id]
@@ -99,7 +131,55 @@ export class MissionRunner {
     }
   }
 
+  /** Relaunch a run the control file interrupted: same task, the journal to continue from, the clock it had left. */
+  private async resumePaused(paused: PausedRun, now: Date): Promise<void> {
+    const trigger = this.ledger.config.triggers.find((t) => t.id === paused.triggerId)
+      ?? { id: paused.triggerId, kind: 'daily' as const, at: '00:00', precheck: 'none' as const, missedPolicy: 'skip' as const, prompt: paused.input.prompt }
+    const input: TaskFileInput = {
+      ...paused.input,
+      outcomePath: '',
+      timeoutMs: Math.max(paused.remainingMs, MIN_RESUME_MS),
+      ...(paused.sessionId ? { resumeSessionId: paused.sessionId } : {}),
+    }
+    console.log(`[mission:${this.ledger.config.id}] resuming "${paused.triggerId}" ${paused.sessionId ? `from ${paused.sessionId}` : 'from scratch (no journal was captured)'} with ${Math.round(input.timeoutMs / 60000)} min left`)
+    let outcome: TaskOutcome
+    try {
+      outcome = await this.deps.runTask(input)
+    } catch (err) {
+      if (err instanceof GpuBusyError) {
+        console.log(`[mission:${this.ledger.config.id}] GPU busy — the paused run "${paused.triggerId}" waits for the next tick`)
+        return
+      }
+      outcome = { ok: false, summary: '', recommendations: [], error: err instanceof Error ? err.message : String(err) }
+    }
+    delete this.ledger.state.paused
+    this.ledger.saveState()
+    await this.complete(trigger, input, outcome, now)
+  }
+
   private async fire(trigger: TriggerSpec, now: Date): Promise<FireResult> {
+    // Cheap pre-check (precheck 'command'): the trigger's own gate decides whether the model is worth
+    // loading. stdout starting with "skip" records a skipped run and spawns nothing; a failing or
+    // throwing precheck lets the run proceed, so a broken gate cannot silence a mission.
+    if (trigger.precheck === 'command' && trigger.precheckCommand) {
+      let verdict: { code: number | null; stdout: string } | null = null
+      try {
+        verdict = this.deps.runPrecheck
+          ? await this.deps.runPrecheck(trigger.precheckCommand, trigger.cwd ?? this.ledger.config.cwd)
+          : null
+      } catch (err) {
+        console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}" threw (${err instanceof Error ? err.message : err}) — running the pass anyway`)
+      }
+      const firstLine = sanitizePrecheckLine((verdict?.stdout ?? '').trim().split(/\r?\n/)[0] ?? '')
+      if (/^skip\b/i.test(firstLine)) {
+        console.log(`[mission:${this.ledger.config.id}] precheck skipped "${trigger.id}": ${firstLine}`)
+        // Quoted: in the next run's context this is a report of what a command printed, not an instruction.
+        this.ledger.recordRun({ ts: now.toISOString(), triggerId: trigger.id, ok: true, summary: `precheck skipped the pass: "${firstLine}"`, recommendationIds: [], entropy: null })
+        return { status: 'ran' }
+      }
+      if (verdict) console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}": ${firstLine || `(exit ${verdict.code}, no output)`} — running the pass`)
+    }
+
     // Cheap pre-check: skip the model entirely when MFL hasn't changed
     if (trigger.precheck === 'mfl-delta') {
       let anyDelta = false
@@ -181,6 +261,30 @@ export class MissionRunner {
       outcome = { ok: false, summary: '', recommendations: [], error: err instanceof Error ? err.message : String(err) }
     }
 
+    if (outcome.paused) {
+      // Not a failure: remember the run and relaunch it when the control file clears.
+      const remainingMs = Math.max(input.timeoutMs - outcome.paused.elapsedMs, 0)
+      const { outcomePath: _dropped, ...rest } = input
+      this.ledger.state.paused = {
+        triggerId: trigger.id, input: { ...rest, outcomePath: '' }, remainingMs,
+        ...(outcome.paused.sessionId ? { sessionId: outcome.paused.sessionId } : {}),
+        pausedAt: now.toISOString(),
+      }
+      this.ledger.recordRun({
+        ts: now.toISOString(), triggerId: trigger.id, ok: true,
+        summary: `paused on request after ${Math.round(outcome.paused.elapsedMs / 60000)} min (${Math.round(remainingMs / 60000)} min left); resumes when the pause lifts`,
+        recommendationIds: [], entropy: null,
+      })
+      this.ledger.saveState()
+      return { status: 'ran' }
+    }
+
+    await this.complete(trigger, input, outcome, now)
+    return { status: 'ran' }
+  }
+
+  /** Record a finished run, keep the failure streak, hand recommendations to the phone. */
+  private async complete(trigger: TriggerSpec, _input: TaskFileInput, outcome: TaskOutcome, now: Date): Promise<void> {
     this.ledger.recordRun({
       ts: now.toISOString(),
       triggerId: trigger.id,
@@ -212,7 +316,7 @@ export class MissionRunner {
           priority: 5,
         })
       }
-      return { status: 'ran' }
+      return
     }
 
     this.ledger.state.failureStreak = 0
@@ -227,11 +331,10 @@ export class MissionRunner {
     for (const rec of outcome.recommendations) {
       await this.deps.publishRecommendation(rec)
     }
-    if (outcome.recommendations.length === 0 && trigger.precheck === 'none') {
+    if (outcome.recommendations.length === 0 && trigger.precheck !== 'mfl-delta') {
       // Digest-style runs report even when nothing is actionable
       await this.deps.publish({ title: `Mission ${this.ledger.config.id}: ${trigger.id}`, message: outcome.summary })
     }
-    return { status: 'ran' }
   }
 
   /** Handle an approve/reject command from the phone. Returns false if the recId is unknown to this mission. */
