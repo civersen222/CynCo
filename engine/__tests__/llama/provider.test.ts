@@ -346,3 +346,26 @@ describe('LlamaCppProvider', () => {
     }
   })
 })
+
+describe('LlamaCppProvider uncertainty trace switch', () => {
+  // 2026-11-06 benchmark: top_logprobs 8 on every streamed token costs 114 -> 44 tok/s on the 5090.
+  it('sends no logprobs fields when uncertaintyTrace is false', async () => {
+    const bodies: any[] = []
+    const realFetch = globalThis.fetch
+    const sse = 'data: {"id":"c","model":"m","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+    globalThis.fetch = (async (_url: any, init: any) => {
+      bodies.push(JSON.parse(init.body))
+      return new Response(sse, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }) as any
+    try {
+      const provider = new LlamaCppProvider({ primaryUrl: 'http://127.0.0.1:9999', modelName: 'qwen3.6', modelsDir: '/tmp', uncertaintyTrace: false })
+      const req = { model: 'qwen3.6', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] } as any
+      for await (const _e of provider.stream(req)) { /* drain */ }
+      expect(bodies).toHaveLength(1)
+      expect(bodies[0].logprobs).toBeUndefined()
+      expect(bodies[0].top_logprobs).toBeUndefined()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
