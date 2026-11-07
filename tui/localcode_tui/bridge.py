@@ -64,7 +64,12 @@ class EngineBridge:
             except (ConnectionRefusedError, OSError):
                 if attempt < retries - 1:
                     await asyncio.sleep(delay)
-        raise ConnectionError(f"Could not connect to engine on port {self.port}")
+        raise ConnectionError(
+            f"Could not connect to engine on port {self.port}. Start one: "
+            f"`python -m localcode_tui.app` (the project picker launches the engine "
+            f"and writes its output to <project>/.cynco-engine.log), or run "
+            f"`bun engine/main.ts` (CynCo's engine) from the folder you want to work in."
+        )
 
     async def _receive_loop(self) -> None:
         """Listen for events from the engine."""

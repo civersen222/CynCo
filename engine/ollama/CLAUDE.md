@@ -7,7 +7,7 @@ The Ollama `Provider` implementation plus a capability-probe table shared with t
 | File | Role |
 |---|---|
 | `client.ts` | `OllamaProvider`: HTTP calls to Ollama's `/v1/chat/completions`, `/api/tags`, `/api/pull`. |
-| `errors.ts` | Typed error classes with actionable messages (`ollama serve`, `ollama pull ...`); unit-tested but not currently thrown by `client.ts`. |
+| `errors.ts` | Typed error classes with actionable messages (`ollama serve`, `ollama pull ...`). `client.ts` throws `ModelNotFoundError` (a 404 whose body names a model) and `GenerationError` (any other non-2xx) from `httpError()`; `ConnectionError` is not thrown — a refused socket stays the raw fetch error so `callModel.isRetryableError` can read its `code`. |
 | `format.ts` | OpenAI-compat message/tool/response/stream-chunk translation, shared with the llama-cpp OpenAI-compat path. |
 | `probe.ts` | Known-model capability table and family-based lookup/fallback logic. |
 | `simulated.ts` | `<tool_call>`/Hermes/fenced-JSON/bare-syntax tool-call extraction and `<think>` block extraction for Standard-tier models. |
@@ -15,7 +15,7 @@ The Ollama `Provider` implementation plus a capability-probe table shared with t
 ## Important types & functions
 - **`OllamaProvider`** (`client.ts:17`) — implements `Provider`; called by `engine/providers/factory.ts` (construction) and `engine/engine/callModel.ts` (generation).
 - **`toOpenAIMessages`** (`format.ts:24`) — converts internal `Message[]` to OpenAI chat messages; splits `tool_result` blocks into separate `role:'tool'` messages, strips thinking/image/document blocks.
-- **`fromOpenAIStreamChunk`** (`format.ts:234`) — converts one OpenAI SSE chunk into zero or more internal `StreamEvent`s (text/thinking deltas, tool-call start/delta, usage `message_delta`). Called from `client.ts:137` per parsed SSE line.
+- **`fromOpenAIStreamChunk`** (`format.ts:234`) — converts one OpenAI SSE chunk into zero or more internal `StreamEvent`s (text/thinking deltas, tool-call start/delta, usage `message_delta`). Called from `client.ts:107` per parsed SSE line.
 - **`parseTurnCost`** (`format.ts:169`) — extracts `TurnCost` from a response/chunk's `usage`/`timings`; source is `'server-timings'` only when a `timings` block is present (llama-server), `'usage-only'` when only token counts are present (Ollama's shim), `'none'` otherwise.
 - **`resolveCapabilities`** (`probe.ts:119`) — resolves `ModelCapabilities` via known table → probe result → safe basic-tier defaults. Called from `client.ts:47/52`, `engine/bootstrapProvider.ts`, `engine/engine/callModel.ts`, and `engine/llama/provider.ts`.
 - **`buildSimulatedToolPrompt`** (`simulated.ts:55`) — builds the `<tool_call>` XML instruction prompt for Standard-tier models; memoized (single-slot cache keyed on tool-name list) so the prefix stays byte-identical across turns for llama.cpp prompt caching.
@@ -23,16 +23,16 @@ The Ollama `Provider` implementation plus a capability-probe table shared with t
 - **`extractProseToolCalls`** (`simulated.ts:254`) — rescues tool calls a model wrote as ordinary code (e.g. `Read(file_path="x")`) instead of the requested XML tags.
 
 ## Data flow
-1. `engine/engine/callModel.ts` builds a `CompletionRequest` and calls `OllamaProvider.stream()` (`client.ts:66`).
-2. `buildRequestBody()` (`client.ts:180`) converts it via `toOpenAIMessages`/`toOpenAITools` (`format.ts:24`/`format.ts:96`), prepends a system message, sets `options.num_ctx` only when the resolved context exceeds Ollama's 32K default, and adds `logprobs`/`top_logprobs` when streaming.
-3. `client.ts:90` POSTs the body to `${baseUrl}/v1/chat/completions`.
+1. `engine/engine/callModel.ts` builds a `CompletionRequest` and calls `OllamaProvider.stream()` (`client.ts:63`).
+2. `buildRequestBody()` (`client.ts:175`) converts it via `toOpenAIMessages`/`toOpenAITools` (`format.ts:24`/`format.ts:96`), prepends a system message, sets `options.num_ctx` only when the resolved context exceeds Ollama's 32K default, and adds `logprobs`/`top_logprobs` when streaming.
+3. `postChat()` (`client.ts:118`) POSTs the body to `${baseUrl}/v1/chat/completions`. A non-2xx response throws from `httpError()` (`client.ts:135`) before any event is yielded: `ModelNotFoundError` for a 404 whose body names a model (the installed list from `/api/tags` is best effort; the `ollama pull` command is always there), otherwise `GenerationError` spelled `Ollama HTTP <status>: <detail>`. Pinned by `clientErrors.test.ts`.
 4. The response body reader splits on `\n`, and `parseSSELine` (`format.ts:362`) parses each `data: ` line to JSON (or signals `[DONE]`/non-data lines).
 5. `fromOpenAIStreamChunk` (`format.ts:234`) turns each parsed chunk into `StreamEvent`s; `client.ts` yields `message_start` before the loop and `message_stop` after.
 6. For Standard-tier (simulated-tool-use) models, `engine/engine/streamTranslator.ts` runs `extractSimulatedToolCalls`/`extractThinkingBlocks` (`simulated.ts:85`/`simulated.ts:163`) over the accumulated text to recover tool calls and thinking that arrived as plain text rather than native `tool_calls`.
 
 ## Gotchas
-- `client.ts:66`–`156` (`stream()`) unconditionally writes `.cynco-http-debug.json` before the request and `.cynco-sse-debug.json` after, and `console.log`s the HTTP status and chunk count on every call — real disk/stdout side effects on every streamed turn, not just a debug build.
-- `errors.ts` exports `ConnectionError`, `ModelNotFoundError`, `ModelLoadError`, `TimeoutError`, `GenerationError` and is imported into `client.ts`, but none of them are actually thrown there — `healthCheck()` catches and returns `false` instead of raising `ConnectionError`. `errors.test.ts` only exercises the classes in isolation, not the wiring.
+- `stream()` writes nothing and logs nothing per call. Until 2026-11-06 it wrote `.cynco-http-debug.json` / `.cynco-sse-debug.json` into `process.cwd()` — the user's project folder — on every streamed turn (GLM review O3c); per-iteration debug files belong to `ConversationLoop.debugDir()`, never the project folder. `clientErrors.test.ts` pins that a streamed turn leaves nothing behind.
+- A 404 reads as "model not found" only when its body mentions a model (`/model/i` in `httpError()`); a 404 from a server with no `/v1/chat/completions` at all is a `GenerationError` carrying the raw body, not an `ollama pull` hint. The `GenerationError` text keeps the `HTTP <status>: <detail>` spelling of the llama path on purpose: `callModel.isRetryableError` waits out a load window by reading `HTTP 503` + `Loading model` off the message. `healthCheck()` still returns `false` rather than raising `ConnectionError`.
 - `format.ts:260`–`270`: a chunk carrying only `usage` (empty `choices`) must still be read — `mapFinishReason` on it can legitimately be `undefined`, and "consumers must not read it as a stop" (comment at `format.ts:274`). Pinned by `turnCost.test.ts` ("rides the streaming usage chunk").
 - `parseTurnCost` (`format.ts:169`) never returns `source: 'server-timings'` for Ollama — its OpenAI-compat shim does not send a `timings` block, so Ollama turns are always `'usage-only'` or `'none'`. Pinned by `turnCost.test.ts`.
 - `extractProseToolCalls` (`simulated.ts:254`) only runs when `extractSimulatedToolCalls` found zero structured calls — "a model that emits `<tool_call>` correctly must not also have its narration mined for accidental extra calls" (`simulated.ts:120`). Pinned by `simulated.test.ts` ("does not mine narration when a structured call was found").

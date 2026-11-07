@@ -114,6 +114,10 @@ cd tui && python -m localcode_tui.app
 
 That's it. No API keys. No subscriptions. No data leaving your machine.
 
+The TUI starts the engine for you and owns the terminal, so the engine's own output goes to `.cynco-engine.log` in the project folder, not to the screen. To attach to an engine you started yourself, pass `-p <project dir>`.
+
+Beyond this page, [docs/README.md](docs/README.md) indexes the rest: [USER_GUIDE](docs/USER_GUIDE.md) (install, commands, modes, troubleshooting), [MANUAL](docs/MANUAL.md) (architecture), [BENCHMARKS](docs/BENCHMARKS.md) (what is measured, honest numbers), [MAXIMIZING](docs/MAXIMIZING.md) (tuning). Returning after a break, or working on CynCo itself: [AGENTS.md](AGENTS.md), then [docs/NOW.md](docs/NOW.md).
+
 Once running, interact in the TUI or open the dashboard in your browser. The engine prints its URL at startup:
 
 ```
@@ -349,7 +353,7 @@ The Chat tab has to be able to talk to the agent — that is the feature — so 
 dashboard socket forwards frames. Which frames is not left to the page:
 `dashboardCommandRefusal` in `engine/dashboard/server.ts` asks two separate
 questions, in order. First *may a browser send this kind of frame at all* — an
-allowlist of nine frame types and fifteen slash commands, every one of them
+allowlist of eleven frame types and fifteen slash commands, every one of them
 read-only or no more privileged than typing the same sentence. Then *is the frame
 the shape that kind is declared to have* — `validateCommand`, the same schema
 check the bridge entrance runs. Authority first, because a perfectly well-formed

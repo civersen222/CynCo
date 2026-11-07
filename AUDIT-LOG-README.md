@@ -30,7 +30,7 @@ All logs live in `~/.cynco/audit-log/`:
 
 ```bash
 # In the TUI, type:
-/audit-start qwen3:8b "RTX 4090 24GB, Ryzen 9 7950X, 64GB RAM"
+/audit-start qwen3.6 "RTX 4090 24GB, Ryzen 9 7950X, 64GB RAM"
 ```
 
 This writes `metadata.json` and starts the 28-day clock. All subsequent sessions automatically log to the audit streams.
