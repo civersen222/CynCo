@@ -24,6 +24,13 @@ import { shouldUseRouting, setRoutingEnabled } from '../../tools/toolRouter.js'
  * per-iteration `routingDeclined = false` restores the old behaviour while the
  * guard expression still reads correctly. So this asserts the flag is set once
  * and never cleared, in addition to being consulted.
+ *
+ * F185 (2026-11-06): the "ignored it" reading above was itself wrong. Stage 1
+ * tested `evt.type === 'tool_use'` on events that are only `stream_event` |
+ * `assistant` | `system`, so a selector the model DID call was never seen. The
+ * zero selections were this comparison, not the model. routingStageOne.test.ts
+ * now drives a real loop through a scripted `select_category`; this guard still
+ * matters for the case where the model genuinely answers without it.
  */
 
 const here = dirname(fileURLToPath(import.meta.url))

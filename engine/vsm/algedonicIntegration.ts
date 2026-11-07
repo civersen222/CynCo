@@ -12,6 +12,7 @@
 
 import { algedonic, NodeId, AlgedonicType, Severity, classifySeverity } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
+import { AuditLogger } from '../audit/auditLogger.js'
 import { events } from '../cybernetics-core/src/index.js'
 
 export class AlgedonicIntegration {
@@ -78,14 +79,13 @@ export class AlgedonicIntegration {
 
     // Audit: log algedonic signal
     try {
-      const { AuditLogger } = require('../audit/auditLogger.js')
       AuditLogger.log('algedonic', {
         type: 'algedonic.signal',
         severity: success ? 'pleasure' : (this.consecutivePainCount >= this.KILL_THRESHOLD - 1 ? 'critical' : 'mild_pain'),
         source: toolName,
         trigger: `Tool ${toolName}: ${success ? 'success' : 'failure'}`,
         consecutive_count: this.consecutivePainCount,
-        killswitch_state: this.killSwitch.isActive ? 'active' : 'inactive',
+        killswitch_state: this.killSwitch.isHalted() ? 'active' : 'inactive',
         s5_notified: false,
       })
     } catch {}

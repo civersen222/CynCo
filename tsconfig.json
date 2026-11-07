@@ -1,0 +1,35 @@
+{
+  // Type-check only. Bun strips types at run time and vitest transforms through
+  // esbuild, so until this file existed nothing in the repository ever checked the
+  // engine's types (GLM review 2026-10-30, finding A1; triage in
+  // docs/reviews/2026-11-06-glm5-engineering-review-triage.md). The first strict run
+  // found eight live defects behind 59 errors — a governance rule that could never
+  // fire, a routing branch that could never be reached — so this is a bug detector,
+  // not hygiene. `npm run typecheck` runs it; the guard
+  // engine/__tests__/guards/typecheck.test.ts fails the suite when it is not clean.
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["bun-types"]
+  },
+  // Production code only. The test suite (engine/__tests__ and the co-located
+  // *.test.ts files) is a second, larger surface; widen `include` to it once this
+  // one is at zero and has stayed there.
+  "include": ["engine/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "engine/__tests__/**",
+    "engine/**/__tests__/**",
+    "engine/**/*.test.ts",
+    // Vendored copy of C:/Users/civer/cybernetics with its own tsconfig. Files the
+    // engine imports from it are still checked through the import.
+    "engine/cybernetics-core/**"
+  ]
+}

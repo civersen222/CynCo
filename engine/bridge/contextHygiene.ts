@@ -6,7 +6,7 @@
  * `redundantSigs`, together with the matching tool_result (by tool_use_id).
  * Keeps the most recent such exchange for continuity; inserts ONE marker.
  */
-type Msg = { role: string; content: any }
+type Msg = { role: 'user' | 'assistant' | 'system'; content: any }
 type SigOf = (toolName: string, input: any) => string | null
 
 const MARKER =

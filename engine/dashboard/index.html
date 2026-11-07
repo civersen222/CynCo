@@ -1604,7 +1604,7 @@ function handleEvent(event) {
     case 's5.decision': {
       var s5dec = {
         ts: new Date(),
-        decision: (event.contextAction || 'proceed') + (event.toolRestriction ? ' | tools: ' + event.toolRestriction : ''),
+        decision: (event.contextAction || 'proceed') + (event.toolRestriction ? ' | tools: ' + [].concat(event.toolRestriction).join(', ') : ''),
         agentId: 'S5',
         reason: event.reasoning || '',
       };

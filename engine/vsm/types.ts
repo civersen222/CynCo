@@ -95,6 +95,8 @@ export type GovernanceReport = {
   predictions: PredictionSnapshot
   s4: S4Snapshot
   heterarchy: HeterarchySnapshot
+  /** EMA of decode tok/s from the loop's measured turns (`setTokPerSec`); 0 until the first measured turn. The dashboard's speed gauge reads it. */
+  tokPerSec: number
 }
 
 export type GovernanceAlert = {

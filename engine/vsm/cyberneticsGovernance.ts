@@ -110,6 +110,9 @@ export const ALGEDONIC_WINDOW_TURNS = 20
 
 // ─── Cybernetics Governance Layer ─────────────────────────────
 
+/** tok/s samples kept for the model latency trend (`getLatencyTrend`). */
+const LATENCY_TREND_WINDOW = 10
+
 export class CyberneticsGovernance {
   // Real cybernetics components
   private varietyEngine: InstanceType<typeof variety.VarietyEngine>
@@ -200,6 +203,8 @@ export class CyberneticsGovernance {
   private _thinkingTokensLastTurn = 0
   private _s4ReflectionRanThisTurn = false
   private _lastTokPerSec = 0
+  /** Raw tok/s per measured model call, newest last; the latency trend is read off these. */
+  private tokPerSecSamples: number[] = []
   private lastVarietyRatio = 1.0
   private consecutiveUnstableCount = 0
   /** F165: cumulative alert count at each of the last 21 turn seals. */
@@ -394,12 +399,14 @@ export class CyberneticsGovernance {
     if (passed) {
       // Pleasure signal — goal achieved
       this.algedonicIntegration.recordToolResult('Verification', true, 0)
-      this.performanceMetrics.recordTaskCompletion(true)
+      this.performanceMetrics.recordTaskCompletion()
       console.log(`[vsm] Verification PASS → pleasure signal`)
     } else {
       // Pain signal — goal NOT achieved despite tools succeeding
       this.algedonicIntegration.recordToolResult('Verification', false, 0)
-      this.performanceMetrics.recordTaskCompletion(false)
+      // Not a completion: `recordTaskCompletion` takes no argument and only
+      // counts, so the `false` it used to be passed counted a failed
+      // verification into Beer's actuality (verificationAndHealth.test.ts).
       console.log(`[vsm] Verification FAIL → pain signal: ${details?.slice(0, 80)}`)
     }
   }
@@ -896,6 +903,8 @@ export class CyberneticsGovernance {
   /** Update tok/s from model calls. Uses exponential moving average to smooth out turn-to-turn variation. Only updates when there were actual output tokens. */
   setTokPerSec(tps: number, tokenCount: number): void {
     if (tokenCount > 0 && tps > 0) {
+      this.tokPerSecSamples.push(tps)
+      if (this.tokPerSecSamples.length > LATENCY_TREND_WINDOW) this.tokPerSecSamples = this.tokPerSecSamples.slice(-LATENCY_TREND_WINDOW)
       if (this._lastTokPerSec === 0) {
         this._lastTokPerSec = tps // first measurement
       } else {
@@ -934,10 +943,27 @@ export class CyberneticsGovernance {
     return recent.filter(t => t.success).length / recent.length
   }
 
-  private getLatencyTrend(): number {
-    const recent = this.toolHistory.slice(-10)
-    if (recent.length === 0) return 0
-    return recent.reduce((sum, t) => sum + t.latencyMs, 0) / recent.length
+  /**
+   * Model latency trend over the recent tok/s samples: the newer half against
+   * the older half. Decode speed down by a fifth is latency rising; up by a
+   * quarter is falling; fewer than four samples is no trend. This used to
+   * return the mean TOOL latency in milliseconds into a field typed
+   * 'stable' | 'rising' | 'falling', so rule W2 (`=== 'rising'`) could never
+   * fire in production — the reachability guard passed on a hand-written input
+   * (latencyTrend.test.ts).
+   */
+  private getLatencyTrend(): 'stable' | 'rising' | 'falling' {
+    const s = this.tokPerSecSamples
+    if (s.length < 4) return 'stable'
+    const half = Math.floor(s.length / 2)
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+    const older = mean(s.slice(0, half))
+    const newer = mean(s.slice(-half))
+    if (older <= 0) return 'stable'
+    const ratio = newer / older
+    if (ratio < 0.8) return 'rising'
+    if (ratio > 1.25) return 'falling'
+    return 'stable'
   }
 
   private _toolUsageProbabilities(recentTools: { name: string }[]): number[] {

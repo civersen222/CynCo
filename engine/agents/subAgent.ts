@@ -169,6 +169,21 @@ export class SubAgent {
         tools: undefined,
         provider: 'ollama' as any,
         apiKey: '',
+        // The provider is injected (`deps.getProvider`), so the serving fields
+        // below are never read on this path; they are here so the object is a
+        // whole LocalCodeConfig and not a partial one that type-checks by luck.
+        llamaServer: undefined,
+        modelPath: undefined,
+        modelFile: undefined,
+        runtime: undefined,
+        adapterUrl: undefined,
+        port: 0,
+        batchSize: 0,
+        gpuLayers: 0,
+        flashAttn: false,
+        threads: undefined,
+        noScouts: true,
+        approveAll: false,
       }
 
       const deps = {

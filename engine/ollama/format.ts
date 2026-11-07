@@ -132,7 +132,7 @@ export function fromOpenAIResponse(oai: {
   timings?: Record<string, unknown>
 }): CompletionResponse {
   if (!oai.choices || oai.choices.length === 0) {
-    return { content: [], model: oai.model, stopReason: 'error', usage: { inputTokens: 0, outputTokens: 0 } }
+    return { id: oai.id, model: oai.model, content: [], stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 0 } }
   }
   const choice = oai.choices[0]
   const content: ContentBlock[] = []

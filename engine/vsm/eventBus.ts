@@ -41,7 +41,6 @@ export function getEventSummary(maxEvents: number = 10): string[] {
   const recent = all.slice(-maxEvents)
   return recent.map(e => {
     const kind = e.payload.kind
-    const ts = e.timestamp.toMillis ? e.timestamp.toMillis() : Date.now()
     return `[${e.seq}] ${kind}`
   })
 }
