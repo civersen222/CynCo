@@ -52,6 +52,29 @@ export const COMFY_FENCE_REASON = 'pictures are made by the engine from RenderUI
  * argument — asks instead of running: the address is not a call, and the
  * user sees the command (review: an echo naming it was refused outright).
  */
+/**
+ * GLM review S2 (2026-11-06): the folder fence contains writes, not execution.
+ * `Write evil.py` inside the folder graded safe and `python evil.py` matched no
+ * risky pattern, so code the chat had just written ran with no card. In a
+ * project chat the user is present by definition, so running a program or
+ * script in the project asks. An inline one-liner the user can read whole in
+ * the tool row (`python -c "print(400*1.1)"`) stays as the classifier grades
+ * it, unless it reaches for the modules that leave the folder — the shell,
+ * the network, the filesystem.
+ */
+export const RUNS_CODE_REASON = 'runs a program or script in the project — code this chat may have just written; you decide'
+const INTERPRETERS = String.raw`(?:python3?|py|node|bun|deno|ruby|perl|php|bash|sh|zsh|pwsh|powershell|cmd|java|dotnet|npx|uv|make|cargo|go)(?:\.exe)?`
+/** Start of a command segment: the line, or after `;`, `&&`, `||`, `|`. */
+const SEG = String.raw`(?:^|[;&|]\s*)`
+const RUNS_SCRIPT = new RegExp(SEG + INTERPRETERS + String.raw`\s+(?:run\s+)?(?:-[-\w:]+\s+)*(?:-m\s+\S+|\S+\.(?:py|js|mjs|cjs|ts|sh|ps1|rb|pl|php|bat|cmd))\b`, 'i')
+const DIRECT_EXEC = new RegExp(SEG + String.raw`(?:&\s*)?\.{0,2}[\\/][^\s;&|]*\.(?:py|js|mjs|cjs|ts|sh|ps1|bat|cmd|exe)\b`, 'i')
+const INLINE_CODE = new RegExp(SEG + String.raw`(?:python3?|py|node|bun|deno|ruby|perl)\s+(?:-\w+\s+)*-[ce]\b`, 'i')
+const REACHES_OUT = /\b(?:subprocess|os\.(?:system|popen|remove|unlink|rename|environ)|socket|urllib|requests|http\.client|httpx|shutil|pathlib|child_process|require\(['"](?:fs|net|http|https|dns)['"]\)|open\()/i
+export function runsProjectCode(command: string): boolean {
+  if (RUNS_SCRIPT.test(command) || DIRECT_EXEC.test(command)) return true
+  return INLINE_CODE.test(command) && REACHES_OUT.test(command)
+}
+
 export const COMFY_MENTION_REASON = 'names the ComfyUI server — pictures are made by the engine from RenderUI Image prompts, and a project chat never drives ComfyUI itself'
 
 /**
@@ -178,8 +201,12 @@ export function gradeProjectCall(root: string, cwd: string, classify: Classifier
     if (fence?.level === 'dangerous') return fence
     if (isDownloadCommand(command) || /\bgit\s+clone\b/i.test(command)) return { level: 'risky', reason: 'downloads need your approval' }
     const level = classify(toolName, input)
+    if (level === 'dangerous') return { level, reason: describe(toolName, input, level) }
     // A command that merely names the server asks — unless the classifier already has a word on it.
     if (level === 'safe' && fence) return fence
+    // Running code in the project asks (S2) — after the classifier's refusals and the
+    // fence's more specific word, before the classifier's `safe`.
+    if (runsProjectCode(command)) return { level: 'risky', reason: RUNS_CODE_REASON }
     return { level, reason: level === 'safe' ? '' : describe(toolName, input, level) }
   }
   return { level: 'safe', reason: '' }

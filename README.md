@@ -310,8 +310,12 @@ Each project is one plain folder, five pieces (six once a chat has painted a pic
 Tool calls inside a project chat are graded, not approved by tier: a file write
 or read stays inside the project folder or is refused outright; a Bash command
 runs at once when it's safe, asks you first when it's risky — and *every*
-download asks, always, however safe it would otherwise look; anything
-dangerous is refused with its reason. There is no `/undo` and no workspace
+download asks, always, however safe it would otherwise look, as does anything
+that runs a program or script in the project (code the chat may have just
+written); anything dangerous is refused with its reason. In every mode, the
+engine's own token file is off limits to the model, and SSH keys, `.env` files
+and system credential files need your yes before any tool touches them
+(`docs/decisions/2026-11-06-untrusted-content-and-secret-paths.md`). There is no `/undo` and no workspace
 snapshot inside a project chat — the project's own invisible git history is the
 record instead.
 

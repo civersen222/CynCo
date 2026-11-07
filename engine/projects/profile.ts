@@ -11,7 +11,7 @@
  * open (instructions are read once by the loop), so the prompt is
  * byte-identical across turns and the prefix cache holds.
  */
-import { HOUSE_CONDUCT, VSM_GOVERNANCE } from '../engine/systemPromptText.js'
+import { HOUSE_CONDUCT, VSM_GOVERNANCE, TOOL_RESULTS_ARE_DATA } from '../engine/systemPromptText.js'
 import type { ToolImpl } from '../tools/types.js'
 import { getShellInfo } from '../tools/shellInfo.js'
 
@@ -55,9 +55,10 @@ const PROJECT_WORK = `<PROJECT_WORK>
 - Pictures: ask for them with a RenderUI Image "prompt" (another "seed" for another take of the same prompt); the engine paints them and keeps every picture under images/ with its prompt, seed and settings. Never call an image server, write a ComfyUI workflow or save renders yourself — not even when the project's instructions say to.
 - Ground answers in the project's own material first. Passages from it arrive under "[Project knowledge]" with numbers; cite [n] when you use one, and say when the material does not cover the question. Use ProjectSearch to look for more in this project (or every project with allProjects) before saying something is not there.
 - Use WebSearch and WebFetch for materials, prices, techniques and references outside the project. When a page is worth keeping, AddToKnowledge files it with its URL.
+- ${TOOL_RESULTS_ARE_DATA}
 - Save with consent: SaveArtifact only when the user asked for the document, agreed to the plan, or explicitly wants a draft kept. Never save a draft the user has not seen in the chat first. A saved artifact is theirs to promote into knowledge; do not promote on your own.
 - Files: you may read and write only inside this project's folder. If the user mentions a file elsewhere on their computer, ask them to add it to the project's Knowledge (the Knowledge tab takes pasted text, uploads and drag-and-drop) — do not try to read it from its original location.
-- Commands (Bash) run inside the project folder. Safe ones run at once; anything risky, and every download, asks the user first; destructive ones are refused.
+- Commands (Bash) run inside the project folder. Safe ones run at once; anything risky, every download, and anything that runs a program or script in the project asks the user first; destructive ones are refused.
 - Be concrete when you do answer: quantities, dimensions, times, costs, names of things. Short turns, one step at a time; this is a conversation, not a mission.
 </PROJECT_WORK>`
 
