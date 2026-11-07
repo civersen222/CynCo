@@ -46,6 +46,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     continue-on-error: true
+    env:
+      # tools/git.test.ts commits in a scratch repo; a runner has no identity.
+      GIT_AUTHOR_NAME: cynco-ci
+      GIT_AUTHOR_EMAIL: ci@cynco.invalid
+      GIT_COMMITTER_NAME: cynco-ci
+      GIT_COMMITTER_EMAIL: ci@cynco.invalid
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -61,7 +67,8 @@ jobs:
       # The Grep tool shells out to ripgrep; the runner image does not ship it.
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
       - run: npm ci
-      - run: python -m pip install -q -e "./tui[dev]"
+      # scripts/__tests__ run scripts/cynco-outcome-model.py, which imports numpy and sklearn.
+      - run: python -m pip install -q -e "./tui[dev]" numpy scikit-learn
       - name: engine suite (vitest)
         run: npx vitest run 2>&1 | tee vitest-linux.txt; exit "${PIPESTATUS[0]}"
       - name: TUI suite (pytest)

@@ -16,7 +16,15 @@ import { classifyRisk, describeRisk } from '../../bridge/guardianRules.js'
  * the modules that leave the folder: the shell, the network, the filesystem.
  */
 const root = mkdtempSync(join(tmpdir(), 'cynco-runs-code-'))
-afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 5 }))
+// The ComfyUI fence reads the server's address from the environment. Set it
+// here, as binding.test.ts does: on the owner's box the variable is exported,
+// and the fence pin below passed there and failed on the first Linux CI run.
+const prevComfy = process.env.LOCALCODE_COMFYUI_URL
+process.env.LOCALCODE_COMFYUI_URL = 'http://192.168.0.47:8188'
+afterAll(() => {
+  if (prevComfy === undefined) delete process.env.LOCALCODE_COMFYUI_URL; else process.env.LOCALCODE_COMFYUI_URL = prevComfy
+  rmSync(root, { recursive: true, force: true, maxRetries: 5 })
+})
 const grade = (command: string) => gradeProjectCall(root, root, classifyRisk, describeRisk, 'Bash', { command })
 
 describe('project chat: running code asks', () => {
