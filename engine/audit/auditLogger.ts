@@ -79,7 +79,7 @@ class AuditLoggerImpl {
   }
 
   /** Append an entry to a named stream. fsync after every write. */
-  log(stream: StreamName, entry: Omit<AuditEntry, 'ts' | 'session_id' | 'project_id'>): void {
+  log(stream: StreamName, entry: { type: string; [key: string]: unknown }): void {
     if (!this.initialized || !this.dir) return
 
     const full: AuditEntry = {

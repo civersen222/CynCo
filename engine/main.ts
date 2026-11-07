@@ -30,7 +30,7 @@ if (process.platform === 'win32') {
 
 import { loadConfig } from './config.js'
 import { LocalCodeWSServer } from './bridge/server.js'
-import type { TUICommand } from './bridge/protocol.js'
+import type { TUICommand, MCPServerInfo } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
 import { governanceCapabilities } from './bridge/capabilities.js'
 import { markerChannelSealLine } from './bridge/contractAutoCreate.js'
@@ -57,11 +57,11 @@ import { ImageService } from './imagegen/service.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
-async function discoverMcpServers(): Promise<{ name: string; status: string }[]> {
+async function discoverMcpServers(): Promise<MCPServerInfo[]> {
   const fs = require('fs')
   const path = require('path')
   const os = require('os')
-  const servers: { name: string; status: string }[] = []
+  const servers: MCPServerInfo[] = []
 
   // Check user-level and project-level MCP config files
   const configPaths = [
@@ -1249,11 +1249,11 @@ async function handleCommand(command: TUICommand): Promise<void> {
         await onSessionEnd(baseDir, project, {
           goal: handoffData.goal,
           now: handoffData.now,
-          status: handoffData.status as any,
+          status: handoffData.status,
           model: handoffData.model,
           what_was_done: handoffData.what_was_done,
           files_modified: handoffData.files_modified,
-          regulator_fidelity: (handoffData as any).regulator_fidelity ?? null,
+          regulator_fidelity: handoffData.regulator_fidelity ?? null,
         })
         console.log('[localcode] Handoff written successfully')
       } catch (err) {

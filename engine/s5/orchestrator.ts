@@ -29,6 +29,8 @@ export type OrchestratorInput = {
   productivityRatio?: number
   recommendedToolMode?: string | null
   heterarchyAuthority?: 's3' | 's4' | 's5' | null
+  /** Tools the trust scorer has demoted this session (executor.getToolScorer().getDemotedTools()). */
+  demotedTools?: string[]
   promptDifficulty?: DifficultyLevel
   /** P4.5 Phase 3: STATE half of the surfacing triple. taskClass = keyword-classified
    *  request type; loadedTools = currently-loaded tool names. Both feed the P1
@@ -96,7 +98,7 @@ export class S5Orchestrator {
       infoGain: input.governance.infoGain,
       progressRate: input.governance.progressRate,
       explorationState: input.governance.explorationState,
-      demotedTools: [],
+      demotedTools: input.demotedTools ?? [],
       promptDifficulty: input.promptDifficulty ?? 'unknown',
       taskClass: input.taskClass ?? null,
       loadedTools: input.loadedTools ?? [],

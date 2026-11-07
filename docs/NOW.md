@@ -43,6 +43,7 @@ merge of PR #173 on GitHub and, once the owner is satisfied, making the variable
 
 ## Backlog (worth doing, not started)
 
+- **GLM review triage (2026-11-06).** `docs/reviews/2026-11-06-glm5-engineering-review-triage.md` re-checks every finding of the 2026-10-30 GLM 5.3 review against HEAD and orders the work; A1 (strict type-check, F185) is done. Next in that order: S4+S1+S2 as one slice (untrusted-content delimiters, default-sealed `tokens.json`/`~/.ssh`/`.env`, project-chat Bash asks), then the Ollama `resp.ok` fix with the doc quick wins, then CI. Also found on the way: `package-lock.json` is out of sync with `package.json` (`fflate`, `unpdf` missing), so `npm ci` fails — CI cannot start until `npm install` refreshes it.
 - **Dynasty runbook mission (2026-10-27).** CynCo is now the default runner of the owner's MFL team through `C:/Users/civer/fantasyman/dynasty` (per-mission `allowedTools`/`cwd` landed for it; `docs/liveness-setup.md` -> "Dynasty runbook mission"). In the smoke run the model kept going after its first command said `skip:` (the runbook's `done` now refuses in that case). A daemon-side way to end a one-shot run when the prompt's first command says stop would save a model turn per idle trigger.
 - `CYNCO.md` still carries an architecture sketch that trails `docs/MANUAL.md`; decide whether it
   stays a conventions file only.

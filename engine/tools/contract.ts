@@ -133,7 +133,7 @@ export class ContractState {
     // session; a gate that read only the live contract would let one trivial
     // final task launder the learnings of the failed tasks before it. See
     // memory/promotionGate.ts.
-    if (this.assertions.length > 0) sessionContracts.record(verdictOf(this))
+    if (this.assertions.length > 0) sessionContracts.record(verdictOf({ getOrigin: () => this.getOrigin(), assertions: this.assertions }))
     this.title = title
     this.brief = brief
     this.assertions = assertionTexts.map(a =>

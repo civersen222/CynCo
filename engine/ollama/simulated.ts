@@ -99,7 +99,7 @@ export function extractSimulatedToolCalls(text: string): ExtractToolCallsResult 
       toolCalls.push({
         id: `sim_${randomUUID()}`,
         name: parsed.name,
-        input: parsed.arguments ?? {},
+        input: isRecord(parsed.arguments) ? parsed.arguments : {},
       })
     }
     // Remove the tool call from the remaining text
@@ -384,6 +384,10 @@ function parseArgValue(raw: string): unknown {
 }
 
 // ─── JSON Repair ─────────────────────────────────────────────────
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
 
 function tryParseJSON(str: string): Record<string, unknown> | null {
   try {

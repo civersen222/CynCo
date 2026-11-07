@@ -80,4 +80,4 @@ An inconclusive benchmark is not a reason to remove something useful, and a theo
 
 ## Build / test
 
-`bun engine/main.ts` runs the engine (dashboard on 9161). `npx vitest run` is the engine suite (`bun:test` imports are aliased); `npm run audit:wiring` is the post-change guard set (protocol coverage, empty-catch ratchet, README env inventory, package docs); `cd tui && pytest` for the TUI. Missions: `scripts/dispatch-mission.sh <brief> <marker> <cwd> <timeout-s> "<check-cmd>"`.
+`bun engine/main.ts` runs the engine (dashboard on 9161). `npx vitest run` is the engine suite (`bun:test` imports are aliased); `npm run typecheck` is the strict type-check of the engine's production code (root `tsconfig.json`; F185 is why it exists); `npm run audit:wiring` is the post-change guard set (type-check, protocol coverage, empty-catch ratchet, README env inventory, package docs); `cd tui && pytest` for the TUI. Missions: `scripts/dispatch-mission.sh <brief> <marker> <cwd> <timeout-s> "<check-cmd>"`.

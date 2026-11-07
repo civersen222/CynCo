@@ -738,6 +738,33 @@ export type SessionTokenStatsEvent = {
   unmeasuredTurns: number
 }
 
+/**
+ * S5's decision for a turn — the 9161 dashboard S5 panel and the ledger
+ * collector (scripts/cynco-ledger.mjs s5Decisions) read it. `toolRestriction`
+ * and `modelSwitch` are the decision's `tools` and `model`: the frame keeps the
+ * names its readers already use. Built by s5/decisionEvent.ts at both emit sites.
+ */
+export type S5DecisionEvent = {
+  type: 's5.decision'
+  reasoning: string
+  contextAction: 'none' | 'compact' | 'warn'
+  toolRestriction: string[] | null
+  modelSwitch: string | null
+  ruleIds: string[]
+  enforced: boolean
+  authority: 'earned' | 'advisory' | 'legacy'
+  /** F157: 'stuck-reeval' for the stuck-loop live re-evaluation; absent for the per-message decision. */
+  source?: 'stuck-reeval'
+  timestamp: number
+}
+
+/** One recorded trajectory turn (training/trajectoryRecorder.ts), for the dashboard's training panel. */
+export type TrajectoryTurnEvent = {
+  type: 'trajectory.turn'
+  taskId: string | null
+  turnIdx: number
+}
+
 export type EngineEvent =
   | SessionReadyEvent
   | SessionErrorEvent
@@ -793,6 +820,8 @@ export type EngineEvent =
   | ProjectIngestEvent
   | UiRenderEvent
   | UiImageEvent
+  | S5DecisionEvent
+  | TrajectoryTurnEvent
 
 // ─── TUI → Engine Commands ─────────────────────────────────────
 
@@ -865,6 +894,11 @@ export type SlashCommand = {
 
 export type AbortCommand = {
   type: 'abort'
+}
+
+/** The TUI's clean shutdown (tui/localcode_tui/bridge.py send_session_end); main.ts writes the continuity handoff on it. */
+export type SessionEndCommand = {
+  type: 'session.end'
 }
 
 export type FileOpenCommand = {
@@ -974,6 +1008,7 @@ export type TUICommand =
   | AskAnswerCommand
   | SlashCommand
   | AbortCommand
+  | SessionEndCommand
   | FileOpenCommand
   | ConfigUpdateCommand
   | ConfigGetCommand
