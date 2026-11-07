@@ -29,7 +29,10 @@ describe('gradeProjectCall', () => {
     expect(out.level).toBe('dangerous')
     expect(out.reason).toMatch(/outside the project folder/)
     expect(out.reason).toContain('other-project')
-    expect(grade('Grep', { pattern: 'x', path: 'C:/Windows' }).level).toBe('dangerous')
+    // An absolute path outside the root. `C:/Windows` is only that on Windows;
+    // on Linux it is a relative path and resolves INSIDE the root.
+    const elsewhere = process.platform === 'win32' ? 'C:/Windows' : '/etc'
+    expect(grade('Grep', { pattern: 'x', path: elsewhere }).level).toBe('dangerous')
     expect(grade('Glob', { pattern: '**/*.md' }).level).toBe('safe')
   })
   it('a Glob pattern that climbs out or is absolute is dangerous, naming the pattern (final review I3)', () => {

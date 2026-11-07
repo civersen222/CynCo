@@ -22,17 +22,20 @@ function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
 }
 
 
-// Distinct from bridge/server.test.ts (19161) and dashboard/security.test.ts
-// (19171-19173) so parallel vitest workers never collide on a bound port.
-const PORT = 19181
-const BASE = `http://localhost:${PORT}`
+// Every server here asks for port 0 and reads the bound port back with
+// getPort() once it is listening: a literal port is shared with whichever other
+// test file picked the same number, and the loser walks to the next port and
+// times out (T7). Only the port-walking tests at the end name a port, because
+// squatting one is what they test.
+let BASE = ''
 
 let server: DashboardServer
 
 beforeAll(async () => {
-  server = new DashboardServer({ port: PORT, tokens: _tokens })
+  server = new DashboardServer({ port: 0, tokens: _tokens })
   // Wait for the server to be listening
   await new Promise(r => setTimeout(r, 100))
+  BASE = `http://localhost:${server.getPort()}`
 })
 
 afterAll(() => {
@@ -184,7 +187,7 @@ describe('POST /config/engine', () => {
 
 describe('WebSocket broadcast', () => {
   it('sends events to connected clients', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve()
       ws.onerror = (e) => reject(e)
@@ -219,7 +222,7 @@ describe('WebSocket broadcast', () => {
     // brain.tier fires once at engine startup, before any browser connects
     server.broadcast({ type: 'brain.tier', tier: 'live', layers: [24, 32], layer: 40 } as never)
 
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
     const received: string[] = []
     ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
     await new Promise<void>((resolve, reject) => {
@@ -241,7 +244,7 @@ describe('WebSocket broadcast', () => {
   it('does not replay non-whitelisted event types', async () => {
     server.broadcast({ type: 'stream.token', text: 'ephemeral' })
 
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
     const received: string[] = []
     ws.onmessage = (event) => { received.push(typeof event.data === 'string' ? event.data : event.data.toString()) }
     await new Promise<void>((resolve, reject) => {
@@ -349,8 +352,8 @@ describe('POST /config/tools', () => {
 // ── getPort() ─────────────────────────────────────────────────────
 
 describe('getPort()', () => {
-  it('returns the configured port', () => {
-    expect(server.getPort()).toBe(PORT)
+  it('returns the bound port, not the 0 that was asked for', () => {
+    expect(server.getPort()).toBeGreaterThan(0)
   })
 })
 
@@ -358,7 +361,7 @@ describe('getPort()', () => {
 
 describe('integration: event flow', () => {
   it('governance.status event reaches WS client', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
     const received: any[] = []
 
     await new Promise<void>((resolve, reject) => {
@@ -386,7 +389,7 @@ describe('integration: event flow', () => {
   })
 
   it('tool.start + tool.complete flow', async () => {
-    const ws = new WebSocket(`ws://localhost:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
     const received: any[] = []
 
     await new Promise<void>((resolve, reject) => {
@@ -421,20 +424,20 @@ describe('integration: event flow', () => {
  * difference between inferring and asking.
  */
 describe('/api/run — is the turn still open', () => {
-  const RUN_PORT = 19182
-  const RUN_BASE = `http://localhost:${RUN_PORT}`
+  let RUN_BASE = ''
   let processing = false
   let runServer: DashboardServer
   let bareServer: DashboardServer
 
   beforeAll(async () => {
     runServer = new DashboardServer({
-      port: RUN_PORT,
+      port: 0,
       tokens: _tokens,
       deps: { getRunState: () => ({ processing }) },
     })
-    bareServer = new DashboardServer({ port: RUN_PORT + 6, tokens: _tokens })
+    bareServer = new DashboardServer({ port: 0, tokens: _tokens })
     await new Promise(r => setTimeout(r, 100))
+    RUN_BASE = `http://localhost:${runServer.getPort()}`
   })
 
   afterAll(() => {
@@ -455,7 +458,7 @@ describe('/api/run — is the turn still open', () => {
     // The caller has to be able to tell "the loop is idle" from "this engine
     // cannot say". Collapsing them is the F57 mistake one layer down: the
     // driver would read a missing answer as permission to grade.
-    const res = await authFetch(`http://localhost:${RUN_PORT + 6}/api/run`)
+    const res = await authFetch(`http://localhost:${bareServer.getPort()}/api/run`)
     expect(res.status).toBe(200)
     expect(await res.json()).toBeNull()
   })
@@ -479,8 +482,7 @@ describe('/api/run — is the turn still open', () => {
  * sessions to 1 live one — so the label matters as much as the row.
  */
 describe('GET /api/sessions', () => {
-  const SESS_PORT = 19191
-  const SESS_BASE = `http://localhost:${SESS_PORT}`
+  let SESS_BASE = ''
   let sessServer: DashboardServer
   let currentSessionId = 'sess-live'
 
@@ -499,7 +501,7 @@ describe('GET /api/sessions', () => {
 
   beforeAll(async () => {
     sessServer = new DashboardServer({
-      port: SESS_PORT,
+      port: 0,
       tokens: _tokens,
       deps: {
         getGovernance: () => ({
@@ -509,6 +511,7 @@ describe('GET /api/sessions', () => {
       } as any,
     })
     await new Promise(r => setTimeout(r, 100))
+    SESS_BASE = `http://localhost:${sessServer.getPort()}`
   })
 
   afterAll(() => { sessServer.stop() })
@@ -546,7 +549,7 @@ describe('GET /api/sessions', () => {
 
 // Distinct from every other port range in this file so parallel workers cannot
 // collide on the block this suite deliberately occupies.
-const WALK_PORT = 19241
+const WALK_PORT = 19251
 
 describe('port walking', () => {
   // The caller passes `wsServer.port + 1`, which is a wish rather than a free
@@ -669,12 +672,11 @@ describe('GET /api/mission', () => {
 
 // ── /api/mission never blocks the engine on a slow git (F144) ─────────────────
 describe('GET /api/mission with a hung git', () => {
-  const HUNG_PORT = 19195
   let hungServer: DashboardServer
 
   beforeAll(async () => {
     hungServer = new DashboardServer({
-      port: HUNG_PORT,
+      port: 0,
       tokens: _tokens,
       // A git that never answers: the old execFileSync path froze the whole
       // engine for its 10 s timeout on every poll (726 times in C7 wave 2).
@@ -698,7 +700,7 @@ describe('GET /api/mission with a hung git', () => {
     let ticked = false
     const timer = setTimeout(() => { ticked = true }, 200)   // fires only if the loop is free during the request
     const t0 = Date.now()
-    const res = await authFetch(`http://localhost:${HUNG_PORT}/api/mission`)
+    const res = await authFetch(`http://localhost:${hungServer.getPort()}/api/mission`)
     const ms = Date.now() - t0
     clearTimeout(timer)
     const m = await res.json()

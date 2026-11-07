@@ -235,7 +235,9 @@ describe('Bash tool — redirecting the model to the purpose-built tool', () => 
     const file = join(dir, 'sample.py')
     writeFileSync(file, 'def alpha():\n    return 1\n')
 
-    const result = await bashTool.execute({ command: `Get-Content "${file}"` }, dir)
+    // PowerShell on Windows, bash elsewhere; toolHints' READ_COMMANDS knows both.
+    const read = process.platform === 'win32' ? 'Get-Content' : 'cat'
+    const result = await bashTool.execute({ command: `${read} "${file}"` }, dir)
 
     expect(result.isError).toBe(false)
     expect(result.output).toContain('Read tool')
