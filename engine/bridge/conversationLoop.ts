@@ -41,7 +41,6 @@ import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleAuthority, ruleVerdictsPath, isEnforced, recommendationAutoApplyMs } from '../s5/ruleAuthority.js'
-import { SubAgentRunner } from '../agents/runner.js'
 import { s5DecisionEvent } from '../s5/decisionEvent.js'
 import { toPerformanceHealth } from '../vsm/performanceMetrics.js'
 import type { Message as CanonicalMessage } from '../types.js'
@@ -529,7 +528,6 @@ export class ConversationLoop {
   // Phase 4: per-rule earned S5 authority, read once per session from the
   // campaign runner's rule-verdict file (legacy when there is none).
   private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
-  private agentRunner: SubAgentRunner
   private s2: S2Coordinator
   private runningAgents = new Map<string, SubAgent>()
   private agentResults = new Map<string, SubAgentResult>()
@@ -751,11 +749,6 @@ export class ConversationLoop {
     // under a pin, so this is the only way they can load.
     if (opts.allowedTools) this.loadedTools.surface(opts.allowedTools.filter(n => ALL_TOOLS.some(t => t.name === n)))
     this.getBrain = opts.getBrain
-    this.agentRunner = new SubAgentRunner(async (task) => {
-      // Simplified sub-agent execution — full execution comes later
-      return `[SubAgent completed] ${task.task}`
-    })
-
     this.s2 = new S2Coordinator({
       pollGpuUtil: async () => {
         try {

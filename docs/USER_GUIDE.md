@@ -26,8 +26,9 @@ There are two ways to work:
 
 1. **A model backend**, one of:
    - **Ollama** (simplest): install from [ollama.com](https://ollama.com), then
-     pull a model. Recommended: `ollama pull qwen3.6`. For code indexing also
-     `ollama pull nomic-embed-text`.
+     pull a model. Recommended: `ollama pull qwen3.6`. For semantic code search
+     also `ollama pull jina-code-embeddings-0.5b`; without it CynCo falls back to
+     `nomic-embed-text`, then to keyword search, and says so on `context.status`.
    - **llama.cpp** (`llama-server`) with a local GGUF file — see MAXIMIZING.md.
 2. **Bun** (the engine runtime).
 3. **Python 3.10+** (the TUI).
@@ -266,7 +267,8 @@ The security boundary and troubleshooting: README → Local tokens → Phone acc
   9160 was busy; restart cleanly. On Windows, kill stray engine processes rather
   than reconnecting to an old one.
 - **Slow first response** — the project is being indexed; subsequent queries are
-  faster. `nomic-embed-text` must be installed for indexing.
+  faster. Semantic search wants `jina-code-embeddings-0.5b` (fallback
+  `nomic-embed-text`); with neither installed, search runs on keywords only.
 - **Agent seems stuck** — give it time; long Read/search sequences are normal
   work, not a hang. Governance will nudge or restrict tools if it truly loops.
 - **Can't read the engine console** — the TUI owns the terminal; check log files

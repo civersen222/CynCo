@@ -2,7 +2,7 @@
  * CynCo engine entry point.
  *
  * Usage:
- *   LOCALCODE_MODEL=qwen3:8b bun engine/main.ts
+ *   LOCALCODE_MODEL=qwen3.6 bun engine/main.ts
  */
 
 // Ensure ripgrep is in PATH on Windows (winget installs it but Bun may not inherit updated PATH)

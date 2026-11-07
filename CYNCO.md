@@ -21,7 +21,7 @@ The TypeScript engine lives in `engine/`. The Python TUI lives in `tui/`.
 cd tui && python -m localcode_tui.app        # Launches TUI + engine
 
 # --- Engine only (headless WebSocket server) ---
-LOCALCODE_MODEL=qwen3:8b bun engine/main.ts
+LOCALCODE_MODEL=qwen3.6 bun engine/main.ts
 
 # --- Tests ---
 cd tui && python -m pytest tests/            # TUI tests
