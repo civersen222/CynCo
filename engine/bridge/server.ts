@@ -42,13 +42,15 @@ export class LocalCodeWSServer {
     this.start()
   }
 
-  get port(): number { return this._port }
+  /** The port actually bound: with `port: 0` the OS picks one, and callers (the dashboard's `+ 1`, tests) need the real number. */
+  get port(): number { return this.server?.port || this._port }
   get connected(): boolean { return this._connected }
   getHostname(): string { return this._hostname }
 
   private start() {
-    // Try the requested port, then fall back to +1, +2 if it's stuck in TIME_WAIT/CLOSE_WAIT
-    const portsToTry = [this._port, this._port + 1, this._port + 2]
+    // Try the requested port, then fall back to +1, +2 if it's stuck in TIME_WAIT/CLOSE_WAIT.
+    // Port 0 means "OS, pick one" and never needs the walk.
+    const portsToTry = this._port === 0 ? [0] : [this._port, this._port + 1, this._port + 2]
     let lastError: any
     for (const port of portsToTry) {
       try {

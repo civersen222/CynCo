@@ -39,10 +39,11 @@ afterEach(async () => {
 })
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }))
 
-async function connect(port: number): Promise<WebSocket> {
-  server = new LocalCodeWSServer({ port, tokens, onCommand: () => { accepted.push(true) } })
+async function connect(): Promise<WebSocket> {
+  // port 0: the OS picks, `server.port` reports it (T7 — no literal to collide on).
+  server = new LocalCodeWSServer({ port: 0, tokens, onCommand: () => { accepted.push(true) } })
   await new Promise(r => setTimeout(r, 50))
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
+  const ws = new WebSocket(`ws://127.0.0.1:${server.port}`, {
     headers: { Authorization: `Bearer ${BRIDGE}` },
   })
   await new Promise((resolve, reject) => {
@@ -76,7 +77,7 @@ function sendAndAwait(ws: WebSocket, frame: unknown, ms = 400): Promise<any | nu
 describe('a refused command frame reaches the sender', () => {
   it('accepts the exact frame that hung Wave 8 — assertions as {text, command}', async () => {
     accepted = []
-    const ws = await connect(19240)
+    const ws = await connect()
     // Verbatim the shape scripts/cynco-mission-driver.mjs builds when a mission
     // carries a held-out gate. The driver and the schema drifted apart once
     // (F32) and nothing in the suite noticed, because the driver is a script and
@@ -97,7 +98,7 @@ describe('a refused command frame reaches the sender', () => {
 
   it('sends session.error naming the reason when a frame is refused', async () => {
     accepted = []
-    const ws = await connect(19241)
+    const ws = await connect()
     const reply = await sendAndAwait(ws, { type: 'user.message', text: 42 })
     ws.close()
 
@@ -112,7 +113,7 @@ describe('a refused command frame reaches the sender', () => {
 
   it('answers a frame that is not JSON at all', async () => {
     accepted = []
-    const ws = await connect(19242)
+    const ws = await connect()
     const reply = await new Promise<any | null>(resolve => {
       const timer = setTimeout(() => resolve(null), 400)
       ws.on('message', (d: Buffer) => { clearTimeout(timer); resolve(JSON.parse(d.toString())) })
@@ -129,7 +130,7 @@ describe('a refused command frame reaches the sender', () => {
     // Guard the guard. Without this, a server that replied `session.error` to
     // everything would pass every test above.
     accepted = []
-    const ws = await connect(19243)
+    const ws = await connect()
     const reply = await sendAndAwait(ws, { type: 'abort' })
     ws.close()
 

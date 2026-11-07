@@ -20,13 +20,12 @@ function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
 }
 
 
-const PORT = 19191
 describe('dashboard chat command path', () => {
   it('forwards a parsed WS command to deps.onCommand', async () => {
     const received: any[] = []
-    const server = new DashboardServer({ port: PORT, deps: { onCommand: (c) => received.push(c) }, tokens: _tokens })
+    const server = new DashboardServer({ port: 0, deps: { onCommand: (c) => received.push(c) }, tokens: _tokens })
     await new Promise(r => setTimeout(r, 100))
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${server.getPort()}/ws?token=${_ADMIN}`)
     await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error('x')) })
     ws.send(JSON.stringify({ type: 'vibe.start', mode: 'new', description: 'hi' }))
     await new Promise(r => setTimeout(r, 150))
@@ -42,9 +41,9 @@ describe('dashboard chat command path', () => {
     // `approvalGate` short-circuits on, and `Bash`'s tier:'approval' is the
     // only thing in front of an unsandboxed exec().
     const received: any[] = []
-    const server = new DashboardServer({ port: PORT + 1, deps: { onCommand: (c) => received.push(c) }, tokens: _tokens })
+    const server = new DashboardServer({ port: 0, deps: { onCommand: (c) => received.push(c) }, tokens: _tokens })
     await new Promise(r => setTimeout(r, 100))
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT + 1}/ws?token=${_ADMIN}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${server.getPort()}/ws?token=${_ADMIN}`)
     await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error('x')) })
     ws.send(JSON.stringify({ type: 'command', command: '/approve-all' }))
     ws.send(JSON.stringify({ type: 'command', command: '/quit' }))
@@ -62,9 +61,9 @@ describe('dashboard chat command path', () => {
     // thinking" and waited out its whole timeout. The dashboard entrance had the
     // identical shape. A browser cannot read this process's stdout at all.
     return (async () => {
-      const server = new DashboardServer({ port: PORT + 2, deps: { onCommand: () => {} }, tokens: _tokens })
+      const server = new DashboardServer({ port: 0, deps: { onCommand: () => {} }, tokens: _tokens })
       await new Promise(r => setTimeout(r, 100))
-      const ws = new WebSocket(`ws://127.0.0.1:${PORT + 2}/ws?token=${_ADMIN}`)
+      const ws = new WebSocket(`ws://127.0.0.1:${server.getPort()}/ws?token=${_ADMIN}`)
       await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error('x')) })
       const seen: any[] = []
       ws.onmessage = (e: any) => { try { seen.push(JSON.parse(e.data)) } catch {} }

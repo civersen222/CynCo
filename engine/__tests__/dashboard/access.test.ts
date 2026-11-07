@@ -47,7 +47,7 @@ describe('hostRefusal (every listener)', () => {
     expect(hostRefusal('evil.example:9161', 'local', '127.0.0.1')).toMatch(/does not name this machine/)
   })
   it('a remote client may use an IP literal, the listener address, or a MagicDNS name', () => {
-    for (const h of ['100.101.192.101:9161', '100.101.192.101', '127.0.0.1:19190', '[fd7a:115c:a1e0::c039:c066]:9161', 'longdongsilver.tail05397a.ts.net:9161', 'PC.Tail05397a.TS.NET']) {
+    for (const h of ['100.101.192.101:9161', '100.101.192.101', '127.0.0.1:9190', '[fd7a:115c:a1e0::c039:c066]:9161', 'longdongsilver.tail05397a.ts.net:9161', 'PC.Tail05397a.TS.NET']) {
       expect(hostRefusal(h, 'remote', '100.101.192.101'), h).toBeNull()
     }
     expect(hostRefusal(null, 'remote', '100.101.192.101')).toBeNull()
@@ -61,7 +61,7 @@ describe('hostRefusal (every listener)', () => {
 
 describe('loopbackHostRefusal', () => {
   it('this machine, by any of its loopback names, with or without a port, or no Host at all', () => {
-    for (const h of ['localhost:9161', 'localhost', '127.0.0.1:9161', '127.0.0.1', '[::1]:9161', '[::1]', 'LOCALHOST:19190', '127.5.5.5:1']) {
+    for (const h of ['localhost:9161', 'localhost', '127.0.0.1:9161', '127.0.0.1', '[::1]:9161', '[::1]', 'LOCALHOST:9190', '127.5.5.5:1']) {
       expect(loopbackHostRefusal(h), h).toBeNull()
     }
     expect(loopbackHostRefusal(null)).toBeNull()
