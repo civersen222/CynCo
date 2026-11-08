@@ -23,7 +23,7 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 - **`MissionRunner`** (`missionRunner.ts:38`) — the class whose `tick()` (called every 30s from `main.ts`) drives the whole per-mission scheduling/firing/notification loop.
 - **`runGovernedLoop`** (`oneShot.ts:148`) — runs one prompt through the real `ConversationLoop`, called by both `runOneShotTask` and `tradeScan.ts`'s final ranking pass.
 - **`runOneShotTask`** (`oneShot.ts:209`) — the function `engine/main.ts` invokes when `--run-task` is passed; reads the task file, dispatches to `runGovernedLoop` or `runTradeScan`, writes the outcome.
-- **`TaskRunner`** (`taskRunner.ts:95`) — its `run()` method GPU-guards, spawns the child engine process, enforces the timeout, and reads back the outcome.
+- **`TaskRunner`** (`taskRunner.ts:98`) — its `run()` method GPU-guards, spawns the child engine process, enforces the timeout, and reads back the outcome.
 - **`isGpuBusy`** (`taskRunner.ts:34`) — nvidia-smi + tasklist heuristic; both probes fail open (can't tell → let the run proceed).
 - **`MissionLedger`** (`missionLedger.ts:14`) — loads/saves per-mission `state.json`/`runs.jsonl`; `saveState()` writes atomically via tmp-file rename.
 - **`evaluateTrigger` / `computeNextFire`** (`scheduler.ts:127`, `scheduler.ts:98`) — pure trigger arithmetic consumed by `MissionRunner.tick()`.
@@ -34,7 +34,7 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 1. `main.ts` loads every `<mission-id>/mission.json` under `CYNCO_MISSIONS_DIR`, builds a `MissionLedger` + `TaskRunner` per mission, and starts a 30s `setInterval` calling `runner.tick()` on each `MissionRunner`.
 2. `MissionRunner.tick()` (`missionRunner.ts:61`) calls `evaluateTrigger` (`scheduler.ts:127`) per trigger; a due trigger's `nextFire` is persisted to `state.json` *before* firing, then `fire()` (`missionRunner.ts:102`) runs.
 3. `fire()` optionally runs the `mfl-delta` precheck, builds mission context (goal + last 3 runs + roster snapshots), and calls `deps.runTask(input)` — in production this is `TaskRunner.run()`.
-4. `TaskRunner.run()` (`taskRunner.ts:102`) checks `isGpuBusy()`; if free, it writes the task file (`taskFile.ts:10`) and spawns `bun engine/main.ts --run-task <path>` as a child process (ntfy env vars stripped), enforcing `timeoutMs` with a hard kill.
+4. `TaskRunner.run()` (`taskRunner.ts:105`) checks `isGpuBusy()`; if free, it writes the task file (`taskFile.ts:10`) and spawns `bun engine/main.ts --run-task <path>` as a child process (ntfy env vars stripped), enforcing `timeoutMs` with a hard kill.
 5. Inside the child, `engine/main.ts` calls `runOneShotTask` (`oneShot.ts:209`), which reads the task file and either calls `runGovernedLoop` (plain prompt) or `runTradeScan` (`tradeScan.ts:163`) for `taskType: 'trade-scan'`.
 6. `runGovernedLoop` (`oneShot.ts:148`) drives the prompt through `ConversationLoop` with `approveAll`/`noScouts`, then `extractOutcome` (`oneShot.ts:37`) parses the model's fenced JSON into a `TaskOutcome`, which `writeOutcome` (`taskFile.ts:24`) writes to `outcomePath`.
 7. `TaskRunner.run()` reads the outcome back via `readOutcome` (`taskFile.ts:29`) and returns it to `fire()`, which records a `RunRecord` (`missionLedger.ts:58`), saves pending recommendations, and — before any notification — calls `MissionLedger.saveState()`.

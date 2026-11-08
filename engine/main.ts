@@ -481,7 +481,9 @@ try {
           const { readGpuBusy, estimateRemainingMs } = require('./daemon/gpuBusyFile.js')
           const b = readGpuBusy()
           if (b) busy = { triggerId: b.triggerId, task: b.task, remainingMs: estimateRemainingMs(b) }
-        } catch {}
+        } catch (e) {
+          console.log(`[dashboard] gpu-busy.json unreadable: ${e instanceof Error ? e.message : String(e)}`)
+        }
         return {
           model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd(),
           modelState: pm?.modelState ? pm.modelState() : null,

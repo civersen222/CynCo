@@ -36,6 +36,20 @@ function Get-EngineProc($procs) {
 function Get-OneShotProc($procs) {
   $procs | Where-Object { $_.CommandLine -match 'engine[\\/]main\.ts' -and $_.CommandLine -match '--run-task' } | Select-Object -First 1
 }
+# The engine's own view of the GPU: cold / loading / warm / waiting (+ which one-shot holds it).
+# /api/session is token-gated; the inference token lives in ~/.cynco/tokens.json (this user's file).
+function Get-ModelState {
+  try {
+    $j = Get-Content (Join-Path $env:USERPROFILE '.cynco\tokens.json') -Raw | ConvertFrom-Json
+    $t = $j.tokens | Where-Object { $_.name -eq 'inference' -or ($_.scopes -contains 'inference') -or ($_.scope -eq 'inference') } | Select-Object -First 1
+    $secret = if ($t.secret) { $t.secret } elseif ($t.token) { $t.token } else { $null }
+    if (-not $secret) { return $null }
+    $s = Invoke-RestMethod -Uri "http://127.0.0.1:$dashPort/api/session" -Headers @{ Authorization = "Bearer $secret" } -TimeoutSec 2
+    if ($s.busy -and $s.busy.triggerId) { return "$($s.modelState) ($($s.busy.triggerId), ~$([math]::Ceiling($s.busy.remainingMs / 60000)) min)" }
+    return $s.modelState
+  } catch { return $null }
+}
+
 function Get-TailscaleUp {
   try { $j = & tailscale status --json 2>$null | ConvertFrom-Json; return $j.BackendState -eq 'Running' } catch { return $false }
 }
@@ -85,7 +99,8 @@ function Refresh {
   if ($tsHost -and $local) { $remote = Test-Http "http://$tsHost`:$dashPort/" }
   if ($local) {
     $ui.dotCynco.Fill = if ($remote) { '#3fb950' } else { '#d29922' }
-    $ui.txtCynco.Text = if ($remote) { "on - remote ok ($tsHost)" } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }
+    $model = Get-ModelState
+    $ui.txtCynco.Text = (if ($remote) { 'on - remote ok' } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }) + (if ($model) { " - model $model" } else { '' })
     $ui.btnCynco.Content = 'Stop'
   } else {
     $ui.dotCynco.Fill = '#666'
@@ -127,6 +142,10 @@ $ui.btnCynco.Add_Click({
     return
   } else {
     $env:LOCALCODE_PROVIDER = if ($env:LOCALCODE_PROVIDER) { $env:LOCALCODE_PROVIDER } else { 'llama-cpp' }
+    # The phone engine is lazy: cold GPU until a message needs the model, unload after 15 min idle
+    # (docs/decisions/2026-11-08-wakefulness-design.md, slice 2). Start-Process inherits $env:.
+    $env:LOCALCODE_LLAMA_LAZY = 'true'
+    if (-not $env:LOCALCODE_LLAMA_IDLE_UNLOAD_MS) { $env:LOCALCODE_LLAMA_IDLE_UNLOAD_MS = '900000' }
     Start-Process -FilePath 'bun' -ArgumentList 'engine/main.ts' -WorkingDirectory $repo -WindowStyle Hidden -RedirectStandardOutput $engineLog -RedirectStandardError "$engineLog.err"
     $ui.txtNote.Text = "starting CynCo (log: $engineLog)…"
   }

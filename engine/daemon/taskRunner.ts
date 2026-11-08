@@ -193,7 +193,11 @@ export class TaskRunner {
     }
     return outcome
     } finally {
-      try { clearGpuBusy(busyPath) } catch {}
+      try {
+        clearGpuBusy(busyPath)
+      } catch (e) {
+        console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${e instanceof Error ? e.message : String(e)}`)
+      }
     }
   }
 }
