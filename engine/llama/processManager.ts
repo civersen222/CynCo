@@ -262,6 +262,20 @@ export const SLOT_SNAPSHOT_INTERVAL_MS = Number(process.env.LOCALCODE_SLOT_SNAPS
 /** VRAM is released a moment after a process dies; one re-read before refusing on it. */
 const GPU_RECHECK_DELAY_MS = 3_000
 
+export type ModelState = 'cold' | 'loading' | 'warm' | 'waiting'
+
+/** Injected by bootstrapProvider (and tests) into ensureRunningLazy. */
+export type LazyWaitDeps = {
+  /** gpu-busy.json with a live owner, or null. */
+  readBusy: () => import('../daemon/gpuBusyFile.js').GpuBusy | null
+  isPortOccupied: () => Promise<boolean>
+  maxWaitMs: number
+  pollMs?: number
+  now?: () => number
+  sleep?: (ms: number) => Promise<void>
+  onWaiting?: (info: { reason: string; remainingMs: number | null }) => void
+}
+
 export type ProcessManagerConfig = {
   binaryPath: string
   modelPath: string
@@ -341,6 +355,67 @@ export class ProcessManager {
 
   isRunning(): boolean {
     return this.child !== null && this.child.exitCode === null
+  }
+
+  // ---- lazy path (wakefulness slice 2) ------------------------------------
+  private lazyPhase: 'idle' | 'waiting' | 'loading' = 'idle'
+
+  /**
+   * What the dashboard and the widget show: `warm` = a server of ours is up,
+   * `loading` = startProcess in flight, `waiting` = the lazy path is holding
+   * off because another process owns the GPU, else `cold`.
+   */
+  modelState(): ModelState {
+    if (this.lazyPhase === 'loading') return 'loading'
+    if (this.lazyPhase === 'waiting') return 'waiting'
+    return this.isRunning() ? 'warm' : 'cold'
+  }
+
+  /**
+   * The lazy counterpart of ensureRunning(): never kills a live occupant of
+   * the port. While `readBusy()` names a running one-shot (gpu-busy.json with
+   * a live pid) it waits, polling every `pollMs`, reporting the trigger and
+   * the remaining time through `onWaiting`. A port that is occupied with NO
+   * busy file is provably stale (the owner is gone) and is killed as before.
+   * Gives up after `maxWaitMs` with an error naming the trigger. The F140
+   * pre-spawn check still runs inside startProcess. Pinned by
+   * `ProcessManager.ensureRunningLazy` in processManager.test.ts.
+   */
+  async ensureRunningLazy(deps: LazyWaitDeps): Promise<void> {
+    if (this.isRunning()) return
+    const pollMs = deps.pollMs ?? 5_000
+    const now = deps.now ?? (() => Date.now())
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+    const started = now()
+    let lastTrigger: string | null = null
+    try {
+      for (;;) {
+        const busy = deps.readBusy()
+        if (busy) {
+          lastTrigger = busy.triggerId
+          this.lazyPhase = 'waiting'
+          const remainingMs = Math.max(0, Date.parse(busy.startedAt) + busy.timeoutMs - now())
+          deps.onWaiting?.({ reason: `GPU busy with ${busy.triggerId} (${busy.task})`, remainingMs })
+        } else if (await deps.isPortOccupied()) {
+          this.lazyPhase = 'loading'
+          console.log(`[llama-cpp] port ${this.port} occupied with no live gpu-busy.json owner — stale, killing it`)
+          await this.killProcessOnPort(this.port)
+          await this.startProcess()
+          return
+        } else {
+          this.lazyPhase = 'loading'
+          await this.startProcess()
+          return
+        }
+        if (now() - started >= deps.maxWaitMs) {
+          const mins = Math.round(deps.maxWaitMs / 60_000)
+          throw new Error(`GPU busy: waited ${mins} min for ${lastTrigger ?? 'another process'} to release the model port`)
+        }
+        await sleep(pollMs)
+      }
+    } finally {
+      this.lazyPhase = 'idle'
+    }
   }
 
   /**
@@ -639,7 +714,8 @@ export class ProcessManager {
     throw new ServerStartError(this.port, `Health check timed out after ${timeoutMs}ms`)
   }
 
-  private async isPortOccupied(): Promise<boolean> {
+  /** Public so the lazy path's deps (bootstrapProvider) can pass it through; behaviour unchanged. */
+  async isPortOccupied(): Promise<boolean> {
     try {
       const resp = await fetch(`http://127.0.0.1:${this.port}/health`, {
         signal: AbortSignal.timeout(2000),
