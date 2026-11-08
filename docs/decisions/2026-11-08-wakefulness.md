@@ -14,7 +14,8 @@
 ## Rejected (see the design record for the full list)
 Wi-Fi wake-on-LAN (fails on this board, 3 tests), the NAS as front door (froze twice; cannot reach the PC's wired port), a Pi 4 (SD slot unreadable, USB-reader boot hung), USB-gadget wake from a Pi (works in principle, split-power fiddle), the phone engine interrupting a running mission (owner chose wait + notice + a smaller-model fallback, slice 2b).
 
-## Open — decided with the owner, not in this change
+## Two engines on one box — decided by the owner 2026-11-08, built the same day
+"When I start a desk engine from the TUI or the desktop dashboard, the phone engine is silent and restarted after; if I'm at the machine I won't be using it on my phone." `engine/power/siblingEngine.ts`: an eager interactive engine on Windows runs `cynco-services.ps1 stop engine` before `bootstrapProvider` and `start engine` from `cleanShutdown`; the phone engine (lazy) and one-shot children never hand off. Pinned by `engine/__tests__/power/siblingEngine.test.ts`. The finding, for the record:
 **Two engines on one box.** The autostarted headless engine holds 9160/9161 and, when warm, port 8081. A desk engine launched from the TUI falls back to 9162/9163 and its *eager* `ensureRunning()` kills whatever answers on 8081 as stale — the headless engine's warm server — which then spends its restart budget trying to rebind. Not covered by the plan (found in review). Options: the TUI launch (or `cynco-services.ps1`) stops the headless engine first and restarts it after; or the desk engine refuses to start while the headless one is warm; or the desk engine is also lazy. Until decided: stop the headless engine from the widget before a desk session, or use the desk session through the headless engine's own dashboard.
 
 ## Verified live (2026-11-08)

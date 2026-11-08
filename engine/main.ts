@@ -141,6 +141,19 @@ import { bootstrapProvider } from './bootstrapProvider.js'
   const job = await installKillOnCloseJob()
   console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
 }
+// Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
+// the headless phone engine before loading its own model and restarts it on
+// exit — owner's decision 2026-11-08 (engine/power/siblingEngine.ts). The
+// phone engine itself and one-shot children never do this.
+let siblingRelease: (() => Promise<void>) | null = null
+{
+  const { lazySettings } = await import('./llama/lazyLoad.js')
+  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner } = await import('./power/siblingEngine.js')
+  if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform }) === 'handoff') {
+    const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), log: (l) => console.log(l) })
+    if (handoff.wasRunning) siblingRelease = handoff.release
+  }
+}
 const { provider, contextLength } = await bootstrapProvider(config)
 
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
@@ -645,6 +658,8 @@ async function cleanShutdown(signal: string) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
   }
+  // Give the GPU back to the phone engine (after our llama-server is gone, so its lazy load finds a free port).
+  if (siblingRelease) await siblingRelease()
   process.exit(0)
 }
 process.on('SIGTERM', () => cleanShutdown('SIGTERM'))
