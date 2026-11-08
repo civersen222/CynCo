@@ -14,7 +14,8 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 | `ntfyChannel.ts` | Self-hosted ntfy client: publish (with offline queue) and SSE subscribe for phone commands. |
 | `oneShot.ts` | Runs INSIDE the spawned engine process: drives one prompt through `ConversationLoop`, extracts the outcome contract, writes it out. |
 | `scheduler.ts` | Pure trigger-time arithmetic (interval/daily/weekly/cron) — no I/O, no `Date.now()`. |
-| `taskRunner.ts` | Spawns the one-shot engine child with a GPU guard and hard timeout/kill. |
+| `taskRunner.ts` | Spawns the one-shot engine child with a GPU guard and hard timeout/kill; writes `gpu-busy.json` for the child's lifetime. |
+| `gpuBusyFile.ts` | `<cyncoHome>/gpu-busy.json` — the one-shot's claim on the GPU (`task`, `triggerId`, `startedAt`, `timeoutMs`, `pid`): atomic write, cleared on every exit path, a dead-pid file reads as null and is deleted. Readers: the engine's lazy model path, `/api/session`, the desk widget. |
 | `tradeScan.ts` | Multi-pass trade-scan orchestrator (`taskType: 'trade-scan'`), dispatched from `oneShot.ts`, runs inside the same engine process. |
 
 ## Important types & functions
@@ -62,3 +63,4 @@ A mission may widen or narrow the tool pin of its one-shot runs: `MissionConfig.
 - `isGpuBusy` first asks the engine's model port (`/health` on `LOCALCODE_PORT`, default 8081): any answer means busy, because a new one-shot's `ProcessManager.ensureRunning()` kills whatever answers there as "stale". Without it, a missed tasklist probe let the daemon kill a live hand-started run's server (2026-10-28); pinned by `a model server answering on the engine port means busy even when tasklist and nvidia-smi miss it`.
 - Zero assistant turns (every model call timed out) must report failure, not the unstructured-fallback `ok: true` — `runGovernedLoop` gates on `countAssistantTurns(messages) === 0` before falling through to `extractOutcome` (`oneShot.ts:192`).
 - `MissionConfig.leagues` is optional: a mission that is not MFL-bound (fantasy-digest) has none, and `fire`/`buildContext` read it as `?? []` — a required-typed read threw on every tick and no digest ever ran (F184); pinned by `a mission without leagues fires its due trigger with leagues: []` in `missionRunner.test.ts`. `scripts/cynco-services.ps1` is the status/start/stop for the daemon, ntfy and the approval listener.
+- `gpu-busy.json` is the arbiter the lazy engine waits on (`readGpuBusy`, `gpuBusyFile.ts`): while it names a live pid the engine never spawns its own llama-server, so a phone message cannot kill a running one-shot's server (the F182 class). `TaskRunner.run()` writes it right after `spawn` and clears it in a `finally`, timeout kill included; pinned by `names the running one-shot while the child runs and clears it after` in `taskRunner.test.ts`.

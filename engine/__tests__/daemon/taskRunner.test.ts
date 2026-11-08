@@ -133,3 +133,36 @@ describe('isGpuBusy', () => {
     expect(await isGpuBusy(async () => 'llama-server\n', queryGpu, noServer)).toBe(true)
   })
 })
+
+describe('TaskRunner gpu-busy.json', () => {
+  const { existsSync, readFileSync } = require('fs') as typeof import('fs')
+
+  it('names the running one-shot while the child runs and clears it after', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    const busyPath = join(dir, 'gpu-busy.json')
+    try {
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: busyPath })
+      const input = { ...makeInput(dir, 'HANG please'), timeoutMs: 1500 }
+      const running = runner.run(input)
+      await new Promise((r) => setTimeout(r, 400))
+      expect(existsSync(busyPath)).toBe(true)
+      const info = JSON.parse(readFileSync(busyPath, 'utf-8'))
+      expect(info.task).toBe('m1')
+      expect(info.triggerId).toBe('t1')
+      expect(info.timeoutMs).toBe(1500)
+      expect(typeof info.pid).toBe('number')
+      await running
+      expect(existsSync(busyPath)).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('clears the file after a normal run too', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    const busyPath = join(dir, 'gpu-busy.json')
+    try {
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: busyPath })
+      await runner.run(makeInput(dir, 'do the thing'))
+      expect(existsSync(busyPath)).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
