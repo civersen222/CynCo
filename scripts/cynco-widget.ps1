@@ -100,7 +100,8 @@ function Refresh {
   if ($local) {
     $ui.dotCynco.Fill = if ($remote) { '#3fb950' } else { '#d29922' }
     $model = Get-ModelState
-    $ui.txtCynco.Text = (if ($remote) { 'on - remote ok' } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }) + (if ($model) { " - model $model" } else { '' })
+    $base = if ($remote) { 'on - remote ok' } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }
+    $ui.txtCynco.Text = if ($model) { "$base - model $model" } else { $base }
     $ui.btnCynco.Content = 'Stop'
   } else {
     $ui.dotCynco.Fill = '#666'

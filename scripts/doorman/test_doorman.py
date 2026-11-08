@@ -30,8 +30,13 @@ class Harness:
             send_wake=lambda t: self.sent.append((self.clock.now(), t.mac)),
             probe_up=lambda t: self.up,
             now=self.clock.now,
-            schedule_later=lambda when, fn: self.timers.append((when, fn)),
+            schedule_later=self._later,
         )
+
+    def _later(self, when, fn):
+        entry = (when, fn)
+        self.timers.append(entry)
+        return lambda: self.timers.remove(entry) if entry in self.timers else None
 
     def run_until(self, t_end):
         while True:

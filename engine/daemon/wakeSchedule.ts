@@ -36,10 +36,13 @@ export type WakePublisherDeps = {
   fetchImpl?: typeof fetch
   log?: (line: string) => void
   now?: () => Date
+  /** Re-send an unchanged list this often, so a restarted doorman learns it again (default 10 min). */
+  resendEveryMs?: number
 }
 
 export class WakePublisher {
   private lastSent: string | null = null
+  private lastSentAt = 0
   private readonly fetchImpl: typeof fetch
   private readonly log: (line: string) => void
   private readonly now: () => Date
@@ -54,7 +57,8 @@ export class WakePublisher {
     if (!this.deps.url) return 'skipped'
     const times = collectNextFires(ledgers, this.now())
     const key = times.join(',')
-    if (key === this.lastSent) return 'unchanged'
+    const resendEveryMs = this.deps.resendEveryMs ?? 600_000
+    if (key === this.lastSent && this.now().getTime() - this.lastSentAt < resendEveryMs) return 'unchanged'
     const url = `${this.deps.url.replace(/\/$/, '')}/schedule`
     try {
       const resp = await this.fetchImpl(url, {
@@ -68,6 +72,7 @@ export class WakePublisher {
         return 'failed'
       }
       this.lastSent = key
+      this.lastSentAt = this.now().getTime()
       this.log(`[daemon] wake schedule sent to doorman: ${times.length} time(s), next ${times[0] ?? 'none'}`)
       return 'sent'
     } catch (e) {

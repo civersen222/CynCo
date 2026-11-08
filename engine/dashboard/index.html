@@ -1454,6 +1454,18 @@ function activateSession(contextLength) {
   if (contextLength) setSlider('sliderCtxLen', 'valCtxLen', contextLength);
 }
 
+// Which governance.alert frames become a line in the chat panel, and how they
+// read. Operator notes (source 'operator', any severity — see
+// conversationLoop.ts queueOperatorNote) and the lazy model's busy/waiting
+// notices (source 'llama-cpp', severity 'info'). Everything else stays in the
+// tool feed. Pure; lifted by text in engine/__tests__/dashboard/lazyBusyNotice.test.ts.
+function alertChatLine(event) {
+  if (!event) return null;
+  if (event.source === 'operator') return 'operator: ' + (event.message || '');
+  if (event.source === 'llama-cpp' && event.severity === 'info') return 'model: ' + (event.message || '');
+  return null;
+}
+
 function handleEvent(event) {
   // Any engine event means a session is active — detect late connections
   var liveEvents = ['governance.status', 'context.status', 'tool.start', 'tool.complete',
@@ -1525,14 +1537,12 @@ function handleEvent(event) {
         if (state.toolFeed.length > MAX_FEED) state.toolFeed.pop();
         renderToolFeed();
       }
-      // Task 7 review: an operator's own note to a running mission is
-      // acknowledged over THIS event (source 'operator', severity 'low' — see
-      // conversationLoop.ts queueOperatorNote/dropOperatorQueueAtMissionEnd).
-      // It must reach the chat panel regardless of severity, or the operator
-      // who just typed a note has no way to tell it was heard at all.
-      if (event.source === 'operator') {
-        appendChatMsg('system', 'operator: ' + (event.message || ''));
-      }
+      // Some alerts are for the person in the chat, whatever their severity:
+      // the operator's own note acknowledgement, and the lazy engine's "GPU busy
+      // with <trigger>" (wakefulness slice 2) — without it the phone sees up to
+      // 30 minutes of silence. alertChatLine() decides (lazyBusyNotice.test.ts).
+      var chatLine = alertChatLine(event);
+      if (chatLine !== null) appendChatMsg('system', chatLine);
       break;
     }
 

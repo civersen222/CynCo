@@ -13,8 +13,9 @@ The HTTP service, the waking page and the real senders live below the core (adde
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 BURST_INTERVAL_S = 15.0
 BURST_DURATION_S = 60.0
@@ -52,14 +53,21 @@ class Doorman:
         self._burst: Dict[str, Optional[float]] = {n: None for n in targets}  # burst start time
         self._last_wake: Dict[str, Optional[float]] = {n: None for n in targets}
         self._schedule_gen: Dict[str, int] = {n: 0 for n in targets}  # bumps per set_schedule; stale timers no-op
+        self._schedule_handles: Dict[str, List[Any]] = {n: [] for n in targets}  # cancel handles from schedule_later
+        self._schedule_times: Dict[str, List[float]] = {n: [] for n in targets}
+        self._lock = threading.Lock()  # knock() under ThreadingHTTPServer must start one burst, not two
+        self.schedule_path: Optional[str] = None  # set by main(); None = in-memory only (tests)
 
     def _target(self, name: str) -> Target:
         return self.targets[name]  # KeyError for an unknown target, by design
 
     def knock(self, name: str) -> dict:
         self._target(name)
-        if self._burst[name] is None:
-            self._burst[name] = self._now()
+        with self._lock:
+            start = self._burst[name] is None
+            if start:
+                self._burst[name] = self._now()
+        if start:
             self._burst_tick(name)
         return self.status(name)
 
@@ -75,6 +83,11 @@ class Doorman:
         self._target(name)
         self._schedule_gen[name] += 1
         gen = self._schedule_gen[name]
+        for h in self._schedule_handles[name]:  # cancel the previous list's timers (not merely ignore them)
+            if callable(h):
+                h()
+        self._schedule_handles[name] = []
+        self._schedule_times[name] = list(times)
         now = self._now()
         for at in times:
             fire_at = max(now, at - LEAD_S)
@@ -83,7 +96,31 @@ class Doorman:
                 if self._schedule_gen[n] == g:
                     self.knock(n)
 
-            self._schedule_later(fire_at, fire)
+            self._schedule_handles[name].append(self._schedule_later(fire_at, fire))
+        self._persist_schedule()
+
+    def _persist_schedule(self) -> None:
+        if not self.schedule_path:
+            return
+        tmp = self.schedule_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._schedule_times, f)
+        import os as _os
+        _os.replace(tmp, self.schedule_path)
+
+    def load_schedule(self) -> None:
+        """Re-arm the persisted lists (after a restart). Past times are dropped by set_schedule's max(now, ...)? No:
+        a past wake time still fires at once, which is right — the PC may be asleep past a trigger we missed."""
+        if not self.schedule_path:
+            return
+        try:
+            with open(self.schedule_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return
+        for name, times in saved.items():
+            if name in self.targets and isinstance(times, list):
+                self.set_schedule(name, [float(t) for t in times])
 
     def _burst_tick(self, name: str) -> None:
         started = self._burst[name]
@@ -143,10 +180,11 @@ def real_probe_up(t: Target) -> bool:
         return False
 
 
-def real_schedule_later(when: float, fn: Callable[[], None]) -> None:
+def real_schedule_later(when: float, fn: Callable[[], None]) -> Callable[[], None]:
     timer = threading.Timer(max(0.0, when - time.time()), fn)
     timer.daemon = True
     timer.start()
+    return timer.cancel
 
 
 def _make_handler(d: Doorman, page_html: str):
@@ -222,11 +260,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--targets", default="/etc/doorman/targets.json")
     p.add_argument("--bind", required=True, help="Tailscale address to bind (never 0.0.0.0)")
     p.add_argument("--port", type=int, default=9170)
+    p.add_argument("--schedule-file", default="/var/lib/doorman/schedule.json", help="the daemon's wake times survive a restart here")
     a = p.parse_args(argv)
     if a.bind in ("0.0.0.0", "::"):
         print("refusing to bind a wildcard address", file=sys.stderr)
         return 2
     d = Doorman(load_targets(a.targets), real_send_wake, real_probe_up, time.time, real_schedule_later)
+    os.makedirs(os.path.dirname(a.schedule_file), exist_ok=True)
+    d.schedule_path = a.schedule_file
+    d.load_schedule()
     srv = serve(a.bind, a.port, d)
     print("doorman listening on %s:%d targets=%s" % (a.bind, a.port, list(d.targets)), file=sys.stderr)
     srv.serve_forever()

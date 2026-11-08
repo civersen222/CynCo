@@ -16,7 +16,7 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 | `scheduler.ts` | Pure trigger-time arithmetic (interval/daily/weekly/cron) — no I/O, no `Date.now()`. |
 | `taskRunner.ts` | Spawns the one-shot engine child with a GPU guard and hard timeout/kill; writes `gpu-busy.json` for the child's lifetime. |
 | `gpuBusyFile.ts` | `<cyncoHome>/gpu-busy.json` — the one-shot's claim on the GPU (`task`, `triggerId`, `startedAt`, `timeoutMs`, `pid`): atomic write, cleared on every exit path, a dead-pid file reads as null and is deleted. Readers: the engine's lazy model path, `/api/session`, the desk widget. |
-| `wakeSchedule.ts` | `collectNextFires` + `WakePublisher`: after each tick round the daemon POSTs every mission's future `nextFire` times to the doorman (`CYNCO_DOORMAN_URL`, unset = nothing sent), which wakes this PC 3 min before each; the list is re-sent only when it changes and a failed send retries next tick. |
+| `wakeSchedule.ts` | `collectNextFires` + `WakePublisher`: after each tick round the daemon POSTs every mission's future `nextFire` times to the doorman (`CYNCO_DOORMAN_URL`, unset = nothing sent; `CYNCO_DOORMAN_TARGET`, default `main`), which wakes this PC 3 min before each; the list is re-sent when it changes and every 10 min regardless (a restarted doorman learns it again), and a failed send retries next tick. Setup: `docs/liveness-setup.md` § 7. |
 | `tradeScan.ts` | Multi-pass trade-scan orchestrator (`taskType: 'trade-scan'`), dispatched from `oneShot.ts`, runs inside the same engine process. |
 
 ## Important types & functions

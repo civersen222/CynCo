@@ -3,7 +3,7 @@
  *
  * Turns (ConversationLoop), one-shot children (daemon TaskRunner) and
  * in-flight model requests (LlamaCppProvider) register here. Two consumers
- * read the count: the idle-unload timer (engine/llama/idleUnload.ts) runs
+ * read the count: the idle-unload timer (engine/llama/lazyLoad.ts) runs
  * only while nothing is open, and hold-awake (engine/power/awake.ts) keeps
  * the PC from sleeping while anything is. Edges only: `onBusy` fires on
  * 0→1, `onIdle` on 1→0. Design: docs/decisions/2026-11-08-wakefulness-design.md.

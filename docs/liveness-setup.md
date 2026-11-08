@@ -145,6 +145,22 @@ bun engine/daemon/main.ts
 Set a trigger's `everyMinutes` to 1 temporarily; within ~90 seconds your phone should get
 either recommendations or a digest. Check `~/.cynco/missions/mfl-dynasty/runs.jsonl` for the run record.
 
+## 7. Doorman: let the PC sleep between triggers (wakefulness, 2026-11-08)
+
+With the doorman mini PC on the tailnet (`scripts/doorman/`, design `docs/decisions/2026-11-08-wakefulness-design.md`),
+the daemon publishes every mission's next-fire times after each tick and the doorman wakes this PC
+3 minutes before each one, so Windows' own "Sleep after" timer may sleep the box between triggers.
+Add to the daemon's launch script (the one Task Scheduler runs):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CYNCO_DOORMAN_URL` | unset — nothing is published; the PC must stay awake for triggers | The doorman service, e.g. `http://100.110.117.10:9170`. The daemon POSTs `{target, times}` to `/schedule`, re-sends when the list changes and every 10 minutes regardless (a restarted doorman learns it again), and logs one line per failed send. Read in `engine/daemon/main.ts` only. |
+| `CYNCO_DOORMAN_TARGET` | `main` | Which target in the doorman's `targets.json` this PC is. Only matters once a second GPU box is on the switch. |
+
+While a one-shot runs, the daemon holds the PC awake (`engine/power/awake.ts`); with nothing running it holds
+nothing, and the owner's "Sleep after" setting decides. `scripts/cynco-services.ps1` shows and starts/stops the
+daemon, the headless phone engine, ntfy and the approval listener.
+
 ## Security posture
 
 - ntfy listens only on the Tailscale interface; phone access requires tailnet membership + token.

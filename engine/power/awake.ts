@@ -43,7 +43,10 @@ export function wireHoldAwake(registry: ActivityRegistry, deps: HoldAwakeDeps = 
         stdio: 'ignore',
         windowsHide: true,
       })
-      helper.on?.('exit', () => { helper = null })
+      const spawned = helper
+      // Identity matters: a late exit from a helper we already replaced must not
+      // null out the live one, or the next stop() cannot kill it (review #4).
+      spawned.on?.('exit', () => { if (helper === spawned) helper = null })
       log(`[power] holding the PC awake (helper pid ${helper?.pid ?? '?'})`)
     } catch (e) {
       helper = null
