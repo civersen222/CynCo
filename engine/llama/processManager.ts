@@ -322,6 +322,8 @@ export class ProcessManager {
   private calibrator: CheckpointCalibrator
   /** Called with the reason whenever a spawn is refused or the restart budget is exhausted. main.ts wires it to a governance.alert. */
   onFault?: (reason: string) => void
+  /** Lazy path: called with a one-line reason each poll while another process owns the GPU. main.ts relays it to the dashboard. */
+  onWaiting?: (reason: string) => void
   /** The last pre-spawn refusal, null when the last attempt was allowed to spawn. */
   lastRefusal: string | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null

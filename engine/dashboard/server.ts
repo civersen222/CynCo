@@ -173,6 +173,10 @@ export type SessionSnapshot = {
   project: { slug: string; chat: string | null; title: string | null } | null
   /** Decisions waiting on a person; null when the engine did not wire the dep. */
   pending: PendingDecision[] | null
+  /** Wakefulness: `cold` (no llama-server), `loading`, `warm`, or `waiting` on another process's GPU claim; null when not llama-cpp. */
+  modelState?: 'cold' | 'loading' | 'warm' | 'waiting' | null
+  /** The one-shot that owns the GPU right now (gpu-busy.json), or null. */
+  busy?: { triggerId: string; task: string; remainingMs: number } | null
   [extra: string]: unknown
 }
 
