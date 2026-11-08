@@ -134,21 +134,11 @@ function Refresh {
 }
 
 $ui.btnCynco.Add_Click({
-  if ($script:state.engine) {
-    Stop-Process -Id $script:state.engine.ProcessId -Force -ErrorAction SilentlyContinue
-    $ui.txtNote.Text = 'stopping CynCo (its llama-server dies with it)…'
-  } elseif ($script:state.oneShot) {
-    $ui.txtNote.Text = 'refused: the daemon is running a task on the GPU; starting CynCo now would kill its model server (F182). Try again when the note clears.'
-    return
-  } else {
-    $env:LOCALCODE_PROVIDER = if ($env:LOCALCODE_PROVIDER) { $env:LOCALCODE_PROVIDER } else { 'llama-cpp' }
-    # The phone engine is lazy: cold GPU until a message needs the model, unload after 15 min idle
-    # (docs/decisions/2026-11-08-wakefulness-design.md, slice 2). Start-Process inherits $env:.
-    $env:LOCALCODE_LLAMA_LAZY = 'true'
-    if (-not $env:LOCALCODE_LLAMA_IDLE_UNLOAD_MS) { $env:LOCALCODE_LLAMA_IDLE_UNLOAD_MS = '900000' }
-    Start-Process -FilePath 'bun' -ArgumentList 'engine/main.ts' -WorkingDirectory $repo -WindowStyle Hidden -RedirectStandardOutput $engineLog -RedirectStandardError "$engineLog.err"
-    $ui.txtNote.Text = "starting CynCo (log: $engineLog)…"
-  }
+  # The headless engine is the logon task "CynCo headless engine" (scripts\run-headless-engine.cmd,
+  # lazy model); cynco-services.ps1 owns start/stop/register so the widget and the command line agree.
+  $action = if ($script:state.engine) { 'stop' } else { 'start' }
+  $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $services $action engine 2>&1
+  $ui.txtNote.Text = ($out -join ' - ')
   Start-Sleep -Milliseconds 800; Refresh
 })
 $ui.btnFantasy.Add_Click({
