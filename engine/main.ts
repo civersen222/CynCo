@@ -486,6 +486,13 @@ try {
       getS4Reflector: () => loop.getGovernance().getReflector(),
       // F57: the one fact a harness outside this process cannot infer.
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
+      // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
+      getAwayRuns: () => {
+        const { collectAwayRuns } = require('./daemon/awayFeed.js')
+        const { cyncoHome } = require('./paths.js')
+        const { join } = require('path')
+        return collectAwayRuns(process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions'))
+      },
       getSessionInfo: () => {
         let modelName = config.model || ''
         // For llama-cpp provider, show the actual GGUF file + spec type
