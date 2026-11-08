@@ -11,9 +11,11 @@ import { fileURLToPath } from 'url'
 const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../dashboard/index.html'), 'utf-8')
 function scripts(): string {
   const out: string[] = []
-  const re = /<script([^>]*)>([\s\S]*?)<\/script\s*>/gi
+  // `\b[^>]*` on the closing tag too: CodeQL's "bad HTML filtering regexp" check
+  // wants `</script\t\n bar>` matched as an end tag, which `\s*>` alone did not.
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi
   let m: RegExpExecArray | null
-  while ((m = re.exec(html)) !== null) out.push(m[2])
+  while ((m = re.exec(html)) !== null) out.push(m[1])
   return out.join('\n')
 }
 function fnSource(name: string): string {
