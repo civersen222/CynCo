@@ -33,20 +33,21 @@ export function collectAwayRuns(missionsDir: string, opts: { limit?: number; tai
   if (!existsSync(missionsDir)) return []
   const out: AwayRun[] = []
   let entries: string[]
-  try { entries = readdirSync(missionsDir) } catch { return [] }
+  try { entries = readdirSync(missionsDir) } catch (e) { console.log(`[away] cannot list ${missionsDir}: ${e instanceof Error ? e.message : String(e)}`); return [] }
   for (const mission of entries) {
     const file = join(missionsDir, mission, 'runs.jsonl')
     if (!existsSync(file)) continue
     let text: string
-    try { text = readTail(file, tailBytes) } catch { continue }
+    try { text = readTail(file, tailBytes) } catch (e) { console.log(`[away] cannot read ${file}: ${e instanceof Error ? e.message : String(e)}`); continue }
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
       try {
         const r = JSON.parse(line)
         if (typeof r?.ts !== 'string' || typeof r?.triggerId !== 'string') continue
         out.push({ ts: r.ts, mission, triggerId: r.triggerId, ok: Boolean(r.ok), summary: typeof r.summary === 'string' ? r.summary : '' })
-      } catch {
+      } catch (e) {
         // a torn or foreign line in an append-only log: skip it, keep the rest
+        console.log(`[away] skipped a line in ${file}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
   }

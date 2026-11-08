@@ -611,6 +611,20 @@ body.mission-mode #historyPanel { display: none; }
 .genui-w { animation: genui-fade .35s ease-out both; }
 @keyframes genui-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .genui-w { animation: none; } }
+/* Wakefulness slice 4: the phone layout. One column, 16px gutters, the send box
+   pinned to the bottom, tool rows one line each. Only when the server marked
+   this page remote (window.__CYNCO_REMOTE → applyRemoteLayout adds body.remote). */
+body.remote { padding: 0 16px 8px; }
+body.remote .grid { grid-template-columns: 1fr; gap: 8px; }
+body.remote .panel { margin: 0; }
+body.remote .tab-bar { position: sticky; top: 0; z-index: 5; background: #1e1e2e; overflow-x: auto; }
+body.remote .chat-input-area { position: sticky; bottom: 0; background: #1e1e2e; padding-bottom: env(safe-area-inset-bottom, 8px); }
+body.remote .chat-tool { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.remote #panelConnection, body.remote #panelContext { display: none; }
+.away-list .away-row { padding: 8px 0; border-bottom: 1px solid #333; }
+.away-list .away-meta { color: #9a9aa6; font-size: 12px; }
+.away-list .away-ok { color: #3fb950; } .away-list .away-fail { color: #f85149; }
+.away-list .away-summary { margin-top: 4px; white-space: pre-wrap; }
 .genui-issues { margin-top: 8px; font-size: 11px; }
 .genui-issues-btn { background: none; border: 1px solid #333; color: #808080; border-radius: 3px; padding: 1px 8px;
   font-size: 11px; cursor: pointer; font-family: inherit; }
@@ -864,6 +878,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
   <button class="tab-btn" onclick="switchTab('history')">History</button>
   <button class="tab-btn" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" onclick="switchTab('projects')">Projects</button>
+  <button class="tab-btn" id="tabAway" onclick="switchTab('away')" hidden>Away</button>
 </div>
 
 <!-- ── Chat Tab ────────────────────────────────────────────── -->
@@ -1085,6 +1100,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div class="panel-title">
       Brain <span id="brain-tier-badge" class="badge">entropy-only</span>
     </div>
+    <div id="brainOffNotice" class="muted" hidden></div>
     <div id="brain-tail" class="scroll-tail"></div>
     <canvas id="brain-sparkline" height="60" style="width:100%;display:block;margin:8px 0;"></canvas>
     <div id="brain-tooltip" class="tooltip" hidden></div>
@@ -1237,6 +1253,15 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 </div><!-- /tab-config -->
 
 <!-- ── Projects Tab (projects mode) ────────────────────────── -->
+<div id="tab-away" class="tab-content">
+<div class="grid">
+  <div class="panel full-width">
+    <div class="panel-title">While you were away</div>
+    <div id="awayList" class="away-list">loading…</div>
+  </div>
+</div>
+</div>
+
 <div id="tab-projects" class="tab-content">
   <div class="proj-status" id="projectsStatus"></div>
 
@@ -1410,6 +1435,7 @@ function connectWS() {
     projectsState.reconciled = !projectsState.active;
     projectsState.rebind = null;
     // Proactively check for active session on every connect (handles reload + late connect)
+    if (typeof applyRemoteLayout === 'function') applyRemoteLayout();
     fetchSessionState();
     // A picture that finished while the socket was down sent its ui.image to nobody.
     genuiRecheckImages();
@@ -2828,6 +2854,13 @@ function fetchSessionState() {
         activateSession(data.contextLength);
       }
       if (data) { seedSessionCounters(data); render(); }
+      // Brain tab: say when the brain or the lens is off for this engine (tests
+      // lift this function alone, hence the typeof guard, as for applyRunState).
+      if (data && typeof brainOffNotice === 'function') {
+        var bn = document.getElementById('brainOffNotice');
+        var notice = brainOffNotice(data.brain, data.lens);
+        if (bn) { bn.hidden = notice === null; bn.textContent = notice || ''; }
+      }
       // Is a turn running, and what is it waiting on? After a reconnect this is
       // the only source: the frames that went by were not replayed.
       if (typeof applyRunState === 'function') applyRunState(data);
@@ -3493,6 +3526,55 @@ fetchSessions();
 setInterval(fetchSessions, 15000);
 
 // ── Tab Switching ─────────────────────────────────────────
+// ── Wakefulness slice 4: the phone-sized remote view ────────────────────────
+// Pure, lifted by text in engine/__tests__/dashboard/remoteView.test.ts.
+function remoteTabSet(isRemote) {
+  return isRemote ? ['chat', 'projects', 'away'] : ['chat', 'governance', 'brain', 'history', 'config', 'projects'];
+}
+function initialHashFor(isRemote, hash) {
+  if (!isRemote) return hash;
+  return hash && hash.indexOf('#projects') === 0 ? hash : '#projects';
+}
+function renderAwayRows(runs) {
+  if (!runs || !runs.length) return '<div class="away-row away-meta">nothing ran while you were away</div>';
+  var out = '';
+  for (var i = 0; i < runs.length; i++) {
+    var r = runs[i];
+    var when = r.ts ? new Date(r.ts).toLocaleString() : '';
+    out += '<div class="away-row">' +
+      '<div class="away-meta">' + escHtml(when) + ' &middot; ' + escHtml(r.mission || '') + ' &middot; ' + escHtml(r.triggerId || '') +
+      ' &middot; <span class="' + (r.ok ? 'away-ok' : 'away-fail') + '">' + (r.ok ? 'ok' : 'FAILED') + '</span></div>' +
+      '<div class="away-summary">' + escHtml(r.summary || '') + '</div></div>';
+  }
+  return out;
+}
+function brainOffNotice(brain, lens) {
+  if (brain === false) return 'brain off for this engine (LOCALCODE_BRAIN=off): no sidecar, no activation tap';
+  if (lens === false) return 'lens off (the jlens sidecar holds gigabytes of RAM) - set LOCALCODE_JLENS=on and restart the engine to start it';
+  return null;
+}
+function applyRemoteLayout() {
+  if (!window.__CYNCO_REMOTE) return;
+  document.body.classList.add('remote');
+  var keep = remoteTabSet(true);
+  var btns = document.querySelectorAll('.tab-bar > .tab-btn');
+  for (var i = 0; i < btns.length; i++) {
+    var name = btns[i].textContent.trim().toLowerCase();
+    btns[i].hidden = keep.indexOf(name) === -1;
+  }
+  var want = initialHashFor(true, location.hash);
+  if (want !== location.hash) location.hash = want;
+  if (want.indexOf('#projects') === 0) switchTab('projects');
+}
+function loadAway() {
+  var el = document.getElementById('awayList');
+  if (!el) return;
+  fetch('/api/away')
+    .then(function(r) { return r.json(); })
+    .then(function(data) { el.innerHTML = renderAwayRows(data && data.runs); })
+    .catch(function(err) { el.innerHTML = '<div class="away-row away-meta">could not load: ' + escHtml(err.message) + '</div>'; });
+}
+
 function switchTab(name) {
   var tabs = document.querySelectorAll('.tab-content');
   var btns = document.querySelectorAll('.tab-bar > .tab-btn');
@@ -3504,6 +3586,7 @@ function switchTab(name) {
     if (btns[i].textContent.trim().toLowerCase() === name) btns[i].classList.add('active');
   }
   if (name === 'brain') drawSparkline();
+  if (name === 'away') loadAway();
   if (name === 'projects' && !projectsState.routing) {
     // A chat hash would re-open the chat and bounce back to the Chat tab, so
     // the Projects tab lands on that chat's project instead.

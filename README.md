@@ -502,6 +502,13 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 
 ---
 
+**What the phone sees (wakefulness slice 4, 2026-11-08).** A remote page lands in Projects and shows
+three tabs — Chat, Projects and **Away** (what the missions did while you were out: time, mission,
+trigger, ok/FAILED, summary, from every mission's `runs.jsonl` via `GET /api/away`). The layout is one
+column with the send box pinned to the bottom. The headless phone engine runs with `LOCALCODE_BRAIN=off`
+(no jlens sidecar, no activation tap), and on every engine the lens sidecar is off unless
+`LOCALCODE_JLENS=on`; the Brain tab says which. The desk page is unchanged.
+
 ## Fine-Tuned Models (Coming)
 
 CynCo collects governance decision data during every session, per VSM system, in `~/.cynco/training/s{1-5}-decisions.jsonl` (`engine/training/decisionJournal.ts`). This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
