@@ -1,4 +1,5 @@
 """Tests for the doorman core: wake bursts, status, schedule. Pure — fakes for clock, sender, prober, timers."""
+import json
 import os
 import sys
 
@@ -101,3 +102,66 @@ def test_unknown_target_raises_keyerror():
         assert False, "expected KeyError"
     except KeyError:
         pass
+
+
+# ---- HTTP service (Task 2) ----
+import http.client  # noqa: E402
+import threading  # noqa: E402
+
+
+class ServerHarness(Harness):
+    def __enter__(self):
+        self.server = doorman.serve("127.0.0.1", 0, self.d, page_html="<html data-dashboard='{dashboard}'>waking</html>")
+        self.port = self.server.server_address[1]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *a):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def get(self, path, method="GET", body=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        c.request(method, path, body=body, headers={"Content-Type": "application/json"} if body else {})
+        r = c.getresponse()
+        data = r.read().decode()
+        c.close()
+        return r.status, data
+
+
+def test_http_status_json_shape():
+    with ServerHarness(probe_up=True) as h:
+        code, body = h.get("/status?target=main")
+        assert code == 200
+        assert json.loads(body) == {"up": True, "burstActive": False, "lastWakeAt": None}
+
+
+def test_http_wake_triggers_one_send():
+    with ServerHarness() as h:
+        code, body = h.get("/wake?target=main")
+        assert code == 200
+        assert json.loads(body)["burstActive"] is True
+        assert len(h.sent) == 1
+
+
+def test_http_schedule_post_two_iso_times():
+    with ServerHarness() as h:
+        code, body = h.get("/schedule", "POST", json.dumps({"target": "main", "times": ["2026-11-08T20:00:00Z", "2026-11-08T21:00:00Z"]}))
+        assert code == 200
+        assert json.loads(body) == {"ok": True, "count": 2}
+        assert len(h.timers) == 2
+
+
+def test_http_unknown_target_404():
+    with ServerHarness() as h:
+        code, body = h.get("/status?target=nope")
+        assert code == 404
+        assert json.loads(body) == {"error": "no such target"}
+
+
+def test_http_root_serves_page_with_dashboard():
+    with ServerHarness() as h:
+        code, body = h.get("/")
+        assert code == 200
+        assert "data-dashboard='http://100.101.192.101:9161/'" in body

@@ -96,3 +96,142 @@ class Doorman:
             self._schedule_later(self._now() + BURST_INTERVAL_S, lambda: self._burst_tick(name))
         else:
             self._burst[name] = None
+
+
+# ---------------------------------------------------------------------------
+# HTTP service (Task 2). Bound to the Tailscale address only; no auth beyond
+# the tailnet — the dashboard it hands off to still requires pairing.
+#   GET  /                 waking page for the default target ("main")
+#   GET  /status?target=   {"up","burstActive","lastWakeAt"}
+#   GET  /wake?target=     start a burst (idempotent while one runs); returns status
+#   POST /schedule         {"target","times":[iso8601,...]} → replaces that target's wake times
+# ---------------------------------------------------------------------------
+import argparse  # noqa: E402
+import datetime as _dt  # noqa: E402
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+import urllib.parse  # noqa: E402
+import urllib.request  # noqa: E402
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
+
+DEFAULT_TARGET = "main"
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _parse_iso(s: str) -> float:
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    d = _dt.datetime.fromisoformat(s)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.timezone.utc)
+    return d.timestamp()
+
+
+def real_send_wake(t: Target) -> None:
+    subprocess.run(["sudo", "etherwake", "-i", t.iface, t.mac], check=False, timeout=10)
+
+
+def real_probe_up(t: Target) -> bool:
+    try:
+        with urllib.request.urlopen(t.dashboard, timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def real_schedule_later(when: float, fn: Callable[[], None]) -> None:
+    timer = threading.Timer(max(0.0, when - time.time()), fn)
+    timer.daemon = True
+    timer.start()
+
+
+def _make_handler(d: Doorman, page_html: str):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "doorman/1"
+
+        def _json(self, code: int, obj) -> None:
+            data = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        @staticmethod
+        def _target_name(q) -> str:
+            return (q.get("target") or [DEFAULT_TARGET])[0]
+
+        def do_GET(self) -> None:  # noqa: N802
+            url = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(url.query)
+            try:
+                if url.path == "/":
+                    t = d.targets[self._target_name(q)]
+                    body = page_html.replace("{dashboard}", t.dashboard).replace("{target}", t.name).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                elif url.path == "/status":
+                    self._json(200, d.status(self._target_name(q)))
+                elif url.path == "/wake":
+                    self._json(200, d.knock(self._target_name(q)))
+                else:
+                    self._json(404, {"error": "not found"})
+            except KeyError:
+                self._json(404, {"error": "no such target"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            url = urllib.parse.urlparse(self.path)
+            if url.path != "/schedule":
+                self._json(404, {"error": "not found"})
+                return
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+                times = [_parse_iso(s) for s in body.get("times", [])]
+                d.set_schedule(body.get("target", DEFAULT_TARGET), times)
+                self._json(200, {"ok": True, "count": len(times)})
+            except KeyError:
+                self._json(404, {"error": "no such target"})
+            except (ValueError, TypeError) as e:
+                self._json(400, {"error": "bad schedule: %s" % e})
+
+        def log_message(self, fmt, *args) -> None:  # journald gets one line per request
+            sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+    return Handler
+
+
+def serve(bind_ip: str, port: int, d: Doorman, page_html: Optional[str] = None) -> ThreadingHTTPServer:
+    if page_html is None:
+        with open(os.path.join(_HERE, "index.html"), "r", encoding="utf-8") as f:
+            page_html = f.read()
+    return ThreadingHTTPServer((bind_ip, port), _make_handler(d, page_html))
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(description="CynCo doorman: wake GPU boxes over the switch, hand the phone to the dashboard")
+    p.add_argument("--targets", default="/etc/doorman/targets.json")
+    p.add_argument("--bind", required=True, help="Tailscale address to bind (never 0.0.0.0)")
+    p.add_argument("--port", type=int, default=9170)
+    a = p.parse_args(argv)
+    if a.bind in ("0.0.0.0", "::"):
+        print("refusing to bind a wildcard address", file=sys.stderr)
+        return 2
+    d = Doorman(load_targets(a.targets), real_send_wake, real_probe_up, time.time, real_schedule_later)
+    srv = serve(a.bind, a.port, d)
+    print("doorman listening on %s:%d targets=%s" % (a.bind, a.port, list(d.targets)), file=sys.stderr)
+    srv.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
