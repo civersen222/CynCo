@@ -516,6 +516,7 @@ try {
           modelState: pm?.modelState ? pm.modelState() : null,
           busy,
           brain: brainEnabled(),
+          lens: lensEnabled(),
         }
       },
       applyEngineConfig: (patches) => {
@@ -580,7 +581,7 @@ try {
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 // (declared above the dashboard server for the setBrainLayer late-binding)
-const { brainEnabled } = await import('./brain/brainSwitch.js')
+const { brainEnabled, lensEnabled } = await import('./brain/brainSwitch.js')
 if (!brainEnabled()) console.log('[brain] off for this engine (LOCALCODE_BRAIN=off): no jlens sidecar, no activations consumer')
 if (config.provider === 'llama-cpp' && dashboardServer && brainEnabled()) {
   // The lens half of the J-Space viewer. Managed here so the workspace works

@@ -13,3 +13,14 @@ export function brainEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   if (v === undefined) return true
   return v.trim().toLowerCase() !== 'off'
 }
+
+/**
+ * The one read site of LOCALCODE_JLENS. The J-Space lens sidecar is a Python
+ * process that holds gigabytes of RAM, so it is OFF unless the owner asks
+ * (`LOCALCODE_JLENS=on`) — owner's decision 2026-11-08. The entropy tier and
+ * the activation tap are unaffected; `sidecarDecision` names this switch in
+ * its refusal so turning the lens on is one variable away.
+ */
+export function lensEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.LOCALCODE_JLENS ?? '').trim().toLowerCase() === 'on'
+}
