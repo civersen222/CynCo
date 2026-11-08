@@ -4,6 +4,7 @@ import { spawn } from 'child_process'
 import { join } from 'path'
 import { writeTaskFile, readOutcome } from './taskFile.js'
 import { clearGpuBusy, writeGpuBusy } from './gpuBusyFile.js'
+import { activity as processActivity, type ActivityRegistry } from '../power/activity.js'
 import type { TaskFileInput, TaskOutcome } from './types.js'
 
 export class GpuBusyError extends Error {
@@ -93,6 +94,8 @@ export interface TaskRunnerOptions {
   isGpuBusyImpl?: () => Promise<boolean>
   /** Where the one-shot's GPU claim is written (default <cyncoHome>/gpu-busy.json). Tests point it at a temp dir. */
   gpuBusyPath?: string
+  /** Where the one-shot registers as an open activity (hold-awake). Default: the process-wide registry. */
+  activity?: ActivityRegistry
 }
 
 export class TaskRunner {
@@ -136,6 +139,9 @@ export class TaskRunner {
     // it instead of killing this child's llama-server (F182). Cleared in the
     // finally below on every exit path, including the timeout kill.
     const busyPath = this.opts.gpuBusyPath
+    // A one-shot is an open activity for its whole lifetime: the PC stays awake
+    // (engine/power/awake.ts) until the child has exited or been killed.
+    const endActivity = (this.opts.activity ?? processActivity).begin('oneshot', input.triggerId)
     if (child.pid) {
       try {
         writeGpuBusy({ task: input.missionId, triggerId: input.triggerId, startedAt: new Date().toISOString(), timeoutMs: input.timeoutMs, pid: child.pid }, busyPath)
@@ -193,6 +199,7 @@ export class TaskRunner {
     }
     return outcome
     } finally {
+      endActivity()
       try {
         clearGpuBusy(busyPath)
       } catch (e) {

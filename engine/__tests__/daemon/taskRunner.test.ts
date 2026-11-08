@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { TaskRunner, isGpuBusy } from '../../daemon/taskRunner.js'
 import type { TaskFileInput } from '../../daemon/types.js'
+import { ActivityRegistry } from '../../power/activity.js'
 
 const STUB = join(import.meta.dirname, 'fixtures', 'stubEngine.mjs')
 
@@ -163,6 +164,22 @@ describe('TaskRunner gpu-busy.json', () => {
       const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: busyPath })
       await runner.run(makeInput(dir, 'do the thing'))
       expect(existsSync(busyPath)).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('TaskRunner activity (hold-awake)', () => {
+  it('keeps a oneshot activity open for the child\'s lifetime and closes it after, including on timeout', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const registry = new ActivityRegistry()
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: join(dir, 'b.json'), activity: registry })
+      const running = runner.run({ ...makeInput(dir, 'HANG please'), timeoutMs: 1500 })
+      await new Promise((r) => setTimeout(r, 400))
+      expect(registry.count()).toBe(1)
+      expect(registry.snapshot()[0]).toMatchObject({ kind: 'oneshot', label: 't1' })
+      await running
+      expect(registry.count()).toBe(0)
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

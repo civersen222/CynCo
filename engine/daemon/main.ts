@@ -12,6 +12,13 @@ import { TaskRunner } from './taskRunner.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome } from '../paths.js'
+import { activity } from '../power/activity.js'
+import { wireHoldAwake } from '../power/awake.js'
+
+// Wakefulness (slice 3): while a one-shot runs, the PC may not sleep. The
+// daemon itself holds nothing while idle, so Windows' own timer can sleep the
+// box between triggers; the doorman wakes it ahead of the next one.
+wireHoldAwake(activity, { log: (line) => console.log(`[daemon] ${line}`) })
 
 const TICK_MS = 30000
 

@@ -344,6 +344,13 @@ const wsServer = new LocalCodeWSServer({
 
 // Initialize audit logger
 import { AuditLogger } from './audit/auditLogger.js'
+import { activity } from './power/activity.js'
+import { wireHoldAwake } from './power/awake.js'
+
+// Wakefulness (slice 3): a turn in progress (interactive or one-shot) keeps the
+// PC awake; with nothing open, Windows' idle timer may sleep it. Process-wide,
+// so it covers both the interactive loop below and the --run-task path above.
+wireHoldAwake(activity, { log: (line) => console.log(line) })
 const auditSessionId = `session-${Date.now()}`
 AuditLogger.init(auditSessionId, process.cwd(), config.model)
 
