@@ -141,6 +141,19 @@ import { bootstrapProvider } from './bootstrapProvider.js'
   const job = await installKillOnCloseJob()
   console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
 }
+// Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
+// the headless phone engine before loading its own model and restarts it on
+// exit — owner's decision 2026-11-08 (engine/power/siblingEngine.ts). The
+// phone engine itself and one-shot children never do this.
+let siblingRelease: (() => Promise<void>) | null = null
+{
+  const { lazySettings } = await import('./llama/lazyLoad.js')
+  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner } = await import('./power/siblingEngine.js')
+  if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform }) === 'handoff') {
+    const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), log: (l) => console.log(l) })
+    if (handoff.wasRunning) siblingRelease = handoff.release
+  }
+}
 const { provider, contextLength } = await bootstrapProvider(config)
 
 console.log(`[localcode] Context budget: ${contextLength} tokens`)
@@ -473,6 +486,13 @@ try {
       getS4Reflector: () => loop.getGovernance().getReflector(),
       // F57: the one fact a harness outside this process cannot infer.
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
+      // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
+      getAwayRuns: () => {
+        const { collectAwayRuns } = require('./daemon/awayFeed.js')
+        const { cyncoHome } = require('./paths.js')
+        const { join } = require('path')
+        return collectAwayRuns(process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions'))
+      },
       getSessionInfo: () => {
         let modelName = config.model || ''
         // For llama-cpp provider, show the actual GGUF file + spec type
@@ -495,6 +515,8 @@ try {
           model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd(),
           modelState: pm?.modelState ? pm.modelState() : null,
           busy,
+          brain: brainEnabled(),
+          lens: lensEnabled(),
         }
       },
       applyEngineConfig: (patches) => {
@@ -559,7 +581,9 @@ try {
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 // (declared above the dashboard server for the setBrainLayer late-binding)
-if (config.provider === 'llama-cpp' && dashboardServer) {
+const { brainEnabled, lensEnabled } = await import('./brain/brainSwitch.js')
+if (!brainEnabled()) console.log('[brain] off for this engine (LOCALCODE_BRAIN=off): no jlens sidecar, no activations consumer')
+if (config.provider === 'llama-cpp' && dashboardServer && brainEnabled()) {
   // The lens half of the J-Space viewer. Managed here so the workspace works
   // without the four-step README ritual nobody performed; the consumer below
   // re-probes, so the tier upgrades on its own once the artifacts load.
@@ -645,6 +669,8 @@ async function cleanShutdown(signal: string) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
   }
+  // Give the GPU back to the phone engine (after our llama-server is gone, so its lazy load finds a free port).
+  if (siblingRelease) await siblingRelease()
   process.exit(0)
 }
 process.on('SIGTERM', () => cleanShutdown('SIGTERM'))

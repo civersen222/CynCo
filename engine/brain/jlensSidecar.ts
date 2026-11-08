@@ -18,6 +18,7 @@ import { spawn, execSync, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import { cyncoHome } from '../paths.js'
+import { lensEnabled } from './brainSwitch.js'
 
 const SIDECAR_MODULE = 'jlens_service.server'
 
@@ -41,7 +42,12 @@ export type SidecarDecision =
 export function sidecarDecision(env: {
   jlensUrl?: string
   artifactsPresent: boolean
+  /** LOCALCODE_JLENS=on (brainSwitch.ts). Omitted = on, for callers/tests that decide only on URL + artifacts. */
+  lensOn?: boolean
 }): SidecarDecision {
+  if (env.lensOn === false) {
+    return { start: false, reason: 'lens off by default (the sidecar holds gigabytes of RAM) — set LOCALCODE_JLENS=on to start it' }
+  }
   const url = env.jlensUrl
   if (url && !/^https?:\/\/(127\.0\.0\.1|localhost):9163\/?$/.test(url)) {
     return { start: false, reason: `LOCALCODE_JLENS_URL=${url} — externally managed lens, not starting one` }
@@ -146,6 +152,7 @@ export function startJlensSidecar(opts: {
   const decision = sidecarDecision({
     jlensUrl: process.env.LOCALCODE_JLENS_URL,
     artifactsPresent: existsSync(join(jlensArtifactsDir(), 'wu.pt')),
+    lensOn: lensEnabled(),
   })
   if (!decision.start) {
     log(`[jlens] sidecar not started: ${decision.reason}`)

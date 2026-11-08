@@ -134,6 +134,8 @@ export interface DashboardDeps {
    * count), null before any turn has run — never 0 (F16).
    */
   getSessionCounters?: () => { turns: number; contextUsed: number | null }
+  /** Wakefulness slice 4: the missions' recent runs for the phone's Away tab (`GET /api/away`); unwired = `{ runs: [] }`. */
+  getAwayRuns?: () => import('../daemon/awayFeed.js').AwayRun[]
   /**
    * The approval cards and AskUser questions the engine is waiting on right
    * now (`ConversationLoop.pendingDecisions`). Served as `pending` on
@@ -696,6 +698,8 @@ export class DashboardServer {
               return this.getSessions()
             case '/api/session':
               return jsonResponse(this.getSession())
+            case '/api/away':
+              return jsonResponse({ runs: this.deps.getAwayRuns?.() ?? [] })
             case '/api/run':
               // `null` when the engine did not wire the dep, and it must stay
               // distinguishable from `{processing:false}`. A caller that reads

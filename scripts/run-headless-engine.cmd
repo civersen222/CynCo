@@ -6,6 +6,8 @@ rem permanent user variable (127.0.0.1,<tailscale ip>), so the phone listener bi
 rem Registered/started/stopped by scripts\cynco-services.ps1 (service name: engine).
 set LOCALCODE_PROVIDER=llama-cpp
 set LOCALCODE_LLAMA_LAZY=true
+rem No brain sidecar / activation tap on the phone engine (nobody watches the Brain tab from a phone).
+set LOCALCODE_BRAIN=off
 if "%LOCALCODE_LLAMA_IDLE_UNLOAD_MS%"=="" set LOCALCODE_LLAMA_IDLE_UNLOAD_MS=900000
 cd /d C:\Users\civer\localcode
 bun engine\main.ts >> "%USERPROFILE%\.cynco\engine-headless.log" 2>&1
