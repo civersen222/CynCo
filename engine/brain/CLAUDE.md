@@ -6,6 +6,7 @@ The Brain is LocalCode's telemetry layer on top of the model's own token stream:
 ## Key files
 | File | Role |
 |---|---|
+| `brainSwitch.ts` | `brainEnabled()` — the one read site of `LOCALCODE_BRAIN`: `off` keeps `main.ts` from starting the sidecar and the activations consumer (the headless phone engine sets it); unset or anything else = auto-detect as before. `/api/session` reports it as `brain`. |
 | `activationsConsumer.ts` | Tier 3: polls `/activations` on the llama-server, decodes fp32 payloads, runs jlens readouts, auto-detects/re-probes the tier, broadcasts `brain.tier`/`brain.workspace`. |
 | `brainRecorder.ts` | Persists per-turn entropy and divergence telemetry to `<trajectoryDir>/brain/<taskId>.jsonl`, joinable to trajectory rows by `(task_id, turn_idx)`. |
 | `jlensClient.ts` | HTTP client for the jlens sidecar's `/health` and `/readout` endpoints; null-degrades on any failure. |
