@@ -9,7 +9,7 @@ Implements sub-agents — bounded, forked conversation loops that the main loop 
 | `advisorRouter.ts` | VSM S2–S5 advisor definitions; decides which advisors fire and formats their advice into a prompt block |
 | `prism.ts` | PRISM persona rules (role identity, no superlatives) and prompt assembly for agent personas |
 | `queue.ts` | `AgentTask` type and `AgentQueue` — FIFO pending/completed task bookkeeping |
-| `runner.ts` | `SubAgentRunner` — pulls tasks off an `AgentQueue` and executes them via an injected run function |
+| `runner.ts` | `SubAgentRunner` — pulls tasks off an `AgentQueue` and executes them via an injected run function. No production caller since 2026-11-06: the loop's constructor held a stub that returned a canned string and was never read (GLM review A2); real sub-agents go through `tools/impl/spawnAgent.ts` → `subAgent.ts`. Wire or remove is a `docs/NOW.md` backlog item. |
 | `s2Coordinator.ts` | `S2Coordinator` — GPU-based schedule decisions, algedonic (stuck/failure) handling, agent lifecycle and kill enforcement |
 | `subAgent.ts` | `SubAgent` — the actual forked model loop: builds prompt, streams model output, executes tools, returns a result |
 | `trustTier.ts` | `getToolsForTier` — maps a trust tier to the allowed tool set |

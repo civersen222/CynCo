@@ -7,6 +7,10 @@
 type SafetyResult = { safe: boolean; reason?: string }
 
 const BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // The engine's own credentials (S1, 2026-11-06). The file tools refuse the
+  // same path by its resolved location (secretPaths.ts); the shell is judged on
+  // its spelling, so a CYNCO_HOME elsewhere is the resolved check's to catch.
+  { pattern: /[\\/]\.cynco[\\/]+tokens\.json\b/i, reason: "Access to the engine's token file (~/.cynco/tokens.json) is blocked" },
   { pattern: /\b(cat|less|more|head|tail|nano|vim?|code)\b.*\.env\b/, reason: 'Access to .env files is blocked — may contain secrets' },
   { pattern: />>?\s*\.env/, reason: 'Writing to .env files is blocked' },
   { pattern: /~\/\.ssh\//, reason: 'Access to SSH keys is blocked' },

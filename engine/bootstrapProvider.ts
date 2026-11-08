@@ -16,7 +16,7 @@ import type { Provider } from './provider.js'
 import type { LocalCodeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
 import { cyncoHome } from './paths.js'
-import { isUnattendedMission } from './missionEnv.js'
+import { isUnattendedMission, uncertaintyTraceEnabled } from './missionEnv.js'
 import { mkdirSync } from 'fs'
 import { basename, join } from 'path'
 
@@ -207,6 +207,8 @@ export async function bootstrapProvider(
 
       // 4. Create provider
       const { LlamaCppProvider } = await import('./llama/provider.js')
+      const uncertaintyTrace = uncertaintyTraceEnabled()
+      if (!uncertaintyTrace) console.log('[llama-cpp] uncertainty trace (per-token logprobs) off for this run — unattended; set LOCALCODE_ENTROPY_TRACE=1 to force it')
       provider = new LlamaCppProvider({
         primaryUrl: `http://127.0.0.1:${config.port}`,
         adapterUrl: config.adapterUrl,
@@ -215,6 +217,7 @@ export async function bootstrapProvider(
         adaptersDir,
         processManager,
         ...(ensureReady ? { ensureReady } : {}),
+        uncertaintyTrace,
       })
 
       if (lazy.idleUnloadMs > 0) {

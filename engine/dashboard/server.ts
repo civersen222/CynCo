@@ -326,7 +326,7 @@ function jsonResponse(data: unknown, status = 200, headers: Record<string, strin
  */
 function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }): Response {
   if (r.status === 200 && r.bytes) {
-    return new Response(r.bytes, {
+    return new Response(new Uint8Array(r.bytes), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
@@ -352,7 +352,7 @@ function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }
  */
 function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; json?: unknown }): Response {
   if (r.status === 200 && r.bytes && r.type) {
-    return new Response(r.bytes, {
+    return new Response(new Uint8Array(r.bytes), {
       status: 200,
       headers: {
         'Content-Type': r.type,
@@ -576,7 +576,7 @@ export class DashboardServer {
       hostname: this._hostname,
       // Note: after Bun.serve() this.server.port reflects the actual bound port
       // (important when port=0 is used for OS-assigned ephemeral ports in tests).
-      fetch: async (req, server) => {
+      fetch: async (req: Request, server: Server<DashboardSocketData>) => {
         const url = new URL(req.url)
         const pathname = url.pathname
         const method = req.method

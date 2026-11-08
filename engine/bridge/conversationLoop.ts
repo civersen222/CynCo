@@ -42,7 +42,10 @@ import { DecisionLogger } from '../decisions/logger.js'
 import { ContextCompressor, FileOperationTracker } from '../context/compressor.js'
 import type { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleAuthority, ruleVerdictsPath, isEnforced, recommendationAutoApplyMs } from '../s5/ruleAuthority.js'
-import { SubAgentRunner } from '../agents/runner.js'
+import { s5DecisionEvent } from '../s5/decisionEvent.js'
+import { toPerformanceHealth } from '../vsm/performanceMetrics.js'
+import type { Message as CanonicalMessage } from '../types.js'
+import type { Handoff } from '../memory/types.js'
 import { S2Coordinator } from '../agents/s2Coordinator.js'
 import { SubAgent } from '../agents/subAgent.js'
 import type { SubAgentConfig, SubAgentResult } from '../agents/types.js'
@@ -533,7 +536,6 @@ export class ConversationLoop {
   // Phase 4: per-rule earned S5 authority, read once per session from the
   // campaign runner's rule-verdict file (legacy when there is none).
   private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
-  private agentRunner: SubAgentRunner
   private s2: S2Coordinator
   private runningAgents = new Map<string, SubAgent>()
   private agentResults = new Map<string, SubAgentResult>()
@@ -755,11 +757,6 @@ export class ConversationLoop {
     // under a pin, so this is the only way they can load.
     if (opts.allowedTools) this.loadedTools.surface(opts.allowedTools.filter(n => ALL_TOOLS.some(t => t.name === n)))
     this.getBrain = opts.getBrain
-    this.agentRunner = new SubAgentRunner(async (task) => {
-      // Simplified sub-agent execution — full execution comes later
-      return `[SubAgent completed] ${task.task}`
-    })
-
     this.s2 = new S2Coordinator({
       pollGpuUtil: async () => {
         try {
@@ -1703,7 +1700,8 @@ export class ConversationLoop {
     // the dashboard forwards a page frame whole, so a token holder could send
     // them, and they are dropped here, by name, before anything reads them.
     if (this.project && opts) {
-      const dropped = (['contract', 'readOnlyPaths', 'invariants', 'unattended'] as const).filter(k => opts[k] !== undefined)
+      const given = opts
+      const dropped = (['contract', 'readOnlyPaths', 'invariants', 'unattended'] as const).filter(k => given[k] !== undefined)
       if (dropped.length) console.log(`[projects] ignored in a project chat: ${dropped.join(', ')}`)
       opts = undefined
     }
@@ -2311,7 +2309,7 @@ export class ConversationLoop {
           homeostatConsecutiveUnstable: (govReport as any).consecutiveUnstable ?? 0,
           driftDetected: pm?.isDriftDetected?.() ?? false,
           driftDirection: pm?.isDriftDetected?.() ? 'degrading' : null,
-          performanceHealth: pm?.getHealthStatus?.() === 'green' ? 'healthy' : pm?.getHealthStatus?.() === 'yellow' ? 'warning' : 'critical',
+          performanceHealth: toPerformanceHealth(pm?.getHealthStatus?.() ?? 'green'),
           productivityRatio: (pm as any)?.getProductivity?.() ?? 0.8,
           recommendedToolMode: this.governance.getRecommendedToolMode?.() ?? null,
           heterarchyAuthority: (() => {
@@ -2321,8 +2319,6 @@ export class ConversationLoop {
             if (lower === 's3' || lower === 's4' || lower === 's5') return lower as 's3' | 's4' | 's5'
             return null
           })(),
-          agreementRatio: (govReport as any).agreementRatio ?? 1.0,
-          observerDivergence: (govReport as any).observerDivergence ?? null,
           demotedTools: this.executor.getToolScorer?.()?.getDemotedTools() ?? [],
           promptDifficulty: this.difficultyClassifier.getLevel(),
           // P4.5 Phase 3: STATE for proactive surfacing. Only classify when the
@@ -2346,18 +2342,8 @@ export class ConversationLoop {
 
         // Emit S5 decision to dashboard (ruleIds/enforced feed the mission
         // outcome ledger — step 2 needs per-rule attribution)
-        this.emit({
-          type: 's5.decision' as any,
-          reasoning: decision.reasoning,
-          contextAction: decision.contextAction,
-          toolRestriction: decision.toolRestriction,
-          modelSwitch: decision.modelSwitch,
-          ruleIds: decision.ruleIds ?? [],
-          enforced,
-          authority,
-          timestamp: Date.now(),
-        })
-        console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.toolRestriction ?? 'none'} (${decision.reasoning})`)
+        this.emit(s5DecisionEvent(decision, { enforced, authority }))
+        console.log(`[s5] Decision: context=${decision.contextAction} tools=${decision.tools?.join(', ') ?? 'none'} (${decision.reasoning})`)
 
         // L3: APPLY S5 decisions — hard enforcement, not advisory
         if (decision.contextAction === 'compact' && !enforced) {
@@ -2861,7 +2847,7 @@ export class ConversationLoop {
     }
   }
 
-  buildHandoff(): Record<string, unknown> {
+  buildHandoff(): Handoff {
     // Extract first user message as the goal
     const firstUser = this.messages.find(m => m.role === 'user')
     const goal = firstUser?.content
@@ -2987,7 +2973,7 @@ export class ConversationLoop {
         body: JSON.stringify(buildSideQueryBody({
           prompt,
           maxTokens,
-          model: this.config.model,
+          model: this.config.model!,
           system,
         })),
       })
@@ -3363,8 +3349,15 @@ export class ConversationLoop {
             deps,
           })
           for await (const evt of routingGen) {
-            if (evt.type === 'tool_use' && evt.name === 'select_category') {
-              const category = (evt as any).input?.category ?? 'all'
+            // localCallModel yields 'stream_event' | 'assistant' | 'system'; the
+            // selector call, if any, is a tool_use block on the assembled assistant
+            // message. This used to test `evt.type === 'tool_use'`, which no event
+            // has, so a model that DID call the selector read as having ignored it
+            // and the stage-1 call was paid for nothing (routingStageOne.test.ts).
+            if (evt.type !== 'assistant') continue
+            const selector = evt.message.content.find((b: any) => b.type === 'tool_use' && b.name === 'select_category') as { input?: { category?: string } } | undefined
+            if (selector) {
+              const category = selector.input?.category ?? 'all'
               console.log(`[routing] Category selected: ${category}`)
               const { ALL_TOOLS } = await import('../tools/registry.js')
               // Intersect. `getToolsForCategory(category, ALL_TOOLS)` is a fresh
@@ -3388,7 +3381,7 @@ export class ConversationLoop {
               routed = true
               break
             }
-            if (evt.type === 'message_stop') break // model didn't use the tool — fall through to all tools
+            break // the assistant message came without the selector — fall through to all tools
           }
           if (!routed) {
             // The stage-1 call cost a full prefill and a full generation and
@@ -3461,8 +3454,6 @@ export class ConversationLoop {
               productivityRatio: 0,
               recommendedToolMode: null,
               heterarchyAuthority: null,
-              agreementRatio: (govReport as any).agreementRatio ?? 1.0,
-              observerDivergence: (govReport as any).observerDivergence ?? null,
               demotedTools: [],
               promptDifficulty: this.difficultyClassifier.getLevel(),
             })
@@ -3474,18 +3465,7 @@ export class ConversationLoop {
             const reevalEnforce = isS5EnforcementEnabled()
             const reevalAuthority = decision.authority ?? this.ruleAuthority.authorityOf(decision.ruleIds ?? [])
             const reevalEnforced = isEnforced(reevalEnforce, reevalAuthority)
-            this.emit({
-              type: 's5.decision' as any,
-              reasoning: decision.reasoning,
-              contextAction: decision.contextAction,
-              toolRestriction: (decision as any).toolRestriction,
-              modelSwitch: (decision as any).modelSwitch,
-              ruleIds: decision.ruleIds ?? [],
-              enforced: reevalEnforced,
-              authority: reevalAuthority,
-              source: 'stuck-reeval',
-              timestamp: Date.now(),
-            })
+            this.emit(s5DecisionEvent(decision, { enforced: reevalEnforced, authority: reevalAuthority, source: 'stuck-reeval' }))
             const reeval = applyStuckReevalRestriction(iterationTools, decision.tools, reevalEnforced)
             if (reeval.outcome === 'withheld') {
               const why = reevalEnforce ? 'advisory — rule authority not earned' : 'capped at recommend'
@@ -4264,7 +4244,8 @@ export class ConversationLoop {
           console.log(`[s2] Summary follow-up queued`)
           this.emit({ type: 'summary.injected', toolsUsed: Array.from(new Set(toolsUsedInSession)) })
           const summaryMsg = buildSummaryInjectionMessage(toolsForSummary)
-          this.steering.followUp(summaryMsg.content[0].text, 'summary')
+          const summaryBlock = summaryMsg.content[0]
+          this.steering.followUp(summaryBlock.type === 'text' ? summaryBlock.text : '', 'summary')
         }
 
         // S2: Check for follow-up messages
@@ -4521,8 +4502,14 @@ export class ConversationLoop {
     this.emit({ type: 'message.complete', messageId: '', stopReason: 'max_iterations' })
   }
 
-  getMessages(): Message[] {
-    return [...this.messages]
+  /**
+   * The conversation as the canonical `types.ts` Message. The loop's private
+   * Message type is looser (any content-block shape) so blocks can be assembled
+   * in place; everything that leaves the loop — the trajectory recorder, the
+   * one-shot runner, the ablation metrics — reads this shape. One cast, here.
+   */
+  getMessages(): CanonicalMessage[] {
+    return [...this.messages] as unknown as CanonicalMessage[]
   }
 
   startWorkflow(workflow: WorkflowDefinition): void {
@@ -4746,7 +4733,7 @@ export class ConversationLoop {
         cwd: this.executor['cwd'],
         stdio: ['pipe', 'pipe', 'pipe'],
       }).toString()
-      const tracked = out.split('\n').filter(l => l.trim() && !l.startsWith('??'))
+      const tracked = out.split('\n').filter((l: string) => l.trim() && !l.startsWith('??'))
       return tracked.length === 0
     } catch {
       return null
@@ -4795,7 +4782,7 @@ export class ConversationLoop {
     // is already on disk. Bailing out when the snapshot cannot be written left
     // the task unlabeled, and an unlabeled trajectory is invisible to the
     // dataset builder — the turns are lost over a failure in something else.
-    recorder.endTask(this.messages)
+    recorder.endTask(this.getMessages())
 
     // Named rather than passed inline so it can be persisted alongside the
     // reward. Finding (z): this object was built here, consumed once and

@@ -1,4 +1,5 @@
-import type { Provider, CompletionRequest, CompletionResponse, ModelCapabilities, ModelInfo, StreamEvent } from '../provider.js'
+import type { Provider, CompletionRequest, ModelCapabilities, ModelInfo } from '../provider.js'
+import type { CompletionResponse, StreamEvent } from '../types.js'
 import { toOpenAIMessages, toOpenAITools, fromOpenAIStreamChunk, parseSSELine, fromOpenAIResponse } from '../ollama/format.js'
 import { resolveCapabilities } from '../ollama/probe.js'
 

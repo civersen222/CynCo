@@ -33,12 +33,9 @@ function authFetch(url: string, init: RequestInit = {}): Promise<Response> {
 }
 
 
-// Use ports well away from the main test suite (port 19161)
-const DEFAULT_PORT = 19171
-const OVERRIDE_PORT = 19172
-const NEGATIVE_PORT = 19173
-const TRAVERSAL_PORT = 19174
-const CORS_PORT = 19175
+// Every server here asks for port 0 and reads the bound port back with
+// getPort(): a literal port is shared with whichever other test file picked the
+// same number, and the loser walks to the next port and times out (T7).
 
 describe('dashboard server hostname binding', () => {
   let server: DashboardServer
@@ -60,14 +57,14 @@ describe('dashboard server hostname binding', () => {
   test('defaults to 127.0.0.1 when LOCALCODE_DASHBOARD_HOST is unset', async () => {
     delete process.env.LOCALCODE_DASHBOARD_HOST
 
-    server = new DashboardServer({ port: DEFAULT_PORT, tokens: _tokens })
+    server = new DashboardServer({ port: 0, tokens: _tokens })
 
     // getHostname() returns the stored value used in Bun.serve()
     expect(server.getHostname()).toBe('127.0.0.1')
 
     // HTTP request to 127.0.0.1 must succeed
     await new Promise(r => setTimeout(r, 100))
-    const res = await authFetch(`http://127.0.0.1:${DEFAULT_PORT}/`)
+    const res = await authFetch(`http://127.0.0.1:${server!.getPort()}/`)
     expect(res.status).toBe(200)
     const body = await res.text()
     expect(body).toContain('CynCo Governance Dashboard')
@@ -86,13 +83,13 @@ describe('dashboard server LOCALCODE_DASHBOARD_HOST override', () => {
     process.env.LOCALCODE_DASHBOARD_HOST = '0.0.0.0'
 
     try {
-      server = new DashboardServer({ port: OVERRIDE_PORT, tokens: _tokens })
+      server = new DashboardServer({ port: 0, tokens: _tokens })
 
       expect(server.getHostname()).toBe('0.0.0.0')
 
       // HTTP request must succeed (0.0.0.0 binds all interfaces, localhost still works)
       await new Promise(r => setTimeout(r, 100))
-      const res = await authFetch(`http://127.0.0.1:${OVERRIDE_PORT}/`)
+      const res = await authFetch(`http://127.0.0.1:${server!.getPort()}/`)
       expect(res.status).toBe(200)
     } finally {
       if (saved !== undefined) {
@@ -136,14 +133,14 @@ describe('dashboard server negative binding (non-loopback refused)', () => {
     delete process.env.LOCALCODE_DASHBOARD_HOST
 
     try {
-      server = new DashboardServer({ port: NEGATIVE_PORT, tokens: _tokens })
+      server = new DashboardServer({ port: 0, tokens: _tokens })
       expect(server.getHostname()).toBe('127.0.0.1')
 
       await new Promise(r => setTimeout(r, 100))
 
       // Fetching via the external IP must be refused (connection error, not a response)
       await expect(
-        authFetch(`http://${externalIP}:${NEGATIVE_PORT}/`, { signal: AbortSignal.timeout(2000) })
+        authFetch(`http://${externalIP}:${server!.getPort()}/`, { signal: AbortSignal.timeout(2000) })
       ).rejects.toThrow()
     } finally {
       server?.stop()
@@ -171,7 +168,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'cynco-dash-sessions-'))
-    server = new DashboardServer({ port: TRAVERSAL_PORT, deps: { sessionsDir: dir }, tokens: _tokens })
+    server = new DashboardServer({ port: 0, deps: { sessionsDir: dir }, tokens: _tokens })
   })
 
   afterEach(() => {
@@ -187,7 +184,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
     ['a null byte', 'abc%00.jsonl'],
   ])('refuses %s instead of reading a file', async (_name, sid) => {
     await new Promise(r => setTimeout(r, 100))
-    const res = await authFetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/${sid}/transcript`)
+    const res = await authFetch(`http://127.0.0.1:${server!.getPort()}/api/sessions/${sid}/transcript`)
     // 400, not an empty 200: "no such session" and "that is not a session id"
     // are different answers and the caller must be able to tell them apart.
     expect(res.status).toBe(400)
@@ -196,7 +193,7 @@ describe('the transcript route cannot walk out of the sessions directory', () =>
   test('still reads a transcript for a well-formed session id', async () => {
     writeFileSync(join(dir, 'sess-1.jsonl'), JSON.stringify({ role: 'user', content: 'hi' }) + '\n')
     await new Promise(r => setTimeout(r, 100))
-    const res = await authFetch(`http://127.0.0.1:${TRAVERSAL_PORT}/api/sessions/sess-1/transcript`)
+    const res = await authFetch(`http://127.0.0.1:${server!.getPort()}/api/sessions/sess-1/transcript`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual([{ role: 'user', content: 'hi' }])
   })
@@ -256,7 +253,7 @@ describe('responses do not grant cross-origin reads', () => {
   let server: DashboardServer
 
   beforeEach(() => {
-    server = new DashboardServer({ port: CORS_PORT, tokens: _tokens })
+    server = new DashboardServer({ port: 0, tokens: _tokens })
   })
 
   afterEach(() => {
@@ -270,7 +267,7 @@ describe('responses do not grant cross-origin reads', () => {
     ['the preflight', '/config/engine', 'OPTIONS'],
   ])('sends no ACAO header on %s', async (_name, path, method) => {
     await new Promise(r => setTimeout(r, 100))
-    const res = await authFetch(`http://127.0.0.1:${CORS_PORT}${path}`, {
+    const res = await authFetch(`http://127.0.0.1:${server!.getPort()}${path}`, {
       method,
       headers: { Origin: 'http://evil.example' },
     })

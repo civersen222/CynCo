@@ -65,7 +65,7 @@ export class HomeostatIntegration {
   readonly latencyTrend: InstanceType<typeof homeostat.TrendTracker>
 
   private nodeId: InstanceType<typeof NodeId>
-  private lastBalance: InstanceType<typeof HomeostatBalance> | null = null
+  private lastBalance: HomeostatBalance | null = null
   private perturbationCount = 0
   /** The pressures last observed (levels, not deviations). */
   private lastPressures: { s3: number; s4: number } = { s3: 0, s4: 0 }
@@ -185,7 +185,7 @@ export class HomeostatIntegration {
     const s5Engagement = this.isStable() ? 0.3 : 0.8
 
     // S5 favor: lean toward whichever system needs support
-    let s5Favor: InstanceType<typeof homeostat.S5Favor>
+    let s5Favor: homeostat.S5Favor
     if (s3 > s4 + 0.2) {
       s5Favor = homeostat.S5Favor.S4Intelligence // operations overloaded, need more intelligence
     } else if (s4 > s3 + 0.2) {
@@ -211,7 +211,7 @@ export class HomeostatIntegration {
    * Null rather than a default: before the first turn there are no pressures,
    * and "no reading" is not the same as "balanced" even where they act alike.
    */
-  getLastBalance(): InstanceType<typeof HomeostatBalance> | null {
+  getLastBalance(): HomeostatBalance | null {
     return this.lastBalance
   }
 

@@ -1,4 +1,5 @@
 import type { ToolImpl } from '../types.js'
+import { wrapUntrusted } from '../untrusted.js'
 
 /**
  * One part of a host, in any spelling `inet_aton` accepts: decimal, 0x-hex or
@@ -179,7 +180,8 @@ export const webFetchTool: ToolImpl = {
       if (!resp.ok) return { output: `HTTP ${resp.status}: ${resp.statusText}`, isError: true }
       let text = await resp.text()
       if (text.length > maxLen) text = text.slice(0, maxLen) + `\n... (truncated at ${maxLen} chars)`
-      return { output: text, isError: false }
+      // A page is data, however it is worded (S4, 2026-11-06): see tools/untrusted.ts.
+      return { output: wrapUntrusted(url, text), isError: false }
     } catch (err) {
       return { output: `Fetch error: ${err instanceof Error ? err.message : String(err)}`, isError: true }
     }

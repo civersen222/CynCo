@@ -12,6 +12,16 @@ import { metrics } from '../cybernetics-core/src/index.js'
 import { getEventBus } from './eventBus.js'
 import { events, NodeId, TrendDirection } from '../cybernetics-core/src/index.js'
 
+/**
+ * The S5 reading of the health colour. Amber is a warning, not a failure: rule
+ * I3 reads 'warning' and C5 reads 'critical'. The loop used to compare the
+ * colour with 'yellow', so amber reported as critical and 'warning' was never
+ * produced (verificationAndHealth.test.ts).
+ */
+export function toPerformanceHealth(status: 'red' | 'amber' | 'green'): 'healthy' | 'warning' | 'critical' {
+  return status === 'green' ? 'healthy' : status === 'amber' ? 'warning' : 'critical'
+}
+
 export class PerformanceMetricsIntegration {
   /** CUSUM detector for tool failure rate drift */
   readonly failureCusum: InstanceType<typeof metrics.CusumDetector>

@@ -50,7 +50,7 @@ async function main(argv: string[]): Promise<number> {
   const pics = service.annotate(spec, { project: { dir, slug: meta.slug, chatFile: 'check.jsonl' }, toolId: 'check', surfaceId: 'check', cutOff: false })
   console.log(pics.note ?? '(no note)')
   const state = spec.elements.img.image
-  if (!state || state.status === 'off') { console.log(`not queued: ${state ? state.reason : 'no annotation'}`); return 1 }
+  if (!state || state.status === 'off' || state.status === 'file') { console.log(`not queued: ${state ? (state.status === 'off' ? state.reason : `project file ${state.path}`) : 'no annotation'}`); return 1 }
   pics.start()
   const end = await ended
   await service.whenIdle()

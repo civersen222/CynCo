@@ -36,6 +36,21 @@ class TestEngineBridgeConnect:
         with pytest.raises(ConnectionError, match="Could not connect"):
             asyncio.run(bridge.connect(retries=1, delay=0.01))
 
+    def test_a_refused_connect_says_how_to_start_an_engine(self):
+        """`-p <dir>` connects to an engine the user must already have started.
+
+        "Could not connect to engine on port 19999" names the symptom and
+        nothing else, so the user is left guessing whether the TUI was meant
+        to start one. Say how: the project picker launches it, and
+        `bun engine/main.ts` runs it alone (GLM review O3a).
+        """
+        bridge = EngineBridge(port=19999)
+        with pytest.raises(ConnectionError) as excinfo:
+            asyncio.run(bridge.connect(retries=1, delay=0.01))
+        message = str(excinfo.value)
+        assert "python -m localcode_tui.app" in message
+        assert "bun engine/main.ts" in message
+
     def test_a_refused_upgrade_raises_ConnectionError_without_retrying(self):
         """The engine answers an unauthorized upgrade with 401.
 

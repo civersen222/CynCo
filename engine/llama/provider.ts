@@ -34,6 +34,10 @@ export type LlamaCppProviderConfig = {
   ensureReady?: () => Promise<void>
   /** Where in-flight requests register as activity (idle unload, hold-awake). Default: the process-wide registry. */
   activity?: ActivityRegistry
+  /** Ask for per-token top-8 logprobs (Brain tier-1 trace). Default true; the
+   *  bootstrap turns it off for one-shots and unattended missions, where it
+   *  costs ~60% of decode speed and nothing reads it (missionEnv.ts). */
+  uncertaintyTrace?: boolean
 }
 
 /** Maximum number of entries stored in the countTokens memoization cache. */
@@ -54,6 +58,7 @@ export class LlamaCppProvider implements Provider {
   /** Sticky: stock llama-server (≥b9529) rejects logprobs with tools+stream.
    *  Tier 1 must degrade, never break the turn — set on first rejection. */
   private logprobsUnsupported = false
+  private readonly uncertaintyTrace: boolean
   /** Set when this server refuses tool_choice 'required'; later calls send 'auto'. */
   private toolChoiceUnsupported = false
   private readonly ensureReady: (() => Promise<void>) | undefined
@@ -66,6 +71,7 @@ export class LlamaCppProvider implements Provider {
     this.adapterUrl = config.adapterUrl?.replace(/\/$/, '')
     this.modelName = config.modelName
     this.modelsDir = config.modelsDir
+    this.uncertaintyTrace = config.uncertaintyTrace ?? true
     this.adaptersDir = config.adaptersDir ?? path.join(path.dirname(config.modelsDir), 'adapters')
     this.processManager = config.processManager
     this.tokenCacheBound = config.tokenCacheBound ?? COUNT_TOKENS_CACHE_BOUND
@@ -372,10 +378,12 @@ export class LlamaCppProvider implements Provider {
       ]
     }
 
-    // Tier-1 uncertainty trace (Brain): default-on. Ollama's OAI-compat layer
-    // ignores unknown sampling fields; llama-server honors them. Skipped once
-    // the server has rejected the combination (stock ≥b9529 with tools+stream).
-    if (stream && !this.logprobsUnsupported) {
+    // Tier-1 uncertainty trace (Brain): on for interactive engines, off for
+    // one-shots and unattended missions (config.uncertaintyTrace, decided in
+    // bootstrapProvider): top-8 logprobs per token cost 114 -> 44 tok/s on the
+    // patched server. Also skipped once the server has rejected the
+    // combination (stock >=b9529 with tools+stream).
+    if (stream && this.uncertaintyTrace && !this.logprobsUnsupported) {
       body.logprobs = true
       body.top_logprobs = 8
     }

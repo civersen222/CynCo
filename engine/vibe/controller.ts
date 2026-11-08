@@ -748,7 +748,7 @@ export class VibeController {
 
   private async generateCompletionReport(): Promise<void> {
     const handoff = this.loop.buildHandoff()
-    const filesChanged = handoff.files_modified
+    const filesChanged = handoff.files_modified ?? []
 
     // GSD: Write project state for cross-session persistence
     this.writeStateFile(filesChanged)

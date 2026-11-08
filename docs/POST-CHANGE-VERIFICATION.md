@@ -5,7 +5,7 @@
 
 After EVERY change set (feature, fix, refactor), before moving on:
 
-1. Run both suites: `npm test` (includes the guard tests in `engine/__tests__/guards/`) and `cd tui && python -m pytest tests/ -q`. Any guard failure is a stop-the-line bug.
+1. Run both suites: `npm test` (includes the guard tests in `engine/__tests__/guards/`, among them the strict type-check — `npm run typecheck` runs it alone and prints the errors) and `cd tui && python -m pytest tests/ -q`. Any guard failure is a stop-the-line bug.
 2. New engine→TUI protocol event types must be emitted AND handled in the same PR (or added to the guard allowlist with a written reason).
 3. Empty `catch {}` / `except: pass` blocks are banned — log the error or emit a governance.alert. The ratchet tests enforce this (comment-only bodies count as silent too).
 4. Any README capability claim must cite a default-ON code path; opt-in features must be labeled opt-in with their env flag.

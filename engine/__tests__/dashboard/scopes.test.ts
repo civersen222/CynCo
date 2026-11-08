@@ -32,7 +32,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { describe, test, expect, afterAll } from 'vitest'
+import { describe, test, expect, afterAll, beforeAll } from 'vitest'
 import WebSocket from 'ws'
 import { DashboardServer } from '../../dashboard/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
@@ -42,15 +42,20 @@ const tokens = loadOrCreateTokens(dir)
 const INFERENCE = tokens.tokenFor('inference')!
 const MANAGEMENT = tokens.tokenFor('management')!
 
-const PORT = 19190
-const server = new DashboardServer({ port: PORT, tokens })
+const server = new DashboardServer({ port: 0, tokens })
+
+beforeAll(async () => {
+  // The shim's listen() binds asynchronously; wait until the OS has named the port (T7).
+  const deadline = Date.now() + 2000
+  while (server.getPort() === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+})
 
 afterAll(() => {
   server.stop()
   rmSync(dir, { recursive: true, force: true })
 })
 
-const url = (path: string) => `http://127.0.0.1:${PORT}${path}`
+const url = (path: string) => `http://127.0.0.1:${server.getPort()}${path}`
 const bearer = (t: string) => ({ Authorization: `Bearer ${t}` })
 
 const READ_ROUTES = [
@@ -184,7 +189,7 @@ describe('changing configuration needs the management scope', () => {
 describe('the event stream needs the inference scope', () => {
   /** Resolve on open, or reject with the handshake status the server sent. */
   function handshake(query: string): Promise<WebSocket> {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws${query}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${server.getPort()}/ws${query}`)
     return new Promise((resolve, reject) => {
       ws.on('open', () => resolve(ws))
       ws.on('unexpected-response', (_req, res) => reject(new Error(`status ${res.statusCode}`)))

@@ -59,6 +59,8 @@ describe('the loop wires the re-eval through the helper and records it', () => {
   })
 
   it('emits an s5.decision frame carrying enforced and authority', () => {
-    expect(block).toMatch(/type: 's5\.decision'[\s\S]*enforced: reevalEnforced,[\s\S]*authority: reevalAuthority,[\s\S]*source: 'stuck-reeval'/)
+    // F185: the frame is built by s5/decisionEvent.ts (decisionEvent.test.ts pins
+    // its fields); the loop's part is to pass the capped verdict and name the site.
+    expect(block).toMatch(/s5DecisionEvent\(decision, \{ enforced: reevalEnforced, authority: reevalAuthority, source: 'stuck-reeval' \}\)/)
   })
 })

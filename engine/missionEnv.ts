@@ -24,3 +24,23 @@ export const MISSION_ENV_KEYS = ['LOCALCODE_MISSION_MARKER', 'LOCALCODE_MISSION_
 export function isUnattendedMission(env: Record<string, string | undefined> = process.env): boolean {
   return MISSION_ENV_KEYS.some(k => typeof env[k] === 'string' && env[k]!.length > 0)
 }
+
+/**
+ * Should the llama-cpp provider ask for per-token top-8 logprobs (the Brain's
+ * tier-1 uncertainty trace)? Measured 2026-11-06 on the 5090 with the daemon's
+ * own flags: 114 tok/s without the fields, 44 with them, because the patched
+ * server computes them inside the speculative-decoding accept loop. Nobody reads
+ * the trace in a daemon one-shot (`--run-task`) or an unattended mission, so it
+ * is off there and on for an interactive engine. `LOCALCODE_ENTROPY_TRACE=1|0`
+ * overrides either way.
+ */
+export function uncertaintyTraceEnabled(
+  env: Record<string, string | undefined> = process.env,
+  argv: readonly string[] = process.argv,
+): boolean {
+  const explicit = env.LOCALCODE_ENTROPY_TRACE
+  if (explicit === '1' || explicit === 'true') return true
+  if (explicit === '0' || explicit === 'false') return false
+  if (argv.includes('--run-task')) return false
+  return !isUnattendedMission(env)
+}

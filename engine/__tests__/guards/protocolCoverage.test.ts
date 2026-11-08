@@ -43,6 +43,14 @@ const NON_TUI_CONSUMERS: Record<string, string> = {
   'ui.image':
     'Generated-picture fill-ins for RenderUI surfaces (engine/imagegen), consumed by the 9161 Chat tab only; ' +
     'the TUI draws no surfaces and shows the RenderUI tool row, whose result names the pictures.',
+  's5.decision':
+    'S5 decision per turn (s5/decisionEvent.ts), consumed by the 9161 dashboard S5 panel and the ' +
+    'ledger collector (scripts/cynco-ledger.mjs s5Decisions). Emitted untyped until the strict ' +
+    'type-check landed (2026-11-06); the TUI never rendered it and a second governance frame in the ' +
+    'chat would only add noise.',
+  'trajectory.turn':
+    'Trajectory recorder progress, consumed by the 9161 dashboard training panel (renderTrajectory). ' +
+    'Like trajectory.task_started, nothing a human watching a session needs.',
 }
 
 /** TUI event types handled bespoke in the receiver (app.py), not via the dispatch table. */
