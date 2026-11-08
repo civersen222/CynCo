@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { activity } from '../power/activity.js'
 import type { ApprovalRequestEvent, EngineEvent, TUICommand, DiffHunk, DiffLine, OperatorNoteSource, UiActionCommand, UiSpec } from './protocol.js'
 import type { ThinkingConfig, TurnCost } from '../types.js'
 import { asSystemPrompt } from '../types.js'
@@ -360,6 +361,13 @@ export class ConversationLoop {
   private routedEditsThisCall = 0
   private abortController: AbortController | null = null
   private processing = false
+  /** The open turn's activity handle (engine/power/activity.ts); idempotent to end. */
+  private turnActivityEnd: (() => void) | null = null
+  private endTurnActivity(): void {
+    const end = this.turnActivityEnd
+    this.turnActivityEnd = null
+    end?.()
+  }
   /**
    * The `unattended` flag of the message currently being processed.
    *
@@ -1517,6 +1525,7 @@ export class ConversationLoop {
       )
     } finally {
       this.processing = false
+      this.endTurnActivity()
       this.abortRequested = false
       this.uiForce = null
       // A surface left partial by an abort, halt or error gets its terminal
@@ -1697,6 +1706,10 @@ export class ConversationLoop {
       opts = undefined
     }
     this.processing = true
+    // Wakefulness: a turn is an activity — the model is not unloaded and the
+    // PC is not allowed to sleep while one is open (engine/power/activity.ts).
+    this.endTurnActivity()
+    this.turnActivityEnd = activity.begin('turn', text.slice(0, 40))
     this.sessionFidelityEmitted = false
     // Set with `processing`, and only ever read by the busy guard above. See
     // the field for why it is the RUNNING message's flag.
@@ -2767,6 +2780,7 @@ export class ConversationLoop {
     }
 
     this.processing = false
+    this.endTurnActivity()
     this.abortController = null
   }
 

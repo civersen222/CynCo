@@ -344,6 +344,13 @@ const wsServer = new LocalCodeWSServer({
 
 // Initialize audit logger
 import { AuditLogger } from './audit/auditLogger.js'
+import { activity } from './power/activity.js'
+import { wireHoldAwake } from './power/awake.js'
+
+// Wakefulness (slice 3): a turn in progress (interactive or one-shot) keeps the
+// PC awake; with nothing open, Windows' idle timer may sleep it. Process-wide,
+// so it covers both the interactive loop below and the --run-task path above.
+wireHoldAwake(activity, { log: (line) => console.log(line) })
 const auditSessionId = `session-${Date.now()}`
 AuditLogger.init(auditSessionId, process.cwd(), config.model)
 
@@ -425,6 +432,13 @@ if ((globalThis as any).__llamaProcessManager) {
   // F140/F143: a refused or unrecoverable llama-server must be visible where the
   // operator looks — the dashboard feed and the TUI — not only in a log nobody
   // tails. Reuses governance.alert (protocol.ts) rather than adding an event type.
+  // Lazy path (wakefulness): "GPU busy with <trigger>" reaches the dashboard
+  // as an info alert, the same channel as a fault, so the phone sees why the
+  // model is not answering yet.
+  pm.onWaiting = (reason: string) => {
+    const event = { type: 'governance.alert' as const, severity: 'info' as const, source: 'llama-cpp', message: reason }
+    dashboardServer?.broadcast(event as any)
+  }
   pm.onFault = (reason: string) => {
     const event = { type: 'governance.alert' as const, severity: 'critical' as const, source: 'llama-cpp', message: reason }
     dashboardServer?.broadcast(event as any)
@@ -467,7 +481,21 @@ try {
           const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
           modelName = `${basename}${spec}`
         }
-        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd() }
+        // Wakefulness: what the phone page and the widget show about the GPU.
+        const pm = (provider as any)?.processManager
+        let busy: { triggerId: string; task: string; remainingMs: number } | null = null
+        try {
+          const { readGpuBusy, estimateRemainingMs } = require('./daemon/gpuBusyFile.js')
+          const b = readGpuBusy()
+          if (b) busy = { triggerId: b.triggerId, task: b.task, remainingMs: estimateRemainingMs(b) }
+        } catch (e) {
+          console.log(`[dashboard] gpu-busy.json unreadable: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return {
+          model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd(),
+          modelState: pm?.modelState ? pm.modelState() : null,
+          busy,
+        }
       },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')

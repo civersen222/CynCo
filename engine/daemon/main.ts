@@ -12,6 +12,14 @@ import { TaskRunner } from './taskRunner.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome } from '../paths.js'
+import { activity } from '../power/activity.js'
+import { wireHoldAwake } from '../power/awake.js'
+import { WakePublisher } from './wakeSchedule.js'
+
+// Wakefulness (slice 3): while a one-shot runs, the PC may not sleep. The
+// daemon itself holds nothing while idle, so Windows' own timer can sleep the
+// box between triggers; the doorman wakes it ahead of the next one.
+wireHoldAwake(activity, { log: (line) => console.log(`[daemon] ${line}`) })
 
 const TICK_MS = 30000
 
@@ -93,12 +101,22 @@ const stopSubscription = ntfy.subscribe(async (cmd) => {
   }
 })
 
+// Wakefulness (slice 3): after each tick round, tell the doorman when the next
+// triggers are due so it can wake this PC 3 min ahead. Unset = nothing sent.
+const wakePublisher = new WakePublisher({
+  url: process.env.CYNCO_DOORMAN_URL,
+  target: process.env.CYNCO_DOORMAN_TARGET ?? 'main',
+  log: (line) => console.log(line),
+})
+if (!process.env.CYNCO_DOORMAN_URL) console.log('[daemon] CYNCO_DOORMAN_URL unset — no wake schedule is published; the PC must stay awake for triggers')
+
 let ticking = false
 const interval = setInterval(async () => {
   if (ticking) return // a long engine run is in progress — skip overlapping ticks
   ticking = true
   try {
     for (const runner of runners) await runner.tick()
+    await wakePublisher.publishIfChanged(runners.map((r) => r.ledger))
   } catch (err) {
     console.error(`[daemon] Tick error: ${err instanceof Error ? err.message : err}`)
   } finally {

@@ -653,3 +653,124 @@ describe('ProcessManager pre-spawn check', () => {
     expect(pm.lastRefusal).toBeNull()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Lazy path (wakefulness slice 2): wait on a busy GPU, never kill a live
+// one-shot's server; kill only a provably stale port occupant.
+// ---------------------------------------------------------------------------
+describe('ProcessManager.ensureRunningLazy', () => {
+  type Busy = import('../../daemon/gpuBusyFile.js').GpuBusy
+  const busyInfo: Busy = { task: 'fantasy-digest', triggerId: 'digest-espn', startedAt: new Date(1_000_000).toISOString(), timeoutMs: 600_000, pid: 7 }
+
+  function lazyPm() {
+    const pm = new ProcessManager({ binaryPath: '/bin/llama-server', modelPath: '/models/qwen.gguf', port: 8081 })
+    const calls = { start: 0, kill: 0 }
+    let running = false
+    ;(pm as any).startProcess = async () => { calls.start++; running = true }
+    ;(pm as any).killProcessOnPort = async () => { calls.kill++ }
+    ;(pm as any).isRunning = () => running
+    return { pm, calls }
+  }
+
+  function deps(over: Partial<import('../../llama/processManager.js').LazyWaitDeps> = {}): import('../../llama/processManager.js').LazyWaitDeps {
+    let t = 1_000_000
+    return {
+      readBusy: () => null,
+      isPortOccupied: async () => false,
+      isHealthy: async () => false,
+      maxWaitMs: 60_000,
+      pollMs: 5_000,
+      now: () => t,
+      sleep: async (ms) => { t += ms },
+      ...over,
+    }
+  }
+
+  it('spawns once when the port is free and nothing is busy', async () => {
+    const { pm, calls } = lazyPm()
+    await pm.ensureRunningLazy(deps())
+    expect(calls).toEqual({ start: 1, kill: 0 })
+    expect(pm.modelState()).toBe('warm')
+  })
+
+  it('waits while gpu-busy.json names a live one-shot, reports the trigger and remaining time, then spawns', async () => {
+    const { pm, calls } = lazyPm()
+    let polls = 0
+    const waits: { reason: string; remainingMs: number | null }[] = []
+    await pm.ensureRunningLazy(deps({
+      readBusy: () => (polls++ < 2 ? busyInfo : null),
+      isPortOccupied: async () => polls <= 2,
+      onWaiting: (i) => waits.push(i),
+    }))
+    expect(calls.kill).toBe(0)
+    expect(calls.start).toBe(1)
+    // two polls 5 s apart inside the same remaining minute -> ONE notice (review #2: no 5 s spam)
+    expect(waits.length).toBe(1)
+    expect(waits[0].reason).toContain('digest-espn')
+    expect(waits[0].remainingMs).toBe(600_000)
+  })
+
+  it('notifies again when the remaining minutes change', async () => {
+    const { pm } = lazyPm()
+    let polls = 0
+    const waits: { reason: string; remainingMs: number | null }[] = []
+    const late = { ...busyInfo, startedAt: new Date(1_000_000 - 538_000).toISOString() } // 62 s left: 2 min, then 1 min on poll 2
+    await pm.ensureRunningLazy(deps({ readBusy: () => (polls++ < 3 ? late : null), isPortOccupied: async () => polls <= 3, onWaiting: (i) => waits.push(i) }))
+    expect(waits.length).toBe(2)
+  })
+
+  it('a healthy foreign server on the port is waited on, never killed (review #6)', async () => {
+    const { pm, calls } = lazyPm()
+    let polls = 0
+    const waits: { reason: string; remainingMs: number | null }[] = []
+    await pm.ensureRunningLazy(deps({ isPortOccupied: async () => polls++ < 2, isHealthy: async () => true, onWaiting: (i) => waits.push(i) }))
+    expect(calls).toEqual({ start: 1, kill: 0 })
+    expect(waits[0].reason).toMatch(/another llama-server owns port 8081/)
+    expect(waits[0].remainingMs).toBeNull()
+  })
+
+  it('kills only a bound port whose /health fails (provably stale), then spawns', async () => {
+    const { pm, calls } = lazyPm()
+    await pm.ensureRunningLazy(deps({ isPortOccupied: async () => true, isHealthy: async () => false }))
+    expect(calls).toEqual({ start: 1, kill: 1 })
+  })
+
+  it('clears a pending crash-restart timer before spawning, so a crash + a request does not start two servers (review #5)', async () => {
+    const { pm, calls } = lazyPm()
+    let fired = false
+    ;(pm as any).restartTimer = setTimeout(() => { fired = true }, 50)
+    await pm.ensureRunningLazy(deps())
+    expect((pm as any).restartTimer).toBeNull()
+    await new Promise(r => setTimeout(r, 80))
+    expect(fired).toBe(false)
+    expect(calls.start).toBe(1)
+  })
+
+  it('throws naming the trigger when the wait budget runs out', async () => {
+    const { pm, calls } = lazyPm()
+    await expect(pm.ensureRunningLazy(deps({ readBusy: () => busyInfo, isPortOccupied: async () => true, maxWaitMs: 12_000 })))
+      .rejects.toThrow(/GPU busy.*digest-espn/)
+    expect(calls.start).toBe(0)
+    expect(pm.modelState()).toBe('cold')
+  })
+
+  it('is a no-op when already running', async () => {
+    const { pm, calls } = lazyPm()
+    await pm.ensureRunningLazy(deps())
+    await pm.ensureRunningLazy(deps())
+    expect(calls.start).toBe(1)
+  })
+
+  it('modelState is waiting during the wait and loading during the spawn', async () => {
+    const { pm } = lazyPm()
+    const seen: string[] = []
+    let polls = 0
+    ;(pm as any).startProcess = async () => { seen.push(pm.modelState()); (pm as any).isRunning = () => true }
+    await pm.ensureRunningLazy(deps({
+      readBusy: () => (polls++ < 1 ? busyInfo : null),
+      onWaiting: () => seen.push(pm.modelState()),
+    }))
+    expect(seen).toEqual(['waiting', 'loading'])
+    expect(pm.modelState()).toBe('warm')
+  })
+})

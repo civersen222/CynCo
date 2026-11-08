@@ -9,6 +9,7 @@ import {
 } from '../ollama/format.js'
 import { resolveCapabilities } from '../ollama/probe.js'
 import type { ProcessManager } from './processManager.js'
+import { activity, type ActivityRegistry } from '../power/activity.js'
 import { resolveAdapter } from './modelResolver.js'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -29,6 +30,10 @@ export type LlamaCppProviderConfig = {
   modelsDir: string
   adaptersDir?: string
   processManager?: ProcessManager
+  /** Lazy load (LOCALCODE_LLAMA_LAZY): awaited before every request; undefined = the server is up from boot. */
+  ensureReady?: () => Promise<void>
+  /** Where in-flight requests register as activity (idle unload, hold-awake). Default: the process-wide registry. */
+  activity?: ActivityRegistry
   /** Ask for per-token top-8 logprobs (Brain tier-1 trace). Default true; the
    *  bootstrap turns it off for one-shots and unattended missions, where it
    *  costs ~60% of decode speed and nothing reads it (missionEnv.ts). */
@@ -56,8 +61,12 @@ export class LlamaCppProvider implements Provider {
   private readonly uncertaintyTrace: boolean
   /** Set when this server refuses tool_choice 'required'; later calls send 'auto'. */
   private toolChoiceUnsupported = false
+  private readonly ensureReady: (() => Promise<void>) | undefined
+  private readonly activity: ActivityRegistry
 
   constructor(config: LlamaCppProviderConfig & { tokenCacheBound?: number }) {
+    this.ensureReady = config.ensureReady
+    this.activity = config.activity ?? activity
     this.primaryUrl = config.primaryUrl.replace(/\/$/, '')
     this.adapterUrl = config.adapterUrl?.replace(/\/$/, '')
     this.modelName = config.modelName
@@ -126,17 +135,33 @@ export class LlamaCppProvider implements Provider {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
-    const body = this.buildRequestBody(request, false)
-    const resp = await fetch(this.getCompletionsUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    const oai = await resp.json()
-    return fromOpenAIResponse(oai as any)
+    const end = this.activity.begin('request', 'complete')
+    try {
+      if (this.ensureReady) await this.ensureReady()
+      const body = this.buildRequestBody(request, false)
+      const resp = await fetch(this.getCompletionsUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const oai = await resp.json()
+      return fromOpenAIResponse(oai as any)
+    } finally {
+      end()
+    }
   }
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
+    const end = this.activity.begin('request', 'stream')
+    try {
+      if (this.ensureReady) await this.ensureReady()
+      yield* this.streamBody(request)
+    } finally {
+      end()
+    }
+  }
+
+  private async *streamBody(request: CompletionRequest): AsyncIterable<StreamEvent> {
     let body = this.buildRequestBody(request, true)
 
     let resp = await fetch(this.getCompletionsUrl(), {
@@ -290,6 +315,7 @@ export class LlamaCppProvider implements Provider {
 
     const cached = this.tokenCache.get(text)
     if (cached !== undefined) return cached
+    if (this.ensureReady) await this.ensureReady()
 
     try {
       const resp = await fetch(`${this.getBaseUrl()}/tokenize`, {

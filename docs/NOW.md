@@ -5,21 +5,24 @@ Changing the first section is the owner's decision. Rules: `AGENTS.md` → "How 
 
 ## Current objective
 
-**Phone access, slice 1 — built 2026-10-22, verified on the owner's phone 2026-10-27.**
+**Wakefulness core (slices 1–3) — built 2026-11-08, live proof pending merge + pull.**
 
-Use CynCo's existing engine and dashboard from the owner's phone over the owner's Tailscale
-tailnet. Done when, on the phone: open the phone URL → pair once with the printed code → see
-connection and run state → send a prompt → watch the streamed answer and tool rows → stop a
-running turn. Nothing is bound beyond loopback by default; no second engine, chat implementation
-or client codebase. Design and rejected alternatives: `docs/decisions/2026-10-22-phone-access.md`;
-how to use it: README → Phone access.
+The GPU box sleeps; the doorman mini PC wakes it for a phone knock or a scheduled trigger; the
+phone engine keeps the GPU cold until a message needs the model and never kills a running
+mission's server. Design: `docs/decisions/2026-11-08-wakefulness-design.md`; record:
+`docs/decisions/2026-11-08-wakefulness.md`; hardware log: the owner's `pc-wakefulness` project.
+Done when, after merge + pull on the main checkout: (a) `powercfg /requests` shows the SYSTEM
+request during a one-shot; (b) the PC sleeps on its own with "Sleep after" set; (c) the next
+trigger's wake shows in Power-Troubleshooter ~3 min early and `runs.jsonl` shows the run;
+(d) a phone knock on `http://100.110.117.10:9170/` wakes the PC and lands on the dashboard.
 
-Verified 2026-10-27 on the owner's Pixel 7 Pro over the tailnet: the engine launched from the TUI
-with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,100.101.192.101`, the phone paired on the first code,
-a prompt streamed and Stop ended a turn; no firewall change was needed. The access model (tailnet
-only, plain HTTP inside the tunnel) is confirmed by use. What is left of this objective is the
-merge of PR #173 on GitHub and, once the owner is satisfied, making the variable permanent
-(`setx`). The next objective is the owner's choice; Next 1 below is the candidate.
+Remaining slices, each its own plan: **2b** busy fallback to a 14B model on the 4070 Ti Super
+box (`LOCALCODE_LLAMA_FALLBACK_URL`); **4** the phone-sized remote view (Chat · Projects · Away,
+no brain sidecar, `LOCALCODE_BRAIN=off`); **5** phone files (attach button, docx/xlsx extraction);
+**6** ntfy and the NAS watchdog on the doorman. Then the tiers: the 4070 and 1080 Ti boxes on the
+switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/tiering-preview.md`).
+
+Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.
 
 ## Next (in rough order)
 
@@ -42,6 +45,8 @@ merge of PR #173 on GitHub and, once the owner is satisfied, making the variable
    limiting the dashboard port to the owner's devices.
 
 ## Backlog (worth doing, not started)
+
+- **Two engines on one box (wakefulness review, 2026-11-08).** A TUI-launched desk engine's eager `ensureRunning()` kills the headless phone engine's warm llama-server on 8081 (`docs/decisions/2026-11-08-wakefulness.md` → Open). Owner's call: stop-then-restart the headless engine around a desk session, refuse the desk start while the phone engine is warm, or make the desk engine lazy too.
 
 - **GLM review triage (2026-11-06).** `docs/reviews/2026-11-06-glm5-engineering-review-triage.md` re-checks every finding of the 2026-10-30 GLM 5.3 review against HEAD and orders the work; A1 (strict type-check, F185), S4+S1+S2 (`docs/decisions/2026-11-06-untrusted-content-and-secret-paths.md`) the Ollama `resp.ok` fix with the doc quick wins (O1, O3, S9, O2, A6, the A2 stub) and CI (T1, with T7's shared test ports first: `.github/workflows/ci.yml`, `guards/testPortsDoNotCollide.test.ts`) are done. Next in that order: S3/S5/S6/S7/S8. The CI suite job is advisory until its Linux failures are classified. First Linux run (PR #188, 2026-11-06): 544 files green, 9 red, pytest green. Two were the runner (no git identity for `tools/git.test.ts`; no numpy/scikit-learn for the 17 `scripts/__tests__/cynco-outcome-model` and `cynco-hindcast-signals` tests) and one was a test of ours that leaned on the owner's exported `LOCALCODE_COMFYUI_URL` (`projects/bindingRunsCode.test.ts`) — all three fixed on that PR. The other six were Windows shapes in the tests, made platform-aware on the same PR: `harness/cyncoContract.test.ts` (refusing `&&` is the engine's verdict about PowerShell; on bash the contract must load intact), `projects/binding.test.ts` (`C:/Windows` is a relative path inside the root on Linux; `/etc` there), `tools/bash.test.ts` (`cat` where there is no `Get-Content`), `scripts/__tests__/cynco-gate-author.test.mjs` (the `R:` drive is Windows-only; `/repo` elsewhere), and `lsp/manager.test.ts`, whose "diagnostics" test runs `npx tsc` over the whole repo and needed 30 s, not 5. Once the suite job is green on Linux it can become a required check (branch protection — the owner's switch).
 - `engine/agents/runner.ts` and `queue.ts` (`SubAgentRunner`, `AgentQueue`) have no production caller since the loop's never-read stub was removed (GLM A2, 2026-11-06); only their own tests use them, and real sub-agents go through `tools/impl/spawnAgent.ts`. Wire or remove — the owner's call.
