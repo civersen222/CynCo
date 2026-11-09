@@ -2,10 +2,11 @@ import { extname } from 'node:path'
 import { extractMarkdown } from './markdown.js'
 import { extractPdf } from './pdf.js'
 import { extractEpub } from './epub.js'
+import { extractDocx } from './docx.js'
 import type { Extracted, Extractor } from './types.js'
 export type { Extracted, Extractor, Segment } from './types.js'
 
-export const EXTRACTOR_EXTS: ReadonlySet<string> = new Set(['.md', '.markdown', '.txt', '.pdf', '.epub'])
+export const EXTRACTOR_EXTS: ReadonlySet<string> = new Set(['.md', '.markdown', '.txt', '.pdf', '.epub', '.docx'])
 export const IMAGE_EXTS: ReadonlySet<string> = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
 export const ACCEPTED_EXTS: ReadonlySet<string> = new Set([...EXTRACTOR_EXTS, ...IMAGE_EXTS])
 
@@ -14,6 +15,7 @@ export function extractorFor(fileName: string): Extractor | null {
   if (ext === '.md' || ext === '.markdown' || ext === '.txt') return extractMarkdown
   if (ext === '.pdf') return extractPdf
   if (ext === '.epub') return extractEpub
+  if (ext === '.docx') return extractDocx
   return null
 }
 

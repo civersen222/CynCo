@@ -68,7 +68,7 @@ describe('epub', () => {
 
 describe('routing', () => {
   it('maps extensions and names the refusal for the rest', async () => {
-    expect([...ACCEPTED_EXTS].sort()).toEqual(['.epub', '.gif', '.jpeg', '.jpg', '.markdown', '.md', '.pdf', '.png', '.txt', '.webp'])
+    expect([...ACCEPTED_EXTS].sort()).toEqual(['.docx', '.epub', '.gif', '.jpeg', '.jpg', '.markdown', '.md', '.pdf', '.png', '.txt', '.webp'])
     expect(extractorFor('A.MD')).not.toBeNull()
     expect(extractorFor('x.docx')).toBeNull()
     expect(await extractFile(enc('x'), 'x.docx')).toEqual({ ok: false, reason: 'no extractor for .docx' })
