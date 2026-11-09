@@ -220,6 +220,32 @@ export async function bootstrapProvider(
         uncertaintyTrace,
       })
 
+      // Wakefulness (slice 2b): while a one-shot owns the GPU, a lazy engine
+      // answers on the secondary box's Ollama instead of waiting
+      // (LOCALCODE_FALLBACK_URL / _MODEL, engine/llama/busyFallback.ts).
+      const { fallbackSettings, BusyFallbackProvider } = await import('./llama/busyFallback.js')
+      const fb = fallbackSettings()
+      if (lazy.lazy && fb.url) {
+        const { createProvider } = await import('./providers/factory.js')
+        const { readGpuBusy, estimateRemainingMs } = await import('./daemon/gpuBusyFile.js')
+        const fallback = createProvider('ollama', fb.url)
+        provider = new BusyFallbackProvider({
+          primary: provider,
+          fallback,
+          fallbackModel: fb.model,
+          fallbackLabel: fb.url.replace(/^https?:\/\//, ''),
+          readBusy: () => readGpuBusy(),
+          remainingMs: (b) => estimateRemainingMs(b),
+          primaryWarm: () => processManager.modelState() === 'warm',
+          fallbackHealthy: () => fallback.healthCheck(),
+          notify: (m) => processManager.onWaiting?.(m),
+          log: (line) => console.log(line),
+        })
+        console.log(`[llama-cpp] busy fallback: ${fb.model} at ${fb.url} answers while a one-shot owns the GPU (LOCALCODE_FALLBACK_URL)`)
+      } else if (fb.url) {
+        console.log('[llama-cpp] LOCALCODE_FALLBACK_URL is set but the engine is not lazy — the fallback only serves a lazy engine; ignored')
+      }
+
       if (lazy.idleUnloadMs > 0) {
         const { activity } = await import('./power/activity.js')
         new IdleUnloader({

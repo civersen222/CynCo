@@ -15,6 +15,7 @@ The llama.cpp serving layer underneath LocalCode's default provider: resolve the
 | `binaryManager.ts` | Resolve/download the llama-server binary (bin-brain vs bin, GitHub release download) |
 | `modelResolver.ts` | Resolve a model name or adapter name to a GGUF file path |
 | `errors.ts` | Typed errors (`BinaryNotFoundError`, `ModelNotFoundError`, `ServerStartError`, `AdapterNotFoundError`) and type guards |
+| `busyFallback.ts` | Wakefulness (slice 2b): `fallbackSettings` (`LOCALCODE_FALLBACK_URL` / `LOCALCODE_FALLBACK_MODEL`, read nowhere else) and `BusyFallbackProvider` — wraps the lazy `LlamaCppProvider`; while `gpu-busy.json` names a one-shot and our server is cold, requests (and `countTokens`) go to the other box's `OllamaProvider` with `model` rewritten, the chat told once per one-shot via `onWaiting`; fallback down = wait as before. Assembled by `bootstrapProvider` only; `processManager` passes through for `main.ts` |
 | `lazyLoad.ts` | Wakefulness (slice 2): `lazySettings` (the three `LOCALCODE_LLAMA_LAZY*` switches, read nowhere else), `createLazyEnsureReady` (one in-flight lazy load shared by concurrent requests), `IdleUnloader` (unload after N idle ms, keyed on `engine/power/activity.ts`) |
 
 ## Important types & functions
@@ -36,6 +37,7 @@ The llama.cpp serving layer underneath LocalCode's default provider: resolve the
 - **`LlamaCppProvider`** (`provider.ts:46`) — the `Provider` implementation the rest of the engine calls for completions, streaming, token counts, and adapter load/unload. `complete`/`stream` register a `request` activity for their whole duration and await `config.ensureReady` first when the engine is lazy.
 - **`ensureRunningLazy`** (`processManager.ts:386`) — the lazy counterpart of `ensureRunning`: never kills a live occupant of the port; waits while `gpu-busy.json` names a running one-shot (reporting through `onWaiting`, `processManager.ts:326`), kills only a provably stale occupant (port busy, no live owner), gives up after `LazyWaitDeps.maxWaitMs` (`processManager.ts:272`) naming the trigger.
 - **`modelState`** (`processManager.ts:370`) — `cold` / `loading` / `warm` / `waiting`, what `/api/session` and the desk widget show.
+- **`fallbackSettings`** / **`BusyFallbackProvider`** (`busyFallback.ts`) — the slice-2b route decided per request; pinned by `engine/__tests__/llama/busyFallback.test.ts` (free → primary; busy + warm → primary; busy + fallback down → primary; busy + fallback up → fallback, one notice per one-shot, `countTokens` follows).
 - **`lazySettings`** (`lazyLoad.ts:32`), **`createLazyEnsureReady`** (`lazyLoad.ts:53`), **`IdleUnloader`** (`lazyLoad.ts:82`) — the switches, the serialised first load, and the idle timer; assembled by `bootstrapProvider` only.
 - **`LlamaCppProvider`** (`provider.ts:46`) — the `Provider` implementation the rest of the engine calls for completions, streaming, token counts, and adapter load/unload.
 

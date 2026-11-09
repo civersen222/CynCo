@@ -9,5 +9,8 @@ set LOCALCODE_LLAMA_LAZY=true
 rem No brain sidecar / activation tap on the phone engine (nobody watches the Brain tab from a phone).
 set LOCALCODE_BRAIN=off
 if "%LOCALCODE_LLAMA_IDLE_UNLOAD_MS%"=="" set LOCALCODE_LLAMA_IDLE_UNLOAD_MS=900000
+rem While a daemon one-shot owns the 5090, answer on the 4070 Ti Super box's Ollama (slice 2b).
+if "%LOCALCODE_FALLBACK_URL%"=="" set LOCALCODE_FALLBACK_URL=http://192.168.0.47:11434
+if "%LOCALCODE_FALLBACK_MODEL%"=="" set LOCALCODE_FALLBACK_MODEL=qwen3:14b
 cd /d C:\Users\civer\localcode
 bun engine\main.ts >> "%USERPROFILE%\.cynco\engine-headless.log" 2>&1
