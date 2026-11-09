@@ -198,3 +198,34 @@ describe('probeComfy', () => {
     expect(!r.ok && r.reason).toMatch(/did not answer .* --listen/)
   })
 })
+
+// The image box (docs/decisions/2026-11-08-image-box-design.md §4): the transforms' input goes up first, the models come down after.
+describe('uploadImage and free', () => {
+  let mock: MockComfy
+  afterEach(async () => { await mock?.close() })
+  it('uploadImage posts the bytes as a multipart image field, overwriting into the input folder, and returns the stored name', async () => {
+    mock = await startMockComfy()
+    const c = new ComfyClient(mock.url)
+    const name = await c.uploadImage(new Uint8Array(PNG_1X1), 'cynco-abc.png')
+    expect(name).toBe('cynco-abc.png')
+    const call = mock.calls.find(k => k.path === '/upload/image')!
+    expect(call.method).toBe('POST')
+    const raw = (call.body as { unparsed: string }).unparsed
+    expect(raw).toContain('name="image"')
+    expect(raw).toContain('filename="cynco-abc.png"')
+    expect(raw).toContain('name="overwrite"')
+    expect(raw).toContain('name="type"')
+  })
+  it('a failed upload is a ComfyError naming the status', async () => {
+    mock = await startMockComfy({ uploadFail: true })
+    const c = new ComfyClient(mock.url)
+    await expect(c.uploadImage(new Uint8Array(PNG_1X1), 'x.png')).rejects.toThrow(/HTTP 500/)
+  })
+  it('free asks ComfyUI to unload its models and free memory', async () => {
+    mock = await startMockComfy()
+    const c = new ComfyClient(mock.url)
+    await c.free()
+    const call = mock.calls.find(k => k.path === '/free')!
+    expect(call.body).toEqual({ unload_models: true, free_memory: true })
+  })
+})
