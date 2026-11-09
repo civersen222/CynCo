@@ -93,6 +93,7 @@ describe('IngestNotes.takeEvents / attachedImages / formatLookBlock', () => {
   it('both blocks point the model at LookAt: the look block for a specific question, the no-look block saying it will not help yet (F191)', () => {
     const b = formatLookBlock('knowledge/boot.jpg', { text: 'UEFI: USB', state: '', description: 'A boot menu.', model: 'm', ms: 1 })
     expect(b).toMatch(/call LookAt with file "knowledge\/boot\.jpg" and your question/)
+    expect(b).toMatch(/zoom "on" for small detail/)
     const n = formatNoLookBlock('knowledge/dark.jpg', 'image box did not answer: HTTP 503')
     expect(n).toMatch(/LookAt will not answer either until the image box does/)
   })

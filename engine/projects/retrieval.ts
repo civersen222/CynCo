@@ -117,7 +117,7 @@ export function attachedImages(events: IngestEvent[]): string[] {
 export function formatLookBlock(filePath: string, look: Look): string {
   const parts = [look.text && `text: ${look.text}`, look.state && `state: ${look.state}`, look.description && `description: ${look.description}`].filter((p): p is string => !!p)
   return `${RETRIEVAL_TAG}\n[Attached image] ${filePath} — what the image box read off it:\n${parts.join('\n')}\n` +
-    `For anything specific this does not answer (what is selected, a value, a detail), call LookAt with file "${filePath}" and your question.\n`
+    `For anything specific this does not answer (what is selected, a value, a detail), call LookAt with file "${filePath}" and your question (zoom "on" for small detail: checkboxes, bold, little marks).\n`
 }
 
 /**

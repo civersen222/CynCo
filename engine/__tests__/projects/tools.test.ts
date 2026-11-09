@@ -7,6 +7,8 @@ import { ingestFile } from '../../projects/ingest.js'
 import { projectSearchTool, saveArtifactTool, addToKnowledgeTool, lookAtTool, setProjectToolContext, setProjectFetch } from '../../projects/tools.js'
 import { ALL_TOOLS, getToolByName } from '../../tools/registry.js'
 import type { EmbedClient } from '../../index/embedClient.js'
+import { PNG } from 'pngjs'
+import { imageDimensions } from '../../vision/imageSize.js'
 
 class StubEmbed { async embed() { return new Array(768).fill(0.01) } async embedQuery(t: string) { return this.embed() } async embedBatch(ts: string[]) { return ts.map(() => new Array(768).fill(0.01)) } get modelName() { return 'stub' } }
 let home: string, slug: string, dir: string
@@ -82,6 +84,43 @@ describe('LookAt (F191: the text-only model asks the image box a question about 
     expect(await lookAtTool.execute({ file: 'knowledge/missing.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: knowledge/missing.png is not in this project.', isError: true })
     expect(await lookAtTool.execute({ file: 'knowledge/shot.png', question: '  ' }, dir)).toEqual({ output: 'LookAt: question is required.', isError: true })
     expect(asks).toEqual([])
+  })
+  /** A flat PNG of the given size (the zoom decides by pixel count, not content). */
+  function flatPng(w: number, h: number): Uint8Array {
+    const png = new PNG({ width: w, height: h }); png.data.fill(200); return new Uint8Array(PNG.sync.write(png))
+  }
+  it('zoom auto: a picture larger than the box keeps is cut into tiles, each asked the question with its place named; the answers come back labelled (F192)', async () => {
+    const asks = withAsk()
+    writeFileSync(join(dir, 'knowledge', 'wide.png'), flatPng(2200, 2000))  // 4.4 MP > BOX_MAX_PIXELS
+    const r = await lookAtTool.execute({ file: 'knowledge/wide.png', question: 'which boxes are ticked?' }, dir)
+    expect(r.isError).toBe(false)
+    expect(asks.map(a => a.mime)).toEqual(['image/jpeg', 'image/jpeg'])
+    expect(asks[0].question).toContain('which boxes are ticked?'); expect(asks[0].question).toMatch(/top half of a larger picture/)
+    expect(asks[1].question).toMatch(/bottom half of a larger picture/)
+    expect(imageDimensions(asks[0].bytes)).toEqual({ width: 2200, height: 1040 })
+    expect(r.output).toMatch(/^Looked closely: 2 tiles \(top half, bottom half\), each answered for its part\./)
+    expect(r.output).toContain('[top half] The second item'); expect(r.output).toContain('[bottom half] The second item')
+    expect(r.output).toMatch(/\(image box, qwen3-vl:8b-instruct, 2\.5 s total\)$/)
+  })
+  it('zoom auto leaves a small picture whole; zoom off keeps one look of a large one; zoom on tiles anyway', async () => {
+    const asks = withAsk()
+    writeFileSync(join(dir, 'knowledge', 'wide.png'), flatPng(2200, 2000))
+    expect((await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'q' }, dir)).output).not.toContain('Looked closely')
+    expect(asks).toHaveLength(1)
+    const off = await lookAtTool.execute({ file: 'knowledge/wide.png', question: 'q', zoom: 'off' }, dir)
+    expect(off.output).not.toContain('Looked closely'); expect(asks).toHaveLength(2); expect(asks[1].mime).toBe('image/png')
+    const on = await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'q', zoom: 'on' }, dir)
+    expect(on.output).not.toContain('Looked closely')  // too small to cut: one tile is the whole picture
+    expect(asks).toHaveLength(3)
+  })
+  it('a tile the box refuses is reported in its place; the other tiles still answer', async () => {
+    let n = 0
+    setProjectToolContext({ home, slug, embed: null, embedModel: 'none', ask: async () => (++n === 1 ? { ok: false, reason: 'image box did not answer: HTTP 503' } : { ok: true, answer: 'Two ticked.', model: 'm', ms: 1000 }) })
+    writeFileSync(join(dir, 'knowledge', 'wide.png'), flatPng(2200, 2000))
+    const r = await lookAtTool.execute({ file: 'knowledge/wide.png', question: 'q' }, dir)
+    expect(r.isError).toBe(false)
+    expect(r.output).toContain('[top half] image box did not answer: HTTP 503')
+    expect(r.output).toContain('[bottom half] Two ticked.')
   })
   it('a box that does not answer is the reason, as an error', async () => {
     setProjectToolContext({ home, slug, embed: null, embedModel: 'none', ask: async () => ({ ok: false, reason: 'image box did not answer: HTTP 503' }) })
