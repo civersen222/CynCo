@@ -16,7 +16,7 @@ export type AwayRun = { ts: string; mission: string; triggerId: string; ok: bool
 const DEFAULT_LIMIT = 50
 const DEFAULT_TAIL_BYTES = 256 * 1024
 
-function readTail(path: string, tailBytes: number): string {
+export function readTail(path: string, tailBytes: number): string {
   const size = statSync(path).size
   const start = Math.max(0, size - tailBytes)
   // Read one byte before the cut: if it is a newline the cut sits on a line
