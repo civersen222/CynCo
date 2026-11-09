@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues } from '../../imagegen/workflow.js'
+import { BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, fitToArea, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -63,6 +63,19 @@ describe('parseWorkflow', () => {
 })
 
 // The image box (docs/decisions/2026-11-08-image-box-design.md §4): two transforms of the owner's own photo.
+describe('fitToArea (a transform paints at the photo\'s aspect, not the configured square — check 4, 2026-11-09)', () => {
+  it('keeps the aspect at about the configured area, on multiples of 64', () => {
+    expect(fitToArea({ width: 3000, height: 4000 }, 1024 * 1024)).toEqual({ width: 896, height: 1152 })
+    expect(fitToArea({ width: 4000, height: 3000 }, 1024 * 1024)).toEqual({ width: 1152, height: 896 })
+    expect(fitToArea({ width: 500, height: 500 }, 1024 * 1024)).toEqual({ width: 1024, height: 1024 })
+    expect(fitToArea({ width: 1080, height: 2340 }, 1024 * 1024)).toEqual({ width: 704, height: 1536 })
+  })
+  it('no size known: null, and the caller keeps the configured size', () => {
+    expect(fitToArea(null, 1024 * 1024)).toBeNull()
+    expect(fitToArea({ width: 0, height: 10 }, 1024 * 1024)).toBeNull()
+  })
+})
+
 describe('vary and outline', () => {
   it('the vary graph takes the uploaded image and a denoise, and passes as kind vary', () => {
     const g = fillWorkflow(BUILTIN_VARY, { ...VALUES, image: 'cynco-in.png', denoise: 0.55 })
