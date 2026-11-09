@@ -59,3 +59,11 @@ describe('WakePublisher', () => {
     expect(await p.publishIfChanged(ledgers)).toBe('failed')
   })
 })
+
+describe('collectNextFires allowedIds', () => {
+  it('publishes only the allowed trigger ids (disabled and stale ids are left out)', () => {
+    const ledger = L({ poll: '2026-11-08T21:00:00.000Z', news: '2026-11-08T22:00:00.000Z', 'june-old': '2026-11-09T09:00:00.000Z' })
+    expect(collectNextFires([ledger], NOW, new Set(['poll']))).toEqual(['2026-11-08T21:00:00.000Z'])
+    expect(collectNextFires([ledger], NOW)).toHaveLength(3)
+  })
+})

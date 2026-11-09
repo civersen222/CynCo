@@ -1,10 +1,11 @@
 // engine/__tests__/daemon/missionRunner.test.ts
 import { beforeEach, afterEach, describe, expect, it } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { MissionRunner, sanitizePrecheckLine } from '../../daemon/missionRunner.js'
 import { MissionLedger } from '../../daemon/missionLedger.js'
+import { cadenceFingerprint } from '../../daemon/schedule.js'
 import type { MissionConfig, TaskOutcome, Recommendation } from '../../daemon/types.js'
 import type { TurnThinkingRecord } from '../../memory/thinkingRecorder.js'
 
@@ -869,5 +870,140 @@ describe('precheck output is data, not prompt', () => {
     ledger.setNextFire('trades', new Date(2026, 5, 11, 11, 59).toISOString())
     await new MissionRunner(ledger, deps as any).tick()
     expect(ledger.recentRuns(1)[0].summary).toBe('precheck skipped the pass: "skip: bnothing/b to do"')
+  })
+})
+
+describe('MissionRunner schedule.json overrides', () => {
+  const mdir = () => join(dir, 'mfl-dynasty')
+  const writeSchedule = (s: unknown) => writeFileSync(join(mdir(), 'schedule.json'), typeof s === 'string' ? s : JSON.stringify(s), 'utf-8')
+  function setup() {
+    const now = { t: new Date(2026, 5, 11, 12, 0, 0) }
+    const made = makeDeps({ now: () => now.t })
+    const ledger = MissionLedger.load(mdir())
+    const runner = new MissionRunner(ledger, made.deps as any)
+    return { now, ledger, runner, ...made }
+  }
+  const at = (h: number, m = 0) => new Date(2026, 5, 11, h, m, 0)
+
+  it('a disabled trigger never fires and its nextFire keeps advancing past now', async () => {
+    writeSchedule({ triggers: { poll: { enabled: false } } })
+    const { now, ledger, runner, ranTasks } = setup()
+    await runner.tick()                                   // init: poll 13:00
+    expect(ledger.state.nextFire['poll']).toBe(at(13).toISOString())
+    now.t = at(13, 5); await runner.tick()                // inside the grace window: would fire if enabled
+    expect(ledger.state.nextFire['poll']).toBe(at(14, 5).toISOString())
+    now.t = at(15, 30); await runner.tick()
+    expect(ranTasks).toHaveLength(0)
+    expect(new Date(ledger.state.nextFire['poll']).getTime()).toBeGreaterThan(now.t.getTime())
+    expect(ledger.recentRuns(5)).toHaveLength(0)
+  })
+
+  it('re-enabling resumes the grid from now, no catch-up fire', async () => {
+    writeSchedule({ triggers: { poll: { enabled: false } } })
+    const { now, ledger, runner, ranTasks } = setup()
+    await runner.tick()
+    now.t = at(13, 5); await runner.tick()                // poll silently moved to 14:05
+    writeSchedule({ triggers: { poll: { enabled: true } } })
+    now.t = at(13, 6); await runner.tick()
+    expect(ranTasks).toHaveLength(0)
+    expect(ledger.state.nextFire['poll']).toBe(at(14, 5).toISOString())
+    now.t = at(14, 5); await runner.tick()
+    expect(ranTasks.filter((t: any) => t.triggerId === 'poll')).toHaveLength(1)   // news (14:00) is due too
+  })
+
+  it('a cron override resets nextFire from now and records the fingerprint in state.scheduleSeen', async () => {
+    const { now, ledger, runner } = setup()
+    await runner.tick()                                   // no schedule: poll 13:00, fingerprint stored
+    expect(ledger.state.scheduleSeen?.['poll']).toBe(cadenceFingerprint(config.triggers[0]))
+    writeSchedule({ triggers: { poll: { kind: 'cron', cron: '0 18 * * *' } } })
+    now.t = at(12, 30); await runner.tick()
+    expect(ledger.state.nextFire['poll']).toBe(at(18).toISOString())
+    expect(ledger.state.scheduleSeen?.['poll']).toBe('cron|0 18 * * *|||60')
+    expect(JSON.parse(readFileSync(join(mdir(), 'state.json'), 'utf-8')).scheduleSeen.poll).toBe('cron|0 18 * * *|||60')
+  })
+
+  it('an unchanged schedule does not reset nextFire on every tick', async () => {
+    writeSchedule({ triggers: { poll: { everyMinutes: 90 } } })
+    const { now, ledger, runner } = setup()
+    await runner.tick()                                   // init with the override: 13:30
+    const first = ledger.state.nextFire['poll']
+    expect(first).toBe(at(13, 30).toISOString())
+    now.t = at(12, 30); await runner.tick()
+    expect(ledger.state.nextFire['poll']).toBe(first)
+  })
+
+  it('a torn schedule.json keeps the last good overrides (disabled stays disabled)', async () => {
+    writeSchedule({ triggers: { poll: { enabled: false } } })
+    const { now, ledger, runner, ranTasks } = setup()
+    await runner.tick()
+    writeSchedule('{"triggers": {"poll": {"ena')
+    now.t = at(13, 5); await runner.tick()
+    expect(ranTasks).toHaveLength(0)
+    expect(new Date(ledger.state.nextFire['poll']).getTime()).toBeGreaterThan(now.t.getTime())
+  })
+
+  it('a deleted schedule.json means no overrides again', async () => {
+    writeSchedule({ triggers: { poll: { enabled: false } } })
+    const { now, ledger, runner, ranTasks } = setup()
+    await runner.tick()                                   // poll 13:00
+    now.t = at(13, 5); await runner.tick()                // disabled: moved to 14:05, nothing run
+    expect(ranTasks).toHaveLength(0)
+    unlinkSync(join(mdir(), 'schedule.json'))
+    now.t = at(14, 5); await runner.tick()
+    expect(ranTasks.map((t: any) => t.triggerId)).toContain('poll')
+    expect(ledger.recentRuns(5).some((r) => r.triggerId === 'poll')).toBe(true)
+  })
+
+  it('an override for an undeclared trigger is ignored', async () => {
+    writeSchedule({ triggers: { ghost: { enabled: false } } })
+    const { ledger, runner, ranTasks } = setup()
+    ledger.setNextFire('news', at(11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await runner.tick()
+    expect(ranTasks.map((t: any) => t.triggerId)).toEqual(['news'])
+    expect(ledger.state.nextFire['ghost']).toBeUndefined()
+    expect(ledger.state.scheduleSeen?.['ghost']).toBeUndefined()
+    expect(runner.effectiveTriggers().map((t) => t.id)).toEqual(['poll', 'news'])
+  })
+
+  it('timeoutMs override reaches the task input', async () => {
+    writeSchedule({ triggers: { news: { timeoutMs: 600000 } } })
+    const { ledger, runner, ranTasks } = setup()
+    ledger.setNextFire('news', at(11, 59).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    await runner.tick()
+    expect(ranTasks[0].timeoutMs).toBe(600000)
+  })
+
+  it('disabling a trigger with a parked PausedRun drops it and records "dropped on disable"', async () => {
+    writeSchedule({ triggers: { poll: { enabled: false } } })
+    const { ledger, runner, ranTasks } = setup()
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    ledger.setNextFire('news', new Date(2026, 5, 12).toISOString())
+    ledger.state.paused = {
+      triggerId: 'poll', remainingMs: 60000, pausedAt: at(11).toISOString(),
+      input: { missionId: 'mfl-dynasty', triggerId: 'poll', prompt: 'Check transactions', context: 'ctx', allowedTools: ['Mfl'], timeoutMs: 15 * 60 * 1000, outcomePath: '', leagues: [] },
+    }
+    ledger.saveState()
+    await runner.tick()
+    expect(ranTasks).toHaveLength(0)
+    expect(ledger.state.paused).toBeUndefined()
+    expect(ledger.recentRuns(1)[0].summary.startsWith('dropped on disable: poll')).toBe(true)
+    expect(JSON.parse(readFileSync(join(mdir(), 'state.json'), 'utf-8')).paused).toBeUndefined()
+  })
+
+  it('an override whose cadence cannot be computed falls back to mission.json for that trigger and logs it', async () => {
+    writeSchedule({ triggers: { poll: { kind: 'cron' } } })   // passes per-field validation, but no cron expression
+    const { now, ledger, runner, ranTasks } = setup()
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: any[]) => { lines.push(a.join(' ')) }
+    try {
+      await runner.tick()
+      expect(ledger.state.nextFire['poll']).toBe(at(13).toISOString())
+      now.t = at(13); await runner.tick()
+    } finally { console.log = orig }
+    expect(ranTasks.map((t: any) => t.triggerId)).toEqual(['poll'])
+    expect(lines.some((l) => l.includes('poll') && /cron/.test(l))).toBe(true)
   })
 })

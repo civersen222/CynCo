@@ -15,11 +15,15 @@
 
 export type NextFireLedger = { state: { nextFire: Record<string, string> } }
 
-/** Every mission's future next-fire times, ISO, sorted, unique. */
-export function collectNextFires(ledgers: NextFireLedger[], now: Date = new Date()): string[] {
+/**
+ * Every mission's future next-fire times, ISO, sorted, unique. `allowedIds` (the enabled
+ * effective trigger ids) leaves out switched-off triggers and stale ids still in state.nextFire.
+ */
+export function collectNextFires(ledgers: NextFireLedger[], now: Date = new Date(), allowedIds?: Set<string>): string[] {
   const out = new Set<string>()
   for (const l of ledgers) {
-    for (const iso of Object.values(l.state.nextFire ?? {})) {
+    for (const [id, iso] of Object.entries(l.state.nextFire ?? {})) {
+      if (allowedIds && !allowedIds.has(id)) continue
       const t = Date.parse(iso)
       if (!Number.isFinite(t) || t <= now.getTime()) continue
       out.add(new Date(t).toISOString())
@@ -53,9 +57,9 @@ export class WakePublisher {
     this.now = deps.now ?? (() => new Date())
   }
 
-  async publishIfChanged(ledgers: NextFireLedger[]): Promise<PublishResult> {
+  async publishIfChanged(ledgers: NextFireLedger[], allowedIds?: Set<string>): Promise<PublishResult> {
     if (!this.deps.url) return 'skipped'
-    const times = collectNextFires(ledgers, this.now())
+    const times = collectNextFires(ledgers, this.now(), allowedIds)
     const key = times.join(',')
     const resendEveryMs = this.deps.resendEveryMs ?? 600_000
     if (key === this.lastSent && this.now().getTime() - this.lastSentAt < resendEveryMs) return 'unchanged'
