@@ -130,7 +130,7 @@ describe('workflow file', () => {
     const noPrompt = tempFile('np.json', api({ '6': { class_type: 'CLIPTextEncode', inputs: { text: 'a cat', clip: ['4', 1] } } }))
     expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: noPrompt })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${noPrompt} has no "{{prompt}}" placeholder, so nothing would describe the picture` })
     const unknown = tempFile('uk.json', api({ '10': { class_type: 'Note', inputs: { text: '{{style}}' } } }))
-    expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: unknown })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${unknown} uses "{{style}}", which is not one of: prompt, negative, seed, width, height, steps, cfg, sampler, scheduler, checkpoint, filename_prefix` })
+    expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: unknown })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${unknown} uses "{{style}}", which is not one of: prompt, negative, seed, width, height, steps, cfg, sampler, scheduler, checkpoint, filename_prefix, image, denoise` })
     const embedded = tempFile('em.json', api({ '5': { class_type: 'EmptyLatentImage', inputs: { width: 'w{{width}}', height: '{{height}}', batch_size: 1 } } }))
     expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: embedded })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${embedded}: "{{width}}" must be a whole string value, not part of a longer one` })
     const { '9': _save, ...noSaveGraph } = BUILTIN_WORKFLOW
