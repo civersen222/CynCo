@@ -19,12 +19,20 @@ import { visionSettings } from './settings.js'
 export const LOOK_INSTRUCTION = [
   'Look at this picture and answer in exactly three labelled sections, in this order.',
   'TEXT: every word visible in the picture, transcribed faithfully — menu lines, error messages, labels, numbers, file names. Keep line breaks. Write "none" if there is no text.',
-  'STATE: the state of things — lights and their colours, cables and which ports they are in, switches, what is selected or highlighted on a screen. Write "none" if nothing applies.',
+  'STATE: the state of things — lights and their colours, cables and which ports they are in, switches; on a screen, which menu item, tab, row or line is selected or highlighted, and how you can tell. Write "none" if nothing applies.',
   'DESCRIPTION: one paragraph describing the picture for someone who cannot see it.',
 ].join('\n')
 
 export type Look = { text: string; state: string; description: string; model: string; ms: number }
 export type LookResult = { ok: true; look: Look } | { ok: false; reason: string }
+/** The answer to one aimed question about a picture (the LookAt tool, F191). */
+export type AskResult = { ok: true; answer: string; model: string; ms: number } | { ok: false; reason: string }
+
+/** The aimed instruction: the user's (or the model's) question, with a standing order not to invent what the picture does not show. */
+export function askInstruction(question: string): string {
+  return `Answer this question about the picture: ${question}
+Say what you can see that supports the answer. If the picture does not show it, say so plainly.`
+}
 
 export const LOOK_TIMEOUT_MS = 60_000
 /**
@@ -67,6 +75,20 @@ export class LookClient {
   }
 
   async look(image: Uint8Array, _mime: string): Promise<LookResult> {
+    const r = await this.chat(LOOK_INSTRUCTION, image)
+    if (!r.ok) return r
+    return { ok: true, look: { ...parseLook(r.content), model: r.model, ms: r.ms } }
+  }
+
+  /** One aimed question about a picture — the LookAt tool's path; no cache, no ingest (F191). */
+  async ask(image: Uint8Array, _mime: string, question: string): Promise<AskResult> {
+    const r = await this.chat(askInstruction(question), image)
+    if (!r.ok) return r
+    return { ok: true, answer: r.content.trim(), model: r.model, ms: r.ms }
+  }
+
+  /** The one request shape both calls share: `/api/chat`, the image as base64, `keep_alive`, the window, the deadline; every failure is a reason. */
+  private async chat(content: string, image: Uint8Array): Promise<{ ok: true; content: string; model: string; ms: number } | { ok: false; reason: string }> {
     const started = this.now()
     try {
       const resp = await this.fetchFn(`${this.url}/api/chat`, {
@@ -77,7 +99,7 @@ export class LookClient {
           stream: false,
           keep_alive: '10m',
           options: { num_ctx: LOOK_NUM_CTX },
-          messages: [{ role: 'user', content: LOOK_INSTRUCTION, images: [Buffer.from(image).toString('base64')] }],
+          messages: [{ role: 'user', content, images: [Buffer.from(image).toString('base64')] }],
         }),
         signal: AbortSignal.timeout(this.timeoutMs),
       })
@@ -86,8 +108,7 @@ export class LookClient {
         return { ok: false, reason: `image box did not answer: HTTP ${resp.status}${body ? ` ${body}` : ''}` }
       }
       const data = (await resp.json()) as { model?: string; message?: { content?: string } }
-      const parsed = parseLook(data.message?.content ?? '')
-      return { ok: true, look: { ...parsed, model: data.model ?? this.model, ms: this.now() - started } }
+      return { ok: true, content: data.message?.content ?? '', model: data.model ?? this.model, ms: this.now() - started }
     } catch (e) {
       return { ok: false, reason: `image box did not answer: ${e instanceof Error ? e.message : String(e)}` }
     }

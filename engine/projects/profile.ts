@@ -17,10 +17,11 @@ import { getShellInfo } from '../tools/shellInfo.js'
 
 // No ImageView: a project chat's model is text-only and the image box looks at every
 // picture at upload (engine/vision); offered, the tool sent the model tiling and pixel-
-// scripting a photo it could never see (F190).
+// scripting a photo it could never see (F190). LookAt is the model's way to look: it asks
+// the box a question and gets words back (F191).
 export const PROJECT_TOOL_NAMES: readonly string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch',
-  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI',
+  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt', 'AskUser', 'RenderUI',
 ]
 
 /**

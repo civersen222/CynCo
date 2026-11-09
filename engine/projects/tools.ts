@@ -1,12 +1,12 @@
 /**
- * engine/projects/tools.ts — ProjectSearch, SaveArtifact, AddToKnowledge.
+ * engine/projects/tools.ts — ProjectSearch, SaveArtifact, AddToKnowledge, LookAt.
  *
  * Tools see only `(input, cwd)`; the project context (home, slug, embed
  * client, event sink) is module state the loop sets when a project session
  * starts and clears when it ends. Outside a project session every tool
  * refuses by name. Files are only ever written inside the project folder.
  */
-import { existsSync, mkdirSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import type { ToolImpl } from '../tools/types.js'
 import type { EmbedClient } from '../index/embedClient.js'
@@ -16,8 +16,12 @@ import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, type IngestEvent } from './ingest.js'
 import { searchProjects } from './search.js'
 import { htmlToText } from './extract/epub.js'
+import { IMAGE_EXTS } from './extract/index.js'
+import { imageMime } from '../vision/lookRunner.js'
+import type { AskResult } from '../vision/lookClient.js'
 
-export type ProjectToolContext = { home: string; slug: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void }
+/** `ask`: the image box's aimed look (`LookRunner.ask`), for LookAt; absent = no vision model configured. */
+export type ProjectToolContext = { home: string; slug: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void; ask?: (bytes: Uint8Array, mime: string, question: string) => Promise<AskResult> }
 let context: ProjectToolContext | null = null
 let fetchImpl: typeof fetch | null = null
 export function setProjectToolContext(ctx: ProjectToolContext | null): void { context = ctx }
@@ -160,5 +164,48 @@ export const addToKnowledgeTool: ToolImpl = {
       return { output: `Added knowledge/${rel}${ev.indexed ? '' : ` (kept but not indexed: ${ev.reason})`}`, isError: false }
     }
     return { output: 'give either path or url', isError: true }
+  },
+}
+
+/**
+ * LookAt — the text-only model asks the image box one question about a picture
+ * in this project (F191: the upload-time look reads text and describes, but
+ * "which item is selected" on a dense screen came back empty four times out
+ * of four; aimed, the box answered in under 4 s). Replaces the role ImageView
+ * could not fill here: it returned bytes to a model that cannot see.
+ */
+export const lookAtTool: ToolImpl = {
+  name: 'LookAt',
+  description: 'Ask the image box one question about a picture in this project (a photo or screenshot in knowledge/ or artifacts/): what is selected, a value, a colour, a detail the attached-image block did not give. Returns the box\'s answer in words. You cannot see pictures yourself; this is how you look.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      file: { type: 'string', description: 'The picture\'s project path, e.g. knowledge/photo.jpg (a bare name means knowledge/)' },
+      question: { type: 'string', description: 'One specific question about the picture, in plain words' },
+    },
+    required: ['file', 'question'],
+  },
+  tier: 'auto', core: false,
+  execute: async (input) => {
+    if (!context) return NOT_IN_PROJECT('LookAt')
+    if (!context.ask) return { output: 'LookAt: no image box is configured (LOCALCODE_VISION_URL unset); pictures cannot be read in this chat.', isError: true }
+    const raw = String(input.file ?? '').trim().replace(/\\/g, '/').replace(/^\.?\//, '')
+    const rel = raw.startsWith('knowledge/') || raw.startsWith('artifacts/') ? raw : `knowledge/${raw}`
+    const dir = projectDir(context.home, context.slug)
+    const abs = resolve(dir, rel)
+    if (!raw || raw.includes('..') || !(isInside(join(dir, 'knowledge'), abs) || isInside(join(dir, 'artifacts'), abs))) {
+      return { output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true }
+    }
+    const ext = rel.toLowerCase().slice(rel.lastIndexOf('.'))
+    if (!IMAGE_EXTS.has(ext)) return { output: `LookAt: ${rel} is not a picture (${[...IMAGE_EXTS].join(', ')}).`, isError: true }
+    if (!existsSync(abs) || !statSync(abs).isFile()) return { output: `LookAt: ${rel} is not in this project.`, isError: true }
+    const real = realInside(dir, abs)
+    if (!real.inside) return { output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true }
+    const question = String(input.question ?? '').trim()
+    if (!question) return { output: 'LookAt: question is required.', isError: true }
+    const r = await context.ask(new Uint8Array(readFileSync(real.real)), imageMime(rel), question)
+    if (!r.ok) return { output: `LookAt: ${r.reason}`, isError: true }
+    return { output: `${r.answer}
+(image box, ${r.model}, ${(r.ms / 1000).toFixed(1)} s)`, isError: false }
   },
 }

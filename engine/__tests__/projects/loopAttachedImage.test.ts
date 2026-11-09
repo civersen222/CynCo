@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { createProject } from '../../projects/layout.js'
 import { openBinding } from '../../projects/binding.js'
 import { RETRIEVAL_TAG } from '../../projects/retrieval.js'
-import { setProjectToolContext } from '../../projects/tools.js'
+import { getProjectToolContext, setProjectToolContext } from '../../projects/tools.js'
 import { globalContract } from '../../tools/contract.js'
 import { PENDING_REASON } from '../../vision/lookRunner.js'
 import type { Look } from '../../vision/lookClient.js'
@@ -27,6 +27,8 @@ function fakeRunner(slug: string, rel: string, afterMs: number | null) {
   return {
     slug,
     start() {},
+    asks: [] as string[],
+    async ask(_b: Uint8Array, _m: string, q: string) { this.asks.push(q); return { ok: true as const, answer: 'A', model: 'm', ms: 1 } },
     pending(s: string, r: string) {
       if (s !== slug || r !== rel || afterMs === null) return null
       promise ??= new Promise<IngestEvent>(res => setTimeout(() => { done = look; res({ slug, filePath: `knowledge/${rel}`, kind: 'knowledge', indexed: true, chunks: 2 }) }, afterMs))
@@ -49,6 +51,11 @@ describe('an attached photo reaches the next turn', () => {
     const b = await openBinding({ home, slug, embed: null, embedModel: 'none', contextLength: 32768, looks: runner as any })
     if (!b.ok) throw new Error(b.reason)
     await loop.startProjectSession(b.binding, b.messages)
+    // the LookAt tool reaches the same runner (F191)
+    const ask = getProjectToolContext()?.ask
+    expect(typeof ask).toBe('function')
+    await ask!(new Uint8Array([1]), 'image/png', 'what is lit?')
+    expect(runner.asks).toEqual(['what is lit?'])
     // What the upload route emits the moment the bytes are written (before the look):
     loop.noteProjectIngest({ slug, filePath: 'knowledge/nas.jpg', kind: 'knowledge', indexed: false, reason: PENDING_REASON })
     await loop.handleUserMessage('which port is dead?')

@@ -30,7 +30,7 @@ import {
   contractAssertFailTool,
   contractStatusTool,
 } from './contract.js'
-import { projectSearchTool, saveArtifactTool, addToKnowledgeTool } from '../projects/tools.js'
+import { projectSearchTool, saveArtifactTool, addToKnowledgeTool, lookAtTool } from '../projects/tools.js'
 import { renderUiTool } from '../genui/renderUiTool.js'
 
 export const ALL_TOOLS: ToolImpl[] = [
@@ -40,7 +40,7 @@ export const ALL_TOOLS: ToolImpl[] = [
   spawnAgentTool, collectAgentTool, indexResearchTool, replaceFunctionTool, mflTool,
   loadToolsTool, runSkillTool, listSkillsTool, askUserTool,
   contractCreateTool, contractAssertPassTool, contractAssertFailTool, contractStatusTool,
-  projectSearchTool, saveArtifactTool, addToKnowledgeTool,
+  projectSearchTool, saveArtifactTool, addToKnowledgeTool, lookAtTool,
   renderUiTool,
 ]
 

@@ -82,6 +82,6 @@ describe('assembleProjectPrompt', () => {
   })
   it('keeps the tool name list', () => {
     // no ImageView: a project chat's model is text-only and the image box looks at pictures at upload (F190)
-    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI'])
+    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt', 'AskUser', 'RenderUI'])
   })
 })

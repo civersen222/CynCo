@@ -1223,7 +1223,8 @@ export class ConversationLoop {
     this.governance.setSessionId(this.sessionId)
     this.setCwd(binding ? binding.dir : this.launchCwd)
     if (binding) {
-      setProjectToolContext({ home: binding.home, slug: binding.slug, embed: binding.embed, embedModel: binding.embedModel, emit: binding.emit })
+      const looks = binding.looks
+      setProjectToolContext({ home: binding.home, slug: binding.slug, embed: binding.embed, embedModel: binding.embedModel, emit: binding.emit, ...(looks ? { ask: (bytes: Uint8Array, mime: string, question: string) => looks.ask(bytes, mime, question) } : {}) })
       this.executor.setGrader((tool, input) => gradeProjectCall(binding.dir, this.executor['cwd'], classifyRisk, describeRisk, tool, input))
       this.executor.setCodeIndexHints(false)
       this.emit({ type: 'project.opened', slug: binding.slug, chat: binding.chatFile, title: binding.chatTitle })

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createProject, readFileIndex, readJournal } from '../../projects/layout.js'
 import { ingestFile } from '../../projects/ingest.js'
-import { projectSearchTool, saveArtifactTool, addToKnowledgeTool, setProjectToolContext, setProjectFetch } from '../../projects/tools.js'
+import { projectSearchTool, saveArtifactTool, addToKnowledgeTool, lookAtTool, setProjectToolContext, setProjectFetch } from '../../projects/tools.js'
 import { ALL_TOOLS, getToolByName } from '../../tools/registry.js'
 import type { EmbedClient } from '../../index/embedClient.js'
 
@@ -21,12 +21,12 @@ beforeEach(async () => {
 afterEach(() => { setProjectToolContext(null); setProjectFetch(null); rmSync(home, { recursive: true, force: true }) })
 
 describe('registry', () => {
-  it('registers the three tools as extended auto tools', () => {
-    for (const n of ['ProjectSearch', 'SaveArtifact', 'AddToKnowledge']) {
+  it('registers the four tools as extended auto tools', () => {
+    for (const n of ['ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt']) {
       const t = getToolByName(n)!
       expect(t).toBeTruthy(); expect(t.tier).toBe('auto'); expect(t.core).toBe(false)
     }
-    expect(ALL_TOOLS.filter(t => ['ProjectSearch', 'SaveArtifact', 'AddToKnowledge'].includes(t.name))).toHaveLength(3)
+    expect(ALL_TOOLS.filter(t => ['ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt'].includes(t.name))).toHaveLength(4)
   })
 })
 
@@ -40,6 +40,53 @@ describe('ProjectSearch', () => {
     setProjectToolContext(null)
     const r = await projectSearchTool.execute({ query: 'x' }, dir)
     expect(r).toEqual({ output: 'ProjectSearch is only available inside a project chat.', isError: true })
+  })
+})
+
+describe('LookAt (F191: the text-only model asks the image box a question about a picture)', () => {
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+  function withAsk() {
+    const asks: Array<{ bytes: Uint8Array; mime: string; question: string }> = []
+    setProjectToolContext({ home, slug, embed: null, embedModel: 'none', ask: async (bytes, mime, question) => { asks.push({ bytes, mime, question }); return { ok: true, answer: 'The second item, "Resume", is highlighted.', model: 'qwen3-vl:8b-instruct', ms: 1234 } } })
+    writeFileSync(join(dir, 'knowledge', 'shot.png'), png)
+    return asks
+  }
+  it('refuses outside a project session by name', async () => {
+    setProjectToolContext(null)
+    expect(await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'q' }, dir)).toEqual({ output: 'LookAt is only available inside a project chat.', isError: true })
+  })
+  it('without an image box it says so, naming the switch', async () => {
+    writeFileSync(join(dir, 'knowledge', 'shot.png'), png)
+    const r = await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'q' }, dir)
+    expect(r).toEqual({ output: 'LookAt: no image box is configured (LOCALCODE_VISION_URL unset); pictures cannot be read in this chat.', isError: true })
+  })
+  it('asks the box the question about the project picture and returns the answer with the box\'s name and time', async () => {
+    const asks = withAsk()
+    const r = await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'which item is selected?' }, dir)
+    expect(r.isError).toBe(false)
+    expect(r.output).toBe('The second item, "Resume", is highlighted.\n(image box, qwen3-vl:8b-instruct, 1.2 s)')
+    expect(asks).toHaveLength(1)
+    expect(Array.from(asks[0].bytes)).toEqual(Array.from(png)); expect(asks[0].mime).toBe('image/png'); expect(asks[0].question).toBe('which item is selected?')
+  })
+  it('a bare file name means knowledge/; artifacts/ is allowed too', async () => {
+    const asks = withAsk()
+    writeFileSync(join(dir, 'artifacts', 'render.jpg'), png)
+    expect((await lookAtTool.execute({ file: 'shot.png', question: 'q' }, dir)).isError).toBe(false)
+    expect((await lookAtTool.execute({ file: 'artifacts/render.jpg', question: 'q' }, dir)).isError).toBe(false)
+    expect(asks.map(a => a.mime)).toEqual(['image/png', 'image/jpeg'])
+  })
+  it('refuses a path outside the project, a file that is not a picture, a missing file and an empty question — without calling the box', async () => {
+    const asks = withAsk()
+    expect(await lookAtTool.execute({ file: '../elsewhere/x.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true })
+    expect(await lookAtTool.execute({ file: 'knowledge/a.md', question: 'q' }, dir)).toEqual({ output: 'LookAt: knowledge/a.md is not a picture (.png, .jpg, .jpeg, .webp, .gif).', isError: true })
+    expect(await lookAtTool.execute({ file: 'knowledge/missing.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: knowledge/missing.png is not in this project.', isError: true })
+    expect(await lookAtTool.execute({ file: 'knowledge/shot.png', question: '  ' }, dir)).toEqual({ output: 'LookAt: question is required.', isError: true })
+    expect(asks).toEqual([])
+  })
+  it('a box that does not answer is the reason, as an error', async () => {
+    setProjectToolContext({ home, slug, embed: null, embedModel: 'none', ask: async () => ({ ok: false, reason: 'image box did not answer: HTTP 503' }) })
+    writeFileSync(join(dir, 'knowledge', 'shot.png'), png)
+    expect(await lookAtTool.execute({ file: 'knowledge/shot.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: image box did not answer: HTTP 503', isError: true })
   })
 })
 
