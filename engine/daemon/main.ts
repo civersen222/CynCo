@@ -11,7 +11,7 @@ import { NtfyChannel } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
-import { cyncoHome } from '../paths.js'
+import { missionsDir as resolveMissionsDir } from '../paths.js'
 import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
@@ -23,7 +23,7 @@ wireHoldAwake(activity, { log: (line) => console.log(`[daemon] ${line}`) })
 
 const TICK_MS = 30000
 
-const missionsDir = process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions')
+const missionsDir = resolveMissionsDir()
 const ntfyUrl = process.env.CYNCO_NTFY_URL
 if (!ntfyUrl) {
   console.error('[daemon] CYNCO_NTFY_URL is required (e.g. http://<tailscale-ip>:8090)')

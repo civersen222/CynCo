@@ -3555,6 +3555,16 @@ function brainOffNotice(brain, lens) {
   if (lens === false) return 'lens off (the jlens sidecar holds gigabytes of RAM) - set LOCALCODE_JLENS=on and restart the engine to start it';
   return null;
 }
+// connectWS calls applyRemoteLayout on every open. The layout is idempotent;
+// the routing is not: switchTab('projects') rewrites a chat hash to its
+// project, so a reconnect (screen off/on, tailnet blip) would close the chat
+// the phone is in (PR #190 review). Route on the first open only.
+var remoteState = { routed: false };
+function remoteRouteOnce(state) {
+  if (state.routed) return false;
+  state.routed = true;
+  return true;
+}
 function applyRemoteLayout() {
   if (!window.__CYNCO_REMOTE) return;
   document.body.classList.add('remote');
@@ -3564,6 +3574,7 @@ function applyRemoteLayout() {
     var name = btns[i].textContent.trim().toLowerCase();
     btns[i].hidden = keep.indexOf(name) === -1;
   }
+  if (!remoteRouteOnce(remoteState)) return;
   var want = initialHashFor(true, location.hash);
   if (want !== location.hash) location.hash = want;
   if (want.indexOf('#projects') === 0) switchTab('projects');

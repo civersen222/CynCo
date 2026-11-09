@@ -179,6 +179,9 @@ export type SessionSnapshot = {
   modelState?: 'cold' | 'loading' | 'warm' | 'waiting' | null
   /** The one-shot that owns the GPU right now (gpu-busy.json), or null. */
   busy?: { triggerId: string; task: string; remainingMs: number } | null
+  /** Wakefulness slice 4: `LOCALCODE_BRAIN` / `LOCALCODE_JLENS` as this engine read them (`brain/brainSwitch.ts`); the Brain tab's off-notice. */
+  brain?: boolean
+  lens?: boolean
   [extra: string]: unknown
 }
 

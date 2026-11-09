@@ -14,7 +14,10 @@
 # it can be matched by command line, and the last line of its log.
 param(
   [ValidateSet('status', 'start', 'stop', 'register')] [string] $Action = 'status',
-  [string] $Only = ''
+  [string] $Only = '',
+  # A process never to match: the desk engine passes its own pid, since it is a `bun engine\main.ts` too
+  # (engine/power/siblingEngine.ts) and must not read itself as the phone engine or stop itself.
+  [int] $ExcludePid = 0
 )
 
 $repo = 'C:\Users\civer\localcode'
@@ -26,7 +29,7 @@ $services = @(
 )
 if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, daemon, ntfy, listener)"; exit 2 } }
 
-$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine }
+$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $ExcludePid }
 
 foreach ($s in $services) {
   if ($s.Remote) {

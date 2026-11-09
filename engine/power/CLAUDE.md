@@ -8,7 +8,7 @@ The engine's and the daemon's relationship with the machine's power state, in tw
 |---|---|
 | `activity.ts` | `ActivityRegistry` (`begin(kind,label) → end()`, `count()`, `snapshot()`, `onBusy`, `onIdle`) and the shared `activity` instance. |
 | `awake.ts` | `wireHoldAwake(registry, deps?)`: spawns `scripts/hold-awake.ps1` on busy, kills it on idle; no-op off Windows. |
-| `siblingEngine.ts` | `siblingDecision` + `takeOverFromHeadless`: a desk engine (eager, interactive, Windows) stops the headless phone engine through `scripts/cynco-services.ps1 stop engine` before loading its model and `release()`s it (`start engine`) from `cleanShutdown`; the phone engine and one-shots never hand off. Owner's decision 2026-11-08. Pinned by `engine/__tests__/power/siblingEngine.test.ts`. |
+| `siblingEngine.ts` | `siblingDecision` + `takeOverFromHeadless`: a desk engine (eager, interactive, Windows) stops the headless phone engine through `scripts/cynco-services.ps1 stop engine` before loading its model and `release()`s it (`start engine`) from `cleanShutdown`, with `releaseSync()` on `process.on('exit')` for a crash or a shutdown that throws (a hard kill runs neither: `cynco-services.ps1 start engine`). Every call passes `-ExcludePid <own pid>` (`servicesArgs`): the desk engine is a `bun engine\main.ts` too and must never read itself as the phone engine or stop itself (PR #190 review). The phone engine and one-shots never hand off. Owner's decision 2026-11-08. Pinned by `engine/__tests__/power/siblingEngine.test.ts`. |
 
 ## Important types & functions
 - **`ActivityRegistry`** (`activity.ts:16`) — the refcount. `begin` returns an idempotent `end`; listeners fire only on the 0↔1 edges, so overlapping activities produce one busy and one idle.
