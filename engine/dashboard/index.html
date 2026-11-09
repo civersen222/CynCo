@@ -1545,6 +1545,8 @@ function alertChatLine(event) {
   if (!event) return null;
   if (event.source === 'operator') return 'operator: ' + (event.message || '');
   if (event.source === 'llama-cpp' && event.severity === 'info') return 'model: ' + (event.message || '');
+  // The image box's look (engine/vision): what it read, or that it did not answer (design §2 goal 6).
+  if (event.source === 'vision' && event.severity === 'info') return 'image box: ' + (event.message || '');
   return null;
 }
 

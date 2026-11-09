@@ -67,6 +67,28 @@ describe('LookRunner', () => {
     expect(r.runner.recent('p', '1.jpg')).toBeNull()
     expect(r.runner.recent('p', '3.jpg')).toEqual(look)
   })
+  it('the same bytes attached again after a look are not looked at twice: the recent look is reused and finish runs again', async () => {
+    const r = rig()
+    r.runner.start('p', 'a.jpg', bytes, 'image/jpeg'); r.release({ ok: true, look }); await r.runner.pending('p', 'a.jpg')
+    r.runner.start('p', 'a.jpg', bytes, 'image/jpeg')
+    await r.runner.pending('p', 'a.jpg')
+    expect(r.calls()).toBe(1)
+    expect(r.finished).toHaveLength(2)
+  })
+  it('different bytes under the same name while a look is in flight: a new look starts and the stale one never finishes the file', async () => {
+    const r = rig()
+    r.runner.start('p', 'a.jpg', bytes, 'image/jpeg')
+    const other = new Uint8Array([9, 9, 9])
+    r.runner.start('p', 'a.jpg', other, 'image/jpeg')
+    expect(r.calls()).toBe(2)
+    const stale = { ...look, description: 'STALE' }
+    r.release({ ok: true, look: stale }); r.release({ ok: true, look })
+    await r.runner.pending('p', 'a.jpg')
+    await new Promise(res => setTimeout(res, 5))
+    expect(r.finished.map(f => ('look' in f.input ? f.input.look.description : 'failure'))).toEqual(['d'])
+    expect(r.runner.recent('p', 'a.jpg')).toEqual(look)
+    expect(r.logs.some(l => /superseded/.test(l))).toBe(true)
+  })
   it('names the pending reason the upload route records', () => {
     expect(PENDING_REASON).toBe('looking at the picture…')
   })

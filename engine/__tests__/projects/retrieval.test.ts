@@ -83,6 +83,8 @@ describe('IngestNotes.takeEvents / attachedImages / formatLookBlock', () => {
     expect(n.takeEvents()).toEqual([])
     expect(formatNotes(events)).toContain('knowledge/b.docx')
     expect(formatNotes([])).toBeNull()
+    expect(formatNotes([ev('knowledge/p.jpg', { indexed: false, reason: 'looking at the picture…' })])).toBeNull()
+    expect(formatNotes([ev('knowledge/p.jpg', { indexed: false, reason: 'looking at the picture…' }), ev('knowledge/n.md')])).not.toContain('looking at the picture')
   })
   it('attachedImages keeps knowledge pictures, in order, once each', () => {
     expect(attachedImages([ev('knowledge/a.jpg'), ev('knowledge/b.docx'), ev('knowledge/c.PNG'), ev('knowledge/a.jpg'), ev('artifacts/d.webp')]))

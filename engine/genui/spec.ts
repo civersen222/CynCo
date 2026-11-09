@@ -415,12 +415,13 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     if (p.transform !== undefined || p.source !== undefined) {
       const transform = toStr(p.transform)?.trim().toLowerCase()
       const source = projectImagePath(toStr(p.source))
+      // A dropped transform takes its prompt with it: the idea must never be painted from scratch instead (final review I3).
       if (transform !== 'vary' && transform !== 'outline') {
-        report(ctx, `${at}.transform: "${String(p.transform ?? '').slice(0, 40)}" is not "vary" or "outline" — the transform was dropped`)
-        delete p.transform; delete p.source
+        report(ctx, `${at}.transform: "${String(p.transform ?? '').slice(0, 40)}" is not "vary" or "outline" — the picture was dropped`)
+        delete p.transform; delete p.source; delete p.prompt
       } else if (source === null) {
         report(ctx, `${at}.source: "${String(p.source ?? '').slice(0, 60)}" is not the path of a photo in the project — the ${transform} was dropped`)
-        delete p.transform; delete p.source
+        delete p.transform; delete p.source; delete p.prompt
       } else if (transform === 'vary' && typeof p.prompt !== 'string') {
         report(ctx, `${at}: a vary needs the idea in "prompt" — dropped`)
         delete p.transform; delete p.source

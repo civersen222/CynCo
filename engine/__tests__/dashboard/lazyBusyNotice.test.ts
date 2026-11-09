@@ -39,6 +39,8 @@ describe('alertChatLine', () => {
   it('leaves other alerts to the tool feed', () => {
     expect(alertChatLine({ type: 'governance.alert', severity: 'critical', source: 'llama-cpp', message: 'refused' })).toBeNull()
     expect(alertChatLine({ type: 'governance.alert', severity: 'info', source: 'vsm', message: 'x' })).toBeNull()
+    // the image box's look line (design §2 goal 6) rides the same channel
+    expect(alertChatLine({ type: 'governance.alert', severity: 'info', source: 'vision', message: 'looked at nas.jpg on the image box (qwen3-vl:8b-instruct, 1.8 s)' })).toBe('image box: looked at nas.jpg on the image box (qwen3-vl:8b-instruct, 1.8 s)')
   })
   it('handleEvent routes governance.alert through alertChatLine', () => {
     expect(fnSource('handleEvent')).toContain('alertChatLine(event)')

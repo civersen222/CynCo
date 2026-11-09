@@ -49,6 +49,8 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
 
 ## Backlog (worth doing, not started)
 
+- Image box, deferred from the 2026-11-08 review: a restart mid-look leaves a knowledge record at "looking at the picture…" until a rescan (a startup pass over pending records); the History tab and a reopened chat do not yet show a picture's `transform`/`source` though the sidecar records them; the doorman's page does not name the companion box `/status` reports under `with`, and `status()` probes companions synchronously (two 2 s timeouts when both boxes sleep); a vary beside an operator generate workflow without `{{checkpoint}}` keys on `''`; `sidecarFault` accepts schema 2 without checking the transform fields' shapes.
+
 - `POST /api/projects/:slug/rescan` outlives Bun.serve's default 10 s `idleTimeout` on a project with a handful of files (found 2026-11-08 rescanning `pc-wakefulness`): the work finishes server-side, the client sees the socket drop. Either raise `idleTimeout` on the dashboard server or make rescan answer at once and report through `project.ingest` events.
 - Ollama on the GPU PC is installed but broken and unused since 2026-11-08 (embeddings moved to CynCo's own llama-server, `docs/decisions/2026-11-08-embeddings-own-llama-server.md`); uninstalling it is the owner's step. The 4070 box's Ollama stays (slice 2b fallback).
 

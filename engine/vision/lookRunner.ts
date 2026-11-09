@@ -16,6 +16,7 @@
 import type { Look, LookClient } from './lookClient.js'
 import type { IngestEvent } from '../projects/ingest.js'
 import type { LookInput } from '../projects/extract/types.js'
+import { sha256Of } from '../projects/layout.js'
 
 export const PENDING_REASON = 'looking at the picture…'
 const DEFAULT_RECENT_CAP = 20
@@ -23,8 +24,12 @@ const DEFAULT_RECENT_CAP = 20
 export type LookFinish = (slug: string, rel: string, input: LookInput) => Promise<IngestEvent>
 
 export class LookRunner {
+  /** In-flight looks by `<slug>/<rel>@<sha256>`: the same bytes never run twice at once. */
   private readonly inflight = new Map<string, Promise<IngestEvent>>()
+  /** Finished looks by the same key (LRU): the turn, a re-attach of the same bytes and a rescan reuse them. */
   private readonly recentLooks = new Map<string, Look>()
+  /** The sha256 last started under each `<slug>/<rel>`: what `pending`/`recent` by name resolve to, and what a stale look is checked against. */
+  private readonly latest = new Map<string, string>()
   private readonly cap: number
 
   constructor(private readonly deps: { client: LookClient; finish: LookFinish; log: (line: string) => void; recentCap?: number }) {
@@ -32,35 +37,59 @@ export class LookRunner {
   }
 
   start(slug: string, rel: string, bytes: Uint8Array, mime: string): void {
-    const key = `${slug}/${rel}`
+    const relKey = `${slug}/${rel}`
+    const sha = sha256Of(bytes)
+    const key = `${relKey}@${sha}`
+    this.latest.set(relKey, sha)
     if (this.inflight.has(key)) return
+    const known = this.recentLooks.get(key)
     const run = (async (): Promise<IngestEvent> => {
-      const r = await this.deps.client.look(bytes, mime)
       let input: LookInput
-      if (r.ok) {
-        this.remember(key, r.look)
-        this.deps.log(`[vision] looked at ${key} (${r.look.model}, ${(r.look.ms / 1000).toFixed(1)} s)`)
-        input = { look: r.look }
+      if (known) {
+        // The same bytes again (re-attached, or a rescan): no second look, the record is simply made again.
+        input = { look: known }
       } else {
-        this.deps.log(`[vision] ${key}: ${r.reason}`)
-        input = { failure: r.reason }
+        const r = await this.deps.client.look(bytes, mime)
+        if (r.ok) {
+          this.remember(key, r.look)
+          this.deps.log(`[vision] looked at ${relKey} (${r.look.model}, ${(r.look.ms / 1000).toFixed(1)} s)`)
+          input = { look: r.look }
+        } else {
+          this.deps.log(`[vision] ${relKey}: ${r.reason}`)
+          input = { failure: r.reason }
+        }
       }
       try {
+        if (this.latest.get(relKey) !== sha) {
+          // Other bytes were uploaded under this name while we looked: their look finishes the file, not this one.
+          this.deps.log(`[vision] ${relKey}: look superseded by a newer upload; not recorded`)
+          return { slug, filePath: `knowledge/${rel}`, kind: 'knowledge', indexed: false, reason: 'superseded by a newer upload' }
+        }
         return await this.deps.finish(slug, rel, input)
       } finally {
         this.inflight.delete(key)
       }
     })()
     this.inflight.set(key, run)
-    run.catch(e => this.deps.log(`[vision] finishing ${key} failed: ${e instanceof Error ? e.message : String(e)}`))
+    run.catch(e => this.deps.log(`[vision] finishing ${relKey} failed: ${e instanceof Error ? e.message : String(e)}`))
   }
 
-  pending(slug: string, rel: string): Promise<IngestEvent> | null {
-    return this.inflight.get(`${slug}/${rel}`) ?? null
+  /** The look in flight for these bytes (by sha, or the latest started under the name), or null. */
+  pending(slug: string, rel: string, sha?: string): Promise<IngestEvent> | null {
+    const k = this.keyFor(slug, rel, sha)
+    return k ? this.inflight.get(k) ?? null : null
   }
 
-  recent(slug: string, rel: string): Look | null {
-    return this.recentLooks.get(`${slug}/${rel}`) ?? null
+  /** A finished look for these bytes (by sha, or the latest started under the name), or null. */
+  recent(slug: string, rel: string, sha?: string): Look | null {
+    const k = this.keyFor(slug, rel, sha)
+    return k ? this.recentLooks.get(k) ?? null : null
+  }
+
+  private keyFor(slug: string, rel: string, sha?: string): string | null {
+    const relKey = `${slug}/${rel}`
+    const s = sha ?? this.latest.get(relKey)
+    return s ? `${relKey}@${s}` : null
   }
 
   private remember(key: string, look: Look): void {

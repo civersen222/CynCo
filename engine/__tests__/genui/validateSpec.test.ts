@@ -542,7 +542,10 @@ describe('validateSpec: Image source + transform', () => {
     expect(bad.errors.join(' ')).toContain('source')
     const odd = one('Image', { source: 'knowledge/x.jpg', transform: 'blur', prompt: 'soft', alt: 'x' })
     expect(odd.errors.join(' ')).toContain('blur')
-    expect(odd.spec?.elements.x.props).toEqual({ prompt: 'soft', alt: 'x' })
+    // never a text-to-image painting of the idea instead (final review I3): the element goes
+    expect(odd.spec).toBeNull()
+    const away = one('Image', { source: '../elsewhere/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'x' })
+    expect(away.spec).toBeNull()
   })
   it('a transform with a src as well keeps the source and drops the src', () => {
     const r = one('Image', { source: 'knowledge/x.jpg', src: 'https://example.com/a.png', transform: 'outline', alt: 'x' })

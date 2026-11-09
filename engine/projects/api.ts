@@ -121,6 +121,8 @@ export async function addKnowledgeApi(d: ProjectsDeps, slug: string, item: { nam
     const index = readFileIndex(dir, 'knowledge')
     index.files[rel] = { sha256: sha256Of(bytes), addedAt: index.files[rel]?.addedAt ?? new Date().toISOString(), origin: 'uploaded', indexed: false, reason: PENDING_REASON }
     writeFileIndex(dir, 'knowledge', index)
+    // The loop hears of the picture now (IngestNotes), so the next turn can wait on the look (design §2); the look's own event follows.
+    d.emit({ slug, filePath: `knowledge/${rel}`, kind: 'knowledge', indexed: false, reason: PENDING_REASON })
     d.looks.start(slug, rel, bytes, imageMime(rel))
     return { status: 201, body: { name: rel, ...index.files[rel], event: null } }
   }

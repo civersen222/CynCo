@@ -10,6 +10,7 @@ import type { SearchHit } from './search.js'
 import type { IngestEvent } from './ingest.js'
 import type { Look } from '../vision/lookClient.js'
 import { IMAGE_EXTS } from './extract/index.js'
+import { PENDING_REASON } from '../vision/lookRunner.js'
 
 export const RETRIEVAL_TAG = '[Project knowledge]'
 export const MAX_PASSAGES = 8
@@ -89,8 +90,10 @@ export class IngestNotes {
 }
 
 export function formatNotes(events: IngestEvent[]): string | null {
-  if (events.length === 0) return null
-  const lines = events.map(e => `- ${e.filePath} — ${e.indexed ? `indexed (${e.chunks ?? 0} passage(s))` : `kept, not vector-indexed: ${e.reason ?? 'no reason given'}`}`)
+  // A picture still being looked at is the look block's to report (or the refusal line's), not a "not indexed" entry.
+  const listed = events.filter(e => e.reason !== PENDING_REASON)
+  if (listed.length === 0) return null
+  const lines = listed.map(e => `- ${e.filePath} — ${e.indexed ? `indexed (${e.chunks ?? 0} passage(s))` : `kept, not vector-indexed: ${e.reason ?? 'no reason given'}`}`)
   return `${RETRIEVAL_TAG}\nFiles added to this project since your last turn (uploaded or saved; they live at the paths shown, under the project folder):\n${lines.join('\n')}\n`
 }
 
