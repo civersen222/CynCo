@@ -1784,7 +1784,8 @@ describe('ImageService: files from the project (an Image whose src is a path)', 
 // The image box (docs/decisions/2026-11-08-image-box-design.md §4): the owner's own photo,
 // varied toward an idea or turned into outlines, on ComfyUI.
 describe('ImageService: transforms', () => {
-  const NODES = [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode', 'LineArtPreprocessor']
+  const EDIT_NODES = ['UnetLoaderGGUF', 'LoraLoaderModelOnly', 'ModelSamplingAuraFlow', 'CFGNorm', 'CLIPLoader', 'VAELoader', 'FluxKontextImageScale', 'TextEncodeQwenImageEditPlus']
+  const NODES = [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode', 'LineArtPreprocessor', ...EDIT_NODES]
   const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 1, 2, 3])
   function photo(rel = 'knowledge/yard.jpg'): string { mkdirSync(join(dir, 'knowledge'), { recursive: true }); writeFileSync(join(dir, rel), JPG); return rel }
   function tspec(props: Record<string, unknown>): UiSpec {
@@ -1821,6 +1822,38 @@ describe('ImageService: transforms', () => {
     expect(existsSync(pngPath(dir, key))).toBe(true)
   })
 
+  it('edit (F193): uploads the photo, submits the Qwen edit graph with the instruction, fixed 4-step sampling and no negative, checkpoint none, no denoise; schema 2 with transform edit', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const rel = photo()
+    const sp = tspec({ source: rel, transform: 'edit', prompt: 'add a wooden pergola over the table' })
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    const key = keyOf(sp, 0)
+    const paths = mock.calls.map(c => c.path)
+    expect(paths.indexOf('/upload/image')).toBeLessThan(paths.indexOf('/prompt'))
+    expect(paths.indexOf('/free')).toBeGreaterThan(paths.indexOf('/view'))
+    const g = graphOf()
+    expect(node(g, 'LoadImage')!.inputs.image).toBe(`cynco-${key}.jpg`)
+    expect(node(g, 'UnetLoaderGGUF')!.inputs.unet_name).toBe('Qwen-Image-Edit-2509-Q4_K_S.gguf')
+    const ks = node(g, 'KSampler')!.inputs
+    expect([ks.steps, ks.cfg, ks.sampler_name, ks.scheduler, ks.denoise]).toEqual([4, 1, 'euler', 'simple', 1])
+    const prompts = Object.values(g).filter(n => n.class_type === 'TextEncodeQwenImageEditPlus').map(n => n.inputs.prompt).sort()
+    expect(prompts).toEqual(['', 'add a wooden pergola over the table'])
+    const sc = readSidecar(dir, key)!
+    expect(sc).toMatchObject({ status: 'done', schema: 2, transform: 'edit', checkpoint: 'none', steps: 4, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: '' })
+    expect(sc.denoise).toBeUndefined()
+    expect(sc.source).toEqual({ path: rel, sha256: sha256Of(new Uint8Array(JPG)) })
+  })
+  it('edit on a box without the GGUF loader fails naming the node and the ComfyUI-GGUF pack; generated pictures are untouched', async () => {
+    mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })
+    const s = start(); const rel = photo()
+    const sp = tspec({ source: rel, transform: 'edit', prompt: 'add a pergola' })
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    const sc = readSidecar(dir, keyOf(sp, 0))!
+    expect(sc.status).toBe('failed')
+    expect(sc.reason).toContain('"UnetLoaderGGUF"'); expect(sc.reason).toContain('ComfyUI-GGUF')
+  })
   it('outline: the preprocessor graph has no text encoder, needs no checkpoint, and the record carries an empty prompt', async () => {
     mock = await startMockComfy({ nodes: NODES })
     const s = start(); const rel = photo('knowledge/porch.png')

@@ -59,7 +59,7 @@ describe('genui catalog', () => {
     expect(img.props.alt.required).toBe(true)
     // another take of one design: the same prompt with another seed (engine/imagegen keys on it)
     expect(img.props.seed).toEqual({ type: 'int', desc: 'a whole number; the same prompt with another seed is another take — leave it out for one picture', min: 0, max: Number.MAX_SAFE_INTEGER })
-    expect(img.description).toBe('A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "vary" (toward the "prompt") or "outline" (line art, no prompt).')
+    expect(img.description).toBe('A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "edit" (change it as the "prompt" instructs: add, remove, replace, restyle something), "vary" (a variation toward the "prompt") or "outline" (line art, no prompt).')
     expect(img.example).toEqual({ prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' })
   })
 

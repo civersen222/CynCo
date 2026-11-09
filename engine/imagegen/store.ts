@@ -25,7 +25,7 @@
  * regular file under a cap, the format's signature — and under its own.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import type { WorkflowKind } from './workflow.js'
+import type { TransformKind, WorkflowKind } from './workflow.js'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UiElement, UiImageState, UiSpec } from '../bridge/protocol.js'
@@ -83,7 +83,7 @@ export type ImageSidecar = {
   scheduler: string
   /** The resolved checkpoint name, 'auto' until a probe resolves it, or 'none' for a graph with no checkpoint (outline). */
   checkpoint: string
-  transform?: 'vary' | 'outline'
+  transform?: TransformKind
   /** The project photo the transform started from, by path and content. */
   source?: { path: string; sha256: string }
   denoise?: number
@@ -107,7 +107,7 @@ export type KeyFields = {
   prompt: string; negative: string; seed: number; width: number; height: number; steps: number; cfg: number
   sampler: string; scheduler: string; checkpoint: string; workflow: string
   /** Transforms (image box §4): the kind and the source photo's sha256, so another photo or another transform is another picture. Absent for a generated picture (its keys are unchanged). */
-  transform?: 'vary' | 'outline'; source?: string
+  transform?: TransformKind; source?: string
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -462,7 +462,7 @@ export type PictureRequest = { id: string; el: UiElement; kind: WorkflowKind; pr
 
 /**
  * Every reachable Image the engine must make a picture for, in draw order:
- * generate (a prompt, today's path), vary (a source photo + a prompt) or
+ * generate (a prompt, today's path), vary or edit (a source photo + a prompt) or
  * outline (a source photo). Image box §4. A vary's prompt is never painted
  * from scratch: `promptedImages` is the generate subset.
  */
@@ -471,11 +471,11 @@ export function pictureRequests(spec: UiSpec): PictureRequest[] {
   for (const { id, el, props } of reachableElements(spec)) {
     if (el.type !== 'Image' || !props) continue
     const alt = typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : ''
-    const transform = props.transform === 'vary' || props.transform === 'outline' ? props.transform : null
+    const transform = props.transform === 'vary' || props.transform === 'outline' || props.transform === 'edit' ? props.transform : null
     const source = transform ? projectImagePath(props.source) : null
     if (transform && source) {
       const prompt = typeof props.prompt === 'string' ? normPrompt(props.prompt) : ''
-      if (transform === 'vary' && !prompt) continue
+      if ((transform === 'vary' || transform === 'edit') && !prompt) continue
       out.push({ id, el, kind: transform, prompt: transform === 'outline' ? '' : prompt, alt, source })
       continue
     }
