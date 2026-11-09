@@ -38,10 +38,10 @@ describe('chat attach', () => {
   })
 
   it('markup: a hidden file input that feeds uploadKnowledgeFiles with a chat status sink, camera allowed', () => {
-    expect(html).toMatch(/<input type="file" id="chatAttach"[^>]*multiple[^>]*onchange="uploadKnowledgeFiles\(this\.files, chatAttachStatus\)"/)
+    expect(html).toMatch(/<input type="file" id="chatAttach"[^>]*multiple[^>]*onchange="uploadKnowledgeFiles\(this\.files, chatAttachStatus, projectsState\.active && projectsState\.active\.slug\)"/)
     expect(html).toMatch(/id="chatAttachBtn"[^>]*hidden/)
     const js = scripts()
-    expect(js).toContain("function uploadKnowledgeFiles(files, onStatus)")
+    expect(js).toContain("function uploadKnowledgeFiles(files, onStatus, slugOverride)")
     expect(js).toContain('function chatAttachStatus(')
   })
 

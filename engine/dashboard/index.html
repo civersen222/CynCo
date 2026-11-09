@@ -902,7 +902,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!chatEnterInsertsNewline()){event.preventDefault();sendChatMessage()}"></textarea>
-      <input type="file" id="chatAttach" multiple accept=".md,.markdown,.txt,.pdf,.epub,.docx,.xlsx,image/*" style="display:none" onchange="uploadKnowledgeFiles(this.files, chatAttachStatus)">
+      <input type="file" id="chatAttach" multiple accept=".md,.markdown,.txt,.pdf,.epub,.docx,.xlsx,image/*" style="display:none" onchange="uploadKnowledgeFiles(this.files, chatAttachStatus, projectsState.active && projectsState.active.slug)">
       <button class="btn btn-grey" id="chatAttachBtn" hidden onclick="document.getElementById('chatAttach').click()" title="Attach a file or a photo to this project's knowledge">Attach</button>
       <button class="chat-stop" id="chatStop" onclick="abortTurn()" title="Stop the running turn">Stop</button>
       <button class="chat-send" onclick="sendChatMessage()">Send</button>
@@ -6116,7 +6116,10 @@ function projStatus(id, kind, text) {
   var el = document.getElementById(id);
   if (!el) return;
   var cls = kind === 'ok' ? 'proj-ok' : kind === 'warn' ? 'proj-warn' : kind === 'err' ? 'proj-err' : 'proj-muted';
-  el.innerHTML = text ? '<span class="' + cls + '">' + escHtml(text) + '</span>' : '';
+  // Built from nodes, not innerHTML: the text may be a file name or a server
+  // error (CodeQL js/xss-through-dom on PR #191; escHtml was already applied).
+  while (el.firstChild) el.removeChild(el.firstChild);
+  if (text) { var span = document.createElement('span'); span.className = cls; span.textContent = text; el.appendChild(span); }
 }
 
 function projToast(text) {
@@ -6906,10 +6909,15 @@ function chatAttachStatus(kind, text) {
   appendChatMsg('system', (kind === 'err' ? 'attach failed: ' : kind === 'warn' ? 'attached (not indexed): ' : kind === 'busy' ? '' : 'attached: ') + text);
 }
 
-function uploadKnowledgeFiles(files, onStatus) {
-  var slug = projectsState.slug;
-  if (!slug || !files || !files.length) return;
+function uploadKnowledgeFiles(files, onStatus, slugOverride) {
+  // The Projects tab uploads to the project it shows (projectsState.slug); the
+  // chat's Attach passes the project the CHAT is bound to (projectsState.active.slug)
+  // — a phone that never opened the Projects tab has no tab project at all
+  // (review of slice 5, critical #1).
+  var slug = slugOverride || projectsState.slug;
   var status = onStatus || function(kind, text) { projStatus('knowledgeStatus', kind, text); };
+  if (!files || !files.length) return;
+  if (!slug) { status('err', 'no project bound — open a project chat first'); return; }
   var list = Array.prototype.slice.call(files);
   var results = [];
   var next = function() {

@@ -33,7 +33,7 @@ function headingLevel(pXml: string): number | null {
 export const extractDocx: Extractor = async (bytes, fileName) => {
   let xml: string
   try {
-    const entries = readZip(bytes)
+    const entries = readZip(bytes, { want: (n) => n === 'word/document.xml' })
     const doc = entries.get('word/document.xml')
     if (!doc) return { ok: false, reason: 'not a docx: word/document.xml missing' }
     xml = Buffer.from(doc).toString('utf-8')
@@ -51,7 +51,10 @@ export const extractDocx: Extractor = async (bytes, fileName) => {
     lines = []
   }
   // Top-level blocks: paragraphs and tables, in document order.
-  const BLOCK_RE = /<w:tbl>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>|<w:p(?:\s[^>]*)?\/>/g
+  // The self-closing form comes FIRST: `<w:p w14:paraId="…"/>` would otherwise
+  // match the open-tag alternative (its `[^>]*` eats the `/`) and run on to the
+  // next `</w:p>`, swallowing a following table's first cell (review of slice 5).
+  const BLOCK_RE = /<w:p(?:\s[^>]*)?\/>|<w:tbl>[\s\S]*?<\/w:tbl>|<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g
   for (const m of body.matchAll(BLOCK_RE)) {
     const block = m[0]
     if (block.startsWith('<w:tbl>')) {

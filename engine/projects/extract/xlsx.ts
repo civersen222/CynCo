@@ -50,7 +50,7 @@ export function extractXlsxWith(opts: Opts): Extractor {
     let entries: Map<string, Uint8Array>
     let sheets: { name: string; path: string }[]
     try {
-      entries = readZip(bytes)
+      entries = readZip(bytes, { want: (n) => n === 'xl/workbook.xml' || n === 'xl/_rels/workbook.xml.rels' || n === 'xl/sharedStrings.xml' || n.startsWith('xl/worksheets/') })
       sheets = sheetOrder(entries)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)

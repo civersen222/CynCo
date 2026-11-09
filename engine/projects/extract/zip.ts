@@ -5,9 +5,13 @@
  * deflated (method 8); Node's zlib inflates the latter, so no dependency is
  * needed (wakefulness slice 5; `fflate` was the fallback the spec allowed).
  * Reads the end-of-central-directory record, walks the central directory,
- * then each local header. Bounded: an entry whose declared uncompressed size
- * exceeds `maxEntryBytes` (default 64 MiB) is refused before inflating — the
- * zip-bomb shape. Throws an Error with a reason; extractors turn that into
+ * then each local header. Bounded three ways (review of slice 5): an entry whose
+ * declared uncompressed size exceeds `maxEntryBytes` (default 64 MiB) is refused
+ * before inflating; the declared total across entries may not exceed
+ * `maxTotalBytes` (default 256 MiB) — the overlapping-entry bomb, where many
+ * central-directory records point at one local header, fails here; and only
+ * entries the caller `want`s are inflated at all (a docx's embedded photos are
+ * never touched). Throws an Error with a reason; extractors turn that into
  * `{ ok: false, reason }`. Zip64 and encrypted archives are not supported
  * (an Office file is neither).
  */
@@ -17,9 +21,21 @@ const EOCD_SIG = 0x06054b50
 const CEN_SIG = 0x02014b50
 const LOC_SIG = 0x04034b50
 const DEFAULT_MAX_ENTRY = 64 * 1024 * 1024
+const DEFAULT_MAX_TOTAL = 256 * 1024 * 1024
 
-export function readZip(bytes: Uint8Array, opts: { maxEntryBytes?: number } = {}): Map<string, Uint8Array> {
+export type ReadZipOpts = {
+  maxEntryBytes?: number
+  /** Cap on the sum of the declared uncompressed sizes of the entries actually read. */
+  maxTotalBytes?: number
+  /** Only entries this returns true for are inflated and returned; default: all. */
+  want?: (name: string) => boolean
+}
+
+export function readZip(bytes: Uint8Array, opts: ReadZipOpts = {}): Map<string, Uint8Array> {
   const maxEntry = opts.maxEntryBytes ?? DEFAULT_MAX_ENTRY
+  const maxTotal = opts.maxTotalBytes ?? DEFAULT_MAX_TOTAL
+  const want = opts.want ?? (() => true)
+  let total = 0
   const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   if (buf.length < 22) throw new Error('not a zip: too short')
   // EOCD: scan back over a possible comment (≤ 64 KiB).
@@ -46,7 +62,10 @@ export function readZip(bytes: Uint8Array, opts: { maxEntryBytes?: number } = {}
     const localOffset = buf.readUInt32LE(p + 42)
     const name = buf.toString('utf-8', p + 46, p + 46 + nameLen)
     p += 46 + nameLen + extraLen + commentLen
+    if (!want(name)) continue
     if (uncompSize > maxEntry) throw new Error(`zip entry ${name} too large (${uncompSize} bytes, cap ${maxEntry})`)
+    total += uncompSize
+    if (total > maxTotal) throw new Error(`zip total too large (over ${maxTotal} bytes across entries) — refused`)
     if (localOffset + 30 > buf.length || buf.readUInt32LE(localOffset) !== LOC_SIG) throw new Error(`not a zip: bad local header for ${name}`)
     const lNameLen = buf.readUInt16LE(localOffset + 26)
     const lExtraLen = buf.readUInt16LE(localOffset + 28)
