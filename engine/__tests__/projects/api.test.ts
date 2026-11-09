@@ -17,6 +17,8 @@ import { ingestFile, type IngestEvent } from '../../projects/ingest.js'
 import { appendTranscript, newChatFile, readTranscript } from '../../projects/chat.js'
 import { pdfWithPages } from './fixtures.js'
 import type { EmbedClient } from '../../index/embedClient.js'
+import { LookRunner, PENDING_REASON } from '../../vision/lookRunner.js'
+import type { LookClient, LookResult } from '../../vision/lookClient.js'
 
 class StubEmbed {
   async embed(_t: string): Promise<number[]> { return new Array(8).fill(0.01) }
@@ -406,5 +408,45 @@ describe('rescanApi', () => {
   it('404s an unknown project', async () => {
     const r = await rescanApi(deps(), 'ghost')
     expect(r.status).toBe(404)
+  })
+})
+
+// The image box (docs/decisions/2026-11-08-image-box-design.md §3): an image upload
+// answers at once and the look runs behind it.
+describe('addKnowledgeApi with an image', () => {
+  const look = { text: 'UEFI: USB, Partition 1', state: '', description: 'A boot menu.', model: 'qwen3-vl:8b-instruct', ms: 900 }
+  const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])
+  function withRunner(d: ProjectsDeps) {
+    let release!: (r: LookResult) => void
+    const client = { look: () => new Promise<LookResult>(res => { release = res }) } as unknown as LookClient
+    d.looks = new LookRunner({ client, finish: (slug, rel, input) => ingestFile(d, slug, 'knowledge', rel, 'uploaded', { lookInput: input }), log: () => {} })
+    return { release: (r: LookResult) => release(r) }
+  }
+  it('answers 201 at once with the pending record; the look finishes behind it and the record turns indexed', async () => {
+    const d = deps(); const { slug } = createProject(home, { name: 'Pics' }); const h = withRunner(d)
+    const r = await addKnowledgeApi(d, slug, { name: 'Boot Menu.JPG', bytes: jpg })
+    expect(r.status).toBe(201)
+    expect(r.body).toMatchObject({ name: 'boot-menu.jpg', indexed: false, reason: PENDING_REASON, event: null })
+    // the loop learns of the picture now, not when the look lands (final review C1)
+    expect(events).toEqual([{ slug, filePath: 'knowledge/boot-menu.jpg', kind: 'knowledge', indexed: false, reason: PENDING_REASON }])
+    h.release({ ok: true, look })
+    await d.looks!.pending(slug, 'boot-menu.jpg')
+    expect(readFileIndex(join(home, slug), 'knowledge').files['boot-menu.jpg']).toMatchObject({ indexed: true, chunks: 2 })
+    expect(events).toHaveLength(2)
+    expect(events[1]).toMatchObject({ filePath: 'knowledge/boot-menu.jpg', indexed: true })
+  })
+  it('without a runner the upload is today\'s synchronous path and says no vision model is configured', async () => {
+    const d = deps(); const { slug } = createProject(home, { name: 'Pics' })
+    const r = await addKnowledgeApi(d, slug, { name: 'a.png', bytes: jpg })
+    expect(r.status).toBe(201)
+    expect(r.body).toMatchObject({ indexed: false, reason: 'no vision model configured' })
+  })
+  it('rescan re-looks an image through the runner', async () => {
+    const d = deps(); const { slug } = createProject(home, { name: 'Pics' }); const h = withRunner(d)
+    writeFileSync(join(home, slug, 'knowledge', 'old.jpg'), jpg)
+    const p = rescanApi(d, slug)
+    await new Promise(r => setTimeout(r, 10)); h.release({ ok: true, look })
+    expect((await p).body).toEqual({ files: 1, indexed: 1, unindexed: 0 })
+    expect(readFileIndex(join(home, slug), 'knowledge').files['old.jpg']).toMatchObject({ indexed: true, chunks: 2 })
   })
 })

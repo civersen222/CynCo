@@ -4,8 +4,9 @@ import { extractPdf } from './pdf.js'
 import { extractEpub } from './epub.js'
 import { extractDocx } from './docx.js'
 import { extractXlsx } from './xlsx.js'
-import type { Extracted, Extractor } from './types.js'
-export type { Extracted, Extractor, Segment } from './types.js'
+import type { Extracted, Extractor, LookInput } from './types.js'
+import { imageSegments } from './image.js'
+export type { Extracted, Extractor, LookInput, Segment } from './types.js'
 
 export const EXTRACTOR_EXTS: ReadonlySet<string> = new Set(['.md', '.markdown', '.txt', '.pdf', '.epub', '.docx', '.xlsx'])
 export const IMAGE_EXTS: ReadonlySet<string> = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
@@ -21,9 +22,14 @@ export function extractorFor(fileName: string): Extractor | null {
   return null
 }
 
-export async function extractFile(bytes: Uint8Array, fileName: string): Promise<Extracted> {
+export async function extractFile(bytes: Uint8Array, fileName: string, lookInput?: LookInput): Promise<Extracted> {
   const ext = extname(fileName).toLowerCase()
-  if (IMAGE_EXTS.has(ext)) return { ok: false, reason: 'images are captioned in sub-project 3' }
+  if (IMAGE_EXTS.has(ext)) {
+    // A picture is what the image box read off it (image.ts); the look is the caller's to supply.
+    if (!lookInput) return { ok: false, reason: 'no vision model configured' }
+    if ('failure' in lookInput) return { ok: false, reason: lookInput.failure }
+    return { ok: true, segments: imageSegments(lookInput.look, fileName) }
+  }
   const fn = extractorFor(fileName)
   if (!fn) return { ok: false, reason: `no extractor for ${ext || '(no extension)'}` }
   return fn(bytes, fileName)

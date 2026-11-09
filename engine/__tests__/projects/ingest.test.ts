@@ -143,7 +143,7 @@ describe('ingestFile', () => {
     expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.unindexed', detail: expect.stringMatching(/^plan\.md \(chat\) — not indexed: embeddings unavailable: /) })
     writeFileSync(join(dir, 'artifacts', 'photo.png'), new Uint8Array([1, 2, 3]))
     await ingestFile(deps(new StubEmbed()), slug, 'artifact', 'photo.png', 'chat')
-    expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.unindexed', detail: 'photo.png (chat) — not indexed: images are captioned in sub-project 3' })
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.unindexed', detail: 'photo.png (chat) — not indexed: no vision model configured' })
     await removeFromIndex(deps(new StubEmbed()), slug, 'artifact', 'plan.md')
     expect(readJournal(dir)[0]).toMatchObject({ event: 'artifact.removed', detail: 'plan.md removed' })
     expect(readJournal(dir).some(e => e.event === 'artifact.saved')).toBe(false)
@@ -172,7 +172,27 @@ describe('chats, removal, rescan', () => {
     writeFileSync(join(dir, 'artifacts', 'plan.md'), '# Plan\n\nsteps\n', 'utf8')
     const r = await rescanProject(deps(new StubEmbed()), slug)
     expect(r).toEqual({ files: 3, indexed: 2, unindexed: 1 })
-    expect(readFileIndex(dir, 'knowledge').files['photo.jpg']).toMatchObject({ indexed: false, reason: 'images are captioned in sub-project 3', origin: 'uploaded' })
+    expect(readFileIndex(dir, 'knowledge').files['photo.jpg']).toMatchObject({ indexed: false, reason: 'no vision model configured', origin: 'uploaded' })
+  })
+})
+
+describe('ingestFile with a look (image box)', () => {
+  const look = { text: 'UEFI: USB, Partition 1', state: '', description: 'A boot menu.', model: 'qwen3-vl:8b-instruct', ms: 1200 }
+  it('a looked-at photo is indexed with its two chunks', async () => {
+    writeFileSync(join(dir, 'knowledge', 'boot.jpg'), Buffer.from([0xff, 0xd8, 0xff, 1]))
+    const ev = await ingestFile(deps(new StubEmbed()), slug, 'knowledge', 'boot.jpg', 'uploaded', { lookInput: { look } })
+    expect(ev).toEqual({ slug, filePath: 'knowledge/boot.jpg', kind: 'knowledge', indexed: true, chunks: 2 })
+    expect(readFileIndex(dir, 'knowledge').files['boot.jpg']).toMatchObject({ indexed: true, chunks: 2 })
+    const store = openProjectStore(dir)
+    expect(store.allChunks(['knowledge']).map(c => c.name)).toEqual(['boot.jpg › text', 'boot.jpg › description'])
+    store.close()
+  })
+  it('a failed look is recorded with its reason and journaled, and the file stays for a rescan', async () => {
+    writeFileSync(join(dir, 'knowledge', 'dark.jpg'), Buffer.from([0xff, 0xd8, 0xff, 2]))
+    const ev = await ingestFile(deps(new StubEmbed()), slug, 'knowledge', 'dark.jpg', 'uploaded', { lookInput: { failure: 'image box did not answer: timed out' } })
+    expect(ev).toMatchObject({ indexed: false, reason: 'image box did not answer: timed out' })
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'knowledge.unindexed' })
+    expect(existsSync(join(dir, 'knowledge', 'dark.jpg'))).toBe(true)
   })
 })
 

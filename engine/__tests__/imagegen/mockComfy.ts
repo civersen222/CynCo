@@ -49,6 +49,8 @@ export type MockMode = {
   ignoreClientId: boolean
   /** Delay every answer to this path prefix, ms. */
   delay: Record<string, number>
+  /** POST /upload/image answers 500 (image box §4). */
+  uploadFail: boolean
 }
 
 export type MockCall = { method: string; path: string; query: Record<string, string>; body: unknown }
@@ -71,7 +73,7 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
   const mode: MockMode = {
     stats: 'ok', checkpoints: ['juggernautXL_v9.safetensors', 'sd15.safetensors'], nodes: [...BUILTIN_CLASSES],
     pendingPolls: 1, neverFinish: false, refuse: null, checkCheckpoints: false, executionError: null, interrupted: false,
-    filename: null, subfolder: null, noOutputs: false, view: 'png', oversizedBytes: 4096, ignoreClientId: false, delay: {},
+    filename: null, subfolder: null, noOutputs: false, view: 'png', oversizedBytes: 4096, ignoreClientId: false, delay: {}, uploadFail: false,
     ...overrides,
   }
   const calls: MockCall[] = []
@@ -185,6 +187,16 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
       for (const id of ((body as { delete?: string[] } | null)?.delete ?? [])) pending.delete(id)
       return json(res, 200, {})
     }
+    // Image box §4: the transforms upload their input first, and free the models after.
+    if (u.pathname === '/upload/image' && req.method === 'POST') {
+      if (mode.uploadFail) return json(res, 500, { error: 'disk full' })
+      const raw = (body as { unparsed?: string } | null)?.unparsed ?? ''
+      const m = /filename="([^"]+)"/.exec(raw)
+      const ct = String(req.headers['content-type'] ?? '')
+      if (!ct.startsWith('multipart/form-data') || !m) return json(res, 400, { error: 'expected multipart with an image field' })
+      return json(res, 200, { name: m[1], subfolder: '', type: 'input' })
+    }
+    if (u.pathname === '/free' && req.method === 'POST') return json(res, 200, {})
     return json(res, 404, { error: `no route ${u.pathname}` })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

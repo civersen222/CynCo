@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test'
+import { comfyConfig as comfyConfigForTransforms, comfyWorkflowFor } from '../../imagegen/config.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -129,7 +130,7 @@ describe('workflow file', () => {
     const noPrompt = tempFile('np.json', api({ '6': { class_type: 'CLIPTextEncode', inputs: { text: 'a cat', clip: ['4', 1] } } }))
     expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: noPrompt })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${noPrompt} has no "{{prompt}}" placeholder, so nothing would describe the picture` })
     const unknown = tempFile('uk.json', api({ '10': { class_type: 'Note', inputs: { text: '{{style}}' } } }))
-    expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: unknown })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${unknown} uses "{{style}}", which is not one of: prompt, negative, seed, width, height, steps, cfg, sampler, scheduler, checkpoint, filename_prefix` })
+    expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: unknown })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${unknown} uses "{{style}}", which is not one of: prompt, negative, seed, width, height, steps, cfg, sampler, scheduler, checkpoint, filename_prefix, image, denoise` })
     const embedded = tempFile('em.json', api({ '5': { class_type: 'EmptyLatentImage', inputs: { width: 'w{{width}}', height: '{{height}}', batch_size: 1 } } }))
     expect(comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: embedded })).toEqual({ ok: false, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${embedded}: "{{width}}" must be a whole string value, not part of a longer one` })
     const { '9': _save, ...noSaveGraph } = BUILTIN_WORKFLOW
@@ -141,5 +142,29 @@ describe('workflow file', () => {
     const p = tempFile('flux.json', api({ '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'flux1-dev-fp8.safetensors' } } }))
     const r = comfyConfig({ ...URL_OK, LOCALCODE_COMFYUI_WORKFLOW: p })
     expect(r.ok && r.cfg.workflow.usesCheckpoint).toBe(false)
+  })
+})
+
+describe('transform workflows (image box §4)', () => {
+  it('comfyWorkflowFor reads one knob per kind, trimmed, empty = built-in', () => {
+    expect(comfyWorkflowFor('generate', { LOCALCODE_COMFYUI_WORKFLOW: ' g.json ' })).toBe('g.json')
+    expect(comfyWorkflowFor('vary', { LOCALCODE_COMFYUI_WORKFLOW_VARY: ' v.json ' })).toBe('v.json')
+    expect(comfyWorkflowFor('outline', { LOCALCODE_COMFYUI_WORKFLOW_OUTLINE: 'o.json' })).toBe('o.json')
+    expect(comfyWorkflowFor('vary', {})).toBe('')
+  })
+  it('the config carries the built-in vary and outline graphs; outline needs no checkpoint', () => {
+    const r = comfyConfigForTransforms({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188' })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.cfg.vary.source).toBe('builtin')
+      expect(r.cfg.vary.usesCheckpoint).toBe(true)
+      expect(r.cfg.outline.source).toBe('builtin')
+      expect(r.cfg.outline.usesCheckpoint).toBe(false)
+    }
+  })
+  it('a bad vary file is refused under its own variable name', () => {
+    const r = comfyConfigForTransforms({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188', LOCALCODE_COMFYUI_WORKFLOW_VARY: '/definitely/not/here.json' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason.startsWith('LOCALCODE_COMFYUI_WORKFLOW_VARY: ')).toBe(true)
   })
 })

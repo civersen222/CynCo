@@ -21,6 +21,8 @@ box — BUILT 2026-11-08 (its existing Ollama + `qwen3:14b`, `LOCALCODE_FALLBACK
 **6** ntfy and the NAS watchdog on the doorman — BUILT 2026-11-08 (ntfy container on `100.110.117.10:8090`, `naswatch.service`, PC ntfy task disabled). Then the tiers: the 4070 and 1080 Ti boxes on the
 switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/tiering-preview.md`).
 
+**The image box** (`docs/decisions/2026-11-08-image-box-design.md`, the 4070 Ti Super as CynCo's eyes and sketchpad): Part A vision BUILT 2026-11-08 (`engine/vision/`: one look per attached photo on the box's Ollama, into the turn and into knowledge; owner steps: `ollama pull qwen3-vl:8b-instruct` on the box, `LOCALCODE_VISION_URL`/`_MODEL` as user variables); Part C (the doorman wakes both boxes: `with`/`health` on targets) and Part B (`vary`/`outline` of a project photo on ComfyUI, `Image` `source` + `transform`) BUILT the same day; live checks wait on the owner steps in the three PRs.
+
 Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.
 
 Mission schedule control — built 2026-11-08 on branch `mission-schedule-control` (PR pending): the owner moves, switches off or pauses any daemon pass from a Missions tab (desk and phone) and the widget, with no restart; Resume picks up from now. Record: `docs/decisions/2026-11-08-mission-schedule-control.md`.
@@ -46,6 +48,9 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
    limiting the dashboard port to the owner's devices.
 
 ## Backlog (worth doing, not started)
+
+- `writeJsonAtomic` (engine/projects/layout.ts) loses a Windows rename race under load: `EPERM: operation not permitted, rename images/index.json.tmp-… -> images/index.json` while a previous image job's commit still holds the file; seen 2026-11-08 as a ~1-in-5 flake of `service.test` "more than three generating" on the image-box branch (never on Linux CI). A bounded rename retry on EPERM/EBUSY, with a test that injects the failure, would close it.
+- Image box, deferred from the 2026-11-08 review: a restart mid-look leaves a knowledge record at "looking at the picture…" until a rescan (a startup pass over pending records); the History tab and a reopened chat do not yet show a picture's `transform`/`source` though the sidecar records them; the doorman's page does not name the companion box `/status` reports under `with`, and `status()` probes companions synchronously (two 2 s timeouts when both boxes sleep); a vary beside an operator generate workflow without `{{checkpoint}}` keys on `''`; `sidecarFault` accepts schema 2 without checking the transform fields' shapes.
 
 - `POST /api/projects/:slug/rescan` outlives Bun.serve's default 10 s `idleTimeout` on a project with a handful of files (found 2026-11-08 rescanning `pc-wakefulness`): the work finishes server-side, the client sees the socket drop. Either raise `idleTimeout` on the dashboard server or make rescan answer at once and report through `project.ingest` events.
 - Ollama on the GPU PC is installed but broken and unused since 2026-11-08 (embeddings moved to CynCo's own llama-server, `docs/decisions/2026-11-08-embeddings-own-llama-server.md`); uninstalling it is the owner's step. The 4070 box's Ollama stays (slice 2b fallback).

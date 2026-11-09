@@ -31,7 +31,7 @@ export type HistoryEntry = {
 }
 
 /** Per-call deadlines, ms. A test seam; production uses these. */
-export const CLIENT_TIMEOUTS = { stats: 3000, models: 5000, node: 5000, submit: 15_000, history: 5000, view: 30_000, control: 2000 }
+export const CLIENT_TIMEOUTS = { stats: 3000, models: 5000, node: 5000, submit: 15_000, history: 5000, view: 30_000, control: 2000, upload: 30_000, free: 10_000 }
 export type ClientTimeouts = typeof CLIENT_TIMEOUTS
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -48,6 +48,9 @@ function netCause(e: unknown): string {
 function megabytes(n: number): string {
   return `${Math.round(n / (1024 * 1024))} MB`
 }
+
+/** Where a custom node a built-in transform graph uses comes from, for the probe's refusal. */
+export const NODE_PACKS: Record<string, string> = { LineArtPreprocessor: 'comfyui_controlnet_aux' }
 
 export class ComfyClient {
   readonly host: string
@@ -203,6 +206,29 @@ export class ComfyClient {
   }
 
   /** Stop prompt `id` if it is the one running (targeted on current ComfyUI). */
+  /**
+   * The transforms' input (image box §4): the project's own photo, posted as a
+   * multipart `image` field into ComfyUI's input folder (`overwrite` so a
+   * re-run of the same key replaces, never piles up). Returns the stored name
+   * the `{{image}}` placeholder takes.
+   */
+  async uploadImage(bytes: Uint8Array, name: string): Promise<string> {
+    const form = new FormData()
+    form.append('image', new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer]), name)
+    form.append('overwrite', 'true')
+    form.append('type', 'input')
+    const res = await this.call('/upload/image', this.timeouts.upload, { method: 'POST', body: form })
+    if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /upload/image with HTTP ${res.status}`)
+    const body = await this.json(res, '/upload/image')
+    return isObj(body) && typeof body.name === 'string' && body.name ? body.name : name
+  }
+
+  /** After a transform: unload the checkpoint so it does not sit beside the vision model and the 14B fallback on a 16 GB card (image box §4). */
+  async free(): Promise<void> {
+    const res = await this.post('/free', { unload_models: true, free_memory: true }, this.timeouts.free)
+    if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /free with HTTP ${res.status}`)
+  }
+
   async interrupt(id: string): Promise<void> {
     const res = await this.post('/interrupt', { prompt_id: id }, this.timeouts.control)
     if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /interrupt with HTTP ${res.status}`)

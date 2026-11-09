@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import { extractFile, extractorFor, ACCEPTED_EXTS } from '../../projects/extract/index.js'
 import { extractMarkdown } from '../../projects/extract/markdown.js'
+import { imageSegments } from '../../projects/extract/image.js'
 import { pdfWithPages, scannedPdf, epubWithChapters } from './fixtures.js'
 
 const enc = (s: string) => new TextEncoder().encode(s)
@@ -72,6 +73,26 @@ describe('routing', () => {
     expect(extractorFor('A.MD')).not.toBeNull()
     expect(extractorFor('x.pptx')).toBeNull()
     expect(await extractFile(enc('x'), 'x.pptx')).toEqual({ ok: false, reason: 'no extractor for .pptx' })
-    expect(await extractFile(enc('x'), 'photo.jpg')).toEqual({ ok: false, reason: 'images are captioned in sub-project 3' })
+    expect(await extractFile(enc('x'), 'photo.jpg')).toEqual({ ok: false, reason: 'no vision model configured' })
+  })
+})
+
+// A photo is text the image box read off it plus a description (design: image box, section 3).
+describe('image', () => {
+  const look = { text: 'UEFI: USB, Partition 1', state: 'second line highlighted', description: 'A boot menu on a monitor.', model: 'qwen3-vl:8b-instruct', ms: 2100 }
+  it('with a look: a text segment and a description segment, headed by the file name', async () => {
+    expect(imageSegments(look, 'boot.jpg')).toEqual([
+      { heading: ['boot.jpg', 'text'], text: 'UEFI: USB, Partition 1' },
+      { heading: ['boot.jpg', 'description'], text: 'second line highlighted\n\nA boot menu on a monitor.' },
+    ])
+    expect(await extractFile(enc('x'), 'boot.jpg', { look })).toEqual({ ok: true, segments: imageSegments(look, 'boot.jpg') })
+  })
+  it('a photo with no readable text still yields one description segment, never zero', () => {
+    const segs = imageSegments({ ...look, text: '', state: '' }, 'yard.jpg')
+    expect(segs).toEqual([{ heading: ['yard.jpg', 'description'], text: 'A boot menu on a monitor.' }])
+  })
+  it('a failed look is the failure reason; no look input is the configuration refusal', async () => {
+    expect(await extractFile(enc('x'), 'a.png', { failure: 'image box did not answer: timed out' })).toEqual({ ok: false, reason: 'image box did not answer: timed out' })
+    expect(await extractFile(enc('x'), 'a.webp')).toEqual({ ok: false, reason: 'no vision model configured' })
   })
 })

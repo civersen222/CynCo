@@ -117,7 +117,7 @@ import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
 import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
 import { searchProjects } from '../projects/search.js'
-import { buildRetrievalBlock, citationsUsed, retrievalShare, IngestNotes, RETRIEVAL_TAG } from '../projects/retrieval.js'
+import { buildRetrievalBlock, citationsUsed, retrievalShare, attachedImages, formatLookBlock, formatNotes, IngestNotes, RETRIEVAL_TAG } from '../projects/retrieval.js'
 import type { IngestEvent } from '../projects/ingest.js'
 import { setProjectToolContext } from '../projects/tools.js'
 import { ingestChat } from '../projects/ingest.js'
@@ -1263,6 +1263,14 @@ export class ConversationLoop {
     try { this.images?.warm?.() } catch (e) { console.log(`[imagegen] warm failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
+  /** The look's one-line record for the chat, on the busy-notice channel (governance.alert info → alertChatLine). */
+  private sayVision(message: string): void {
+    console.log(`[vision] ${message}`)
+    try { this.dashboardBroadcast?.({ type: 'governance.alert', severity: 'info', source: 'vision', message }) } catch (e) {
+      console.log(`[vision] chat line not delivered: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   /** main.ts feeds every `project.ingest` here; only the bound project's file events are kept. */
   noteProjectIngest(ev: IngestEvent): void {
     if (!this.project) return
@@ -1280,7 +1288,23 @@ export class ConversationLoop {
     p.citations = []
     // Files added since the last turn go first, and survive a failed search: a
     // phone that just attached a file must hear it landed even with no passages.
-    const note = (this.ingestNotes && this.ingestNotes.slug === p.slug) ? this.ingestNotes.take() : null
+    const events = (this.ingestNotes && this.ingestNotes.slug === p.slug) ? this.ingestNotes.takeEvents() : []
+    const note = formatNotes(events)
+    // An attached picture: what the image box read off it, or a plain word that it could not (image box design §2).
+    const looks: string[] = []
+    for (const filePath of attachedImages(events)) {
+      const rel = filePath.slice('knowledge/'.length)
+      const runner = p.looks ?? null
+      if (!runner) { this.sayVision(`${rel}: no vision model configured — answering without the picture`); continue }
+      let look = runner.recent(p.slug, rel)
+      if (!look) {
+        const pending = runner.pending(p.slug, rel)
+        if (pending) { try { await pending } catch (e) { console.log(`[vision] waiting on ${rel}: ${e instanceof Error ? e.message : String(e)}`) } }
+        look = runner.recent(p.slug, rel)
+      }
+      if (look) { looks.push(formatLookBlock(filePath, look)); this.sayVision(`looked at ${rel} on the image box (${look.model}, ${(look.ms / 1000).toFixed(1)} s)`) }
+      else this.sayVision(`the image box did not answer for ${rel} (asleep or cold) — answering without the picture`)
+    }
     let blockText: string | null = null
     try {
       const r = await searchProjects({ home: p.home, embed: p.embed }, { query: text, scope: { slug: p.slug }, limit: 8, excludeFilePath: p.chatFile ? `chats/${p.chatFile}` : undefined })
@@ -1289,7 +1313,7 @@ export class ConversationLoop {
     } catch (e) {
       console.log(`[projects] retrieval skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
-    const parts = [note, blockText].filter((s): s is string => !!s)
+    const parts = [note, ...looks, blockText].filter((s): s is string => !!s)
     if (parts.length === 0) return
     this.messages.splice(this.messages.length - 1, 0, { role: 'system', content: [{ type: 'text', text: parts.join('\n') }] })
   }

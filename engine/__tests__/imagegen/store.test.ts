@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { pictureRequests } from '../../imagegen/store.js'
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -107,7 +108,7 @@ describe('sidecars', () => {
   it('a tampered sidecar reads as no record', () => {
     const k = imageKey(FIELDS)
     const bad: Array<Record<string, unknown>> = [
-      { status: 'painted' }, { width: '1024' }, { key: imageKey({ ...FIELDS, cfg: 1 }) }, { schema: 2 }, { origin: null }, { comfy: { host: 'h', promptId: 'p', outputs: [{ filename: 1 }] } },
+      { status: 'painted' }, { width: '1024' }, { key: imageKey({ ...FIELDS, cfg: 1 }) }, { schema: 3 }, { origin: null }, { comfy: { host: 'h', promptId: 'p', outputs: [{ filename: 1 }] } },
       { reason: 42 }, { apiPrompt: 'x' }, { workflow: { source: 'builtin' } },
     ]
     mkdirSync(join(dir, 'images'), { recursive: true })
@@ -532,5 +533,36 @@ describe('servedProjectFile', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+  })
+})
+
+describe('pictureRequests (image box §4)', () => {
+  const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
+    a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
+    b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
+    c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'C' } },
+    d: { type: 'Image', props: { src: 'sketches/front.png', alt: 'D' } },
+  }) }
+  it('names each picture\'s kind, prompt and source', () => {
+    expect(pictureRequests(spec).map(r => [r.id, r.kind, r.prompt, r.source])).toEqual([
+      ['a', 'generate', 'a tall green alien', undefined],
+      ['b', 'vary', 'add a pergola', 'knowledge/yard.jpg'],
+      ['c', 'outline', '', 'knowledge/porch.jpg'],
+    ])
+  })
+  it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {
+    expect(promptedImages(spec).map(im => im.id)).toEqual(['a'])
+  })
+})
+
+describe('transform keys and schema-2 records (image box §4)', () => {
+  it('imageKey differs by source sha and by transform, and is unchanged for a generate picture', () => {
+    const base = imageKey(FIELDS)
+    expect(imageKey({ ...FIELDS })).toBe(base)
+    const o1 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'aa'.repeat(32) })
+    const o2 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'bb'.repeat(32) })
+    const v1 = imageKey({ ...FIELDS, transform: 'vary', source: 'aa'.repeat(32) })
+    expect(new Set([base, o1, o2, v1]).size).toBe(4)
   })
 })

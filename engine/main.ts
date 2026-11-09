@@ -727,7 +727,7 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
     case 'project.open': {
       if (command.slug === null) { await loop.startProjectSession(null); break }
-      const opened = await openBinding({ home: projectsDeps.home, slug: command.slug, chat: command.chat ?? null, embed: projectsDeps.embed, embedModel: projectsDeps.embedModel, contextLength, emit: projectsDeps.emit })
+      const opened = await openBinding({ home: projectsDeps.home, slug: command.slug, chat: command.chat ?? null, embed: projectsDeps.embed, embedModel: projectsDeps.embedModel, contextLength, emit: projectsDeps.emit, looks: projectsDeps.looks })
       if (!opened.ok) { wsServer.emit({ type: 'session.error', error: `project.open refused: ${opened.reason}` }); dashboardServer?.broadcast({ type: 'session.error', error: `project.open refused: ${opened.reason}` }); break }
       await loop.startProjectSession(opened.binding, opened.messages)
       break

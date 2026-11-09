@@ -9,22 +9,39 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, c
 import { validateSpec, isSurfaceId } from '../genui/spec.js'
 import { basename, extname, join } from 'node:path'
 import { EmbedClient } from '../index/embedClient.js'
-import { ACCEPTED_EXTS } from './extract/index.js'
+import { ACCEPTED_EXTS, IMAGE_EXTS } from './extract/index.js'
+import { LookRunner, PENDING_REASON, imageMime } from '../vision/lookRunner.js'
+import { makeLookClient } from '../vision/lookClient.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
-import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, slugify, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
+import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, sha256Of, slugify, writeFileIndex, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
 import { annotateFileImages, originKey, promptedImages, readOrigins, storedImageState } from '../imagegen/store.js'
 
-export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number }
+/** `looks`: the image box's look runner (engine/vision); absent or null = no vision model configured, images are refused as before. */
+export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number; looks?: LookRunner | null }
 export type ApiResult = { status: number; body: unknown }
 export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 export { SLUG_RE }
 
-export function makeProjectsDeps(args: { home: string; embedBaseUrl: string; emitEvent: (e: { type: 'project.ingest' } & IngestEvent) => void; contextLength: number }): ProjectsDeps {
-  return { home: args.home, embed: makeProseEmbedClient(args.embedBaseUrl), embedModel: proseEmbedModel(), emit: (e) => args.emitEvent({ type: 'project.ingest', ...e }), contextLength: args.contextLength }
+export function makeProjectsDeps(args: { home: string; embedBaseUrl: string; emitEvent: (e: { type: 'project.ingest' } & IngestEvent) => void; contextLength: number; env?: NodeJS.ProcessEnv }): ProjectsDeps {
+  const d: ProjectsDeps = { home: args.home, embed: makeProseEmbedClient(args.embedBaseUrl), embedModel: proseEmbedModel(), emit: (e) => args.emitEvent({ type: 'project.ingest', ...e }), contextLength: args.contextLength, looks: null }
+  // The image box: a look finishes as an ordinary ingest of the uploaded file, then a history commit.
+  const client = makeLookClient(args.env)
+  if (client) {
+    d.looks = new LookRunner({
+      client,
+      finish: async (slug, rel, input) => {
+        const ev = await ingestFile(d, slug, 'knowledge', rel, 'uploaded', { lookInput: input })
+        await commitHistory(projectDir(d.home, slug), [`knowledge/${rel}`, 'knowledge/index.json', 'journal.md'], `knowledge: look at ${rel}`)
+        return ev
+      },
+      log: (line) => console.log(line),
+    })
+  }
+  return d
 }
 
 const notFound = (what: string): ApiResult => ({ status: 404, body: { error: `no such ${what}` } })
@@ -99,6 +116,16 @@ export async function addKnowledgeApi(d: ProjectsDeps, slug: string, item: { nam
   const dir = projectDir(d.home, slug)
   mkdirSync(join(dir, 'knowledge'), { recursive: true })
   writeFileSync(join(dir, 'knowledge', rel), bytes)
+  if (IMAGE_EXTS.has(ext) && d.looks) {
+    // The look runs behind the answer: the phone's Attach must not wait a minute on a cold box.
+    const index = readFileIndex(dir, 'knowledge')
+    index.files[rel] = { sha256: sha256Of(bytes), addedAt: index.files[rel]?.addedAt ?? new Date().toISOString(), origin: 'uploaded', indexed: false, reason: PENDING_REASON }
+    writeFileIndex(dir, 'knowledge', index)
+    // The loop hears of the picture now (IngestNotes), so the next turn can wait on the look (design §2); the look's own event follows.
+    d.emit({ slug, filePath: `knowledge/${rel}`, kind: 'knowledge', indexed: false, reason: PENDING_REASON })
+    d.looks.start(slug, rel, bytes, imageMime(rel))
+    return { status: 201, body: { name: rel, ...index.files[rel], event: null } }
+  }
   const ev = await ingestFile(d, slug, 'knowledge', rel, item.bytes ? 'uploaded' : 'pasted')
   await commitHistory(dir, [`knowledge/${rel}`, 'knowledge/index.json', 'journal.md'], `knowledge: add ${rel}`)
   return { status: 201, body: { name: rel, ...readFileIndex(dir, 'knowledge').files[rel], event: ev } }
@@ -222,6 +249,6 @@ export async function renameChatApi(d: ProjectsDeps, slug: string, file: string,
 
 export async function rescanApi(d: ProjectsDeps, slug: string): Promise<ApiResult> {
   if (!readProject(d.home, slug)) return notFound('project')
-  const counts = await rescanProject(d, slug)
+  const counts = await rescanProject(d, slug, d.looks ?? null)
   return { status: 200, body: counts }
 }

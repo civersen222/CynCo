@@ -15,12 +15,16 @@
 export type ComfyNode = { class_type: string; inputs: Record<string, unknown>; _meta?: unknown }
 export type ComfyGraph = Record<string, ComfyNode>
 
-/** Every placeholder a workflow may use. */
-export const PLACEHOLDERS = ['prompt', 'negative', 'seed', 'width', 'height', 'steps', 'cfg', 'sampler', 'scheduler', 'checkpoint', 'filename_prefix'] as const
+/** The placeholders a text-to-image (generate) workflow may use. */
+export const GENERATE_PLACEHOLDERS = ['prompt', 'negative', 'seed', 'width', 'height', 'steps', 'cfg', 'sampler', 'scheduler', 'checkpoint', 'filename_prefix'] as const
+/** Every placeholder any workflow may use: the generate set plus the transforms' `image` (the uploaded input's ComfyUI name) and `denoise` (image box §4). */
+export const PLACEHOLDERS = [...GENERATE_PLACEHOLDERS, 'image', 'denoise'] as const
 export type Placeholder = typeof PLACEHOLDERS[number]
+/** generate = today's text-to-image; vary = the owner's photo varied toward an idea; outline = clean line art from a photo. */
+export type WorkflowKind = 'generate' | 'vary' | 'outline'
 
 /** Placeholders that become numbers: only as a whole string value, never inside a longer one. */
-const NUMERIC: ReadonlySet<string> = new Set(['seed', 'width', 'height', 'steps', 'cfg'])
+const NUMERIC: ReadonlySet<string> = new Set(['seed', 'width', 'height', 'steps', 'cfg', 'denoise'])
 const KNOWN: ReadonlySet<string> = new Set(PLACEHOLDERS)
 const TOKEN = /\{\{([^{}]*)\}\}/g
 const WHOLE = /^\{\{([^{}]*)\}\}$/
@@ -28,6 +32,8 @@ const WHOLE = /^\{\{([^{}]*)\}\}$/
 export type FillValues = {
   prompt: string; negative: string; seed: number; width: number; height: number; steps: number; cfg: number
   sampler: string; scheduler: string; checkpoint: string; filename_prefix: string
+  /** Transforms only: the uploaded input's ComfyUI name and the vary denoise. Absent, the tokens stay in place. */
+  image?: string; denoise?: number
 }
 
 /** The plain SDXL chain, the same nodes the operator's old batch script queued. */
@@ -49,6 +55,42 @@ export const BUILTIN_WORKFLOW: ComfyGraph = {
 
 /** The key the built-in graph contributes to an image key in place of a file's sha256. */
 export const BUILTIN_WORKFLOW_SHA = 'builtin-1'
+
+/**
+ * vary (image box §4): the owner's photo, scaled to fit 1024 on its long side,
+ * encoded, re-sampled toward the idea in {{prompt}} at {{denoise}} (0.55 by
+ * default: the thing stays itself, the idea shows), decoded, saved.
+ */
+export const BUILTIN_VARY: ComfyGraph = {
+  '4': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: '{{checkpoint}}' } },
+  '10': { class_type: 'LoadImage', inputs: { image: '{{image}}' } },
+  '11': { class_type: 'ImageScale', inputs: { image: ['10', 0], upscale_method: 'lanczos', width: '{{width}}', height: '{{height}}', crop: 'disabled' } },
+  '12': { class_type: 'VAEEncode', inputs: { pixels: ['11', 0], vae: ['4', 2] } },
+  '6': { class_type: 'CLIPTextEncode', inputs: { text: '{{prompt}}', clip: ['4', 1] } },
+  '7': { class_type: 'CLIPTextEncode', inputs: { text: '{{negative}}', clip: ['4', 1] } },
+  '3': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: '{{seed}}', steps: '{{steps}}', cfg: '{{cfg}}', sampler_name: '{{sampler}}', scheduler: '{{scheduler}}', denoise: '{{denoise}}',
+      model: ['4', 0], positive: ['6', 0], negative: ['7', 0], latent_image: ['12', 0],
+    },
+  },
+  '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['4', 2] } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['8', 0] } },
+}
+export const BUILTIN_VARY_SHA = 'builtin-vary-1'
+
+/**
+ * outline (image box §4): clean black-on-white lines to paint from. The
+ * preprocessor's output is the deliverable — no diffusion, so no model-family
+ * mismatch (SDXL has no native lineart ControlNet). Needs comfyui_controlnet_aux.
+ */
+export const BUILTIN_OUTLINE: ComfyGraph = {
+  '10': { class_type: 'LoadImage', inputs: { image: '{{image}}' } },
+  '20': { class_type: 'LineArtPreprocessor', inputs: { image: ['10', 0], coarse: 'disable', resolution: 1024 } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['20', 0] } },
+}
+export const BUILTIN_OUTLINE_SHA = 'builtin-outline-1'
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -77,7 +119,7 @@ export function workflowClasses(graph: ComfyGraph): string[] {
  * The reason starts with `path` and is the part after
  * "LOCALCODE_COMFYUI_WORKFLOW: " in the config refusal.
  */
-export function parseWorkflow(text: string, path: string): { ok: true; graph: ComfyGraph } | { ok: false; reason: string } {
+export function parseWorkflow(text: string, path: string, kind: WorkflowKind = 'generate'): { ok: true; graph: ComfyGraph } | { ok: false; reason: string } {
   let raw: unknown
   try {
     raw = JSON.parse(text)
@@ -107,7 +149,9 @@ export function parseWorkflow(text: string, path: string): { ok: true; graph: Co
       }
     }
   }
-  if (!placeholdersIn(graph).has('prompt')) return { ok: false, reason: `${path} has no "{{prompt}}" placeholder, so nothing would describe the picture` }
+  const used = placeholdersIn(graph)
+  if (kind !== 'outline' && !used.has('prompt')) return { ok: false, reason: `${path} has no "{{prompt}}" placeholder, so nothing would describe the picture` }
+  if (kind !== 'generate' && !used.has('image')) return { ok: false, reason: `${path} has no "{{image}}" placeholder, so the ${kind} would never see the photo` }
   if (!Object.values(graph).some(n => n.class_type === 'SaveImage')) return { ok: false, reason: `${path} has no SaveImage node; the engine downloads saved images only` }
   return { ok: true, graph }
 }
@@ -117,10 +161,10 @@ function fillValue(v: unknown, values: FillValues, depth: number): unknown {
   if (depth > 32) return v
   if (typeof v === 'string') {
     const whole = WHOLE.exec(v)
-    if (whole && KNOWN.has(whole[1])) return values[whole[1] as Placeholder]
+    if (whole && KNOWN.has(whole[1])) { const val = values[whole[1] as Placeholder]; return val === undefined ? v : val }
     // A function replacement inserts the value literally ("$&" stays "$&") and
     // in one pass, so a "{{seed}}" inside the prompt is never expanded again.
-    return v.replace(TOKEN, (token, name: string) => (KNOWN.has(name) && !NUMERIC.has(name) ? String(values[name as Placeholder]) : token))
+    return v.replace(TOKEN, (token, name: string) => (KNOWN.has(name) && !NUMERIC.has(name) && values[name as Placeholder] !== undefined ? String(values[name as Placeholder]) : token))
   }
   if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = fillValue(v[i], values, depth + 1); return v }
   // Assigning to an own data property, even one named "__proto__", sets that

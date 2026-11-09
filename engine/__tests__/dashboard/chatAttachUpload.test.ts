@@ -66,3 +66,24 @@ describe('uploadKnowledgeFiles from the chat', () => {
     expect(html).toMatch(/id="chatAttach"[^>]*onchange="uploadKnowledgeFiles\(this\.files, chatAttachStatus, projectsState\.active && projectsState\.active\.slug\)"/)
   })
 })
+
+describe('a refused upload keeps the server\'s words (Review Focus 1: a HEIC from the phone)', () => {
+  it('says "not added: unsupported file type .heic"', async () => {
+    const statuses: [string, string][] = []
+    const fakes = {
+      projectsState: { slug: 'p', active: { slug: 'p' } },
+      projFetch: async () => { throw new Error('unsupported file type .heic') },
+      projUrl: (slug: string) => '/api/projects/' + slug,
+      projStatus: () => {},
+      indexedLabel: () => 'indexed',
+      loadKnowledge: () => {},
+      document: { getElementById: () => null },
+      FormData: class { append() {} },
+      console: { warn: () => {} },
+    }
+    const fn = new Function(...Object.keys(fakes), `${fnSource('uploadKnowledgeFiles')}; return uploadKnowledgeFiles;`)(...Object.values(fakes)) as (files: any[], onStatus?: (k: string, t: string) => void, slug?: string) => void
+    fn([{ name: 'IMG_0042.heic', type: 'image/heic', size: 3_000_000 }], (k, t) => statuses.push([k, t]), 'p')
+    await new Promise(r => setTimeout(r, 20))
+    expect(statuses.some(([k, t]) => k === 'err' && t.includes('IMG_0042.heic not added: unsupported file type .heic'))).toBe(true)
+  })
+})

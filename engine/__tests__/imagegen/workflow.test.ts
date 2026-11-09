@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, PLACEHOLDERS, type ComfyGraph, type FillValues } from '../../imagegen/workflow.js'
+import { BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -10,7 +10,8 @@ describe('the built-in graph', () => {
   it('passes parseWorkflow and uses every placeholder', () => {
     const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'builtin')
     expect(r.ok).toBe(true)
-    expect([...placeholdersIn(BUILTIN_WORKFLOW)].sort()).toEqual([...PLACEHOLDERS].sort())
+    expect([...placeholdersIn(BUILTIN_WORKFLOW)].sort()).toEqual([...GENERATE_PLACEHOLDERS].sort())
+    expect([...PLACEHOLDERS].sort()).toEqual([...GENERATE_PLACEHOLDERS, 'image', 'denoise'].sort())
     expect(workflowClasses(BUILTIN_WORKFLOW)).toEqual(['CLIPTextEncode', 'CheckpointLoaderSimple', 'EmptyLatentImage', 'KSampler', 'SaveImage', 'VAEDecode'])
   })
 })
@@ -58,5 +59,35 @@ describe('parseWorkflow', () => {
   it('refuses a top level that is not an object, and an empty graph', () => {
     expect(parseWorkflow('[]', 'p')).toEqual({ ok: false, reason: 'p is not an API-format workflow (the top level is not an object)' })
     expect(parseWorkflow('{}', 'p')).toEqual({ ok: false, reason: 'p is not an API-format workflow (it has no nodes)' })
+  })
+})
+
+// The image box (docs/decisions/2026-11-08-image-box-design.md §4): two transforms of the owner's own photo.
+describe('vary and outline', () => {
+  it('the vary graph takes the uploaded image and a denoise, and passes as kind vary', () => {
+    const g = fillWorkflow(BUILTIN_VARY, { ...VALUES, image: 'cynco-in.png', denoise: 0.55 })
+    const load = Object.values(g).find(n => n.class_type === 'LoadImage')!
+    const ks = Object.values(g).find(n => n.class_type === 'KSampler')!
+    expect(load.inputs.image).toBe('cynco-in.png')
+    expect(ks.inputs.denoise).toBe(0.55)
+    expect(parseWorkflow(JSON.stringify(BUILTIN_VARY), 'builtin-vary', 'vary').ok).toBe(true)
+    expect(workflowClasses(BUILTIN_VARY)).toContain('ImageScale')
+  })
+  it('the outline graph needs no prompt as kind outline, and is refused as kind generate', () => {
+    const text = JSON.stringify(BUILTIN_OUTLINE)
+    expect(parseWorkflow(text, 'builtin-outline', 'outline').ok).toBe(true)
+    const asGenerate = parseWorkflow(text, 'builtin-outline', 'generate')
+    expect(asGenerate.ok).toBe(false)
+    if (!asGenerate.ok) expect(asGenerate.reason).toContain('{{prompt}}')
+    expect(workflowClasses(BUILTIN_OUTLINE)).toEqual(['LineArtPreprocessor', 'LoadImage', 'SaveImage'])
+  })
+  it('a vary workflow without {{image}} is refused naming it', () => {
+    const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'vary')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('{{image}}')
+  })
+  it('an unfilled image token is left in place rather than becoming "undefined"', () => {
+    const g = fillWorkflow(BUILTIN_VARY, VALUES)
+    expect(Object.values(g).find(n => n.class_type === 'LoadImage')!.inputs.image).toBe('{{image}}')
   })
 })
