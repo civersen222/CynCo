@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { LOOK_INSTRUCTION, LookClient, makeLookClient, parseLook } from '../../vision/lookClient.js'
+import { LOOK_INSTRUCTION, LOOK_NUM_CTX, LookClient, makeLookClient, parseLook } from '../../vision/lookClient.js'
 
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
 
@@ -35,6 +35,9 @@ describe('LookClient.look', () => {
     expect(b.model).toBe('qwen3-vl:8b-instruct')
     expect(b.stream).toBe(false)
     expect(b.keep_alive).toBe('10m')
+    // a 12 MP phone photo is ~4100 image tokens on qwen3-vl; Ollama's default 4096 window refused it (F190)
+    expect(b.options).toEqual({ num_ctx: LOOK_NUM_CTX })
+    expect(LOOK_NUM_CTX).toBe(8192)
     expect(b.messages[0].content).toBe(LOOK_INSTRUCTION)
     expect(b.messages[0].images).toEqual([Buffer.from(png).toString('base64')])
     expect(r).toEqual({ ok: true, look: { text: 'hello', state: 'lit', description: 'a lamp', model: 'qwen3-vl:8b-instruct', ms: 2100 } })

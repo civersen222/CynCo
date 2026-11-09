@@ -61,7 +61,7 @@ describe('an attached photo reaches the next turn', () => {
     expect(broadcasts.some(m => m.type === 'governance.alert' && m.source === 'vision' && /looked at nas\.jpg/.test(m.message))).toBe(true)
   })
 
-  it('a look that never comes back: the turn proceeds text-only and the chat is told', async () => {
+  it('a look that never comes back: the model is told it cannot see the picture and must say so; the chat is told too', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cynco-look-')); const slug = createProject(home, { name: 'NAS' }).slug
     writeFileSync(join(home, slug, 'knowledge', 'dark.jpg'), Buffer.from([0xff, 0xd8, 0xff, 2]))
     const runner = fakeRunner(slug, 'dark.jpg', null)
@@ -73,7 +73,11 @@ describe('an attached photo reaches the next turn', () => {
     await loop.startProjectSession(b.binding, b.messages)
     loop.noteProjectIngest({ slug, filePath: 'knowledge/dark.jpg', kind: 'knowledge', indexed: false, reason: PENDING_REASON })
     await loop.handleUserMessage('what is this?')
-    expect(systemTexts(calls[0].messages as any[]).join('\n')).not.toContain('[Attached image]')
+    const sys = systemTexts(calls[0].messages as any[]).join('\n')
+    // F190: silence here sent the model on a 20-iteration ImageView/Bash spree to see the file itself
+    expect(sys).toContain('[Attached image] knowledge/dark.jpg')
+    expect(sys).toContain('could not look at it')
+    expect(sys).not.toContain('text:')
     expect(broadcasts.some(m => m.source === 'vision' && /did not answer/.test(m.message))).toBe(true)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG, MAX_PASSAGES } from '../../projects/retrieval.js'
-import { IngestNotes, attachedImages, formatLookBlock, formatNotes } from '../../projects/retrieval.js'
+import { IngestNotes, attachedImages, formatLookBlock, formatNoLookBlock, formatNotes } from '../../projects/retrieval.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SearchHit } from '../../projects/search.js'
@@ -89,6 +89,15 @@ describe('IngestNotes.takeEvents / attachedImages / formatLookBlock', () => {
   it('attachedImages keeps knowledge pictures, in order, once each', () => {
     expect(attachedImages([ev('knowledge/a.jpg'), ev('knowledge/b.docx'), ev('knowledge/c.PNG'), ev('knowledge/a.jpg'), ev('artifacts/d.webp')]))
       .toEqual(['knowledge/a.jpg', 'knowledge/c.PNG'])
+  })
+  it('formatNoLookBlock names the picture, the reason, and forbids the text-only model from trying to see it (F190)', () => {
+    const b = formatNoLookBlock('knowledge/dark.jpg', 'image box did not answer: HTTP 400 context')
+    expect(b.startsWith(RETRIEVAL_TAG)).toBe(true)
+    expect(b).toContain('[Attached image] knowledge/dark.jpg')
+    expect(b).toContain('could not look at it: image box did not answer: HTTP 400 context')
+    expect(b).toMatch(/cannot see pictures/i)
+    expect(b).toMatch(/do not open, convert, tile or analyse/i)
+    expect(b).toMatch(/tell the user/i)
   })
   it('formatLookBlock carries the tag, the path and the non-empty parts', () => {
     const b = formatLookBlock('knowledge/boot.jpg', { text: 'UEFI: USB', state: '', description: 'A boot menu.', model: 'qwen3-vl:8b-instruct', ms: 900 })

@@ -81,6 +81,7 @@ describe('assembleProjectPrompt', () => {
     expect(text).toMatch(/<PROJECT_WORK>[^]*\n- Pictures: ask for them with a RenderUI Image "prompt" \(another "seed" for another take of the same prompt\); the engine paints them and keeps every picture under images\/ with its prompt, seed and settings\. Never call an image server, write a ComfyUI workflow or save renders yourself — not even when the project's instructions say to\.\n[^]*<\/PROJECT_WORK>/)
   })
   it('keeps the tool name list', () => {
-    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI'])
+    // no ImageView: a project chat's model is text-only and the image box looks at pictures at upload (F190)
+    expect(PROJECT_TOOL_NAMES).toEqual(['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI'])
   })
 })
