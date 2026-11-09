@@ -1,5 +1,5 @@
-# CynCo background services on this PC: the headless phone engine, the liveness daemon,
-# the ntfy server and the dynasty approval listener. Each is a Task Scheduler task that
+# CynCo background services on this PC: the headless phone engine, the liveness daemon and the
+# dynasty approval listener; plus ntfy, which runs on the doorman and is shown as reachable or not. Each is a Task Scheduler task that
 # starts at logon; this script is the one place to see whether they are actually running,
 # and to start, stop or register them without hunting through Task Scheduler.
 #
@@ -14,21 +14,32 @@
 # it can be matched by command line, and the last line of its log.
 param(
   [ValidateSet('status', 'start', 'stop', 'register')] [string] $Action = 'status',
-  [string] $Only = ''
+  [string] $Only = '',
+  # A process never to match: the desk engine passes its own pid, since it is a `bun engine\main.ts` too
+  # (engine/power/siblingEngine.ts) and must not read itself as the phone engine or stop itself.
+  [int] $ExcludePid = 0
 )
 
 $repo = 'C:\Users\civer\localcode'
 $services = @(
   @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
   @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log" },
-  @{ Name = 'ntfy';     Task = 'Dynasty ntfy';              Match = 'ntfy\.exe';             Log = 'C:\Users\civer\ntfy\ntfy.log' },
+  @{ Name = 'ntfy';     Remote = '100.110.117.10'; Port = 8090; Note = 'on the doorman (docker compose, /opt/doorman/ntfy)' },
   @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Log = '' }
 )
 if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, daemon, ntfy, listener)"; exit 2 } }
 
-$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine }
+$procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $ExcludePid }
 
 foreach ($s in $services) {
+  if ($s.Remote) {
+    # A service that lives on the doorman: no task here, only reachability over the tailnet.
+    $up = $false
+    try { $c = New-Object Net.Sockets.TcpClient; $up = $c.ConnectAsync($s.Remote, $s.Port).Wait(1500) -and $c.Connected; $c.Close() } catch {}
+    if ($Action -eq 'status') { Write-Output ("{0,-9} {1,-22} {2}" -f $s.Name, $(if ($up) { "UP on $($s.Remote):$($s.Port)" } else { 'DOWN (doorman)' }), $s.Note) }
+    else { Write-Output "$($s.Name): runs on the doorman - use scripts/doorman/deploy.sh (or ssh cynco@$($s.Remote) and docker compose in /opt/doorman/ntfy)" }
+    continue
+  }
   $task = Get-ScheduledTask -TaskName $s.Task -ErrorAction SilentlyContinue
   $proc = $procs | Where-Object { $_.Name -eq 'bun.exe' -or $_.Name -notmatch 'bun' } | Where-Object { $_.CommandLine -match $s.Match } | Select-Object -First 1
   switch ($Action) {

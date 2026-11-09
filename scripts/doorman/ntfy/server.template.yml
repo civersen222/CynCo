@@ -1,0 +1,8 @@
+# ntfy server config for the doorman. deploy.sh replaces TS_IP with `tailscale ip -4`
+# and installs the result as server.yml beside docker-compose.yml. Tailscale only — never 0.0.0.0.
+listen-http: "TS_IP:8090"
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "168h"
+behind-proxy: false
+# No auth-file: tailnet membership is the authentication. Anyone on the tailnet
+# may publish (the Approve/Reject http actions need it) and read.

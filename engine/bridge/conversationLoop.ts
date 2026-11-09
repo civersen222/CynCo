@@ -52,6 +52,7 @@ import type { SubAgentConfig, SubAgentResult } from '../agents/types.js'
 import { shouldInjectSummary, buildSummaryInjectionMessage } from './summaryInjection.js'
 import { SteeringQueue } from './steeringQueue.js'
 import { JSONLStore } from '../session/jsonlStore.js'
+import { danglingToolResults } from '../session/repairTail.js'
 import { TemplateLoader } from '../prompts/templateLoader.js'
 import {
   assembleBasePrompt,
@@ -1166,6 +1167,13 @@ export class ConversationLoop {
       // S5 Identity Continuity: distinguish a clean prior shutdown from a crash.
       const priorClean = (() => { try { return store.hasEnded() } catch { return false } })()
       console.log(`[session] Resumed ${sessionId}: ${messages.length} messages (prior session ${priorClean ? 'ended cleanly' : 'did not end cleanly — possible crash'})`)
+      // A journal cut mid-turn (paused or killed between a tool call and its result) ends with
+      // an assistant tool_use nobody answered; the template rejects that shape. Close it honestly.
+      const repair = danglingToolResults(this.getMessages())
+      if (repair) {
+        this.addMessage(repair)
+        console.log(`[session] Resumed journal ended on ${repair.content.length} unanswered tool call(s) — marked interrupted`)
+      }
       return true
     }
     return false

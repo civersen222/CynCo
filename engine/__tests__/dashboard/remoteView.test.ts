@@ -73,7 +73,24 @@ describe('brainOffNotice', () => {
   })
 })
 
+describe('remoteRouteOnce', () => {
+  const remoteRouteOnce = lift<(state: { routed: boolean }) => boolean>('remoteRouteOnce')
+  it('routes on the first open only: a reconnect must not close the chat the phone is in', () => {
+    const state = { routed: false }
+    expect(remoteRouteOnce(state)).toBe(true)
+    expect(remoteRouteOnce(state)).toBe(false)
+    expect(remoteRouteOnce(state)).toBe(false)
+  })
+})
+
 describe('wiring', () => {
+  it('applyRemoteLayout asks remoteRouteOnce before it touches the hash or switches tabs', () => {
+    const src = fnSource('applyRemoteLayout')
+    const gate = src.indexOf('remoteRouteOnce(remoteState)')
+    expect(gate).toBeGreaterThan(-1)
+    expect(src.indexOf('initialHashFor(')).toBeGreaterThan(gate)
+    expect(src.indexOf("switchTab('projects')")).toBeGreaterThan(gate)
+  })
   it('the page applies the remote layout at boot and fills the Away tab from /api/away', () => {
     const js = scripts()
     expect(js).toContain('applyRemoteLayout()')

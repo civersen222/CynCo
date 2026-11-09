@@ -45,4 +45,27 @@ describe('collectAwayRuns', () => {
     expect(runs.length).toBe(5)
     expect(runs[0].triggerId).toBe('t299')
   })
+
+  it('keeps the first line when the tail cut lands exactly on a line boundary', () => {
+    // every line is the same length, so a tailBytes that is a multiple of it starts at a line start
+    const lines = Array.from({ length: 20 }, (_, i) => JSON.stringify({ ts: `2026-11-01T00:${String(i).padStart(2, '0')}:00.000Z`, triggerId: `t${String(i).padStart(2, '0')}`, ok: true, summary: 'fixed-width' }))
+    const lineLen = lines[0].length + 1
+    for (const l of lines) expect(l.length + 1).toBe(lineLen)
+    mission('m', lines)
+    const runs = collectAwayRuns(dir, { tailBytes: lineLen * 5 })
+    expect(runs.map(r => r.triggerId)).toEqual(['t19', 't18', 't17', 't16', 't15'])
+  })
+
+  it('logs unparsable lines once per file with a count, not once per line', () => {
+    mission('m', ['{a', '{b', '{c', JSON.stringify({ ts: '2026-11-08T10:00:00Z', triggerId: 't', ok: true, summary: 's' })])
+    const orig = console.log
+    const lines: string[] = []
+    console.log = (...a: unknown[]) => { lines.push(String(a[0])) }
+    try {
+      expect(collectAwayRuns(dir).length).toBe(1)
+      const away = lines.filter(l => l.includes('[away]'))
+      expect(away.length).toBe(1)
+      expect(away[0]).toContain('3')
+    } finally { console.log = orig }
+  })
 })
