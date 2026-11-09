@@ -49,6 +49,7 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
 
 ## Backlog (worth doing, not started)
 
+- `writeJsonAtomic` (engine/projects/layout.ts) loses a Windows rename race under load: `EPERM: operation not permitted, rename images/index.json.tmp-… -> images/index.json` while a previous image job's commit still holds the file; seen 2026-11-08 as a ~1-in-5 flake of `service.test` "more than three generating" on the image-box branch (never on Linux CI). A bounded rename retry on EPERM/EBUSY, with a test that injects the failure, would close it.
 - Image box, deferred from the 2026-11-08 review: a restart mid-look leaves a knowledge record at "looking at the picture…" until a rescan (a startup pass over pending records); the History tab and a reopened chat do not yet show a picture's `transform`/`source` though the sidecar records them; the doorman's page does not name the companion box `/status` reports under `with`, and `status()` probes companions synchronously (two 2 s timeouts when both boxes sleep); a vary beside an operator generate workflow without `{{checkpoint}}` keys on `''`; `sidecarFault` accepts schema 2 without checking the transform fields' shapes.
 
 - `POST /api/projects/:slug/rescan` outlives Bun.serve's default 10 s `idleTimeout` on a project with a handful of files (found 2026-11-08 rescanning `pc-wakefulness`): the work finishes server-side, the client sees the socket drop. Either raise `idleTimeout` on the dashboard server or make rescan answer at once and report through `project.ingest` events.

@@ -40,7 +40,7 @@ afterEach(async () => {
 function start(deps: Partial<ImageServiceDeps> & { env?: NodeJS.ProcessEnv } = {}): ImageService {
   service = new ImageService({
     env: { LOCALCODE_COMFYUI_URL: mock?.url ?? '' },
-    emit: e => events.push(e), log: l => logs.push(l), pollMs: 5,
+    emit: e => events.push(e), log: l => { logs.push(l); if (/ threw: /.test(l)) console.error(l) }, pollMs: 5,
     ...deps,
   })
   return service
