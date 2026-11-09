@@ -90,6 +90,12 @@ describe('IngestNotes.takeEvents / attachedImages / formatLookBlock', () => {
     expect(attachedImages([ev('knowledge/a.jpg'), ev('knowledge/b.docx'), ev('knowledge/c.PNG'), ev('knowledge/a.jpg'), ev('artifacts/d.webp')]))
       .toEqual(['knowledge/a.jpg', 'knowledge/c.PNG'])
   })
+  it('both blocks point the model at LookAt: the look block for a specific question, the no-look block saying it will not help yet (F191)', () => {
+    const b = formatLookBlock('knowledge/boot.jpg', { text: 'UEFI: USB', state: '', description: 'A boot menu.', model: 'm', ms: 1 })
+    expect(b).toMatch(/call LookAt with file "knowledge\/boot\.jpg" and your question/)
+    const n = formatNoLookBlock('knowledge/dark.jpg', 'image box did not answer: HTTP 503')
+    expect(n).toMatch(/LookAt will not answer either until the image box does/)
+  })
   it('formatNoLookBlock names the picture, the reason, and forbids the text-only model from trying to see it (F190)', () => {
     const b = formatNoLookBlock('knowledge/dark.jpg', 'image box did not answer: HTTP 400 context')
     expect(b.startsWith(RETRIEVAL_TAG)).toBe(true)

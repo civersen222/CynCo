@@ -116,7 +116,8 @@ export function attachedImages(events: IngestEvent[]): string[] {
  */
 export function formatLookBlock(filePath: string, look: Look): string {
   const parts = [look.text && `text: ${look.text}`, look.state && `state: ${look.state}`, look.description && `description: ${look.description}`].filter((p): p is string => !!p)
-  return `${RETRIEVAL_TAG}\n[Attached image] ${filePath} — what the image box read off it:\n${parts.join('\n')}\n`
+  return `${RETRIEVAL_TAG}\n[Attached image] ${filePath} — what the image box read off it:\n${parts.join('\n')}\n` +
+    `For anything specific this does not answer (what is selected, a value, a detail), call LookAt with file "${filePath}" and your question.\n`
 }
 
 /**
@@ -128,5 +129,5 @@ export function formatLookBlock(filePath: string, look: Look): string {
 export function formatNoLookBlock(filePath: string, reason: string): string {
   return `${RETRIEVAL_TAG}\n[Attached image] ${filePath} — the image box could not look at it: ${reason}.\n` +
     'You cannot see pictures and no tool can show you one. Do not open, convert, tile or analyse the file. ' +
-    'Tell the user the picture could not be looked at, give the reason above in a few words, and say it will be read when the image box answers (attach it again, or ask for a rescan of the project).\n'
+    'LookAt will not answer either until the image box does. Tell the user the picture could not be looked at, give the reason above in a few words, and say it will be read when the image box answers (attach it again, or ask for a rescan of the project).\n'
 }

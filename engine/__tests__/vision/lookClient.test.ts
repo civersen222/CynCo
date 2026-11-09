@@ -42,6 +42,28 @@ describe('LookClient.look', () => {
     expect(b.messages[0].images).toEqual([Buffer.from(png).toString('base64')])
     expect(r).toEqual({ ok: true, look: { text: 'hello', state: 'lit', description: 'a lamp', model: 'qwen3-vl:8b-instruct', ms: 2100 } })
   })
+  it('the STATE line asks for the selected or highlighted item on a screen and how to tell (F191: "none" 4/4 on a dense screen)', () => {
+    expect(LOOK_INSTRUCTION).toMatch(/which menu item, tab, row or line is selected or highlighted, and how you can tell/)
+  })
+  it('ask: one chat request with the question, the same window and keep_alive, returning the answer with timing (F191)', async () => {
+    const f = fakeFetch(() => ollamaReply('The second item, "Resume", is highlighted.'))
+    let t = 1000
+    const c = new LookClient({ url: 'http://box:11434', model: 'qwen3-vl:8b-instruct', fetchFn: f.fn, now: () => (t += 1500) })
+    const r = await c.ask(png, 'image/png', 'which item is selected?')
+    const b = f.calls[0].body
+    expect(f.calls[0].url).toBe('http://box:11434/api/chat')
+    expect(b.model).toBe('qwen3-vl:8b-instruct'); expect(b.stream).toBe(false); expect(b.keep_alive).toBe('10m'); expect(b.options).toEqual({ num_ctx: LOOK_NUM_CTX })
+    expect(b.messages[0].content).toContain('which item is selected?')
+    expect(b.messages[0].content).toMatch(/does not show it, say so/)
+    expect(b.messages[0].images).toEqual([Buffer.from(png).toString('base64')])
+    expect(r).toEqual({ ok: true, answer: 'The second item, "Resume", is highlighted.', model: 'qwen3-vl:8b-instruct', ms: 1500 })
+  })
+  it('ask: a refused request is a reason, never a throw', async () => {
+    const f = fakeFetch(() => new Response('{"error":"boom"}', { status: 500 }))
+    const c = new LookClient({ url: 'http://box:11434', model: 'm', fetchFn: f.fn })
+    const r = await c.ask(png, 'image/png', 'q')
+    expect(r).toEqual({ ok: false, reason: 'image box did not answer: HTTP 500 {"error":"boom"}' })
+  })
   it('a server that never answers is a bounded refusal', async () => {
     const f = fakeFetch((_u, init) => new Promise((_res, rej) => { (init.signal as AbortSignal).addEventListener('abort', () => rej(new Error('The operation timed out'))) }))
     const c = new LookClient({ url: 'http://box:11434', model: 'm', fetchFn: f.fn, timeoutMs: 20 })

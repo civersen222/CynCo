@@ -11,8 +11,12 @@ const bytes = new Uint8Array([1, 2, 3])
 function fakeClient() {
   const waiting: Array<(r: LookResult) => void> = []
   let calls = 0
-  const client = { look: () => { calls++; return new Promise<LookResult>(res => waiting.push(res)) } } as unknown as LookClient
-  return { client, calls: () => calls, release: (r: LookResult) => waiting.shift()!(r) }
+  const asks: Array<{ bytes: Uint8Array; mime: string; question: string }> = []
+  const client = {
+    look: () => { calls++; return new Promise<LookResult>(res => waiting.push(res)) },
+    ask: async (b: Uint8Array, mime: string, question: string) => { asks.push({ bytes: b, mime, question }); return { ok: true as const, answer: 'A', model: 'm', ms: 1 } },
+  } as unknown as LookClient
+  return { client, asks, calls: () => calls, release: (r: LookResult) => waiting.shift()!(r) }
 }
 function rig(opts: { recentCap?: number } = {}) {
   const c = fakeClient()
@@ -28,6 +32,13 @@ function rig(opts: { recentCap?: number } = {}) {
 }
 
 describe('LookRunner', () => {
+  it('ask goes straight to the client: no queue, no cache, no finish (the LookAt tool\'s path, F191)', async () => {
+    const r = rig()
+    const a = await r.runner.ask(bytes, 'image/jpeg', 'what is selected?')
+    expect(a).toEqual({ ok: true, answer: 'A', model: 'm', ms: 1 })
+    expect(r.asks).toEqual([{ bytes, mime: 'image/jpeg', question: 'what is selected?' }])
+    expect(r.calls()).toBe(0); expect(r.finished).toEqual([])
+  })
   it('start → pending; completion → finish with the look, pending cleared, recent serves it', async () => {
     const r = rig()
     r.runner.start('p', 'a.jpg', bytes, 'image/jpeg')

@@ -13,7 +13,7 @@
  * and a rescan then re-looks).
  * Design: docs/decisions/2026-11-08-image-box-design.md (sections 2 and 3).
  */
-import type { Look, LookClient } from './lookClient.js'
+import type { AskResult, Look, LookClient } from './lookClient.js'
 import type { IngestEvent } from '../projects/ingest.js'
 import type { LookInput } from '../projects/extract/types.js'
 import { sha256Of } from '../projects/layout.js'
@@ -75,6 +75,11 @@ export class LookRunner {
   }
 
   /** The look in flight for these bytes (by sha, or the latest started under the name), or null. */
+  /** The LookAt tool's path: one aimed question, straight to the box; nothing queued, cached or ingested (F191). */
+  ask(bytes: Uint8Array, mime: string, question: string): Promise<AskResult> {
+    return this.deps.client.ask(bytes, mime, question)
+  }
+
   pending(slug: string, rel: string, sha?: string): Promise<IngestEvent> | null {
     const k = this.keyFor(slug, rel, sha)
     return k ? this.inflight.get(k) ?? null : null
