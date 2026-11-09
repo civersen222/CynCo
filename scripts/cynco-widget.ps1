@@ -450,7 +450,7 @@ $ui.btnGpu.Add_Click({
       $ui.txtNote.Text = 'pause asked: the daemon kills the running pass (freeing the GPU) and fires nothing until Resume...'
     } elseif ($g.Button -eq 'Hold') {
       Write-DaemonControl $true
-      $ui.txtNote.Text = 'hold asked: the GPU stays yours - the daemon starts no pass until Release (missed passes fire late or skip)...'
+      $ui.txtNote.Text = 'hold asked: the GPU stays yours - the daemon starts no pass until Release; passes that come due meanwhile wait for their next slot...'
     } elseif ($g.Button -eq 'Release') {
       Write-DaemonControl $false
       $ui.txtNote.Text = 'released: the daemon goes back to its schedule...'

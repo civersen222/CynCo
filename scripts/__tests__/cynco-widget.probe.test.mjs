@@ -3,7 +3,7 @@
 // Skipped where powershell is not on PATH (Linux CI).
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -66,5 +66,17 @@ describe.skipIf(!hasPs)('cynco-widget -Probe mission lines', () => {
   it('next moves back to the trigger once schedule.json no longer disables it', () => {
     w(join(missions, 'alpha', 'schedule.json'), { triggers: { 'dynasty-tin-trades': { enabled: true } } })
     expect(mline(probe(), 'alpha')[2]).toMatch(new RegExp(`^tin trades ${WHEN}$`))
+  })
+})
+
+describe('cynco-widget Hold note', () => {
+  it('says passes that came due during a hold wait for their next slot (Resume is from now), in ASCII', () => {
+    const src = readFileSync(script, 'utf8')
+    const line = src.split(/\r?\n/).find(l => l.includes("hold asked:"))
+    expect(line).toBeDefined()
+    expect(line).not.toContain('fire late or skip')
+    expect(line).toContain('starts no pass until Release')
+    expect(line).toContain('wait for their next slot')
+    expect(/^[\x00-\x7f]*$/.test(line)).toBe(true)
   })
 })
