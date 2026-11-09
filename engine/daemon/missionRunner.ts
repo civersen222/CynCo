@@ -68,7 +68,8 @@ export class MissionRunner {
   private pauseLogged = false
 
   constructor(
-    private ledger: MissionLedger,
+    /** Public (read) so the daemon can collect every mission's nextFire for the doorman wake schedule. */
+    readonly ledger: MissionLedger,
     private deps: MissionRunnerDeps,
     /** Override the sessions dir used by ThinkingRecorder.aggregateSession.
      *  Undefined → real ~/.cynco/sessions. Tests pass a temp dir. */

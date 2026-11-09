@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CynCo doorman</title>
+<style>
+:root{--bg:#1e1e24;--fg:#eee;--dim:#9a9aa6;--ok:#3fb950;--warn:#d29922}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);font:16px/1.4 system-ui,Segoe UI,Roboto,sans-serif}
+main{padding:24px 16px;max-width:420px;text-align:center}
+.dot{display:inline-block;width:14px;height:14px;border-radius:50%;background:var(--warn);margin-right:8px;vertical-align:-1px;animation:p 1.2s infinite}
+@keyframes p{50%{opacity:.35}}
+h1{font-size:20px;margin:0 0 8px}p{color:var(--dim);margin:6px 0}
+button{margin-top:18px;padding:10px 18px;border:0;border-radius:8px;background:#2e6fdc;color:#fff;font-size:16px}
+</style></head>
+<body data-dashboard="{dashboard}" data-target="{target}"><main>
+<h1><span class="dot" id="dot"></span><span id="title">Waking CynCo…</span></h1>
+<p id="msg">Sending the wake signal to the PC.</p>
+<p id="t" style="font-variant-numeric:tabular-nums"></p>
+<button id="retry" style="display:none" onclick="start()">Try again</button>
+</main>
+<script>
+var dash = document.body.dataset.dashboard, target = document.body.dataset.target, t0, timer;
+function el(id) { return document.getElementById(id); }
+function start() {
+  t0 = Date.now(); el('retry').style.display = 'none';
+  el('title').textContent = 'Waking CynCo…'; el('msg').textContent = 'Sending the wake signal to the PC.';
+  fetch('/wake?target=' + encodeURIComponent(target)).catch(function () {});
+  clearInterval(timer); timer = setInterval(poll, 3000); poll();
+}
+function poll() {
+  var s = Math.round((Date.now() - t0) / 1000); el('t').textContent = s + ' s';
+  fetch('/status?target=' + encodeURIComponent(target)).then(function (r) { return r.json(); }).then(function (j) {
+    if (j.up) { clearInterval(timer); el('dot').style.background = 'var(--ok)'; el('title').textContent = 'Awake'; el('msg').textContent = 'Opening the dashboard.'; location.replace(dash); return; }
+    if (s > 30) el('msg').textContent = 'The PC is coming back from sleep; Tailscale can take a minute.';
+    if (s > 180) { clearInterval(timer); el('title').textContent = 'Still asleep'; el('msg').textContent = 'No answer from the dashboard after 3 minutes.'; el('retry').style.display = 'inline-block'; }
+  }).catch(function () {});
+}
+start();
+</script></body></html>

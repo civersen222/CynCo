@@ -2,7 +2,7 @@
  * CynCo engine entry point.
  *
  * Usage:
- *   LOCALCODE_MODEL=qwen3:8b bun engine/main.ts
+ *   LOCALCODE_MODEL=qwen3.6 bun engine/main.ts
  */
 
 // Ensure ripgrep is in PATH on Windows (winget installs it but Bun may not inherit updated PATH)
@@ -30,7 +30,7 @@ if (process.platform === 'win32') {
 
 import { loadConfig } from './config.js'
 import { LocalCodeWSServer } from './bridge/server.js'
-import type { TUICommand } from './bridge/protocol.js'
+import type { TUICommand, MCPServerInfo } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
 import { governanceCapabilities } from './bridge/capabilities.js'
 import { markerChannelSealLine } from './bridge/contractAutoCreate.js'
@@ -57,11 +57,11 @@ import { ImageService } from './imagegen/service.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
-async function discoverMcpServers(): Promise<{ name: string; status: string }[]> {
+async function discoverMcpServers(): Promise<MCPServerInfo[]> {
   const fs = require('fs')
   const path = require('path')
   const os = require('os')
-  const servers: { name: string; status: string }[] = []
+  const servers: MCPServerInfo[] = []
 
   // Check user-level and project-level MCP config files
   const configPaths = [
@@ -140,6 +140,19 @@ import { bootstrapProvider } from './bootstrapProvider.js'
   const { installKillOnCloseJob } = await import('./security/jobObject.js')
   const job = await installKillOnCloseJob()
   console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
+}
+// Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
+// the headless phone engine before loading its own model and restarts it on
+// exit — owner's decision 2026-11-08 (engine/power/siblingEngine.ts). The
+// phone engine itself and one-shot children never do this.
+let siblingRelease: (() => Promise<void>) | null = null
+{
+  const { lazySettings } = await import('./llama/lazyLoad.js')
+  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner } = await import('./power/siblingEngine.js')
+  if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform }) === 'handoff') {
+    const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), log: (l) => console.log(l) })
+    if (handoff.wasRunning) siblingRelease = handoff.release
+  }
 }
 const { provider, contextLength } = await bootstrapProvider(config)
 
@@ -344,6 +357,13 @@ const wsServer = new LocalCodeWSServer({
 
 // Initialize audit logger
 import { AuditLogger } from './audit/auditLogger.js'
+import { activity } from './power/activity.js'
+import { wireHoldAwake } from './power/awake.js'
+
+// Wakefulness (slice 3): a turn in progress (interactive or one-shot) keeps the
+// PC awake; with nothing open, Windows' idle timer may sleep it. Process-wide,
+// so it covers both the interactive loop below and the --run-task path above.
+wireHoldAwake(activity, { log: (line) => console.log(line) })
 const auditSessionId = `session-${Date.now()}`
 AuditLogger.init(auditSessionId, process.cwd(), config.model)
 
@@ -425,6 +445,13 @@ if ((globalThis as any).__llamaProcessManager) {
   // F140/F143: a refused or unrecoverable llama-server must be visible where the
   // operator looks — the dashboard feed and the TUI — not only in a log nobody
   // tails. Reuses governance.alert (protocol.ts) rather than adding an event type.
+  // Lazy path (wakefulness): "GPU busy with <trigger>" reaches the dashboard
+  // as an info alert, the same channel as a fault, so the phone sees why the
+  // model is not answering yet.
+  pm.onWaiting = (reason: string) => {
+    const event = { type: 'governance.alert' as const, severity: 'info' as const, source: 'llama-cpp', message: reason }
+    dashboardServer?.broadcast(event as any)
+  }
   pm.onFault = (reason: string) => {
     const event = { type: 'governance.alert' as const, severity: 'critical' as const, source: 'llama-cpp', message: reason }
     dashboardServer?.broadcast(event as any)
@@ -459,6 +486,13 @@ try {
       getS4Reflector: () => loop.getGovernance().getReflector(),
       // F57: the one fact a harness outside this process cannot infer.
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
+      // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
+      getAwayRuns: () => {
+        const { collectAwayRuns } = require('./daemon/awayFeed.js')
+        const { cyncoHome } = require('./paths.js')
+        const { join } = require('path')
+        return collectAwayRuns(process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions'))
+      },
       getSessionInfo: () => {
         let modelName = config.model || ''
         // For llama-cpp provider, show the actual GGUF file + spec type
@@ -467,7 +501,23 @@ try {
           const spec = process.env.LOCALCODE_SPEC_TYPE ? ` +${process.env.LOCALCODE_SPEC_TYPE}` : ''
           modelName = `${basename}${spec}`
         }
-        return { model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd() }
+        // Wakefulness: what the phone page and the widget show about the GPU.
+        const pm = (provider as any)?.processManager
+        let busy: { triggerId: string; task: string; remainingMs: number } | null = null
+        try {
+          const { readGpuBusy, estimateRemainingMs } = require('./daemon/gpuBusyFile.js')
+          const b = readGpuBusy()
+          if (b) busy = { triggerId: b.triggerId, task: b.task, remainingMs: estimateRemainingMs(b) }
+        } catch (e) {
+          console.log(`[dashboard] gpu-busy.json unreadable: ${e instanceof Error ? e.message : String(e)}`)
+        }
+        return {
+          model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd(),
+          modelState: pm?.modelState ? pm.modelState() : null,
+          busy,
+          brain: brainEnabled(),
+          lens: lensEnabled(),
+        }
       },
       applyEngineConfig: (patches) => {
         const { handleConfigUpdate } = require('./bridge/configHandlers.js')
@@ -531,7 +581,9 @@ try {
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 // (declared above the dashboard server for the setBrainLayer late-binding)
-if (config.provider === 'llama-cpp' && dashboardServer) {
+const { brainEnabled, lensEnabled } = await import('./brain/brainSwitch.js')
+if (!brainEnabled()) console.log('[brain] off for this engine (LOCALCODE_BRAIN=off): no jlens sidecar, no activations consumer')
+if (config.provider === 'llama-cpp' && dashboardServer && brainEnabled()) {
   // The lens half of the J-Space viewer. Managed here so the workspace works
   // without the four-step README ritual nobody performed; the consumer below
   // re-probes, so the tier upgrades on its own once the artifacts load.
@@ -617,6 +669,8 @@ async function cleanShutdown(signal: string) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
   }
+  // Give the GPU back to the phone engine (after our llama-server is gone, so its lazy load finds a free port).
+  if (siblingRelease) await siblingRelease()
   process.exit(0)
 }
 process.on('SIGTERM', () => cleanShutdown('SIGTERM'))
@@ -1249,11 +1303,11 @@ async function handleCommand(command: TUICommand): Promise<void> {
         await onSessionEnd(baseDir, project, {
           goal: handoffData.goal,
           now: handoffData.now,
-          status: handoffData.status as any,
+          status: handoffData.status,
           model: handoffData.model,
           what_was_done: handoffData.what_was_done,
           files_modified: handoffData.files_modified,
-          regulator_fidelity: (handoffData as any).regulator_fidelity ?? null,
+          regulator_fidelity: handoffData.regulator_fidelity ?? null,
         })
         console.log('[localcode] Handoff written successfully')
       } catch (err) {

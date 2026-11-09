@@ -4,8 +4,17 @@ import { cyncoHome } from '../../paths.js'
 import { sidecarDecision, jlensArtifactsDir, sidecarRelay } from '../../brain/jlensSidecar.js'
 
 describe('sidecarDecision', () => {
-  it('starts when artifacts are present and no external URL is set', () => {
+  it('starts when artifacts are present, no external URL is set, and the lens is switched on', () => {
     expect(sidecarDecision({ artifactsPresent: true })).toEqual({ start: true })
+    expect(sidecarDecision({ artifactsPresent: true, lensOn: true })).toEqual({ start: true })
+  })
+
+  // Owner, 2026-11-08: the sidecar is RAM-hungry, so it is off unless asked for
+  // (LOCALCODE_JLENS=on); the reason names the switch so it is easy to turn on.
+  it('is off by default when the switch is read: lensOn false refuses and names LOCALCODE_JLENS', () => {
+    const d = sidecarDecision({ artifactsPresent: true, lensOn: false })
+    expect(d.start).toBe(false)
+    if (!d.start) expect(d.reason).toContain('LOCALCODE_JLENS=on')
   })
 
   it('starts when the URL is the default loopback sidecar', () => {

@@ -403,7 +403,9 @@ export function isComponentName(name: unknown): name is string {
 /** Case-insensitive lookup: a model that writes "table" or "BARCHART" still means the component. */
 export function resolveComponentName(name: unknown): string | null {
   if (typeof name !== 'string') return null
-  if (isComponentName(name)) return name
+  // Not `isComponentName(name)`: its `name is string` predicate would narrow the
+  // string to `never` on the miss, and the catalog's key type is only `string`.
+  if (Object.prototype.hasOwnProperty.call(GENUI_CATALOG, name)) return name
   const lower = name.trim().toLowerCase()
   for (const n of GENUI_COMPONENT_NAMES) if (n.toLowerCase() === lower) return n
   return null

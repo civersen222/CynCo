@@ -5,6 +5,7 @@ import { DoomLoopDetector } from './doomLoop.js'
 import { capToolResult } from './resultCap.js'
 import { ToolScorer } from './toolScorer.js'
 import { callTouchesSealed, redactSealed, SEALED_REFUSAL } from './sealedPaths.js'
+import { secretPathOf, SECRET_REFUSAL, secretApprovalRefusal } from './secretPaths.js'
 import { withCodeIndexNudge } from './toolHints.js'
 import { isWrongPathAnswer } from './impl/pathHint.js'
 
@@ -199,13 +200,22 @@ export class ToolExecutor {
       }
     }
 
+    // Secret paths (GLM review S1, 2026-11-06, secretPaths.ts): the engine's
+    // own token file is refused outright; SSH keys, .env files and system
+    // credential files need the user's yes whatever the tier or grade says, and
+    // where there is no user (approve-all) they are refused like a download.
+    const secret = secretPathOf(toolName, input, this.cwd)
+    if (secret?.action === 'refuse') {
+      return { output: SECRET_REFUSAL, isError: true }
+    }
+
     if (this.grader) {
       // Project mode: one grade decides. A download is the grader's `risky`
       // (the user approves every download), so the approve-all refusal below
       // does not apply — there IS a user to ask in a project chat.
       const g = this.grader(toolName, input)
       if (g.level === 'dangerous') return { output: `Refused: ${g.reason}`, isError: true }
-      if (g.level === 'risky') {
+      if (g.level === 'risky' || secret) {
         const approved = await this.requestApproval(toolName, input, getToolRisk(toolName))
         if (!approved) return { output: `Tool call denied by user: ${toolName}`, isError: true }
       }
@@ -217,7 +227,10 @@ export class ToolExecutor {
       if (download && this.approveAll) {
         return { output: DOWNLOAD_REFUSAL, isError: true }
       }
-      const autoApprove = !download && shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
+      if (secret && this.approveAll) {
+        return { output: secretApprovalRefusal(secret), isError: true }
+      }
+      const autoApprove = !download && !secret && shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
       if (!autoApprove) {
         const risk = getToolRisk(toolName)
         const approved = await this.requestApproval(toolName, input, risk)

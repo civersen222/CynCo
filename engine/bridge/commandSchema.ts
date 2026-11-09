@@ -157,6 +157,7 @@ export const COMMAND_SCHEMA: Record<TUICommand['type'], Check[]> = {
   'ask.answer': [req('requestId', isString, 'a string'), req('answer', isString, 'a string')],
   'command': [req('command', isString, 'a string'), opt('args', isString, 'a string')],
   'abort': [],
+  'session.end': [],
   'file.open': [req('path', isString, 'a string')],
   'config.update': [req('patches', isPlainObject, 'an object')],
   'config.get': [],

@@ -25,7 +25,7 @@ Discovers, validates, and serves "skills" — folders containing a `SKILL.md` wh
 - **`formatSkillIndexBlock`** (`prompt.ts:10`) — sorts the skill index by name and renders the system-prompt catalogue block; returns `null` when there are no skills.
 - **`scaffoldSkill`** (`scaffold.ts:27`) — creates a new workspace skill folder from a template, refusing to overwrite an existing one.
 - **`installSkill`** (`install.ts:194`) — fetches a zipball, validates its `SKILL.md`, calls the injected `confirm` callback with a risk report, and copies the skill into the workspace dir on approval.
-- **`getSkillByName`** / **`getSkillIndex`** (`store.ts:23`, `store.ts:23`) — read accessors onto the process-wide `SKILLS` array set by `setLoadedSkills` (`store.ts:11`).
+- **`getSkillByName`** / **`getSkillIndex`** (`store.ts:19`, `store.ts:23`) — read accessors onto the process-wide `SKILLS` array set by `setLoadedSkills` (`store.ts:11`).
 - **`getWorkflowForSkill`** (`workflowSkill.ts:41`) — returns the `WorkflowDefinition` backing a skill name, if any; used by `conversationLoop.ts` to start the workflow engine when `run_skill` targets a workflow-backed skill.
 - **`workflowSkillTools`** (`workflowSkill.ts:56`) — the union of every phase's `allowedTools` for a workflow, i.e. the canonical value that workflow skill's `tools:` frontmatter must equal.
 
@@ -33,7 +33,7 @@ Discovers, validates, and serves "skills" — folders containing a `SKILL.md` wh
 1. On the first user message of a session, `conversationLoop.ts`'s `ensureSkillsLoaded` calls `loadSkills` (`loader.ts:163`), which scans the builtin and workspace dirs (`scanDir`), splits each `SKILL.md`'s frontmatter fence, parses it as YAML, and validates it with `validateFrontmatter` (`types.ts:58`).
 2. The result is published to the process-wide store via `setLoadedSkills` (`store.ts:11`).
 3. `formatSkillIndexBlock` (`prompt.ts:10`) turns `getSkillIndex()` (`store.ts:23`) into the skill-catalogue block appended to the system prompt, sorted by name for prefix stability.
-4. When the model calls `run_skill`, `skillTools.ts`'s `execute` looks up the skill via `getSkillByName` (`store.ts:23`) and returns its body via `readSkillBody` (`loader.ts:101`) plus its declared `tools[]`.
+4. When the model calls `run_skill`, `skillTools.ts`'s `execute` looks up the skill via `getSkillByName` (`store.ts:19`) and returns its body via `readSkillBody` (`loader.ts:101`) plus its declared `tools[]`.
 5. `conversationLoop.ts` intercepts the same `run_skill` tool-use block: it surfaces the skill's declared tools through the `load_tools` channel, and if `getWorkflowForSkill` (`workflowSkill.ts:41`) resolves a `WorkflowDefinition`, starts the `WorkflowEngine` (only when it is currently idle).
 6. Separately, `/skill new` calls `scaffoldSkill` (`scaffold.ts:27`), `/skill install` calls `installSkill` (`install.ts:194`) which fetches + extracts a GitHub zipball, validates it, and copies it in after confirmation, and `/skill remove` (in `main.ts`) resolves its target through `resolveWorkspaceSkillDir` (`loader.ts:69`) before deleting.
 

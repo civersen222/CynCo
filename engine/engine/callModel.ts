@@ -534,11 +534,18 @@ export async function* localCallModel({
   const retryBaseMs = (options as any).retryBaseDelayMs ?? RETRY_BASE_DELAY_MS
   let iterator: AsyncIterator<any>
   let firstEvent: IteratorResult<any>
+  // The provider's stream() holds a `request` activity (engine/power) in a
+  // finally that only runs when its iterator is closed. We pull that iterator
+  // by hand below, so a consumer that stops early (Stop on the phone, an abort)
+  // returns THIS generator, not the provider's — unless the finally at the
+  // bottom closes it. Wakefulness review, 2026-11-08.
+  let openIterator: AsyncIterator<any> | null = null
   for (let attempt = 0; ; attempt++) {
     try {
       const it = translateStream(provider.stream(request), { simulatedToolUse, model })[Symbol.asyncIterator]()
       const first = await it.next()
       iterator = it
+      openIterator = it
       firstEvent = first
       break
     } catch (err) {
@@ -732,5 +739,13 @@ export async function* localCallModel({
       return
     }
     throw err
+  } finally {
+    if (openIterator?.return) {
+      try {
+        await openIterator.return(undefined)
+      } catch (e) {
+        console.log(`[callModel] provider stream close failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   }
 }

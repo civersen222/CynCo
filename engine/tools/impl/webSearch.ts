@@ -1,4 +1,5 @@
 import type { ToolImpl } from '../types.js'
+import { wrapUntrusted } from '../untrusted.js'
 import { getEngine, getAllEngines, initEngines } from '../../research/engines/registry.js'
 import { routeQuery, searchWithFallback } from '../../research/engineRouter.js'
 import { scoreResults, deduplicateResults } from '../../research/resultScorer.js'
@@ -11,6 +12,23 @@ function ensureEngines(): void {
     initEngines()
     initialized = true
   }
+}
+
+/**
+ * The result list as the model sees it: numbered entries inside the untrusted
+ * block (S4, 2026-11-06, tools/untrusted.ts) — a snippet is a quotation from a
+ * page nobody vetted, and the block says so.
+ */
+export function formatSearchOutput(query: string, results: SearchResult[]): string {
+  const formatted = results.map((r, i) => {
+    const meta = r.metadata
+    const authorLine = meta?.authors?.length ? `\n   Authors: ${meta.authors.join(', ')}` : ''
+    const dateLine = meta?.date ? `\n   Date: ${meta.date}` : ''
+    const starsLine = meta?.stars != null && meta.stars > 0 ? `\n   Stars: ${meta.stars.toLocaleString()}` : ''
+    const scoreLine = r.score != null ? ` (score: ${r.score})` : ''
+    return `${i + 1}. ${r.title}${scoreLine}\n   ${r.url}\n   [${r.source}] ${r.snippet}${starsLine}${authorLine}${dateLine}`
+  }).join('\n\n')
+  return wrapUntrusted(`web search: "${query}"`, `Search results for "${query}":\n\n${formatted}`)
 }
 
 export const webSearchTool: ToolImpl = {
@@ -75,19 +93,7 @@ export const webSearchTool: ToolImpl = {
         return { output: `No results found for: "${query}"`, isError: false }
       }
 
-      const formatted = results.map((r, i) => {
-        const meta = r.metadata
-        const authorLine = meta?.authors?.length ? `\n   Authors: ${meta.authors.join(', ')}` : ''
-        const dateLine = meta?.date ? `\n   Date: ${meta.date}` : ''
-        const starsLine = meta?.stars != null && meta.stars > 0 ? `\n   Stars: ${meta.stars.toLocaleString()}` : ''
-        const scoreLine = r.score != null ? ` (score: ${r.score})` : ''
-        return `${i + 1}. ${r.title}${scoreLine}\n   ${r.url}\n   [${r.source}] ${r.snippet}${starsLine}${authorLine}${dateLine}`
-      }).join('\n\n')
-
-      return {
-        output: `Search results for "${query}":\n\n${formatted}`,
-        isError: false,
-      }
+      return { output: formatSearchOutput(query, results), isError: false }
     } catch (err) {
       return {
         output: `Search failed: ${err instanceof Error ? err.message : String(err)}`,

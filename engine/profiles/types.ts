@@ -61,6 +61,8 @@ export type Profile = {
   model_file?: string
   runtime?: ProfileRuntime
   tier?: TierSetting
+  /** How much the prompt explains; `LOCALCODE_EXPERTISE` overrides (README env table). */
+  expertise?: 'beginner' | 'intermediate' | 'advanced'
   /**
    * Which provider to drive. Every other field here follows env > profile >
    * built-in default; this one did not exist, so provider selection was

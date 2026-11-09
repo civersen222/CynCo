@@ -182,7 +182,28 @@ export async function bootstrapProvider(
       })
       // Wire eval tok/s from llama-server stderr → governance (deferred until loop is created)
       ;(globalThis as any).__llamaProcessManager = processManager
-      await processManager.ensureRunning()
+
+      // Wakefulness (slice 2): under LOCALCODE_LLAMA_LAZY the model is not
+      // loaded here; the provider loads it before its first request, waiting
+      // on a running one-shot (gpu-busy.json) rather than killing its server.
+      // Default: today's eager start.
+      const { lazySettings, createLazyEnsureReady, IdleUnloader } = await import('./llama/lazyLoad.js')
+      const lazy = lazySettings()
+      let ensureReady: (() => Promise<void>) | undefined
+      if (lazy.lazy) {
+        const { readGpuBusy } = await import('./daemon/gpuBusyFile.js')
+        ensureReady = createLazyEnsureReady(processManager, {
+          readBusy: () => readGpuBusy(),
+          maxWaitMs: lazy.lazyWaitMs,
+          onWaiting: (info) => {
+            const mins = info.remainingMs === null ? '?' : String(Math.ceil(info.remainingMs / 60000))
+            processManager.onWaiting?.(`${info.reason} — about ${mins} min left; the model loads when it ends`)
+          },
+        })
+        console.log(`[llama-cpp] lazy: the model loads on the first request (LOCALCODE_LLAMA_LAZY)${lazy.idleUnloadMs ? `, unloads after ${Math.round(lazy.idleUnloadMs / 60000)} min idle` : ''}`)
+      } else {
+        await processManager.ensureRunning()
+      }
 
       // 4. Create provider
       const { LlamaCppProvider } = await import('./llama/provider.js')
@@ -195,8 +216,20 @@ export async function bootstrapProvider(
         modelsDir,
         adaptersDir,
         processManager,
+        ...(ensureReady ? { ensureReady } : {}),
         uncertaintyTrace,
       })
+
+      if (lazy.idleUnloadMs > 0) {
+        const { activity } = await import('./power/activity.js')
+        new IdleUnloader({
+          registry: activity,
+          isRunning: () => processManager.isRunning(),
+          unload: async () => { await processManager.saveSlot(); await processManager.stop() },
+          idleMs: lazy.idleUnloadMs,
+          log: (line) => console.log(line),
+        }).start()
+      }
 
       // Must be the same expression as ctxSize above — the loop's compaction
       // trigger is a fraction of this number, so a mismatch would compact at a

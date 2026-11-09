@@ -31,6 +31,7 @@ const VALID: Record<string, Record<string, unknown>> = {
   'ask.answer': { type: 'ask.answer', requestId: 'r1', answer: 'yes' },
   'command': { type: 'command', command: '/tools' },
   'abort': { type: 'abort' },
+  'session.end': { type: 'session.end' },
   'file.open': { type: 'file.open', path: '/tmp/a.ts' },
   'config.update': { type: 'config.update', patches: { temperature: 0.5 } },
   'config.get': { type: 'config.get' },

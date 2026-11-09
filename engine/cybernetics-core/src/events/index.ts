@@ -409,7 +409,7 @@ export class EventBus {
   /** Replay events for a specific node. */
   replayForNode(nodeId: NodeId): DomainEvent[] {
     return this.events.filter(
-      (e) => eventNodeId(e.payload).value === nodeId.value,
+      (e) => eventNodeId(e.payload).equals(nodeId),
     );
   }
 }

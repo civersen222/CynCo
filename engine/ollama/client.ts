@@ -10,7 +10,7 @@ import type { CompletionResponse, StreamEvent } from '../types.js'
 import type { Provider, CompletionRequest, ModelCapabilities, ModelInfo, PullProgress } from '../provider.js'
 import { toOpenAIMessages, toOpenAITools, fromOpenAIResponse, fromOpenAIStreamChunk, parseSSELine, mapFinishReason } from './format.js'
 import { resolveCapabilities } from './probe.js'
-import { ConnectionError } from './errors.js'
+import { GenerationError, ModelNotFoundError } from './errors.js'
 
 type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -54,47 +54,23 @@ export class OllamaProvider implements Provider {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const body = this.buildRequestBody(request, false)
-    const resp = await this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const resp = await this.postChat(body)
+    if (!resp.ok) throw await this.httpError(resp, request.model)
     const oai = await resp.json()
     return fromOpenAIResponse(oai as any)
   }
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
     const body = this.buildRequestBody(request, true)
+    const resp = await this.postChat(body)
 
-    // Diagnostic: dump request to file for debugging
-    try {
-      const fs = require('fs')
-      const path = require('path')
-      const debugDir = path.join(process.cwd(), '.cynco-http-debug.json')
-      fs.writeFileSync(debugDir, JSON.stringify({
-        timestamp: new Date().toISOString(),
-        url: `${this.baseUrl}/v1/chat/completions`,
-        messageCount: (body.messages as any[])?.length ?? 0,
-        hasTools: !!(body as any).tools,
-        toolCount: ((body as any).tools as any[])?.length ?? 0,
-        systemPromptLength: ((body.messages as any[])?.[0]?.content as string)?.length ?? 0,
-        lastMessageRole: (body.messages as any[])?.[(body.messages as any[]).length - 1]?.role,
-        lastMessageContent: JSON.stringify((body.messages as any[])?.[(body.messages as any[]).length - 1]?.content)?.slice(0, 300),
-        // Dump first and last message for inspection
-        firstMessage: (body.messages as any[])?.[0],
-        model: body.model,
-        temperature: body.temperature,
-      }, null, 2))
-    } catch {}
-
-    const resp = await this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-
-    // Diagnostic: log response status
-    console.log(`[ollama] HTTP ${resp.status} for ${(body.messages as any[])?.length ?? 0} messages, ${((body as any).tools as any[])?.length ?? 0} tools`)
+    // Errors must THROW, not silently end the stream — the llama path's
+    // 2026-06-12 lesson, repeated here (GLM review O1). Ollama answers a model
+    // it does not have with 404 and an OpenAI-shaped error body; read as SSE
+    // that body has no `data:` lines, so this path yielded message_start, no
+    // deltas, message_stop — an empty reply on the first turn after a fresh
+    // install, when the fix is one `ollama pull`.
+    if (!resp.ok) throw await this.httpError(resp, request.model)
 
     // Emit message_start
     yield {
@@ -111,8 +87,6 @@ export class OllamaProvider implements Provider {
 
     const decoder = new TextDecoder()
     let buffer = ''
-    let chunkCount = 0
-    let rawChunks: string[] = []
 
     while (true) {
       const { done, value } = await reader.read()
@@ -126,10 +100,6 @@ export class OllamaProvider implements Provider {
         const trimmed = line.trim()
         if (!trimmed) continue
 
-        // Diagnostic: capture raw SSE lines
-        rawChunks.push(trimmed)
-        chunkCount++
-
         const parsed = parseSSELine(trimmed)
         if (parsed === null) break // [DONE]
         if (parsed === undefined) continue // non-data line
@@ -141,20 +111,45 @@ export class OllamaProvider implements Provider {
       }
     }
 
-    // Diagnostic: dump response info
-    console.log(`[ollama] Stream complete: ${chunkCount} chunks`)
-    // Dump raw SSE to file for analysis
-    try {
-      const fs = require('fs')
-      const path = require('path')
-      fs.writeFileSync(
-        path.join(process.cwd(), '.cynco-sse-debug.json'),
-        JSON.stringify({ chunkCount, rawChunks: rawChunks.map(c => c.slice(0, 500)) }, null, 2)
-      )
-    } catch {}
-
     // Emit message_stop
     yield { type: 'message_stop' }
+  }
+
+  private postChat(body: Record<string, unknown>): Promise<Response> {
+    return this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  /**
+   * The typed error for a non-2xx chat response. A 404 whose body talks about
+   * a model is Ollama's "model not found": `ModelNotFoundError` names the
+   * model, what is installed (best effort — the hint must not depend on a
+   * second request succeeding) and the `ollama pull` command. Everything else
+   * is a `GenerationError` spelled `Ollama HTTP <status>: <detail>`, the same
+   * shape as the llama path, because `callModel.isRetryableError` reads
+   * `HTTP 503` + `Loading model` off the message to wait out a load window.
+   */
+  private async httpError(resp: Response, model: string): Promise<Error> {
+    let detail = ''
+    try {
+      detail = (await resp.text()).slice(0, 500)
+    } catch (err) {
+      console.log(`[ollama] could not read the HTTP ${resp.status} error body: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const message = parseErrorMessage(detail) ?? detail
+    if (resp.status === 404 && /model/i.test(message)) {
+      let available: string[] = []
+      try {
+        available = (await this.listModels()).map(m => m.name)
+      } catch (err) {
+        console.log(`[ollama] could not list models for the not-found hint: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      return new ModelNotFoundError(model, available)
+    }
+    return new GenerationError(`Ollama HTTP ${resp.status}: ${message || resp.statusText}`)
   }
 
   async *pullModel(name: string): AsyncIterable<PullProgress> {
@@ -212,4 +207,17 @@ export class OllamaProvider implements Provider {
 
     return body
   }
+}
+
+/** `{"error":{"message":"..."}}` or `{"error":"..."}` -> the message; anything else -> null. */
+function parseErrorMessage(detail: string): string | null {
+  let parsed: { error?: { message?: unknown } | string }
+  try {
+    parsed = JSON.parse(detail)
+  } catch {
+    return null // not JSON: the raw text is the detail
+  }
+  if (typeof parsed?.error === 'string') return parsed.error
+  if (typeof parsed?.error?.message === 'string') return parsed.error.message
+  return null
 }

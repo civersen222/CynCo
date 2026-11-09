@@ -114,6 +114,10 @@ cd tui && python -m localcode_tui.app
 
 That's it. No API keys. No subscriptions. No data leaving your machine.
 
+The TUI starts the engine for you and owns the terminal, so the engine's own output goes to `.cynco-engine.log` in the project folder, not to the screen. To attach to an engine you started yourself, pass `-p <project dir>`.
+
+Beyond this page, [docs/README.md](docs/README.md) indexes the rest: [USER_GUIDE](docs/USER_GUIDE.md) (install, commands, modes, troubleshooting), [MANUAL](docs/MANUAL.md) (architecture), [BENCHMARKS](docs/BENCHMARKS.md) (what is measured, honest numbers), [MAXIMIZING](docs/MAXIMIZING.md) (tuning). Returning after a break, or working on CynCo itself: [AGENTS.md](AGENTS.md), then [docs/NOW.md](docs/NOW.md).
+
 Once running, interact in the TUI or open the dashboard in your browser. The engine prints its URL at startup:
 
 ```
@@ -310,8 +314,12 @@ Each project is one plain folder, five pieces (six once a chat has painted a pic
 Tool calls inside a project chat are graded, not approved by tier: a file write
 or read stays inside the project folder or is refused outright; a Bash command
 runs at once when it's safe, asks you first when it's risky — and *every*
-download asks, always, however safe it would otherwise look; anything
-dangerous is refused with its reason. There is no `/undo` and no workspace
+download asks, always, however safe it would otherwise look, as does anything
+that runs a program or script in the project (code the chat may have just
+written); anything dangerous is refused with its reason. In every mode, the
+engine's own token file is off limits to the model, and SSH keys, `.env` files
+and system credential files need your yes before any tool touches them
+(`docs/decisions/2026-11-06-untrusted-content-and-secret-paths.md`). There is no `/undo` and no workspace
 snapshot inside a project chat — the project's own invisible git history is the
 record instead.
 
@@ -345,7 +353,7 @@ The Chat tab has to be able to talk to the agent — that is the feature — so 
 dashboard socket forwards frames. Which frames is not left to the page:
 `dashboardCommandRefusal` in `engine/dashboard/server.ts` asks two separate
 questions, in order. First *may a browser send this kind of frame at all* — an
-allowlist of nine frame types and fifteen slash commands, every one of them
+allowlist of eleven frame types and fifteen slash commands, every one of them
 read-only or no more privileged than typing the same sentence. Then *is the frame
 the shape that kind is declared to have* — `validateCommand`, the same schema
 check the bridge entrance runs. Authority first, because a perfectly well-formed
@@ -494,6 +502,15 @@ Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep
 
 ---
 
+**What the phone sees (wakefulness slice 4, 2026-11-08).** A remote page lands in Projects and shows
+three tabs — Chat, Projects and **Away** (what the missions did while you were out: time, mission,
+trigger, ok/FAILED, summary, from every mission's `runs.jsonl` via `GET /api/away`). The layout is one
+column with the send box pinned to the bottom. The headless phone engine runs with `LOCALCODE_BRAIN=off`
+(no jlens sidecar, no activation tap), and on every engine the lens sidecar is off unless
+`LOCALCODE_JLENS=on`; the Brain tab says which. The desk page is unchanged.
+
+**Files from the phone (slice 5).** While a project is bound, an **Attach** button beside the send box takes files or a camera photo straight into that project's knowledge through the same upload route the Projects tab uses, and the chat says what was added and whether it indexed. `.docx` and `.xlsx` now extract alongside `.md`, `.txt`, `.pdf` and `.epub` (a dependency-free zip reader; images are stored, not yet captioned).
+
 ## Fine-Tuned Models (Coming)
 
 CynCo collects governance decision data during every session, per VSM system, in `~/.cynco/training/s{1-5}-decisions.jsonl` (`engine/training/decisionJournal.ts`). This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:
@@ -564,6 +581,11 @@ Setting a variable overrides the profile for that one field and nothing else.
 | `LOCALCODE_S5_MODEL` | — | Fine-tuned S5 model (when available) |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind address, or a comma-separated list: the first entry is the desk's listener, each further one (your Tailscale address) a phone listener on the same port whose clients must pair — see [Phone access](#phone-access). Never `0.0.0.0`. |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | TUI bridge bind address. `0.0.0.0` puts the agent's command channel on the network, behind nothing but the bridge token — see [Local tokens](#local-tokens). |
+| `LOCALCODE_BRAIN` | `on` | `off` = this engine starts no jlens sidecar and no activations consumer; the Brain tab says so. The headless phone engine sets it. |
+| `LOCALCODE_JLENS` | `off` | `on` starts the J-Space lens sidecar (Python, gigabytes of RAM) with the engine; off, the Brain tab runs entropy and activation tiers only and says how to turn the lens on. |
+| `LOCALCODE_LLAMA_LAZY` | `false` | `true` = the engine does not load the model at boot; the provider loads it before the first request, and while the daemon's one-shot owns the GPU (`~/.cynco/gpu-busy.json`) it waits and says so instead of killing that server. The widget's headless phone engine sets this; missions and the TUI keep the eager start. See `docs/decisions/2026-11-08-wakefulness-design.md`. |
+| `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` | `0` (never) | With the lazy engine: unload llama-server (slot snapshot first) after this many ms with no open turn, one-shot or request; the next message loads it again. |
+| `LOCALCODE_LLAMA_LAZY_WAIT_MS` | `1800000` | How long a lazy load waits for a busy GPU before the request fails with "GPU busy: waited N min for <trigger>". |
 | `LOCALCODE_CACHE_RAM` | derived — `21504` at the default context | llama-server host prompt-cache RAM (MiB), a ceiling on **system** memory, not VRAM. Derived as `ctx-checkpoints × (149.65 MiB + 4.02 KiB × context)`, the measured cost of one checkpoint, so the budget always holds one complete conversation's checkpoints. The cache is required for context-checkpoint rollback on hybrid models (Qwen3.6/3.8) — don't set to `0`. Setting it explicitly overrides the derivation, which also means you own the F91 arithmetic. |
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints for prefix-cache rollback on hybrid DeltaNet models. `64` killed llama-server with `bad allocation` against a fixed 8192 MiB cache (F91); `LOCALCODE_CACHE_RAM` is now derived from this value, so raising it raises the budget with it — unless you pin `LOCALCODE_CACHE_RAM` too, which re-creates F91 by hand. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
@@ -585,7 +607,7 @@ complete list is generated from the source rather than written by hand:
 <!-- Generated by scripts/generate-env-docs.mjs. Do not edit by hand.
      Regenerate with: bun scripts/generate-env-docs.mjs -->
 
-Every `LOCALCODE_*` variable the engine reads — 87 of them — with the fallback
+Every `LOCALCODE_*` variable the engine reads — 92 of them — with the fallback
 each read site uses when it is unset, and the profile key (if any) that sits between the
 two. Read out of the source by `scripts/generate-env-docs.mjs`, so it cannot drift from
 the code the way a hand-written list does.
@@ -607,6 +629,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_BEST_OF_N_COUNT` | `2` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_BEST_OF_N_TEMP` | `0.8` | — | `engine/bridge/conversationLoop.ts` |
 | `LOCALCODE_BEST_OF_N_TURN_CAP` | `15` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
+| `LOCALCODE_BRAIN` | *not derived* | — | `engine/brain/brainSwitch.ts` |
 | `LOCALCODE_BRAIN_LAYER` | `40` | — | `engine/main.ts` |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | — | `engine/bridge/server.ts` |
 | `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/llama/processManager.ts` |
@@ -632,10 +655,14 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_HOUSE_CONDUCT` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_HYBRID_SEARCH` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/index/indexer.ts` |
 | `LOCALCODE_IMMUTABLE_PATHS` | *not derived* | — | `engine/tools/executor.ts` |
+| `LOCALCODE_JLENS` | *not derived* | — | `engine/brain/brainSwitch.ts` |
 | `LOCALCODE_JLENS_PYTHON` | `python` | — | `engine/brain/jlensSidecar.ts` |
 | `LOCALCODE_JLENS_URL` | `http://127.0.0.1:9163` | — | `engine/brain/jlensClient.ts`, `engine/brain/jlensSidecar.ts` |
 | `LOCALCODE_LEARNINGS_DB` | *not derived* | — | `engine/bridge/conversationLoop.ts`, `engine/main.ts`, `engine/tools/impl/saveLearning.ts` |
 | `LOCALCODE_LLAMA_HEALTH_TIMEOUT_MS` | *not derived* | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` | *not derived* | — | `engine/llama/lazyLoad.ts` |
+| `LOCALCODE_LLAMA_LAZY` | `false` | — | `engine/llama/lazyLoad.ts` |
+| `LOCALCODE_LLAMA_LAZY_WAIT_MS` | *not derived* | — | `engine/llama/lazyLoad.ts` |
 | `LOCALCODE_LLAMA_MIN_COMMIT_FREE_MIB` | *not derived* | — | `engine/llama/hostResources.ts` |
 | `LOCALCODE_LLAMA_SERVER` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_MAX_ITERATIONS` | `0` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |

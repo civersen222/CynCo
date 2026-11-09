@@ -9,7 +9,7 @@ Implements sub-agents — bounded, forked conversation loops that the main loop 
 | `advisorRouter.ts` | VSM S2–S5 advisor definitions; decides which advisors fire and formats their advice into a prompt block |
 | `prism.ts` | PRISM persona rules (role identity, no superlatives) and prompt assembly for agent personas |
 | `queue.ts` | `AgentTask` type and `AgentQueue` — FIFO pending/completed task bookkeeping |
-| `runner.ts` | `SubAgentRunner` — pulls tasks off an `AgentQueue` and executes them via an injected run function |
+| `runner.ts` | `SubAgentRunner` — pulls tasks off an `AgentQueue` and executes them via an injected run function. No production caller since 2026-11-06: the loop's constructor held a stub that returned a canned string and was never read (GLM review A2); real sub-agents go through `tools/impl/spawnAgent.ts` → `subAgent.ts`. Wire or remove is a `docs/NOW.md` backlog item. |
 | `s2Coordinator.ts` | `S2Coordinator` — GPU-based schedule decisions, algedonic (stuck/failure) handling, agent lifecycle and kill enforcement |
 | `subAgent.ts` | `SubAgent` — the actual forked model loop: builds prompt, streams model output, executes tools, returns a result |
 | `trustTier.ts` | `getToolsForTier` — maps a trust tier to the allowed tool set |
@@ -27,7 +27,7 @@ Implements sub-agents — bounded, forked conversation loops that the main loop 
 - **`getToolsForTier`** (`trustTier.ts:9`) — returns the `ToolImpl[]` allowed for a given `TrustTier`; currently `specialist`/`full` both fall back to the readonly set (Phase 2/3 not yet implemented).
 - **`makeSubAgentConfig`** (`types.ts:108`) — factory that fills in `SubAgentConfig` defaults (tool list, maxIterations, maxTokenBudget) per trust tier; called by `spawnAgent.ts` and `conversationLoop.ts`.
 - **`makeS2Decision`** (`types.ts:132`) — stamps an `S2Decision` with a timestamp; used throughout `s2Coordinator.ts`.
-- **`getVocabulary`** / **`formatVocabularyPrompt`** (`vocabulary.ts:305`, `vocabulary.ts:305`) — look up a persona's domain-term clusters and render them as a prompt line; called by `SubAgent.run`.
+- **`getVocabulary`** / **`formatVocabularyPrompt`** (`vocabulary.ts:296`, `vocabulary.ts:305`) — look up a persona's domain-term clusters and render them as a prompt line; called by `SubAgent.run`.
 
 ## Data flow
 1. The `SubAgent` tool (`tools/impl/spawnAgent.ts`) validates a `persona`/`task` request and calls `makeSubAgentConfig` (`types.ts`) to build a `SubAgentConfig`; it returns a JSON payload rather than running the agent itself. `conversationLoop.ts` also builds scout configs directly via `makeSubAgentConfig` for orientation/exploration scouting.

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { afterAll, beforeAll } from 'bun:test'
-import { gradeProjectCall, FILE_TOOLS, COMFY_FENCE_REASON, COMFY_MENTION_REASON, comfyHostFromEnv, comfyFence } from '../../projects/binding.js'
+import { gradeProjectCall, FILE_TOOLS, COMFY_FENCE_REASON, COMFY_MENTION_REASON, RUNS_CODE_REASON, comfyHostFromEnv, comfyFence } from '../../projects/binding.js'
 import { classifyRisk, describeRisk } from '../../bridge/guardianRules.js'
 
 const root = 'C:/p/diorama'
@@ -29,7 +29,10 @@ describe('gradeProjectCall', () => {
     expect(out.level).toBe('dangerous')
     expect(out.reason).toMatch(/outside the project folder/)
     expect(out.reason).toContain('other-project')
-    expect(grade('Grep', { pattern: 'x', path: 'C:/Windows' }).level).toBe('dangerous')
+    // An absolute path outside the root. `C:/Windows` is only that on Windows;
+    // on Linux it is a relative path and resolves INSIDE the root.
+    const elsewhere = process.platform === 'win32' ? 'C:/Windows' : '/etc'
+    expect(grade('Grep', { pattern: 'x', path: elsewhere }).level).toBe('dangerous')
     expect(grade('Glob', { pattern: '**/*.md' }).level).toBe('safe')
   })
   it('a Glob pattern that climbs out or is absolute is dangerous, naming the pattern (final review I3)', () => {
@@ -197,8 +200,9 @@ describe('gradeProjectCall: the ComfyUI fence', () => {
     expect(grade('Write', { file_path: 'tower/workflow.json', content: '{"3": {"class_type": "KSampler", "inputs": {"seed": 1}}}' })).toEqual({ level: 'safe', reason: '' })
     expect(grade('Write', { file_path: 'tower/prompts/a.txt', content: 'a tall green alien, studio light' })).toEqual({ level: 'safe', reason: '' })
     expect(grade('Edit', { file_path: 'plan.md', old_string: 'a', new_string: 'b' })).toEqual({ level: 'safe', reason: '' })
-    // the Bash that runs a script is graded on its own text
-    expect(grade('Bash', { command: 'python tower/render.py' })).toEqual({ level: 'safe', reason: '' })
+    // the Bash that runs a script is graded on its own text — and since S2 (2026-11-06,
+    // docs/decisions/2026-11-06-untrusted-content-and-secret-paths.md) running a script asks
+    expect(grade('Bash', { command: 'python tower/render.py' })).toEqual({ level: 'risky', reason: RUNS_CODE_REASON })
   })
 
   it('a harmless mention of the word is safe, and every other grade is unchanged', () => {

@@ -3,6 +3,8 @@
 import { spawn } from 'child_process'
 import { join } from 'path'
 import { writeTaskFile, readOutcome } from './taskFile.js'
+import { clearGpuBusy, writeGpuBusy } from './gpuBusyFile.js'
+import { activity as processActivity, type ActivityRegistry } from '../power/activity.js'
 import type { TaskFileInput, TaskOutcome } from './types.js'
 
 export class GpuBusyError extends Error {
@@ -94,6 +96,10 @@ export interface TaskRunnerOptions {
   shouldPause?: () => boolean
   /** How often shouldPause is asked. Default 5 s. */
   pausePollMs?: number
+  /** Where the one-shot's GPU claim is written (default <cyncoHome>/gpu-busy.json). Tests point it at a temp dir. */
+  gpuBusyPath?: string
+  /** Where the one-shot registers as an open activity (hold-awake). Default: the process-wide registry. */
+  activity?: ActivityRegistry
 }
 
 /** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
@@ -136,6 +142,21 @@ export class TaskRunner {
       detached: process.platform !== 'win32',
       env,
     })
+    // The claim on the GPU: readers (lazy engine, dashboard, widget) wait on
+    // it instead of killing this child's llama-server (F182). Cleared in the
+    // finally below on every exit path, including the timeout kill.
+    const busyPath = this.opts.gpuBusyPath
+    // A one-shot is an open activity for its whole lifetime: the PC stays awake
+    // (engine/power/awake.ts) until the child has exited or been killed.
+    const endActivity = (this.opts.activity ?? processActivity).begin('oneshot', input.triggerId)
+    if (child.pid) {
+      try {
+        writeGpuBusy({ task: input.missionId, triggerId: input.triggerId, startedAt: new Date().toISOString(), timeoutMs: input.timeoutMs, pid: child.pid }, busyPath)
+      } catch (e) {
+        console.log(`[task:${input.triggerId}] gpu-busy.json not written: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    try {
     let sessionId: string | undefined
     child.stdout?.on('data', (d: Buffer) => {
       const text = d.toString()
@@ -180,6 +201,14 @@ export class TaskRunner {
       outcome.error = `Engine exited with code ${code}`
     }
     return outcome
+    } finally {
+      endActivity()
+      try {
+        clearGpuBusy(busyPath)
+      } catch (e) {
+        console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
   }
 
   /** Kill bun and the llama-server it spawned (taskkill /T on Windows, the process group elsewhere). */

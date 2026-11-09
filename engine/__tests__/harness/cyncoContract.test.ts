@@ -283,17 +283,28 @@ describe('a slow gate carries its cap into the contract', () => {
  * that can disagree with the one that decides.
  */
 describe('a command the engine will refuse is refused at dispatch', () => {
+  // The verdict is the engine's own (`harnessContractCommandError`), about the
+  // shell it will run the command in: PowerShell has no `&&`, bash does. So on
+  // Windows the contract is refused at dispatch, and on Linux the same contract
+  // is runnable and must load intact — refusing it there would drop a measurable
+  // mission for a rule that does not apply.
+  const SHELL_LACKS_AND_AND = process.platform === 'win32'
+  const joined = 'cd C:/proj && python gate.py'
+
   it('refuses a sidecar command using && on a shell that has no &&', () => {
-    const bad = { assertions: [{ text: 'the gate holds', command: 'cd C:/proj && python gate.py' }] }
-    expect(() => load(bad)).toThrow(/&&|shell/i)
+    const bad = { assertions: [{ text: 'the gate holds', command: joined }] }
+    if (SHELL_LACKS_AND_AND) expect(() => load(bad)).toThrow(/&&|shell/i)
+    else expect(load(bad)!.map(a => a.command)).toContain(joined)
   })
 
   it('refuses the driver-supplied gate command too, not just the sidecar', () => {
     // The gate assertion is prepended from `checkCmd` and never passed through
     // `toAssertion`, so a per-entry check would let this one straight through.
-    expect(() => loadMissionAssertions('C:/tmp/w8.md', 'cd C:/proj && python gate.py', sidecar({
+    const run = () => loadMissionAssertions('C:/tmp/w8.md', joined, sidecar({
       assertions: ['File gilded/ui/policy.py exists after changes'],
-    }))).toThrow(/&&|shell/i)
+    }))
+    if (SHELL_LACKS_AND_AND) expect(run).toThrow(/&&|shell/i)
+    else expect(run()!.map(a => a.command)).toContain(joined)
   })
 
   it('accepts the same commands once they are sequenced the way the shell allows', () => {

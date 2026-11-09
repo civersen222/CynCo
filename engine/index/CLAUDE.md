@@ -37,7 +37,7 @@ Query path:
 
 Build path:
 5. `ProjectIndexer.index` (`indexer.ts:184`) calls `listProjectFiles` (`indexer.ts:107`), hashing each file and skipping ones whose hash matches `IndexStore.getFileHash` (`store.ts:164`).
-6. Changed files run through `chunkFileAsync` (`chunker.ts:195`) → `EmbedClient.embedBatch` (`embedClient.ts:172`) → `IndexStore.insertChunk`/`insertRelationship` (`store.ts:157`, `store.ts:157`).
+6. Changed files run through `chunkFileAsync` (`chunker.ts:195`) → `EmbedClient.embedBatch` (`embedClient.ts:172`) → `IndexStore.insertChunk`/`insertRelationship` (`store.ts:141`, `store.ts:157`).
 7. `refreshFromGitStatus` (`indexer.ts:396`) reruns steps 5-6 at query time for anything `git status` shows dirty or that changed between the recorded `indexed_head` and current `HEAD`.
 
 ## Gotchas

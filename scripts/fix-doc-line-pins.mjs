@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 // scripts/fix-doc-line-pins.mjs
 // Repoint stale `file.ts:NNN` symbol references in the per-package CLAUDE.md files.
 //

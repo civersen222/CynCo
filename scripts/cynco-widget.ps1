@@ -7,8 +7,8 @@
 #
 #   CynCo ON      = the dashboard answers on 127.0.0.1:<port>
 #   CynCo remote  = the dashboard also answers on the Tailscale address
-#   Fantasyman ON = daemon + ntfy + listener all running (cynco-services.ps1)
-#   Fantasyman remote = Tailscale is up and ntfy listens on its address
+#   Fantasyman ON = daemon + listener running here (cynco-services.ps1)
+#   Fantasyman remote = Tailscale is up and the doorman's ntfy answers (slice 6: ntfy moved there)
 #   GPU running   = a daemon one-shot (bun engine\main.ts --run-task ...) is up:
 #                   "<trigger> since HH:MM, done by HH:MM, used/total GB"
 #   GPU paused    = daemon-control.json says paused and a mission's state.json
@@ -61,13 +61,26 @@ function Get-OneShotProc($procs) {
   if ($bun) { return $bun }
   return ($all | Select-Object -First 1)
 }
+# The engine's own view of the GPU: cold / loading / warm / waiting (+ which one-shot holds it).
+# /api/session is token-gated; the inference token lives in ~/.cynco/tokens.json (this user's file).
+function Get-ModelState {
+  try {
+    $j = Get-Content (Join-Path $env:USERPROFILE '.cynco\tokens.json') -Raw | ConvertFrom-Json
+    $t = $j.tokens | Where-Object { $_.name -eq 'inference' -or ($_.scopes -contains 'inference') -or ($_.scope -eq 'inference') } | Select-Object -First 1
+    $secret = if ($t.secret) { $t.secret } elseif ($t.token) { $t.token } else { $null }
+    if (-not $secret) { return $null }
+    $s = Invoke-RestMethod -Uri "http://127.0.0.1:$dashPort/api/session" -Headers @{ Authorization = "Bearer $secret" } -TimeoutSec 2
+    if ($s.busy -and $s.busy.triggerId) { return "$($s.modelState) ($($s.busy.triggerId), ~$([math]::Ceiling($s.busy.remainingMs / 60000)) min)" }
+    return $s.modelState
+  } catch { return $null }
+}
+
 function Get-TailscaleUp {
   try { $j = & tailscale status --json 2>$null | ConvertFrom-Json; return $j.BackendState -eq 'Running' } catch { return $false }
 }
 function Get-FantasyState($procs) {
   $up = @()
   if ($procs | Where-Object { $_.CommandLine -match 'engine\\daemon\\main|engine/daemon/main' }) { $up += 'daemon' }
-  if ($procs | Where-Object { $_.CommandLine -match 'ntfy\.exe' })                               { $up += 'ntfy' }
   if ($procs | Where-Object { $_.CommandLine -match 'approval_listener\.py' })                    { $up += 'listener' }
   return $up
 }
@@ -241,7 +254,9 @@ function Refresh {
   if ($tsHost -and $local) { $remote = Test-Http "http://$tsHost`:$dashPort/" }
   if ($local) {
     $ui.dotCynco.Fill = if ($remote) { '#3fb950' } else { '#d29922' }
-    $ui.txtCynco.Text = if ($remote) { "on - remote ok ($tsHost)" } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }
+    $model = Get-ModelState
+    $base = if ($remote) { 'on - remote ok' } elseif ($tsHost) { 'on - remote NOT reachable' } else { 'on - local only' }
+    $ui.txtCynco.Text = if ($model) { "$base - model $model" } else { $base }
     $ui.btnCynco.Content = 'Stop'
   } else {
     $ui.dotCynco.Fill = '#666'
@@ -250,8 +265,8 @@ function Refresh {
   }
 
   $f = $script:state.fantasy
-  $ntfyRemote = $tsHost -and (Test-Tcp $tsHost 8090)
-  if ($f.Count -eq 3) {
+  $ntfyRemote = Test-Tcp '100.110.117.10' 8090   # ntfy runs on the doorman (slice 6)
+  if ($f.Count -eq 2) {
     $ui.dotFantasy.Fill = if ($ts -and $ntfyRemote) { '#3fb950' } else { '#d29922' }
     $ui.txtFantasy.Text = if ($ts -and $ntfyRemote) { 'on - phone ok' } elseif (-not $ts) { 'on - Tailscale down' } else { 'on - ntfy not listening' }
     $ui.btnFantasy.Content = 'Stop'
@@ -283,21 +298,15 @@ function Refresh {
 }
 
 $ui.btnCynco.Add_Click({
-  if ($script:state.engine) {
-    Stop-Process -Id $script:state.engine.ProcessId -Force -ErrorAction SilentlyContinue
-    $ui.txtNote.Text = 'stopping CynCo (its llama-server dies with it)...'
-  } elseif ($script:state.oneShot) {
-    $ui.txtNote.Text = 'refused: the daemon is running a task on the GPU; starting CynCo now would kill its model server (F182). Try again when the note clears.'
-    return
-  } else {
-    $env:LOCALCODE_PROVIDER = if ($env:LOCALCODE_PROVIDER) { $env:LOCALCODE_PROVIDER } else { 'llama-cpp' }
-    Start-Process -FilePath 'bun' -ArgumentList 'engine/main.ts' -WorkingDirectory $repo -WindowStyle Hidden -RedirectStandardOutput $engineLog -RedirectStandardError "$engineLog.err"
-    $ui.txtNote.Text = "starting CynCo (log: $engineLog)..."
-  }
+  # The headless engine is the logon task "CynCo headless engine" (scripts\run-headless-engine.cmd,
+  # lazy model); cynco-services.ps1 owns start/stop/register so the widget and the command line agree.
+  $action = if ($script:state.engine) { 'stop' } else { 'start' }
+  $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $services $action engine 2>&1
+  $ui.txtNote.Text = ($out -join ' - ')
   Start-Sleep -Milliseconds 800; Refresh
 })
 $ui.btnFantasy.Add_Click({
-  $action = if ($script:state.fantasy.Count -eq 3) { 'stop' } else { 'start' }
+  $action = if ($script:state.fantasy.Count -eq 2) { 'stop' } else { 'start' }
   $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $services $action 2>&1
   $ui.txtNote.Text = ($out -join ' - ')
   Start-Sleep -Milliseconds 800; Refresh

@@ -1,0 +1,16 @@
+[Unit]
+Description=CynCo doorman (wake GPU boxes over the switch; phone front door on the tailnet)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Bind the Tailscale address only (the design forbids 0.0.0.0). Re-read at every start.
+ExecStartPre=/bin/sh -c 'until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done'
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 /opt/doorman/doorman.py --targets /etc/doorman/targets.json --bind "$(tailscale ip -4)" --port 9170'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

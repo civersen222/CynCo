@@ -31,18 +31,30 @@ describe('LocalCodeWSServer', () => {
     }
   })
 
-  it('constructs with port and starts not connected', () => {
-    server = new LocalCodeWSServer({ port: 19160, tokens })
-    expect(server.port).toBe(19160)
+  it('port 0 asks the OS for a free port and reports the one it got', async () => {
+    // T7: a literal port shared by two test files makes the loser walk to the
+    // next number and its client time out on the old one. Port 0 cannot collide,
+    // but only if the server reports the port it was given, not the 0 it asked for.
+    server = new LocalCodeWSServer({ port: 0, tokens })
+    await new Promise(r => setTimeout(r, 50))
+    expect(server.port).toBeGreaterThan(0)
+    const ws = client(server.port)
+    await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = (e) => reject(e) })
+    ws.close()
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  it('constructs and starts not connected', () => {
+    server = new LocalCodeWSServer({ port: 0, tokens })
     expect(server.connected).toBe(false)
   })
 
   it('accepts a WebSocket connection', async () => {
-    server = new LocalCodeWSServer({ port: 19161, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     // Give the server a moment to bind
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19161)
+    const ws = client(server.port)
     await new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve()
       ws.onerror = (e) => reject(e)
@@ -57,10 +69,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('marks disconnected when client closes', async () => {
-    server = new LocalCodeWSServer({ port: 19162, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19162)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
     expect(server.connected).toBe(true)
@@ -71,10 +83,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('emits events to connected client', async () => {
-    server = new LocalCodeWSServer({ port: 19163, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19163)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -99,7 +111,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('does not throw when emitting without a connected client', () => {
-    server = new LocalCodeWSServer({ port: 19164, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     // Should not throw
     expect(() => {
       server!.emit({ type: 'session.ready', model: 'x', contextLength: 1024 })
@@ -109,13 +121,13 @@ describe('LocalCodeWSServer', () => {
   it('receives commands from client and calls onCommand', async () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
-      port: 19165,
+      port: 0,
       tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19165)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -133,13 +145,13 @@ describe('LocalCodeWSServer', () => {
   it('ignores invalid JSON from client', async () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
-      port: 19166,
+      port: 0,
       tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19166)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -156,13 +168,13 @@ describe('LocalCodeWSServer', () => {
   it('ignores JSON without type field from client', async () => {
     const receivedCommands: TUICommand[] = []
     server = new LocalCodeWSServer({
-      port: 19167,
+      port: 0,
       tokens,
       onCommand: (cmd) => { receivedCommands.push(cmd) },
     })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19167)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 
@@ -176,7 +188,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('close() stops the server', async () => {
-    server = new LocalCodeWSServer({ port: 19168, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     await server.close()
@@ -184,7 +196,7 @@ describe('LocalCodeWSServer', () => {
 
     // Trying to connect should fail
     try {
-      const ws = client(19168)
+      const ws = client(server.port)
       await new Promise<void>((resolve, reject) => {
         ws.onopen = () => { ws.close(); reject(new Error('Should not connect')) }
         ws.onerror = () => resolve()
@@ -198,7 +210,7 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('replays session.ready to a late-connecting client', async () => {
-    server = new LocalCodeWSServer({ port: 19170, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     // Emit session.ready BEFORE any client connects
@@ -210,7 +222,7 @@ describe('LocalCodeWSServer', () => {
     server.emit(event)
 
     // Now connect — should receive the cached event immediately
-    const ws = client(19170)
+    const ws = client(server.port)
     const received: string[] = []
     ws.onmessage = (ev) => { received.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -230,14 +242,14 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('replays session.ready to a second client after first disconnects', async () => {
-    server = new LocalCodeWSServer({ port: 19171, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
     // Cache a session.ready before anyone connects
     server.emit({ type: 'session.ready', model: 'second-client-model', contextLength: 8192 })
 
     // First client
-    const ws1 = client(19171)
+    const ws1 = client(server.port)
     const received1: string[] = []
     ws1.onmessage = (ev) => { received1.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -253,7 +265,7 @@ describe('LocalCodeWSServer', () => {
     await new Promise(r => setTimeout(r, 100))
 
     // Second client connects — should also get the cached event
-    const ws2 = client(19171)
+    const ws2 = client(server.port)
     const received2: string[] = []
     ws2.onmessage = (ev) => { received2.push(String(ev.data)) }
     await new Promise<void>((resolve, reject) => {
@@ -269,10 +281,10 @@ describe('LocalCodeWSServer', () => {
   })
 
   it('emits multiple events in sequence', async () => {
-    server = new LocalCodeWSServer({ port: 19169, tokens })
+    server = new LocalCodeWSServer({ port: 0, tokens })
     await new Promise(r => setTimeout(r, 50))
 
-    const ws = client(19169)
+    const ws = client(server.port)
     await new Promise<void>((resolve) => { ws.onopen = () => resolve() })
     await new Promise(r => setTimeout(r, 50))
 

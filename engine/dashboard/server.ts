@@ -134,6 +134,8 @@ export interface DashboardDeps {
    * count), null before any turn has run — never 0 (F16).
    */
   getSessionCounters?: () => { turns: number; contextUsed: number | null }
+  /** Wakefulness slice 4: the missions' recent runs for the phone's Away tab (`GET /api/away`); unwired = `{ runs: [] }`. */
+  getAwayRuns?: () => import('../daemon/awayFeed.js').AwayRun[]
   /**
    * The approval cards and AskUser questions the engine is waiting on right
    * now (`ConversationLoop.pendingDecisions`). Served as `pending` on
@@ -173,6 +175,10 @@ export type SessionSnapshot = {
   project: { slug: string; chat: string | null; title: string | null } | null
   /** Decisions waiting on a person; null when the engine did not wire the dep. */
   pending: PendingDecision[] | null
+  /** Wakefulness: `cold` (no llama-server), `loading`, `warm`, or `waiting` on another process's GPU claim; null when not llama-cpp. */
+  modelState?: 'cold' | 'loading' | 'warm' | 'waiting' | null
+  /** The one-shot that owns the GPU right now (gpu-busy.json), or null. */
+  busy?: { triggerId: string; task: string; remainingMs: number } | null
   [extra: string]: unknown
 }
 
@@ -322,7 +328,7 @@ function jsonResponse(data: unknown, status = 200, headers: Record<string, strin
  */
 function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }): Response {
   if (r.status === 200 && r.bytes) {
-    return new Response(r.bytes, {
+    return new Response(new Uint8Array(r.bytes), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',
@@ -348,7 +354,7 @@ function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }
  */
 function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; json?: unknown }): Response {
   if (r.status === 200 && r.bytes && r.type) {
-    return new Response(r.bytes, {
+    return new Response(new Uint8Array(r.bytes), {
       status: 200,
       headers: {
         'Content-Type': r.type,
@@ -572,7 +578,7 @@ export class DashboardServer {
       hostname: this._hostname,
       // Note: after Bun.serve() this.server.port reflects the actual bound port
       // (important when port=0 is used for OS-assigned ephemeral ports in tests).
-      fetch: async (req, server) => {
+      fetch: async (req: Request, server: Server<DashboardSocketData>) => {
         const url = new URL(req.url)
         const pathname = url.pathname
         const method = req.method
@@ -692,6 +698,8 @@ export class DashboardServer {
               return this.getSessions()
             case '/api/session':
               return jsonResponse(this.getSession())
+            case '/api/away':
+              return jsonResponse({ runs: this.deps.getAwayRuns?.() ?? [] })
             case '/api/run':
               // `null` when the engine did not wire the dep, and it must stay
               // distinguishable from `{processing:false}`. A caller that reads
