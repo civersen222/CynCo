@@ -61,6 +61,12 @@ export type ImageServiceDeps = {
   emit: (e: UiImageEvent) => void
   now?: () => number
   log?: (line: string) => void
+  /**
+   * Runs before a transform's upload (F194): the image box's GPU is shared with its vision model,
+   * and the 12 GB edit model does not fit beside it. main.ts passes the vision client's `unload`.
+   * A failure is logged and the job paints anyway.
+   */
+  beforeTransform?: () => Promise<void>
   /** Test seams; the env clamps apply only to env values. */
   pollMs?: number
   timeoutMs?: number
@@ -193,6 +199,7 @@ export class ImageService implements ImageAnnotator {
   private readonly fetchFn: typeof fetch
   private readonly pollMs: number
   private readonly timeoutMs: number
+  private readonly beforeTransform: (() => Promise<void>) | null
   /**
    * The probe a job trusts (`ensureReady`): a failure for 60 s, a success for 10 minutes, which no failure replaces (F179).
    * `dropVanished` clears it when it unsets the pick, and takes a gone checkpoint off a good one's list, `at` unchanged.
@@ -247,6 +254,7 @@ export class ImageService implements ImageAnnotator {
     this.client = config.ok ? new ComfyClient(config.cfg.url, this.fetchFn) : null
     this.pollMs = deps.pollMs ?? POLL_MS
     this.timeoutMs = deps.timeoutMs ?? (config.ok ? config.cfg.timeoutMs : 300_000)
+    this.beforeTransform = deps.beforeTransform ?? null
     if (config.ok && config.cfg.checkpoint && !config.cfg.workflow.usesCheckpoint) {
       this.log(`[imagegen] LOCALCODE_COMFYUI_CHECKPOINT="${config.cfg.checkpoint}" is ignored: the workflow at ${config.cfg.workflow.source} has no {{checkpoint}}`)
     }
@@ -716,6 +724,11 @@ export class ImageService implements ImageAnnotator {
           return this.finish(job, { status: 'failed', reason: `ComfyUI at ${client.host} has no "${cls}" node, which the ${sc.transform} workflow uses — install it${pack ? ` (the ${pack} node pack)` : ''} or change the workflow` })
         }
       }
+    }
+    // Make room on the shared GPU first (F194): the vision model's VRAM goes before the edit model comes.
+    if (sc.transform && this.beforeTransform) {
+      try { await this.beforeTransform() } catch (e) { this.log(`[imagegen] ${job.key.slice(0, 8)}: before the transform: ${reasonOf(e)} — painting anyway`) }
+      if (this.stopped) return
     }
     // A transform's input goes up first (image box §4); the photo must still be where the ask found it.
     let uploaded: string | undefined
