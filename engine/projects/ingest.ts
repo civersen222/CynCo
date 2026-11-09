@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { IndexStore } from '../index/store.js'
 import { EmbedClient } from '../index/embedClient.js'
 import type { Chunk } from '../index/types.js'
-import { extractFile, type LookInput } from './extract/index.js'
+import { extractFile, IMAGE_EXTS, type LookInput } from './extract/index.js'
 import { chunkSegments, chunkTranscriptTurns, type ProseChunk } from './proseChunker.js'
 import { appendJournal, projectDir, readFileIndex, sha256Of, writeFileIndex, type FileOrigin } from './layout.js'
 
@@ -193,7 +193,14 @@ function listFiles(root: string): string[] {
   return out.sort()
 }
 
-export async function rescanProject(deps: IngestDeps, slug: string): Promise<{ files: number; indexed: number; unindexed: number }> {
+/** What a rescan needs from the image box's look runner (engine/vision/lookRunner.ts), without importing it. */
+export type LookSource = {
+  recent(slug: string, rel: string): import('../vision/lookClient.js').Look | null
+  start(slug: string, rel: string, bytes: Uint8Array, mime: string): void
+  pending(slug: string, rel: string): Promise<IngestEvent> | null
+}
+
+export async function rescanProject(deps: IngestDeps, slug: string, looks: LookSource | null = null): Promise<{ files: number; indexed: number; unindexed: number }> {
   const dir = projectDir(deps.home, slug)
   let files = 0, indexed = 0, unindexed = 0
   for (const kind of ['knowledge', 'artifact'] as const) {
@@ -202,9 +209,22 @@ export async function rescanProject(deps: IngestDeps, slug: string): Promise<{ f
     for (const rel of listFiles(join(dir, area))) {
       files++
       const origin: FileOrigin = existing[rel]?.origin ?? 'uploaded'
-      const ev = await ingestFile(deps, slug, kind, rel, origin)
+      const ev = await rescanOne(deps, slug, kind, rel, origin, looks)
       if (ev.indexed) indexed++; else unindexed++
     }
   }
   return { files, indexed, unindexed }
+}
+
+/** An image is re-looked through the runner (a recent look is reused); everything else is ingested as before. */
+async function rescanOne(deps: IngestDeps, slug: string, kind: 'knowledge' | 'artifact', rel: string, origin: FileOrigin, looks: LookSource | null): Promise<IngestEvent> {
+  const ext = rel.toLowerCase().slice(rel.lastIndexOf('.'))
+  if (!IMAGE_EXTS.has(ext) || !looks) return ingestFile(deps, slug, kind, rel, origin)
+  const recent = looks.recent(slug, rel)
+  if (recent) return ingestFile(deps, slug, kind, rel, origin, { lookInput: { look: recent } })
+  if (kind !== 'knowledge') return ingestFile(deps, slug, kind, rel, origin)
+  const bytes = new Uint8Array(readFileSync(join(projectDir(deps.home, slug), AREA_DIR[kind], rel)))
+  looks.start(slug, rel, bytes, ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : ext === '.gif' ? 'image/gif' : 'image/jpeg')
+  const pending = looks.pending(slug, rel)
+  return pending ? pending : ingestFile(deps, slug, kind, rel, origin)
 }
