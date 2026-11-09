@@ -541,7 +541,7 @@ describe('pictureRequests (image box §4)', () => {
     g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
     a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
     b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
-    c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'C' } },
+    c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', prompt: 'mark the vanishing point', alt: 'C' } },
     d: { type: 'Image', props: { src: 'sketches/front.png', alt: 'D' } },
     e: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', prompt: 'add a pergola over the table', alt: 'E' } },
     f: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', alt: 'F' } },
@@ -550,7 +550,7 @@ describe('pictureRequests (image box §4)', () => {
     expect(pictureRequests(spec).map(r => [r.id, r.kind, r.prompt, r.source])).toEqual([
       ['a', 'generate', 'a tall green alien', undefined],
       ['b', 'vary', 'add a pergola', 'knowledge/yard.jpg'],
-      ['c', 'outline', '', 'knowledge/porch.jpg'],
+      ['c', 'outline', 'mark the vanishing point', 'knowledge/porch.jpg'],
       ['e', 'edit', 'add a pergola over the table', 'knowledge/yard.jpg'],
     ])
   })

@@ -534,10 +534,13 @@ describe('validateSpec: Image source + transform', () => {
     expect(bare.spec).toBeNull()
     expect(bare.errors.join(' ')).toMatch(/edit.*prompt|prompt.*edit/)
   })
-  it('outline needs no prompt and is drawable on its own', () => {
+  it('outline needs no prompt and is drawable on its own; a prompt is kept as extra guidance for the tracing sheet', () => {
     const r = one('Image', { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'Porch outline' })
     expect(r.errors).toEqual([])
     expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/porch.jpg', transform: 'outline', alt: 'Porch outline' })
+    const g = one('Image', { source: 'knowledge/porch.jpg', transform: 'outline', prompt: 'draw the horizon and mark the vanishing point', alt: 'Porch outline' })
+    expect(g.errors).toEqual([])
+    expect(g.spec?.elements.x.props).toEqual({ source: 'knowledge/porch.jpg', transform: 'outline', prompt: 'draw the horizon and mark the vanishing point', alt: 'Porch outline' })
   })
   it('vary without a prompt is dropped, naming the prompt', () => {
     const r = one('Image', { source: 'knowledge/yard.jpg', transform: 'vary', alt: 'Yard' })

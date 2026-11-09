@@ -39,7 +39,7 @@ import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
 import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { EDIT_SAMPLING, fillWorkflow, fitToArea, workflowClasses, type TransformKind } from './workflow.js'
+import { EDIT_SAMPLING, fillWorkflow, fitToArea, outlinePrompt, workflowClasses, type TransformKind } from './workflow.js'
 import { imageDimensions } from '../vision/imageSize.js'
 
 export type AnnotateAt = {
@@ -487,8 +487,11 @@ export class ImageService implements ImageAnnotator {
         // A transform paints at the photo's aspect (check 4 squashed a portrait into the configured square).
         fit = fitToArea(imageDimensions(bytes), cfg.width * cfg.height)
       }
-      // An edit samples as its Lightning LoRA needs, with no negative, whatever the generate configuration says (F193).
-      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(im.kind === 'edit' ? EDIT_SAMPLING : {}) } : undefined)
+      // An edit — and an outline, which is the edit recipe with the tracing-sheet instruction in front (2026-11-09) —
+      // samples as its Lightning LoRA needs, with no negative, whatever the generate configuration says (F193).
+      const byRecipe = im.kind === 'edit' || im.kind === 'outline'
+      const prompt = im.kind === 'outline' ? outlinePrompt(im.prompt) : im.prompt
+      const fields = this.keyFields(cfg, wf, prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(byRecipe ? EDIT_SAMPLING : {}) } : undefined)
       const key = imageKey(fields)
       const repeat = decided.has(key)
       let state = decided.get(key)
@@ -586,7 +589,7 @@ export class ImageService implements ImageAnnotator {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,
-      // 'none' for a graph with no checkpoint (outline): never 'auto', so no probe pick is waited for or keyed on.
+      // 'none' for a graph with no checkpoint (edit, outline): never 'auto', so no probe pick is waited for or keyed on.
       checkpoint: !wf.usesCheckpoint ? 'none' : cfg.checkpoint ?? this.lastCheckpoint ?? 'auto', workflow: wf.sha256,
       ...(extra ?? {}),
     }
@@ -714,7 +717,7 @@ export class ImageService implements ImageAnnotator {
     }
     const ckpt = keyed ?? ready.checkpoint ?? ''
     // A transform's graph may use nodes the generate probe never checks (image box §4): checked here, when one is asked,
-    // so a server without the line-art pack still paints every generated picture and names the pack for the outline.
+    // so a server without the GGUF pack still paints every generated picture and names the pack for an edit or outline.
     if (sc.transform) {
       for (const cls of workflowClasses(wf.graph)) {
         let present = false

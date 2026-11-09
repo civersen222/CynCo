@@ -81,7 +81,7 @@ export type ImageSidecar = {
   cfg: number
   sampler: string
   scheduler: string
-  /** The resolved checkpoint name, 'auto' until a probe resolves it, or 'none' for a graph with no checkpoint (outline). */
+  /** The resolved checkpoint name, 'auto' until a probe resolves it, or 'none' for a graph with no checkpoint (edit, outline). */
   checkpoint: string
   transform?: TransformKind
   /** The project photo the transform started from, by path and content. */
@@ -463,7 +463,7 @@ export type PictureRequest = { id: string; el: UiElement; kind: WorkflowKind; pr
 /**
  * Every reachable Image the engine must make a picture for, in draw order:
  * generate (a prompt, today's path), vary or edit (a source photo + a prompt) or
- * outline (a source photo). Image box §4. A vary's prompt is never painted
+ * outline (a source photo; the prompt, if any, is extra guidance the service appends to the tracing-sheet instruction). Image box §4. A vary's prompt is never painted
  * from scratch: `promptedImages` is the generate subset.
  */
 export function pictureRequests(spec: UiSpec): PictureRequest[] {
@@ -476,7 +476,7 @@ export function pictureRequests(spec: UiSpec): PictureRequest[] {
     if (transform && source) {
       const prompt = typeof props.prompt === 'string' ? normPrompt(props.prompt) : ''
       if ((transform === 'vary' || transform === 'edit') && !prompt) continue
-      out.push({ id, el, kind: transform, prompt: transform === 'outline' ? '' : prompt, alt, source })
+      out.push({ id, el, kind: transform, prompt, alt, source })
       continue
     }
     if (typeof props.prompt !== 'string') continue

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, EDIT_SAMPLING, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
+import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE_SHA, EDIT_SAMPLING, OUTLINE_INSTRUCTION, outlinePrompt, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -86,13 +86,19 @@ describe('vary and outline', () => {
     expect(parseWorkflow(JSON.stringify(BUILTIN_VARY), 'builtin-vary', 'vary').ok).toBe(true)
     expect(workflowClasses(BUILTIN_VARY)).toContain('ImageScale')
   })
-  it('the outline graph needs no prompt as kind outline, and is refused as kind generate', () => {
-    const text = JSON.stringify(BUILTIN_OUTLINE)
-    expect(parseWorkflow(text, 'builtin-outline', 'outline').ok).toBe(true)
-    const asGenerate = parseWorkflow(text, 'builtin-outline', 'generate')
-    expect(asGenerate.ok).toBe(false)
-    if (!asGenerate.ok) expect(asGenerate.reason).toContain('{{prompt}}')
-    expect(workflowClasses(BUILTIN_OUTLINE)).toEqual(['LineArtPreprocessor', 'LoadImage', 'SaveImage'])
+  it('outline is a tracing sheet drawn by the edit recipe (2026-11-09, owner): the same graph as edit, a fixed instruction in front of whatever the model adds; no line-art node, no pack', () => {
+    expect(BUILTIN_OUTLINE_SHA).toBe('builtin-outline-2')
+    expect(workflowClasses(BUILTIN_OUTLINE)).toEqual(workflowClasses(BUILTIN_EDIT))
+    expect(workflowClasses(BUILTIN_OUTLINE)).not.toContain('LineArtPreprocessor')
+    expect(parseWorkflow(JSON.stringify(BUILTIN_OUTLINE), 'builtin-outline', 'outline').ok).toBe(true)
+    expect(OUTLINE_INSTRUCTION).toMatch(/black ink/i); expect(OUTLINE_INSTRUCTION).toMatch(/white/i); expect(OUTLINE_INSTRUCTION).toMatch(/no shading/i)
+    expect(outlinePrompt('')).toBe(OUTLINE_INSTRUCTION)
+    expect(outlinePrompt('draw the horizon line and mark the vanishing point')).toBe(OUTLINE_INSTRUCTION + ' Also: draw the horizon line and mark the vanishing point')
+  })
+  it('an outline workflow needs {{image}} and {{prompt}} like an edit: the generate graph is refused as kind outline naming the image', () => {
+    const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'outline')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('{{image}}')
   })
   it('a vary workflow without {{image}} is refused naming it', () => {
     const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'vary')
@@ -116,8 +122,10 @@ describe('vary and outline', () => {
     expect(Object.values(g).find(n => n.class_type === 'LoraLoaderModelOnly')!.inputs.lora_name).toBe('Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors')
     expect(EDIT_SAMPLING).toEqual({ steps: 4, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: '' })
   })
-  it('an edit workflow needs {{image}} and {{prompt}}: the outline graph is refused as kind edit naming the prompt', () => {
-    const r = parseWorkflow(JSON.stringify(BUILTIN_OUTLINE), 'mine.json', 'edit')
+  it('an edit workflow needs {{prompt}}: the edit graph with its prompt hard-wired is refused naming it', () => {
+    const noPrompt = JSON.parse(JSON.stringify(BUILTIN_EDIT)) as typeof BUILTIN_EDIT
+    for (const n of Object.values(noPrompt)) if (n.class_type === 'TextEncodeQwenImageEditPlus') n.inputs.prompt = 'fixed'
+    const r = parseWorkflow(JSON.stringify(noPrompt), 'mine.json', 'edit')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toContain('{{prompt}}')
   })
