@@ -9,6 +9,12 @@
  *
  * This is Level 4 visibility: every governance parameter, prediction,
  * contract, and audit event is inspectable and tunable from a browser.
+ *
+ * Mission schedule routes (all inference scope, any method: operational
+ * switches, not engine configuration; see docs/decisions/2026-11-08-mission-schedule-control.md):
+ *   GET  /api/missions                           missions, triggers, pause state
+ *   PUT  /api/missions/<id>/triggers/<tid>       per-trigger schedule override
+ *   POST /api/daemon/pause                       { paused: boolean }
  */
 
 import { join, dirname } from 'path'
@@ -28,6 +34,7 @@ import {
   evaluateReadiness,
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
+import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
 import { DEVICE_PREFIX, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
   classifyClient, hostRefusal, originMismatch, parseListenHosts, isWildcardHost,
@@ -136,6 +143,8 @@ export interface DashboardDeps {
   getSessionCounters?: () => { turns: number; contextUsed: number | null }
   /** Wakefulness slice 4: the missions' recent runs for the phone's Away tab (`GET /api/away`); unwired = `{ runs: [] }`. */
   getAwayRuns?: () => import('../daemon/awayFeed.js').AwayRun[]
+  /** Mission schedule + daemon pause files (`/api/missions`, `/api/daemon/pause`); unwired = empty view, writes 503. */
+  missions?: import('./missionsApi.js').MissionsPaths
   /**
    * The approval cards and AskUser questions the engine is waiting on right
    * now (`ConversationLoop.pendingDecisions`). Served as `pending` on
@@ -662,6 +671,15 @@ export class DashboardServer {
           const denied = this.requireScope(req, 'inference', kind)
           if (denied) return denied
           return await this.handleProjects(req, method, pathname, url)
+        }
+
+        // Mission schedule + daemon pause: operational switches under the
+        // inference scope for every method (a phone holds only inference),
+        // so they gate BEFORE the generic method-based split below.
+        if (pathname === '/api/missions' || pathname.startsWith('/api/missions/') || pathname === '/api/daemon/pause') {
+          const denied = this.requireScope(req, 'inference', kind)
+          if (denied) return denied
+          return await this.handleMissions(req, method, pathname)
         }
 
         // Phone administration (the Config tab's panel): the pairing code, the
@@ -1286,6 +1304,28 @@ export class DashboardServer {
       return jsonResponse({ error: 'Not found' }, 404)
     }
 
+    return jsonResponse({ error: 'Not found' }, 404)
+  }
+
+  private async handleMissions(req: Request, method: string, pathname: string): Promise<Response> {
+    const m = this.deps.missions
+    if (pathname === '/api/missions' && method === 'GET') {
+      return jsonResponse(m ? readMissionsView(m) : { paused: { paused: false }, missions: [] })
+    }
+    const trig = /^\/api\/missions\/([^/]+)\/triggers\/([^/]+)$/.exec(pathname)
+    if (trig && method === 'PUT') {
+      if (!m) return jsonResponse({ error: 'missions not wired' }, 503)
+      let ids: [string, string]
+      try { ids = [decodeURIComponent(trig[1]), decodeURIComponent(trig[2])] } catch { return jsonResponse({ error: 'invalid id' }, 400) }
+      const r = patchTrigger(m, ids[0], ids[1], await this.jsonBody(req))
+      return jsonResponse(r.json, r.status)
+    }
+    if (pathname === '/api/daemon/pause' && method === 'POST') {
+      if (!m) return jsonResponse({ error: 'missions not wired' }, 503)
+      const body = (await this.jsonBody(req)) as { paused?: unknown }
+      if (typeof body?.paused !== 'boolean') return jsonResponse({ error: 'paused must be a boolean' }, 400)
+      return jsonResponse(setPaused(m, body.paused))
+    }
     return jsonResponse({ error: 'Not found' }, 404)
   }
 
