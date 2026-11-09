@@ -91,7 +91,7 @@ function lastRuns(missionDir: string): Map<string, LastRun> {
       const summary = typeof r.summary === 'string' ? r.summary : ''
       const prev = out.get(r.triggerId)
       if (!prev || r.ts >= prev.ts) out.set(r.triggerId, { ts: r.ts, ok: Boolean(r.ok), kind: runKind(Boolean(r.ok), summary), summary })
-    } catch { /* torn or foreign line in an append-only log */ }
+    } catch { continue } // a torn or foreign line in an append-only log
   }
   return out
 }
@@ -154,7 +154,7 @@ function missionView(p: MissionsPaths, dirName: string, now: Date): MissionView 
 export function readMissionsView(p: MissionsPaths): MissionsView {
   const now = p.now?.() ?? new Date()
   let names: string[] = []
-  try { names = readdirSync(p.missionsDir).sort() } catch { /* no missions dir */ }
+  try { names = readdirSync(p.missionsDir).sort() } catch { names = [] } // no missions dir yet
   const missions: MissionView[] = []
   for (const name of names) {
     const v = missionView(p, name, now)
