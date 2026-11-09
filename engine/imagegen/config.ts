@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { cyncoHome } from '../paths.js'
-import { BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA, parseWorkflow, placeholdersIn, type ComfyGraph } from './workflow.js'
+import { BUILTIN_OUTLINE, BUILTIN_OUTLINE_SHA, BUILTIN_VARY, BUILTIN_VARY_SHA, BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA, parseWorkflow, placeholdersIn, type ComfyGraph, type WorkflowKind } from './workflow.js'
 
 // ─── fixed in code, not knobs ─────────────────────────────────────────
 // A different sampler, scheduler or model family means a custom workflow file.
@@ -49,6 +49,14 @@ export function comfyCheckpoint(env: NodeJS.ProcessEnv = process.env): string {
 /** An API-format workflow file (absolute, or relative to cyncoHome()); '' is the built-in SDXL graph. */
 export function comfyWorkflow(env: NodeJS.ProcessEnv = process.env): string {
   const v = env.LOCALCODE_COMFYUI_WORKFLOW
+  return v && v.trim() ? v.trim() : ''
+}
+
+/** The variable that names each kind's workflow file; '' = that kind's built-in graph (image box §4). */
+export const WORKFLOW_VARS: Record<WorkflowKind, string> = { generate: 'LOCALCODE_COMFYUI_WORKFLOW', vary: 'LOCALCODE_COMFYUI_WORKFLOW_VARY', outline: 'LOCALCODE_COMFYUI_WORKFLOW_OUTLINE' }
+export function comfyWorkflowFor(kind: WorkflowKind, env: NodeJS.ProcessEnv = process.env): string {
+  if (kind === 'generate') return comfyWorkflow(env)
+  const v = kind === 'vary' ? env.LOCALCODE_COMFYUI_WORKFLOW_VARY : env.LOCALCODE_COMFYUI_WORKFLOW_OUTLINE
   return v && v.trim() ? v.trim() : ''
 }
 
@@ -104,7 +112,11 @@ export type ComfyConfig = {
   port: string
   /** The configured checkpoint, or null to pick one when the server is probed. */
   checkpoint: string | null
+  /** The text-to-image graph (today's pictures). */
   workflow: ComfyWorkflow
+  /** The two photo transforms (image box §4). */
+  vary: ComfyWorkflow
+  outline: ComfyWorkflow
   width: number
   height: number
   steps: number
@@ -137,10 +149,16 @@ function parseSize(v: string): { width: number; height: number } | null {
   return ok(width) && ok(height) ? { width, height } : null
 }
 
-function loadWorkflow(setting: string): { ok: true; workflow: ComfyWorkflow } | { ok: false; reason: string } {
-  if (!setting) return { ok: true, workflow: { source: 'builtin', sha256: BUILTIN_WORKFLOW_SHA, graph: BUILTIN_WORKFLOW, usesCheckpoint: true } }
+const BUILTINS: Record<WorkflowKind, ComfyWorkflow> = {
+  generate: { source: 'builtin', sha256: BUILTIN_WORKFLOW_SHA, graph: BUILTIN_WORKFLOW, usesCheckpoint: true },
+  vary: { source: 'builtin', sha256: BUILTIN_VARY_SHA, graph: BUILTIN_VARY, usesCheckpoint: true },
+  outline: { source: 'builtin', sha256: BUILTIN_OUTLINE_SHA, graph: BUILTIN_OUTLINE, usesCheckpoint: false },
+}
+
+function loadWorkflow(setting: string, kind: WorkflowKind = 'generate'): { ok: true; workflow: ComfyWorkflow } | { ok: false; reason: string } {
+  if (!setting) return { ok: true, workflow: BUILTINS[kind] }
   const path = resolveWorkflowPath(setting)
-  const refuse = (detail: string) => ({ ok: false as const, reason: `LOCALCODE_COMFYUI_WORKFLOW: ${detail}` })
+  const refuse = (detail: string) => ({ ok: false as const, reason: `${WORKFLOW_VARS[kind]}: ${detail}` })
   let bytes: Buffer
   try {
     if (!existsSync(path) || !statSync(path).isFile()) return refuse(`no file at ${path}`)
@@ -150,7 +168,7 @@ function loadWorkflow(setting: string): { ok: true; workflow: ComfyWorkflow } | 
     console.log(`[imagegen] reading the workflow at ${path} failed: ${e instanceof Error ? e.message : String(e)}`)
     return refuse(`${path} could not be read (${e instanceof Error ? e.message : String(e)})`)
   }
-  const parsed = parseWorkflow(bytes.toString('utf8'), path)
+  const parsed = parseWorkflow(bytes.toString('utf8'), path, kind)
   if (!parsed.ok) return refuse(parsed.reason)
   return { ok: true, workflow: { source: path, sha256: createHash('sha256').update(bytes).digest('hex'), graph: parsed.graph, usesCheckpoint: placeholdersIn(parsed.graph).has('checkpoint') } }
 }
@@ -166,10 +184,14 @@ export function comfyConfig(env: NodeJS.ProcessEnv = process.env): { ok: true; c
   if (!size) return { ok: false, reason: `LOCALCODE_COMFYUI_SIZE="${sizeRaw}" must be WIDTHxHEIGHT, each a multiple of 64 from 512 to 2048` }
   const wf = loadWorkflow(comfyWorkflow(env))
   if (!wf.ok) return wf
+  const vary = loadWorkflow(comfyWorkflowFor('vary', env), 'vary')
+  if (!vary.ok) return vary
+  const outline = loadWorkflow(comfyWorkflowFor('outline', env), 'outline')
+  if (!outline.ok) return outline
   return {
     ok: true,
     cfg: {
-      ...base, checkpoint: comfyCheckpoint(env) || null, workflow: wf.workflow, ...size,
+      ...base, checkpoint: comfyCheckpoint(env) || null, workflow: wf.workflow, vary: vary.workflow, outline: outline.workflow, ...size,
       steps: comfySteps(env), cfg: comfyCfg(env), timeoutMs: comfyTimeoutS(env) * 1000,
       sampler: SAMPLER, scheduler: SCHEDULER, negative: NEGATIVE_PROMPT,
     },
