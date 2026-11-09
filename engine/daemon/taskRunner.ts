@@ -92,11 +92,18 @@ export interface TaskRunnerOptions {
   /** Repo root (cwd for the engine process). Default: process.cwd(). */
   repoRoot?: string
   isGpuBusyImpl?: () => Promise<boolean>
+  /** Polled while a task runs; true kills the task tree and reports a paused outcome (control.ts). */
+  shouldPause?: () => boolean
+  /** How often shouldPause is asked. Default 5 s. */
+  pausePollMs?: number
   /** Where the one-shot's GPU claim is written (default <cyncoHome>/gpu-busy.json). Tests point it at a temp dir. */
   gpuBusyPath?: string
   /** Where the one-shot registers as an open activity (hold-awake). Default: the process-wide registry. */
   activity?: ActivityRegistry
 }
+
+/** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
+const JOURNAL_LINE = /\[session\] Journal: .*?(session-\d+)\.jsonl/
 
 export class TaskRunner {
   private opts: TaskRunnerOptions
@@ -106,6 +113,11 @@ export class TaskRunner {
   }
 
   async run(input: TaskFileInput): Promise<TaskOutcome> {
+    // Already paused: report it the way the poll path does, without spawning a run only to kill it.
+    if (this.opts.shouldPause?.()) {
+      console.log(`[task:${input.triggerId}] paused before start — not spawned`)
+      return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { elapsedMs: 0 } }
+    }
     const busy = await (this.opts.isGpuBusyImpl ?? isGpuBusy)()
     if (busy) throw new GpuBusyError()
 
@@ -150,21 +162,63 @@ export class TaskRunner {
       }
     }
     try {
-    child.stdout?.on('data', (d: Buffer) => console.log(`[task:${input.triggerId}] ${d.toString().trim()}`))
+    let sessionId: string | undefined
+    child.stdout?.on('data', (d: Buffer) => {
+      const text = d.toString()
+      const m = JOURNAL_LINE.exec(text)
+      if (m) sessionId = m[1]
+      console.log(`[task:${input.triggerId}] ${text.trim()}`)
+    })
     child.stderr?.on('data', (d: Buffer) => console.log(`[task:${input.triggerId}] ${d.toString().trim()}`))
 
     const exited = new Promise<number | null>((resolve) => {
       child.on('exit', (code) => resolve(code))
       child.on('error', () => resolve(null))
     })
+    const started = Date.now()
     let timer: ReturnType<typeof setTimeout> | null = null
-    const timedOut = await Promise.race([
-      exited.then(() => false),
-      new Promise<boolean>((r) => { timer = setTimeout(() => r(true), input.timeoutMs) }),
+    let poll: ReturnType<typeof setInterval> | null = null
+    const ended = await Promise.race<'exit' | 'timeout' | 'pause'>([
+      exited.then(() => 'exit' as const),
+      new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), input.timeoutMs) }),
+      new Promise<'pause'>((r) => {
+        const ask = this.opts.shouldPause
+        if (!ask) return
+        poll = setInterval(() => { if (ask()) r('pause') }, this.opts.pausePollMs ?? 5000)
+      }),
     ])
     if (timer !== null) clearTimeout(timer)
+    if (poll !== null) clearInterval(poll)
 
-    if (timedOut) {
+    if (ended !== 'exit') {
+      await this.killTree(child, exited)
+      if (ended === 'pause') {
+        const elapsedMs = Date.now() - started
+        console.log(`[task:${input.triggerId}] paused on request after ${Math.round(elapsedMs / 60000)} min${sessionId ? ` (journal ${sessionId})` : ' (no journal announced yet — it will restart)'}`)
+        return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { ...(sessionId ? { sessionId } : {}), elapsedMs } }
+      }
+      return { ok: false, summary: '', recommendations: [], error: `Task timeout after ${input.timeoutMs}ms` }
+    }
+
+    const code = await exited
+    const outcome = readOutcome(finalInput.outcomePath)
+    if (!outcome.ok && !outcome.error && code !== 0) {
+      outcome.error = `Engine exited with code ${code}`
+    }
+    return outcome
+    } finally {
+      endActivity()
+      try {
+        clearGpuBusy(busyPath)
+      } catch (e) {
+        console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  }
+
+  /** Kill bun and the llama-server it spawned (taskkill /T on Windows, the process group elsewhere). */
+  private async killTree(child: ReturnType<typeof spawn>, exited: Promise<number | null>): Promise<void> {
+    {
       if (process.platform === 'win32') {
         // taskkill /T must run while the tree is alive; skip if the child
         // exited during the race window (avoids a noisy taskkill ERROR).
@@ -188,22 +242,6 @@ export class TaskRunner {
           new Promise<boolean>((r) => setTimeout(() => r(false), 2000)),
         ])
         if (!gone) killGroup('SIGKILL')
-      }
-      return { ok: false, summary: '', recommendations: [], error: `Task timeout after ${input.timeoutMs}ms` }
-    }
-
-    const code = await exited
-    const outcome = readOutcome(finalInput.outcomePath)
-    if (!outcome.ok && !outcome.error && code !== 0) {
-      outcome.error = `Engine exited with code ${code}`
-    }
-    return outcome
-    } finally {
-      endActivity()
-      try {
-        clearGpuBusy(busyPath)
-      } catch (e) {
-        console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
   }

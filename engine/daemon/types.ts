@@ -13,8 +13,13 @@ export interface TriggerSpec {
   day?: Weekday
   /** 5-field cron "min hour day-of-month month day-of-week" — numeric values with * , - / supported. */
   cron?: string
-  /** 'mfl-delta': skip the engine run if MFL transactions haven't changed. 'none': always run. */
-  precheck: 'mfl-delta' | 'none'
+  /** 'mfl-delta': skip the engine run if MFL transactions haven't changed. 'none': always run.
+   *  'command': run `precheckCommand` first (no model loaded); stdout starting with `skip` records a
+   *  skipped run and spawns nothing, anything else lets the run proceed. */
+  precheck: 'mfl-delta' | 'none' | 'command'
+  /** Shell command for precheck 'command', run in the trigger's cwd (then the mission's). 2026-11-06: the
+   *  trade passes loaded the 30 GB model 47 times a day to hear their own gate say "skip: no incoming offers". */
+  precheckCommand?: string
   /** What to do when the daemon was down at fire time. */
   missedPolicy: 'skip' | 'run-once-on-startup'
   /** Task prompt for the engine run. */
@@ -79,6 +84,9 @@ export interface TaskFileInput {
   taskType?: 'prompt' | 'trade-scan'
   /** League refs for orchestrated tasks (trade-scan needs structured ids, not just the context string). */
   leagues?: MflLeagueRef[]
+  /** Set by the daemon when it relaunches a paused run: the one-shot reloads this session's journal
+   *  and continues from the last tool result instead of starting the prompt over. */
+  resumeSessionId?: string
 }
 
 export interface TaskOutcome {
@@ -92,6 +100,21 @@ export interface TaskOutcome {
   /** Engine self-corrections applied during the run (tool-floor rescues,
    *  enforcement disabled). Empty on a clean run. */
   rescues?: string[]
+  /** The daemon killed the run because the control file asked for a pause. Not a failure:
+   *  the mission remembers it (MissionState.paused) and relaunches it when the pause lifts. */
+  paused?: { sessionId?: string; elapsedMs: number }
+}
+
+/** A run the daemon interrupted on request; relaunched by the next tick that is not paused. */
+export interface PausedRun {
+  triggerId: string
+  /** The task file input of the interrupted run (outcomePath is reassigned on relaunch). */
+  input: TaskFileInput
+  /** Wall clock the run still had when it was paused; the relaunch gets this (with a floor). */
+  remainingMs: number
+  /** Journal to resume from; absent when the run was killed before it announced one (then it restarts). */
+  sessionId?: string
+  pausedAt: string
 }
 
 export interface RunRecord {
@@ -126,6 +149,8 @@ export interface MissionState {
   /** actionType → trust state. */
   trust: Record<string, TrustState>
   failureStreak: number
+  /** A run interrupted by a pause request, waiting to be resumed. */
+  paused?: PausedRun
 }
 
 export interface ApprovalCommand {
