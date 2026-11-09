@@ -20,7 +20,7 @@ def test_schedule_persists_across_restart(tmp_path):
     h2.d.load_schedule()
     assert len(h2.timers) == 1
     h2.run_until(1000.0 + 600)
-    assert len(h2.sent) == 5
+    assert len([m for _, m in h2.sent if m == "6C:6E:07:2D:AA:00"]) == 5
 
 
 def test_set_schedule_cancels_the_previous_timers():
@@ -39,4 +39,4 @@ def test_knock_under_concurrent_calls_sends_one_burst():
     for t in threads:
         t.join()
     h.run_until(1000.0 + 120)
-    assert len(h.sent) == 5
+    assert len([m for _, m in h.sent if m == "6C:6E:07:2D:AA:00"]) == 5

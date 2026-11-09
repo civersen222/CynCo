@@ -63,9 +63,8 @@ def test_knock_starts_burst_and_sends_every_15s_for_60s():
     h = Harness()
     h.d.knock("main")
     h.run_until(h.clock.t + 120)
-    times = [t - 1000.0 for t, _ in h.sent]
+    times = [t - 1000.0 for t, mac in h.sent if mac == "6C:6E:07:2D:AA:00"]
     assert times == [0, 15, 30, 45, 60]
-    assert all(mac == "6C:6E:07:2D:AA:00" for _, mac in h.sent)
     assert h.d.status("main")["burstActive"] is False
 
 
@@ -75,13 +74,13 @@ def test_second_knock_during_burst_does_not_double():
     h.run_until(h.clock.t + 20)
     h.d.knock("main")
     h.run_until(h.clock.t + 120)
-    assert len(h.sent) == 5
+    assert len([m for _, m in h.sent if m == "6C:6E:07:2D:AA:00"]) == 5
 
 
 def test_status_reports_probe_and_burst():
     h = Harness(probe_up=False)
     s = h.d.status("main")
-    assert s == {"up": False, "burstActive": False, "lastWakeAt": None}
+    assert {k: s[k] for k in ("up", "burstActive", "lastWakeAt")} == {"up": False, "burstActive": False, "lastWakeAt": None}
     h.d.knock("main")
     h.up = True
     s = h.d.status("main")
@@ -97,7 +96,7 @@ def test_set_schedule_replaces_and_bursts_180s_early():
     h.run_until(1000.0 + 2000)
     first_send = min(t for t, _ in h.sent)
     assert first_send == 1000.0 + 900 - 180
-    assert len(h.sent) == 5  # one burst only
+    assert len([m for _, m in h.sent if m == "6C:6E:07:2D:AA:00"]) == 5  # one burst only
 
 
 def test_unknown_target_raises_keyerror():
@@ -139,7 +138,7 @@ def test_http_status_json_shape():
     with ServerHarness(probe_up=True) as h:
         code, body = h.get("/status?target=main")
         assert code == 200
-        assert json.loads(body) == {"up": True, "burstActive": False, "lastWakeAt": None}
+        assert json.loads(body) == {"up": True, "burstActive": False, "lastWakeAt": None, "with": [{"name": "image", "up": True, "burstActive": False}]}
 
 
 def test_http_wake_triggers_one_send():
@@ -147,7 +146,7 @@ def test_http_wake_triggers_one_send():
         code, body = h.get("/wake?target=main")
         assert code == 200
         assert json.loads(body)["burstActive"] is True
-        assert len(h.sent) == 1
+        assert len([m for _, m in h.sent if m == "6C:6E:07:2D:AA:00"]) == 1
 
 
 def test_http_schedule_post_two_iso_times():
@@ -170,3 +169,69 @@ def test_http_root_serves_page_with_dashboard():
         code, body = h.get("/")
         assert code == 200
         assert "data-dashboard='http://100.101.192.101:9161/'" in body
+
+
+# The image box (docs/decisions/2026-11-08-image-box-design.md §5): waking main wakes the 4070 box too.
+IMAGE = "00:00:00:00:00:00"
+MAINMAC = "6C:6E:07:2D:AA:00"
+
+
+def test_load_targets_reads_with_and_health():
+    targets = doorman.load_targets(os.path.join(HERE, "targets.example.json"))
+    assert targets["main"].with_ == ["image"]
+    assert targets["image"].health == "http://192.168.0.47:11434/api/version"
+    assert targets["image"].with_ == []
+    assert targets["image"].dashboard == ""
+
+
+def test_knock_main_bursts_main_and_image_together_never_doubled():
+    h = Harness()
+    h.d.knock("main")
+    h.run_until(h.clock.t + 1)
+    assert sorted(m for _, m in h.sent) == sorted([MAINMAC, IMAGE])
+    h.d.knock("main")
+    h.run_until(h.clock.t + 120)
+    assert len([m for _, m in h.sent if m == IMAGE]) == 5
+    assert len([m for _, m in h.sent if m == MAINMAC]) == 5
+
+
+def test_schedule_for_main_bursts_both_at_fire_time():
+    h = Harness()
+    h.d.set_schedule("main", [1000.0 + 900])
+    h.run_until(1000.0 + 2000)
+    first = {m: min(t for t, mm in h.sent if mm == m) for m in (MAINMAC, IMAGE)}
+    assert first == {MAINMAC: 1000.0 + 720, IMAGE: 1000.0 + 720}
+
+
+def test_status_main_lists_the_boxes_woken_with_it():
+    h = Harness()
+    s = h.d.status("main")
+    assert s["with"] == [{"name": "image", "up": False, "burstActive": False}]
+    h.d.knock("main")
+    assert h.d.status("main")["with"][0]["burstActive"] is True
+
+
+def test_knock_image_alone_wakes_only_image():
+    h = Harness()
+    h.d.knock("image")
+    h.run_until(h.clock.t + 120)
+    assert {m for _, m in h.sent} == {IMAGE}
+
+
+def test_a_target_file_without_with_or_health_loads_as_before(tmp_path):
+    p = tmp_path / "targets.json"
+    p.write_text(json.dumps({"main": {"mac": MAINMAC, "dashboard": "http://x:9161/", "iface": "eth0"}}), encoding="utf-8")
+    t = doorman.load_targets(str(p))["main"]
+    assert (t.with_, t.health, t.dashboard) == ([], None, "http://x:9161/")
+
+
+def test_real_probe_uses_health_when_set(monkeypatch):
+    seen = []
+    class R:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(doorman.urllib.request, "urlopen", lambda url, timeout=2: seen.append(url) or R())
+    doorman.real_probe_up(doorman.Target(name="image", mac=IMAGE, dashboard="", iface="e", health="http://h/api/version"))
+    doorman.real_probe_up(doorman.Target(name="main", mac=MAINMAC, dashboard="http://d/", iface="e"))
+    assert seen == ["http://h/api/version", "http://d/"]

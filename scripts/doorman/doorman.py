@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 BURST_INTERVAL_S = 15.0
@@ -26,14 +26,28 @@ LEAD_S = 180.0
 class Target:
     name: str
     mac: str
-    dashboard: str
+    dashboard: str  # the page hands the phone here; '' for a box with no dashboard (the image box)
     iface: str
+    health: Optional[str] = None  # probed instead of the dashboard when set (e.g. Ollama /api/version)
+    with_: List[str] = field(default_factory=list)  # targets woken whenever this one is ("with" in targets.json)
+
+    @property
+    def probe_url(self) -> str:
+        return self.health or self.dashboard
 
 
 def load_targets(path: str) -> Dict[str, Target]:
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
-    return {name: Target(name=name, mac=v["mac"], dashboard=v["dashboard"], iface=v["iface"]) for name, v in raw.items()}
+    targets = {
+        name: Target(name=name, mac=v["mac"], dashboard=v.get("dashboard", ""), iface=v["iface"], health=v.get("health"), with_=list(v.get("with", [])))
+        for name, v in raw.items()
+    }
+    for t in targets.values():
+        for w in t.with_:
+            if w not in targets:
+                raise KeyError(f"target {t.name!r} wakes unknown target {w!r}")
+    return targets
 
 
 class Doorman:
@@ -62,14 +76,20 @@ class Doorman:
         return self.targets[name]  # KeyError for an unknown target, by design
 
     def knock(self, name: str) -> dict:
-        self._target(name)
+        """Start a wake burst for `name` and for every target in its `with` list (the image box
+        wakes with the main PC: docs/decisions/2026-11-08-image-box-design.md §5). Never doubled."""
+        t = self._target(name)
+        for n in [name, *t.with_]:
+            self._burst_start(n)
+        return self.status(name)
+
+    def _burst_start(self, name: str) -> None:
         with self._lock:
             start = self._burst[name] is None
             if start:
                 self._burst[name] = self._now()
         if start:
             self._burst_tick(name)
-        return self.status(name)
 
     def status(self, name: str) -> dict:
         t = self._target(name)
@@ -77,6 +97,7 @@ class Doorman:
             "up": bool(self._probe_up(t)),
             "burstActive": self._burst[name] is not None,
             "lastWakeAt": self._last_wake[name],
+            "with": [{"name": w, "up": bool(self._probe_up(self._target(w))), "burstActive": self._burst[w] is not None} for w in t.with_],
         }
 
     def set_schedule(self, name: str, times: List[float]) -> None:
@@ -173,8 +194,10 @@ def real_send_wake(t: Target) -> None:
 
 
 def real_probe_up(t: Target) -> bool:
+    if not t.probe_url:
+        return False
     try:
-        with urllib.request.urlopen(t.dashboard, timeout=2) as r:
+        with urllib.request.urlopen(t.probe_url, timeout=2) as r:
             return r.status == 200
     except Exception:
         return False
