@@ -39,7 +39,8 @@ import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
 import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { fillWorkflow, workflowClasses } from './workflow.js'
+import { fillWorkflow, fitToArea, workflowClasses } from './workflow.js'
+import { imageDimensions } from '../vision/imageSize.js'
 
 export type AnnotateAt = {
   /** The bound project chat, or null (a coding session: pictures are project-only). */
@@ -459,6 +460,7 @@ export class ImageService implements ImageAnnotator {
     for (const im of images) {
       // A transform (image box §4) starts from a photo in the project: no photo, no job, and nothing is uploaded.
       const wf = im.kind === 'generate' ? cfg.workflow : cfg[im.kind]
+      let fit: { width: number; height: number } | null = null
       let source: { path: string; sha256: string } | null = null
       if (im.kind !== 'generate') {
         const srcPath = im.source ?? ''
@@ -474,13 +476,15 @@ export class ImageService implements ImageAnnotator {
           continue
         }
         source = { path: srcPath, sha256: sha256Of(bytes) }
+        // A transform paints at the photo's aspect (check 4 squashed a portrait into the configured square).
+        fit = fitToArea(imageDimensions(bytes), cfg.width * cfg.height)
       }
-      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as 'vary' | 'outline', source: source.sha256 } : undefined)
+      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as 'vary' | 'outline', source: source.sha256, ...(fit ?? {}) } : undefined)
       const key = imageKey(fields)
       const repeat = decided.has(key)
       let state = decided.get(key)
       if (!state) {
-        const base = { key, slug, w: cfg.width, h: cfg.height }
+        const base = { key, slug, w: fields.width, h: fields.height }
         if (distinct >= PER_CALL_CAP) { state = { status: 'off', reason: CAP_REASON }; overCap = true }
         else {
           distinct++
@@ -569,7 +573,7 @@ export class ImageService implements ImageAnnotator {
    * found gone is the pick and starts a probe at once — or, with one running, takes that one's answer, a fresh probe
    * following it only when it fails or still picks the gone checkpoint; `runJob` paints with the one the key names.
    */
-  private keyFields(cfg: ComfyConfig, wf: ComfyWorkflow, prompt: string, seed?: number, extra?: { transform: 'vary' | 'outline'; source: string }): KeyFields {
+  private keyFields(cfg: ComfyConfig, wf: ComfyWorkflow, prompt: string, seed?: number, extra?: { transform: 'vary' | 'outline'; source: string; width?: number; height?: number }): KeyFields {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,

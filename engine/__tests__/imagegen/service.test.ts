@@ -11,6 +11,7 @@ import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FU
 import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { BUILTIN_CLASSES, canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
 import { sha256Of } from '../../projects/layout.js'
+import { PNG } from 'pngjs'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
 
@@ -1853,6 +1854,23 @@ describe('ImageService: transforms', () => {
     const sc = readSidecar(dir, keyOf(sp, 0))!
     expect(sc.status).toBe('failed')
     expect(sc.reason).toContain('"UnetLoaderGGUF"'); expect(sc.reason).toContain('ComfyUI-GGUF')
+  })
+  it('vary paints at the photo\'s aspect: a 300x400 portrait is scaled to 896x1152, not squashed into the configured square; an unreadable header keeps the configured size', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start()
+    const png = new PNG({ width: 300, height: 400 }); png.data.fill(120)
+    mkdirSync(join(dir, 'knowledge'), { recursive: true }); writeFileSync(join(dir, 'knowledge', 'tall.png'), PNG.sync.write(png))
+    const sp = tspec({ source: 'knowledge/tall.png', transform: 'vary', prompt: 'a pergola' })
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    const g = graphOf()
+    expect(node(g, 'ImageScale')!.inputs.width).toBe(896); expect(node(g, 'ImageScale')!.inputs.height).toBe(1152)
+    const sc = readSidecar(dir, keyOf(sp, 0))!
+    expect(sc.width).toBe(896); expect(sc.height).toBe(1152)
+    expect(imageOf(sp, 0)).toMatchObject({ w: 896, h: 1152 })
+    const sp2 = tspec({ source: photo(), transform: 'vary', prompt: 'a pergola' })
+    s.annotate(sp2, at()).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(sp2, 0))!.width).toBe(1024)
   })
   it('outline: the preprocessor graph has no text encoder, needs no checkpoint, and the record carries an empty prompt', async () => {
     mock = await startMockComfy({ nodes: NODES })

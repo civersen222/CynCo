@@ -132,6 +132,20 @@ export const BUILTIN_EDIT: ComfyGraph = {
 }
 export const BUILTIN_EDIT_SHA = 'builtin-edit-1'
 
+/**
+ * The size a transform paints at: the photo's aspect, about the configured area
+ * (SDXL's 1 MP), on multiples of 64. Check 4 (2026-11-09) squashed a portrait
+ * yard photo into the configured 1024x1024 square — `ImageScale` with crop
+ * disabled stretches. Null when the photo's size is unknown; the caller keeps
+ * the configured size then.
+ */
+export function fitToArea(dims: { width: number; height: number } | null, area: number, step = 64): { width: number; height: number } | null {
+  if (!dims || !(dims.width > 0) || !(dims.height > 0) || !(area > 0)) return null
+  const ratio = dims.width / dims.height
+  const snap = (v: number) => Math.max(step, Math.round(v / step) * step)
+  return { width: snap(Math.sqrt(area * ratio)), height: snap(Math.sqrt(area / ratio)) }
+}
+
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 /** Every string value under a node's inputs, depth-first; keys are never visited. */
