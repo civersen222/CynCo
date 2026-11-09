@@ -2,6 +2,14 @@
   "main": {
     "mac": "6C:6E:07:2D:AA:00",
     "dashboard": "http://100.101.192.101:9161/",
+    "iface": "enp1s0",
+    "with": [
+      "image"
+    ]
+  },
+  "image": {
+    "mac": "00:00:00:00:00:00",
+    "health": "http://192.168.0.47:11434/api/version",
     "iface": "enp1s0"
   }
 }

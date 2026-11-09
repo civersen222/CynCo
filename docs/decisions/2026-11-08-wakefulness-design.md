@@ -51,7 +51,7 @@ Today an interactive engine must be up for the dashboard to exist (F141), and `b
 ## Decided design — six slices, each usable alone
 
 ### Slice 1 — doorman front door (`scripts/doorman/`, deployed by scp; runs on doorman)
-A small Python 3 stdlib HTTP service (`doorman.py`) as a systemd unit, bound to the Tailscale address only, port 9170. Config `targets.json`: `{ "main": { "mac": "6C:6E:07:2D:AA:00", "dashboard": "http://100.101.192.101:9161/", "iface": "enp1s0" } }`.
+A small Python 3 stdlib HTTP service (`doorman.py`) as a systemd unit, bound to the Tailscale address only, port 9170. Config `targets.json`: `{ "main": { "mac": "6C:6E:07:2D:AA:00", "dashboard": "http://100.101.192.101:9161/", "iface": "enp1s0" } }`. Since the image box (2026-11-08, `docs/decisions/2026-11-08-image-box-design.md` §5) a target may carry `"with": ["image"]` — a knock or a scheduled burst for it bursts those targets too, never doubled — and `"health"`, a URL probed instead of a dashboard for a box that has none (the 4070 box's Ollama `/api/version`); `/status` lists them under `with`.
 - `GET /` → starts a **wake burst** for the default target (etherwake every 15 s for 60 s, in a background thread; a burst already running is not doubled) and returns a page: "Waking CynCo…", polls `GET /status?target=main` every 3 s, `location.replace(dashboard)` when `up`.
 - `GET /status?target=` → `{ up: bool, lastWakeAt, burstActive }` where `up` = a GET to the target dashboard URL answered 200 within 2 s (doorman reaches the PC over the tailnet; the switch island has no IP).
 - `GET /wake?target=` → starts a burst, JSON ack (what the daemon-side scheduler calls in slice 3).
