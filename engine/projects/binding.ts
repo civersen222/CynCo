@@ -14,6 +14,7 @@
  * pictures are the engine's to make from RenderUI Image prompts.
  */
 import { isAbsolute, resolve } from 'node:path'
+import type { LookRunner } from '../vision/lookRunner.js'
 import type { EmbedClient } from '../index/embedClient.js'
 import { isDownloadCommand } from '../tools/approvalGate.js'
 import { projectDir, readInstructions, readProject, realInside } from './layout.js'
@@ -30,6 +31,8 @@ export type ProjectBinding = {
   embed: EmbedClient | null; embedModel: string
   contextLength: number
   emit?: (e: IngestEvent) => void
+  /** The image box's look runner (engine/vision), so a turn can read an attached picture; null = no vision model configured. */
+  looks?: LookRunner | null
   citations: Citation[]
 }
 export type Grade = { level: 'safe' | 'risky' | 'dangerous'; reason: string }
@@ -212,7 +215,7 @@ export function gradeProjectCall(root: string, cwd: string, classify: Classifier
   return { level: 'safe', reason: '' }
 }
 
-export async function openBinding(args: { home: string; slug: string; chat?: string | null; embed: EmbedClient | null; embedModel: string; contextLength: number; emit?: (e: IngestEvent) => void }): Promise<{ ok: true; binding: ProjectBinding; messages: TranscriptMessage[] } | { ok: false; reason: string }> {
+export async function openBinding(args: { home: string; slug: string; chat?: string | null; embed: EmbedClient | null; embedModel: string; contextLength: number; emit?: (e: IngestEvent) => void; looks?: LookRunner | null }): Promise<{ ok: true; binding: ProjectBinding; messages: TranscriptMessage[] } | { ok: false; reason: string }> {
   const meta = readProject(args.home, args.slug)
   if (!meta) return { ok: false, reason: `no such project: ${args.slug}` }
   const dir = projectDir(args.home, args.slug)
@@ -230,6 +233,6 @@ export async function openBinding(args: { home: string; slug: string; chat?: str
   appendJournal(dir, 'chat.opened', chatFile ?? '(new chat)')
   return {
     ok: true, messages,
-    binding: { home: args.home, slug: meta.slug, dir, name: meta.name, description: meta.description, instructions: readInstructions(args.home, meta.slug), chatFile, chatTitle, embed: args.embed, embedModel: args.embedModel, contextLength: args.contextLength, emit: args.emit, citations: [] },
+    binding: { home: args.home, slug: meta.slug, dir, name: meta.name, description: meta.description, instructions: readInstructions(args.home, meta.slug), chatFile, chatTitle, embed: args.embed, embedModel: args.embedModel, contextLength: args.contextLength, emit: args.emit, looks: args.looks ?? null, citations: [] },
   }
 }

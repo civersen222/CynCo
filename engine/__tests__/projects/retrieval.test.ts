@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG, MAX_PASSAGES } from '../../projects/retrieval.js'
-import { IngestNotes } from '../../projects/retrieval.js'
+import { IngestNotes, attachedImages, formatLookBlock, formatNotes } from '../../projects/retrieval.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { SearchHit } from '../../projects/search.js'
@@ -71,7 +71,43 @@ describe('IngestNotes', () => {
   })
 })
 
+// The turn sees an attached photo (image box design §2): the loop reads image
+// entries out of the same notes, waits on an in-flight look, and tells the model.
+describe('IngestNotes.takeEvents / attachedImages / formatLookBlock', () => {
+  const ev = (filePath: string, over: Partial<Parameters<IngestNotes['add']>[0]> = {}) => ({ slug: 'pc', filePath, kind: 'knowledge' as const, indexed: true, chunks: 1, ...over })
+  it('takeEvents drains the same events take() would format', () => {
+    const n = new IngestNotes('pc')
+    n.add(ev('knowledge/a.jpg')); n.add(ev('knowledge/b.docx')); n.add(ev('chats/x.jsonl', { kind: 'chat' }))
+    const events = n.takeEvents()
+    expect(events.map(e => e.filePath)).toEqual(['knowledge/a.jpg', 'knowledge/b.docx'])
+    expect(n.takeEvents()).toEqual([])
+    expect(formatNotes(events)).toContain('knowledge/b.docx')
+    expect(formatNotes([])).toBeNull()
+  })
+  it('attachedImages keeps knowledge pictures, in order, once each', () => {
+    expect(attachedImages([ev('knowledge/a.jpg'), ev('knowledge/b.docx'), ev('knowledge/c.PNG'), ev('knowledge/a.jpg'), ev('artifacts/d.webp')]))
+      .toEqual(['knowledge/a.jpg', 'knowledge/c.PNG'])
+  })
+  it('formatLookBlock carries the tag, the path and the non-empty parts', () => {
+    const b = formatLookBlock('knowledge/boot.jpg', { text: 'UEFI: USB', state: '', description: 'A boot menu.', model: 'qwen3-vl:8b-instruct', ms: 900 })
+    expect(b.startsWith('[Project knowledge]')).toBe(true)
+    expect(b).toContain('[Attached image] knowledge/boot.jpg')
+    expect(b).toContain('text: UEFI: USB')
+    expect(b).not.toContain('state:')
+    expect(b).toContain('description: A boot menu.')
+  })
+})
+
 describe('attachment notes wiring', () => {
+  it('the loop looks up each attached image and waits on an in-flight look; main.ts hands the runner to the binding', () => {
+    const loop = readFileSync(join(here, '../../bridge/conversationLoop.ts'), 'utf8')
+    const fn = loop.slice(loop.indexOf('private async injectProjectRetrieval('))
+    expect(fn).toContain('attachedImages(')
+    expect(fn).toContain('formatLookBlock(')
+    expect(fn).toContain('.pending(')
+    const main = readFileSync(join(here, '../../main.ts'), 'utf8')
+    expect(main).toContain('looks: projectsDeps.looks')
+  })
   const here = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
   it('the loop drains the notes into the per-turn block and main.ts feeds it every project.ingest', () => {
     const loop = readFileSync(join(here, '../../bridge/conversationLoop.ts'), 'utf8')

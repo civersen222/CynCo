@@ -8,6 +8,8 @@
  */
 import type { SearchHit } from './search.js'
 import type { IngestEvent } from './ingest.js'
+import type { Look } from '../vision/lookClient.js'
+import { IMAGE_EXTS } from './extract/index.js'
 
 export const RETRIEVAL_TAG = '[Project knowledge]'
 export const MAX_PASSAGES = 8
@@ -73,11 +75,43 @@ export class IngestNotes {
     if (this.pending.length > this.cap) this.pending.splice(0, this.pending.length - this.cap)
   }
 
+  /** The events since the last turn; drains. The loop reads attached pictures out of these (image box §2). */
+  takeEvents(): IngestEvent[] {
+    const out = this.pending
+    this.pending = []
+    return out
+  }
+
   /** The block text, or null when nothing was added; drains. */
   take(): string | null {
-    if (this.pending.length === 0) return null
-    const lines = this.pending.map(e => `- ${e.filePath} — ${e.indexed ? `indexed (${e.chunks ?? 0} passage(s))` : `kept, not vector-indexed: ${e.reason ?? 'no reason given'}`}`)
-    this.pending = []
-    return `${RETRIEVAL_TAG}\nFiles added to this project since your last turn (uploaded or saved; they live at the paths shown, under the project folder):\n${lines.join('\n')}\n`
+    return formatNotes(this.takeEvents())
   }
+}
+
+export function formatNotes(events: IngestEvent[]): string | null {
+  if (events.length === 0) return null
+  const lines = events.map(e => `- ${e.filePath} — ${e.indexed ? `indexed (${e.chunks ?? 0} passage(s))` : `kept, not vector-indexed: ${e.reason ?? 'no reason given'}`}`)
+  return `${RETRIEVAL_TAG}\nFiles added to this project since your last turn (uploaded or saved; they live at the paths shown, under the project folder):\n${lines.join('\n')}\n`
+}
+
+/** The pictures among the files added since the last turn: `knowledge/<rel>` paths with an image extension, in order, once each. */
+export function attachedImages(events: IngestEvent[]): string[] {
+  const out: string[] = []
+  for (const e of events) {
+    if (!e.filePath.startsWith('knowledge/')) continue
+    const ext = e.filePath.toLowerCase().slice(e.filePath.lastIndexOf('.'))
+    if (!IMAGE_EXTS.has(ext) || out.includes(e.filePath)) continue
+    out.push(e.filePath)
+  }
+  return out
+}
+
+/**
+ * What the image box saw, for the model: text first (the diagnostic use case),
+ * then state, then description; empty parts omitted. Tagged like the rest of
+ * the per-turn block so the loop replaces it next turn.
+ */
+export function formatLookBlock(filePath: string, look: Look): string {
+  const parts = [look.text && `text: ${look.text}`, look.state && `state: ${look.state}`, look.description && `description: ${look.description}`].filter((p): p is string => !!p)
+  return `${RETRIEVAL_TAG}\n[Attached image] ${filePath} — what the image box read off it:\n${parts.join('\n')}\n`
 }
