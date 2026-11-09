@@ -27,8 +27,8 @@ describe.skipIf(!hasPs)('cynco-widget -Probe mission lines', () => {
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), 'widget-probe-'))
     missions = join(root, 'missions'); control = join(root, 'daemon-control.json'); stateFile = join(root, 'widget.json')
-    const a = join(missions, 'alpha'), b = join(missions, 'beta'), c = join(missions, 'gamma')
-    for (const d of [a, b, c]) mkdirSync(d, { recursive: true })
+    const a = join(missions, 'alpha'), b = join(missions, 'beta'), c = join(missions, 'gamma'), d = join(missions, 'delta')
+    for (const x of [a, b, c, d]) mkdirSync(x, { recursive: true })
     w(join(a, 'mission.json'), { id: 'alpha', triggers: [{ id: 'dynasty-tin-trades' }, { id: 'dynasty-tin-daily' }] })
     w(join(a, 'state.json'), { nextFire: { 'dynasty-tin-trades': '2031-01-01T04:00:00.000Z', 'dynasty-tin-daily': '2031-01-02T18:00:00.000Z', 'dynasty-gone': '2030-01-01T00:00:00.000Z' } })
     w(join(a, 'schedule.json'), { triggers: { 'dynasty-tin-trades': { enabled: false } } })
@@ -39,6 +39,12 @@ describe.skipIf(!hasPs)('cynco-widget -Probe mission lines', () => {
     w(join(b, 'mission.json'), { id: 'beta', triggers: [{ id: 'fantasy-weekly-digest' }] })
     w(join(b, 'state.json'), { nextFire: { 'fantasy-weekly-digest': '2031-01-03T15:00:00.000Z' } })
     w(join(b, 'runs.jsonl'), JSON.stringify({ ts: '2031-01-01T02:00:00.000Z', triggerId: 'fantasy-weekly-digest', ok: false, summary: 'boom' }) + '\n')
+    // newest record first, an older one (within 7 h, so a UTC-vs-local mix-up would pick it) last
+    w(join(d, 'mission.json'), { id: 'delta', triggers: [{ id: 'dynasty-tin-daily' }] })
+    w(join(d, 'runs.jsonl'), [
+      { ts: '2031-01-01T10:00:00.000Z', triggerId: 'dynasty-tin-daily', ok: true, summary: 'newest' },
+      { ts: '2031-01-01T06:00:00.000Z', triggerId: 'dynasty-tin-trades', ok: true, summary: 'older' },
+    ].map(r => JSON.stringify(r)).join('\n') + '\n')
     w(join(c, 'mission.json'), { id: 'gamma', triggers: [{ id: 'x-y' }] })
   })
   afterAll(() => rmSync(root, { recursive: true, force: true }))
@@ -46,13 +52,14 @@ describe.skipIf(!hasPs)('cynco-widget -Probe mission lines', () => {
   it('prints the GPU line then a mission line per mission; disabled triggers are not next', () => {
     const lines = probe()
     expect(lines[0]).toMatch(/^#[0-9a-f]{6}\|.+\|.+$/i)
-    expect(lines.filter(l => l.startsWith('mission|'))).toHaveLength(3)
+    expect(lines.filter(l => l.startsWith('mission|'))).toHaveLength(4)
     const a = mline(lines, 'alpha')
     expect(a[2]).toMatch(new RegExp(`^tin daily ${WHEN}$`)) // trades is disabled, gone-trigger undeclared
     expect(a[3]).toMatch(new RegExp(`^tin trades skip ${WHEN}$`)) // newest run, torn tail line skipped
     const b = mline(lines, 'beta')
     expect(b[2]).toMatch(new RegExp(`^weekly digest ${WHEN}$`))
     expect(b[3]).toMatch(new RegExp(`^weekly digest FAIL ${WHEN}$`))
+    expect(mline(lines, 'delta')[3]).toMatch(new RegExp(`^tin daily ok ${WHEN}$`)) // newest by ts, not last in file
     expect(mline(lines, 'gamma').slice(2)).toEqual(['-', '-'])
   })
 

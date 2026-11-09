@@ -187,7 +187,8 @@ function Get-LastRun([string]$dir) {
     try { $r = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
     $t = [datetime]::MinValue
     if (-not $r.ts -or -not [datetime]::TryParse([string]$r.ts, [cultureinfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$t)) { continue }
-    if (-not $best -or $t -gt $best.At) { $best = @{ At = $t.ToLocalTime(); Rec = $r } }
+    $tu = $t.ToUniversalTime()
+    if (-not $best -or $tu -gt $best.Utc) { $best = @{ Utc = $tu; Rec = $r } }
   }
   return $best
 }
@@ -199,7 +200,7 @@ function Get-MissionGlance($mission) {
   $l = Get-LastRun $mission.Dir
   if ($l) {
     $verdict = if ($l.Rec.ok -eq $false) { 'FAIL' } elseif ([string]$l.Rec.summary -like 'precheck skipped*') { 'skip' } else { 'ok' }
-    $g.Last = "$(Get-TriggerName ([string]$l.Rec.triggerId)) $verdict $(Format-When $l.At)"
+    $g.Last = "$(Get-TriggerName ([string]$l.Rec.triggerId)) $verdict $(Format-When $l.Utc.ToLocalTime())"
   }
   return $g
 }
