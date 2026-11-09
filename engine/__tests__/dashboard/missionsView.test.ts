@@ -81,7 +81,7 @@ describe('missionTriggerRow', () => {
     id: 'dynasty-tin-trades', name: 'tin trades', kind: 'cron', cron: '25 7-21/2 * * *', cadenceText: 'every 2 hours 7:25 AM–9:25 PM',
     enabled: true, overridden: [], timeoutMs: null, missedPolicy: 'skip', precheck: 'command',
     nextFire: local(8, 11, 25), nextFirePreview: false,
-    lastRun: { ts: local(8, 9, 25), ok: true, kind: 'skip', summary: 'skip: no incoming offers' },
+    lastRun: { ts: local(8, 9, 25), ok: true, kind: 'skip', summary: 'skip: gate said nothing new' },
   }
   it('carries the trigger id, the switch state, the dot and the next fire', () => {
     const out = missionTriggerRow(base, NOW)
@@ -96,8 +96,9 @@ describe('missionTriggerRow', () => {
   })
   it('a disabled trigger says off and its switch is unchecked', () => {
     const out = missionTriggerRow({ ...base, enabled: false, nextFire: null }, NOW)
-    expect(out).toContain('off')
+    expect(out).toContain('<span class="mt-next">— off</span>')
     expect(out).toContain('aria-checked="false"')
+    expect(missionTriggerRow(base, NOW)).not.toContain('— off')
   })
   it('a preview next fire is in <em>', () => {
     expect(missionTriggerRow({ ...base, nextFirePreview: true }, NOW)).toContain('<em>today 11:25 AM</em>')
@@ -116,6 +117,33 @@ describe('missionTriggerRow', () => {
     expect(out).not.toContain('<b>UNREADABLE')
     expect(out).toContain('a&lt;b')
     expect(out).toContain('lr-dot fail')
+  })
+})
+
+describe('the poll and an open editor', () => {
+  const shouldRender = lift<(open: boolean) => boolean>('missionsListShouldRender')
+  it('re-renders the list only while no editor is open', () => {
+    expect(shouldRender(false)).toBe(true)
+    expect(shouldRender(true)).toBe(false)
+  })
+  it('renderMissions asks before it touches the list, and no longer moves editor nodes', () => {
+    const src = extractFunction(html, 'renderMissions')
+    const gate = src.indexOf('missionsListShouldRender(')
+    expect(gate).toBeGreaterThan(-1)
+    expect(src.indexOf('list.innerHTML')).toBeGreaterThan(gate)
+    expect(src).not.toContain('replaceWith')
+  })
+})
+
+describe('a save racing a poll', () => {
+  it('saveTrigger writes the response into the live row, else reloads', () => {
+    const src = extractFunction(html, 'saveTrigger')
+    expect(src).toContain('liveMissionItem(mid, tid)')
+    expect(src).toContain('loadMissions()')
+    expect(src).not.toMatch(/item\.querySelector\('\.mt-row'\);\s*\n\s*if \(cur\)/)
+  })
+  it('a busy row ignores taps', () => {
+    expect(html).toMatch(/classList\.contains\('busy'\) && act !== 'last'\) return;/)
   })
 })
 

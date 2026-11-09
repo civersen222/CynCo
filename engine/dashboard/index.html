@@ -3800,6 +3800,10 @@ function cronPreviewText(c) {
   var p = String(c.at || '').split(':');
   return p.length === 2 ? parseInt(p[1], 10) + ' ' + parseInt(p[0], 10) + ' * * *' : '';
 }
+/** The poll re-renders the trigger list only while no editor is open (the header always). */
+function missionsListShouldRender(hasOpenEditor) {
+  return !hasOpenEditor;
+}
 
 // DOM wiring: one fetch + render, a 10 s poll while the tab is active, delegated handlers on the tab.
 var missionsState = { timer: null, view: null, open: {} };
@@ -3826,15 +3830,23 @@ function renderMissions(view) {
   var list = document.getElementById('missionsList');
   if (!head || !list) return;
   head.innerHTML = missionsHeaderHtml(view, now);
-  // An open editor survives the poll: its node (inputs and all) is moved into the fresh list.
-  var keep = list.querySelector('.mt-item.editing');
+  // While an editor is open the list is left alone: moving its node would blur the focused input
+  // (on a phone that closes the keyboard and collapses an open picker every 10 s).
+  if (!missionsListShouldRender(!!list.querySelector('.mt-item.editing'))) return;
   list.innerHTML = missionsListHtml(view, now);
   var items = list.querySelectorAll('.mt-item');
   for (var i = 0; i < items.length; i++) {
     var key = items[i].getAttribute('data-mission') + '/' + items[i].getAttribute('data-trigger');
-    if (keep && key === keep.getAttribute('data-mission') + '/' + keep.getAttribute('data-trigger')) { items[i].replaceWith(keep); continue; }
     if (missionsState.open[key]) { var l = items[i].querySelector('.mt-last'); if (l) l.classList.add('open'); }
   }
+}
+/** The trigger's .mt-item as it is on screen now (a poll may have replaced the one a handler held). */
+function liveMissionItem(mid, tid) {
+  var items = document.querySelectorAll('#missionsList .mt-item');
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].getAttribute('data-mission') === mid && items[i].getAttribute('data-trigger') === tid) return items[i];
+  }
+  return null;
 }
 function loadMissions() {
   fetch('/api/missions')
@@ -3859,7 +3871,8 @@ function setDaemonPaused(paused) {
     .catch(function(err) { console.warn('[missions] pause failed: ' + err.message); })
     .then(loadMissions);
 }
-/** PUT one trigger's override; the response is the updated row, which replaces the old one in place. */
+/** PUT one trigger's override; the response is the updated row, which replaces the LIVE row (re-queried,
+ *  since a poll may have re-rendered the list during the request); no live row → reload. */
 function saveTrigger(item, body, onDone) {
   var mid = item.getAttribute('data-mission'), tid = item.getAttribute('data-trigger');
   var row = item.querySelector('.mt-row');
@@ -3871,13 +3884,17 @@ function saveTrigger(item, body, onDone) {
     .then(function(t) {
       var hit = findMissionTrigger(mid, tid);
       if (hit) hit.m.triggers[hit.j] = t;
-      var cur = item.querySelector('.mt-row');
+      var live = liveMissionItem(mid, tid);
+      var cur = live && live.querySelector('.mt-row');
       if (cur) cur.outerHTML = missionTriggerRow(t, new Date().toISOString());
-      if (onDone) onDone(null);
+      else loadMissions();
+      if (onDone) onDone(null, live);
     })
     .catch(function(err) {
-      if (row) row.classList.remove('busy');
-      if (onDone) onDone(err);
+      var live = liveMissionItem(mid, tid);
+      var cur = live && live.querySelector('.mt-row');
+      if (cur) cur.classList.remove('busy');
+      if (onDone) onDone(err, live);
       else alert('Could not save ' + tid + ': ' + err.message);
     });
 }
@@ -3896,6 +3913,9 @@ function closeMissionEditor(item) {
     if (act === 'pause') { setDaemonPaused(el.getAttribute('data-paused') === 'true'); return; }
     var item = el.closest('.mt-item');
     if (!item) return;
+    // A second tap while this row's PUT is in flight does nothing.
+    var row = item.querySelector('.mt-row');
+    if (row && row.classList.contains('busy') && act !== 'last') return;
     var key = item.getAttribute('data-mission') + '/' + item.getAttribute('data-trigger');
     if (act === 'toggle') saveTrigger(item, { enabled: el.getAttribute('aria-checked') !== 'true' });
     else if (act === 'reset') saveTrigger(item, { reset: true });
@@ -3933,8 +3953,8 @@ function closeMissionEditor(item) {
     var msg = form.querySelector('.mt-msg');
     if (!Object.keys(body).length) { msg.className = 'mt-msg err'; msg.textContent = 'nothing to save'; return; }
     msg.className = 'mt-msg'; msg.textContent = 'saving…';
-    saveTrigger(item, body, function(err) {
-      if (!err) { closeMissionEditor(item); return; }
+    saveTrigger(item, body, function(err, live) {
+      if (!err) { closeMissionEditor(live || item); return; }
       msg.className = 'mt-msg err'; msg.textContent = err.message;
     });
   });
