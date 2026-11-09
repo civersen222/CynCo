@@ -21,6 +21,8 @@ box — BUILT 2026-11-08 (its existing Ollama + `qwen3:14b`, `LOCALCODE_FALLBACK
 **6** ntfy and the NAS watchdog on the doorman — BUILT 2026-11-08 (ntfy container on `100.110.117.10:8090`, `naswatch.service`, PC ntfy task disabled). Then the tiers: the 4070 and 1080 Ti boxes on the
 switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/tiering-preview.md`).
 
+**The image box** (`docs/decisions/2026-11-08-image-box-design.md`, the 4070 Ti Super as CynCo's eyes and sketchpad): Part A vision BUILT 2026-11-08 (`engine/vision/`: one look per attached photo on the box's Ollama, into the turn and into knowledge; owner steps: `ollama pull qwen3-vl:8b-instruct` on the box, `LOCALCODE_VISION_URL`/`_MODEL` as user variables); Part C (doorman wakes both boxes) and Part B (photo transforms on ComfyUI) follow in the same plan.
+
 Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.
 
 Mission schedule control — built 2026-11-08 on branch `mission-schedule-control` (PR pending): the owner moves, switches off or pauses any daemon pass from a Missions tab (desk and phone) and the widget, with no restart; Resume picks up from now. Record: `docs/decisions/2026-11-08-mission-schedule-control.md`.
