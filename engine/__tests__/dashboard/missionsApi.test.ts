@@ -120,6 +120,21 @@ describe('missionsApi', () => {
     expect((daily.json as any).cadenceText).toBe('daily at 1:00 PM')
   })
 
+  it('a torn schedule.json reports scheduleStatus bad, and patchTrigger 409s without touching the file', () => {
+    expect(readMissionsView(p).missions[0].scheduleStatus).toBe('absent')
+    writeSchedule(mdir, (s) => ({ ...s, triggers: { 'dynasty-tin-trades': { enabled: false } } }))
+    expect(readMissionsView(p).missions[0].scheduleStatus).toBe('ok')
+    const torn = '{"triggers": {"dynasty-tin-trades": {"ena'
+    writeFileSync(join(mdir, 'schedule.json'), torn)
+    expect(readMissionsView(p).missions[0].scheduleStatus).toBe('bad')
+    for (const body of [{ enabled: false }, { kind: 'daily', at: '13:00' }, { reset: true }]) {
+      const r = patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-daily', body)
+      expect(r.status).toBe(409)
+      expect(r.json).toEqual({ error: 'schedule.json is unreadable; fix or delete it before editing' })
+    }
+    expect(readFileSync(join(mdir, 'schedule.json'), 'utf-8')).toBe(torn)
+  })
+
   it('patchTrigger 404s an unknown mission or trigger', () => {
     expect(patchTrigger(p, 'nope', 'dynasty-tin-daily', { enabled: false }).status).toBe(404)
     expect(patchTrigger(p, 'mfl-dynasty', 'nope', { enabled: false }).status).toBe(404)

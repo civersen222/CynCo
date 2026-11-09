@@ -120,6 +120,30 @@ describe('missionTriggerRow', () => {
   })
 })
 
+describe('a mission whose schedule.json is unreadable', () => {
+  const missionsListHtml = lift<(v: any, nowIso: string) => string>('missionsListHtml', [...HELPERS, 'missionTriggerRow'])
+  const trig = {
+    id: 'dynasty-tin-trades', name: 'tin trades', kind: 'cron', cron: '25 7-21/2 * * *', cadenceText: 'every 2 hours',
+    enabled: true, overridden: ['cron'], timeoutMs: null, missedPolicy: 'skip', precheck: 'command',
+    nextFire: local(8, 11, 25), nextFirePreview: false, lastRun: null,
+  }
+  const view = (scheduleStatus: string) => ({ missions: [{ id: 'mfl-dynasty', goal: 'g', cwd: null, running: null, triggers: [trig], orphans: [], scheduleStatus }] })
+  it('shows the warning and disables the switch, Edit and reset', () => {
+    const out = missionsListHtml(view('bad'), NOW)
+    expect(out).toContain('schedule file unreadable — the daemon keeps its last good settings; fix or delete ~/.cynco/missions/mfl-dynasty/schedule.json')
+    expect(out).toMatch(/class="sw-toggle"[^>]*\sdisabled/)
+    expect(out).toMatch(/class="mt-edit"[^>]*\sdisabled/)
+    expect(out).toMatch(/data-act="reset"[^>]*\sdisabled/)
+  })
+  it('an ok or absent schedule has no warning and nothing disabled', () => {
+    for (const st of ['ok', 'absent']) {
+      const out = missionsListHtml(view(st), NOW)
+      expect(out).not.toContain('schedule file unreadable')
+      expect(out).not.toContain('disabled')
+    }
+  })
+})
+
 describe('the poll and an open editor', () => {
   const shouldRender = lift<(open: boolean) => boolean>('missionsListShouldRender')
   it('re-renders the list only while no editor is open', () => {

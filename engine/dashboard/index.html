@@ -660,6 +660,7 @@ body.remote #panelConnection, body.remote #panelContext { display: none; }
 .mt-editor[data-shape="daily"] .mt-sh-daily, .mt-editor[data-shape="every"] .mt-sh-every, .mt-editor[data-shape="weekly"] .mt-sh-weekly { display:inline-flex; }
 .mt-editor input[readonly] { color:#808080; }
 .mt-msg.err { color:#f85149; }
+.mt-card button:disabled { opacity:.4; cursor:not-allowed; }
 body.remote .mt-row { flex-wrap: wrap; }
 body.remote .mt-name { flex:1 1 auto; min-width:0; }
 body.remote .mt-cadence { order:3; flex:1 1 60%; }
@@ -3705,15 +3706,16 @@ function editorFromTrigger(t) {
   if (m) return { shape: 'daily', at: pad2(+m[2]) + ':' + pad2(+m[1]) };
   return { shape: 'advanced', cron: c };
 }
-/** One trigger: name · cadence (edited/reset) · next · last run · switch · Edit. */
-function missionTriggerRow(t, nowIso) {
+/** One trigger: name · cadence (edited/reset) · next · last run · switch · Edit. `locked` disables the controls. */
+function missionTriggerRow(t, nowIso, locked) {
+  var dis = locked ? ' disabled' : '';
   var lr = t.lastRun;
   var dot = lr && ['go', 'skip', 'fail', 'paused', 'dropped'].indexOf(lr.kind) >= 0 ? lr.kind : 'none';
   var when = escHtml(whenText(t.nextFire, nowIso));
   var next = !t.enabled ? '— off' : (t.nextFirePreview ? '<em>' + when + '</em>' : when);
   var edited = t.overridden && t.overridden.length
     ? ' <span class="mt-edited" title="' + escHtml('changed here: ' + t.overridden.join(', ')) + '">edited</span>' +
-      ' <button type="button" class="mt-link" data-act="reset">reset</button>'
+      ' <button type="button" class="mt-link" data-act="reset"' + dis + '>reset</button>'
     : '';
   var summary = lr ? String(lr.summary || '') : '';
   var line = summary.split('\n')[0];
@@ -3726,8 +3728,8 @@ function missionTriggerRow(t, nowIso) {
     '<span class="mt-last" data-act="last" title="' + escHtml(summary) + '"><span class="lr-dot ' + dot + '"></span>' +
       '<span class="mt-last-text">' + last + '</span><span class="mt-last-full">' + escHtml(summary) + '</span></span>' +
     '<button type="button" class="sw-toggle" role="switch" data-act="toggle" aria-checked="' + (t.enabled ? 'true' : 'false') + '"' +
-      ' aria-label="' + escHtml((t.enabled ? 'turn off ' : 'turn on ') + label) + '"><span class="sw-knob"></span></button>' +
-    '<button type="button" class="mt-edit" data-act="edit">Edit</button>' +
+      ' aria-label="' + escHtml((t.enabled ? 'turn off ' : 'turn on ') + label) + '"' + dis + '><span class="sw-knob"></span></button>' +
+    '<button type="button" class="mt-edit" data-act="edit"' + dis + '>Edit</button>' +
   '</div>';
 }
 /** Daemon state, the one Pause/Resume button, and the GPU line when a pass is running. */
@@ -3760,9 +3762,13 @@ function missionsListHtml(view, nowIso) {
     out += '<div class="panel full-width mt-card" data-mission="' + escHtml(m.id) + '">' +
       '<div class="panel-title" title="' + escHtml(m.goal) + '">' + escHtml(m.id) + (goal ? ' <span class="mt-goal">— ' + escHtml(goal) + '</span>' : '') + '</div>';
     if (m.error) out += '<div class="mt-msg err">' + escHtml(m.error) + '</div>';
+    // A bad schedule.json reads as empty here while the daemon keeps its last good overrides: the switches
+    // would show the wrong state, so they are locked (the server 409s an edit too) until the file is fixed.
+    var locked = m.scheduleStatus === 'bad';
+    if (locked) out += '<div class="mt-msg err">' + escHtml('schedule file unreadable — the daemon keeps its last good settings; fix or delete ~/.cynco/missions/' + m.id + '/schedule.json') + '</div>';
     var ts = m.triggers || [];
     for (var j = 0; j < ts.length; j++) {
-      out += '<div class="mt-item" data-mission="' + escHtml(m.id) + '" data-trigger="' + escHtml(ts[j].id) + '">' + missionTriggerRow(ts[j], nowIso) + '</div>';
+      out += '<div class="mt-item" data-mission="' + escHtml(m.id) + '" data-trigger="' + escHtml(ts[j].id) + '">' + missionTriggerRow(ts[j], nowIso, locked) + '</div>';
     }
     if (m.orphans && m.orphans.length) out += '<div class="mt-empty">' + escHtml('schedule.json names unknown triggers: ' + m.orphans.join(', ')) + '</div>';
     out += '</div>';
@@ -3908,7 +3914,7 @@ function closeMissionEditor(item) {
   if (!tab) return;
   tab.addEventListener('click', function(ev) {
     var el = ev.target.closest('[data-act]');
-    if (!el || !tab.contains(el)) return;
+    if (!el || !tab.contains(el) || el.disabled) return;
     var act = el.getAttribute('data-act');
     if (act === 'pause') { setDaemonPaused(el.getAttribute('data-paused') === 'true'); return; }
     var item = el.closest('.mt-item');

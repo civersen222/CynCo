@@ -50,6 +50,8 @@ export type MissionView = {
   running: { triggerId: string; since: string; timeoutMs: number } | null
   triggers: TriggerView[]
   orphans: string[]
+  /** readSchedule's verdict. On 'bad' the daemon runs on its last good overrides, which this view cannot see. */
+  scheduleStatus: 'ok' | 'absent' | 'bad'
   error?: string
 }
 export type MissionsView = { paused: DaemonControl; missions: MissionView[] }
@@ -135,10 +137,11 @@ function missionView(p: MissionsPaths, dirName: string, now: Date): MissionView 
   try {
     mission = JSON.parse(readFileSync(file, 'utf-8')) as MissionConfig
   } catch (e) {
-    return { id: dirName, goal: '', cwd: null, running: null, triggers: [], orphans: [], error: e instanceof Error ? e.message : String(e) }
+    return { id: dirName, goal: '', cwd: null, running: null, triggers: [], orphans: [], scheduleStatus: readSchedule(dir).status, error: e instanceof Error ? e.message : String(e) }
   }
   const state = readJson<MissionState>(join(dir, 'state.json'))
-  const { triggers, orphans } = applySchedule(mission.triggers ?? [], readSchedule(dir).schedule)
+  const sched = readSchedule(dir)
+  const { triggers, orphans } = applySchedule(mission.triggers ?? [], sched.schedule)
   const runs = lastRuns(dir)
   const busy = readGpuBusy(p.gpuBusyPath)
   return {
@@ -148,6 +151,7 @@ function missionView(p: MissionsPaths, dirName: string, now: Date): MissionView 
     running: busy && busy.task === dirName ? { triggerId: busy.triggerId, since: busy.startedAt, timeoutMs: busy.timeoutMs } : null,
     triggers: triggers.map((t) => triggerView(t, mission, state, runs, now)),
     orphans,
+    scheduleStatus: sched.status,
   }
 }
 
@@ -179,6 +183,9 @@ export function patchTrigger(p: MissionsPaths, missionId: string, triggerId: str
   if (!mission) return { status: 404, json: { error: `unknown mission ${missionId}` } }
   const spec = (mission.triggers ?? []).find((t) => t.id === triggerId)
   if (!spec) return { status: 404, json: { error: `unknown trigger ${triggerId}` } }
+  // An unreadable file reads as empty: writing over it would drop every other override the daemon still
+  // honours from memory (its last good set). Refuse until the owner fixes or deletes it.
+  if (readSchedule(dir).status === 'bad') return { status: 409, json: { error: 'schedule.json is unreadable; fix or delete it before editing' } }
   const now = p.now?.() ?? new Date()
   const reset = !!body && typeof body === 'object' && (body as Record<string, unknown>).reset === true
   let next: TriggerOverride | null = null

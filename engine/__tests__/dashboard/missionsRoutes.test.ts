@@ -58,6 +58,15 @@ describe('mission schedule routes', () => {
     expect(readFileSync(join(mdir, 'schedule.json'), 'utf8')).toContain('dynasty-tin-trades')
   })
 
+  it('PUT on a mission whose schedule.json is unreadable is 409 and leaves the file alone', async () => {
+    const { base, auth } = await start(p)
+    writeFileSync(join(mdir, 'schedule.json'), '{"triggers": {')
+    const r = await fetch(`${base}/api/missions/mfl-dynasty/triggers/dynasty-tin-trades`, { method: 'PUT', headers: auth, body: JSON.stringify({ enabled: false }) })
+    expect(r.status).toBe(409)
+    expect((await r.json() as any).error).toBe('schedule.json is unreadable; fix or delete it before editing')
+    expect(readFileSync(join(mdir, 'schedule.json'), 'utf8')).toBe('{"triggers": {')
+  })
+
   it('PUT with no token is 401', async () => {
     const { base } = await start(p)
     const r = await fetch(`${base}/api/missions/mfl-dynasty/triggers/dynasty-tin-trades`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"enabled":false}' })
