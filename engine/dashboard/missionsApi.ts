@@ -185,7 +185,13 @@ export function patchTrigger(p: MissionsPaths, missionId: string, triggerId: str
   if (!reset) {
     const v = validateOverride(body)
     if (!v.ok) return { status: 400, json: { error: v.error } }
-    next = { ...(readSchedule(dir).schedule.triggers[triggerId] ?? {}), ...v.value }
+    // A body that names any cadence field carries the whole new shape: drop the old shape's fields first,
+    // or a stale `at` or `cron` survives a daily <-> cron change and the result is rejected.
+    const existing: TriggerOverride = { ...(readSchedule(dir).schedule.triggers[triggerId] ?? {}) }
+    if (CADENCE_KEYS.some((k) => (v.value as Record<string, unknown>)[k] !== undefined)) {
+      for (const k of CADENCE_KEYS) delete (existing as Record<string, unknown>)[k]
+    }
+    next = { ...existing, ...v.value }
     const eff = applySchedule([spec], { triggers: { [triggerId]: next } }).triggers[0]
     const problem = scheduleProblem(eff, next, now)
     if (problem) return { status: 400, json: { error: `override does not produce a valid schedule: ${problem}` } }

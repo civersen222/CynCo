@@ -104,6 +104,22 @@ describe('missionsApi', () => {
     expect((reset.json as any).enabled).toBe(true)
   })
 
+  it('patchTrigger: a second cadence shape change replaces the first, keeping enabled and timeoutMs', () => {
+    const stored = (id: string) => JSON.parse(readFileSync(join(mdir, 'schedule.json'), 'utf-8')).triggers[id]
+    // tin trades (cron) -> daily 13:00 -> every 4 hours
+    expect(patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-trades', { kind: 'daily', at: '13:00' }).status).toBe(200)
+    expect(patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-trades', { enabled: false, timeoutMs: 120000 }).status).toBe(200)
+    const every = patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-trades', { kind: 'cron', cron: '25 9-17/4 * * *' })
+    expect(every.status).toBe(200)
+    expect(stored('dynasty-tin-trades')).toEqual({ enabled: false, timeoutMs: 120000, kind: 'cron', cron: '25 9-17/4 * * *' })
+    // tin daily (daily) -> every 3 hours -> daily 13:00
+    expect(patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-daily', { kind: 'cron', cron: '0 7-21/3 * * *' }).status).toBe(200)
+    const daily = patchTrigger(p, 'mfl-dynasty', 'dynasty-tin-daily', { kind: 'daily', at: '13:00' })
+    expect(daily.status).toBe(200)
+    expect(stored('dynasty-tin-daily')).toEqual({ kind: 'daily', at: '13:00' })
+    expect((daily.json as any).cadenceText).toBe('daily at 1:00 PM')
+  })
+
   it('patchTrigger 404s an unknown mission or trigger', () => {
     expect(patchTrigger(p, 'nope', 'dynasty-tin-daily', { enabled: false }).status).toBe(404)
     expect(patchTrigger(p, 'mfl-dynasty', 'nope', { enabled: false }).status).toBe(404)
