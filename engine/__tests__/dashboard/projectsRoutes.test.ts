@@ -153,10 +153,10 @@ describe('POST /api/projects/:slug/knowledge', () => {
 
   it('an unsupported extension 415s naming the extension', async () => {
     const form = new FormData()
-    form.set('file', new File([new Uint8Array([1, 2, 3])], 'resume.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }))
+    form.set('file', new File([new Uint8Array([1, 2, 3])], 'deck.pptx', { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }))
     const res = await authFetch(`/api/projects/${slug}/knowledge`, { method: 'POST', body: form })
     expect(res.status).toBe(415)
-    expect((await res.json() as any).error).toBe('unsupported file type .docx')
+    expect((await res.json() as any).error).toBe('unsupported file type .pptx')
   })
 
   // The brief's hand-set `content-length: 60000000` mismatched-header approach
