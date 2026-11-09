@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test'
-import { comfyConfig as comfyConfigForTransforms, comfyWorkflowFor } from '../../imagegen/config.js'
+import { comfyConfig as comfyConfigForTransforms, comfyWorkflowFor, WORKFLOW_VARS } from '../../imagegen/config.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -161,6 +161,15 @@ describe('transform workflows (image box §4)', () => {
       expect(r.cfg.outline.source).toBe('builtin')
       expect(r.cfg.outline.usesCheckpoint).toBe(false)
     }
+  })
+  it('the config carries the built-in edit graph (no checkpoint) under its own variable', () => {
+    const r = comfyConfigForTransforms({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188' })
+    expect(r.ok).toBe(true)
+    if (r.ok) { expect(r.cfg.edit.source).toBe('builtin'); expect(r.cfg.edit.usesCheckpoint).toBe(false) }
+    expect(WORKFLOW_VARS.edit).toBe('LOCALCODE_COMFYUI_WORKFLOW_EDIT')
+    const bad = comfyConfigForTransforms({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188', LOCALCODE_COMFYUI_WORKFLOW_EDIT: '/definitely/not/here.json' })
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) expect(bad.reason.startsWith('LOCALCODE_COMFYUI_WORKFLOW_EDIT: ')).toBe(true)
   })
   it('a bad vary file is refused under its own variable name', () => {
     const r = comfyConfigForTransforms({ LOCALCODE_COMFYUI_URL: 'http://192.168.0.47:8188', LOCALCODE_COMFYUI_WORKFLOW_VARY: '/definitely/not/here.json' })

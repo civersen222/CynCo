@@ -538,17 +538,20 @@ describe('servedProjectFile', () => {
 
 describe('pictureRequests (image box §4)', () => {
   const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
-    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
     a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
     b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
     c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'C' } },
     d: { type: 'Image', props: { src: 'sketches/front.png', alt: 'D' } },
+    e: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', prompt: 'add a pergola over the table', alt: 'E' } },
+    f: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', alt: 'F' } },
   }) }
   it('names each picture\'s kind, prompt and source', () => {
     expect(pictureRequests(spec).map(r => [r.id, r.kind, r.prompt, r.source])).toEqual([
       ['a', 'generate', 'a tall green alien', undefined],
       ['b', 'vary', 'add a pergola', 'knowledge/yard.jpg'],
       ['c', 'outline', '', 'knowledge/porch.jpg'],
+      ['e', 'edit', 'add a pergola over the table', 'knowledge/yard.jpg'],
     ])
   })
   it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {
@@ -563,6 +566,7 @@ describe('transform keys and schema-2 records (image box §4)', () => {
     const o1 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'aa'.repeat(32) })
     const o2 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'bb'.repeat(32) })
     const v1 = imageKey({ ...FIELDS, transform: 'vary', source: 'aa'.repeat(32) })
-    expect(new Set([base, o1, o2, v1]).size).toBe(4)
+    const e1 = imageKey({ ...FIELDS, transform: 'edit', source: 'aa'.repeat(32) })
+    expect(new Set([base, o1, o2, v1, e1]).size).toBe(5)
   })
 })

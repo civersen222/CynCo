@@ -50,7 +50,7 @@ function megabytes(n: number): string {
 }
 
 /** Where a custom node a built-in transform graph uses comes from, for the probe's refusal. */
-export const NODE_PACKS: Record<string, string> = { LineArtPreprocessor: 'comfyui_controlnet_aux' }
+export const NODE_PACKS: Record<string, string> = { LineArtPreprocessor: 'comfyui_controlnet_aux', UnetLoaderGGUF: 'ComfyUI-GGUF' }
 
 export class ComfyClient {
   readonly host: string

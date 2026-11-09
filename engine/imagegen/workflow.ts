@@ -20,8 +20,10 @@ export const GENERATE_PLACEHOLDERS = ['prompt', 'negative', 'seed', 'width', 'he
 /** Every placeholder any workflow may use: the generate set plus the transforms' `image` (the uploaded input's ComfyUI name) and `denoise` (image box §4). */
 export const PLACEHOLDERS = [...GENERATE_PLACEHOLDERS, 'image', 'denoise'] as const
 export type Placeholder = typeof PLACEHOLDERS[number]
-/** generate = today's text-to-image; vary = the owner's photo varied toward an idea; outline = clean line art from a photo. */
-export type WorkflowKind = 'generate' | 'vary' | 'outline'
+/** generate = today's text-to-image; vary = the owner's photo varied toward an idea; outline = clean line art from a photo; edit = the photo changed as instructed (F193). */
+export type WorkflowKind = 'generate' | 'vary' | 'outline' | 'edit'
+/** The kinds that start from a project photo. */
+export type TransformKind = Exclude<WorkflowKind, 'generate'>
 
 /** Placeholders that become numbers: only as a whole string value, never inside a longer one. */
 const NUMERIC: ReadonlySet<string> = new Set(['seed', 'width', 'height', 'steps', 'cfg', 'denoise'])
@@ -91,6 +93,44 @@ export const BUILTIN_OUTLINE: ComfyGraph = {
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['20', 0] } },
 }
 export const BUILTIN_OUTLINE_SHA = 'builtin-outline-1'
+
+/**
+ * edit (F193): the photo changed as the instruction says — add, remove, replace,
+ * restyle something — on Qwen-Image-Edit-2509, the official ComfyUI template's
+ * graph with the GGUF loader in place of UNETLoader so the 20B model fits the
+ * 16 GB box (Q4_K_S, 12.2 GB) and the 4-step Lightning LoRA so an edit takes
+ * seconds, not minutes. Sampling is the LoRA's (`EDIT_SAMPLING`: 4 steps, cfg 1,
+ * euler/simple, denoise 1) and the negative prompt is empty, whatever the generate
+ * configuration says; `FluxKontextImageScale` sizes the output near 1 MP at the
+ * photo's aspect. A vary keeps the composition and repaints surfaces; this is the
+ * transform for "add a pergola". Files (ComfyUI/models/…): unet/ the GGUF,
+ * text_encoders/qwen_2.5_vl_7b_fp8_scaled, vae/qwen_image_vae, loras/ the LoRA.
+ * Needs the ComfyUI-GGUF node pack (UnetLoaderGGUF).
+ */
+export const EDIT_SAMPLING = { steps: 4, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: '' } as const
+export const BUILTIN_EDIT: ComfyGraph = {
+  '37': { class_type: 'UnetLoaderGGUF', inputs: { unet_name: 'Qwen-Image-Edit-2509-Q4_K_S.gguf' } },
+  '89': { class_type: 'LoraLoaderModelOnly', inputs: { model: ['37', 0], lora_name: 'Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors', strength_model: 1 } },
+  '66': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['89', 0], shift: 3 } },
+  '75': { class_type: 'CFGNorm', inputs: { model: ['66', 0], strength: 1 } },
+  '38': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
+  '39': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+  '10': { class_type: 'LoadImage', inputs: { image: '{{image}}' } },
+  '117': { class_type: 'FluxKontextImageScale', inputs: { image: ['10', 0] } },
+  '88': { class_type: 'VAEEncode', inputs: { pixels: ['117', 0], vae: ['39', 0] } },
+  '111': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['38', 0], vae: ['39', 0], image1: ['117', 0], prompt: '{{prompt}}' } },
+  '110': { class_type: 'TextEncodeQwenImageEditPlus', inputs: { clip: ['38', 0], vae: ['39', 0], image1: ['117', 0], prompt: '' } },
+  '3': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: '{{seed}}', steps: EDIT_SAMPLING.steps, cfg: EDIT_SAMPLING.cfg, sampler_name: EDIT_SAMPLING.sampler, scheduler: EDIT_SAMPLING.scheduler, denoise: 1,
+      model: ['75', 0], positive: ['111', 0], negative: ['110', 0], latent_image: ['88', 0],
+    },
+  },
+  '8': { class_type: 'VAEDecode', inputs: { samples: ['3', 0], vae: ['39', 0] } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['8', 0] } },
+}
+export const BUILTIN_EDIT_SHA = 'builtin-edit-1'
 
 /**
  * The size a transform paints at: the photo's aspect, about the configured area

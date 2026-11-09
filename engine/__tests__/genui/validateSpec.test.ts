@@ -526,6 +526,14 @@ describe('validateSpec: Image source + transform', () => {
     expect(r.errors).toEqual([])
     expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola over the patio', alt: 'Yard' })
   })
+  it('edit keeps source, transform and the instruction in prompt; without an instruction it is dropped (F193)', () => {
+    const r = one('Image', { source: 'knowledge/yard.jpg', transform: 'edit', prompt: 'add a wooden pergola over the table', alt: 'Yard' })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/yard.jpg', transform: 'edit', prompt: 'add a wooden pergola over the table', alt: 'Yard' })
+    const bare = one('Image', { source: 'knowledge/yard.jpg', transform: 'edit', alt: 'Yard' })
+    expect(bare.spec).toBeNull()
+    expect(bare.errors.join(' ')).toMatch(/edit.*prompt|prompt.*edit/)
+  })
   it('outline needs no prompt and is drawable on its own', () => {
     const r = one('Image', { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'Porch outline' })
     expect(r.errors).toEqual([])

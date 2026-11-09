@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, fitToArea, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues } from '../../imagegen/workflow.js'
+import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, EDIT_SAMPLING, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -98,6 +98,28 @@ describe('vary and outline', () => {
     const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'vary')
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.reason).toContain('{{image}}')
+  })
+  it('the edit graph (Qwen-Image-Edit-2509 GGUF + Lightning, F193): the instruction is the positive prompt, the uploaded photo feeds the encoder and the latent, sampling is fixed, no checkpoint', () => {
+    expect(BUILTIN_EDIT_SHA).toBe('builtin-edit-1')
+    expect(parseWorkflow(JSON.stringify(BUILTIN_EDIT), 'builtin-edit', 'edit').ok).toBe(true)
+    const classes = workflowClasses(BUILTIN_EDIT)
+    for (const c of ['UnetLoaderGGUF', 'LoraLoaderModelOnly', 'ModelSamplingAuraFlow', 'CFGNorm', 'CLIPLoader', 'VAELoader', 'LoadImage', 'FluxKontextImageScale', 'VAEEncode', 'TextEncodeQwenImageEditPlus', 'KSampler', 'VAEDecode', 'SaveImage']) expect(classes).toContain(c)
+    expect(classes).not.toContain('CheckpointLoaderSimple')
+    expect([...placeholdersIn(BUILTIN_EDIT)].sort()).toEqual(['filename_prefix', 'image', 'prompt', 'seed'])
+    const g = fillWorkflow(BUILTIN_EDIT, { ...VALUES, prompt: 'add a wooden pergola over the table', image: 'cynco-in.jpg' })
+    expect(Object.values(g).find(n => n.class_type === 'LoadImage')!.inputs.image).toBe('cynco-in.jpg')
+    const encodes = Object.values(g).filter(n => n.class_type === 'TextEncodeQwenImageEditPlus').map(n => n.inputs.prompt)
+    expect(encodes.sort()).toEqual(['', 'add a wooden pergola over the table'])
+    const ks = Object.values(g).find(n => n.class_type === 'KSampler')!.inputs
+    expect([ks.steps, ks.cfg, ks.sampler_name, ks.scheduler, ks.denoise]).toEqual([4, 1, 'euler', 'simple', 1])
+    expect(Object.values(g).find(n => n.class_type === 'UnetLoaderGGUF')!.inputs.unet_name).toBe('Qwen-Image-Edit-2509-Q4_K_S.gguf')
+    expect(Object.values(g).find(n => n.class_type === 'LoraLoaderModelOnly')!.inputs.lora_name).toBe('Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors')
+    expect(EDIT_SAMPLING).toEqual({ steps: 4, cfg: 1, sampler: 'euler', scheduler: 'simple', negative: '' })
+  })
+  it('an edit workflow needs {{image}} and {{prompt}}: the outline graph is refused as kind edit naming the prompt', () => {
+    const r = parseWorkflow(JSON.stringify(BUILTIN_OUTLINE), 'mine.json', 'edit')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.reason).toContain('{{prompt}}')
   })
   it('an unfilled image token is left in place rather than becoming "undefined"', () => {
     const g = fillWorkflow(BUILTIN_VARY, VALUES)

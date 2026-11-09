@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { cyncoHome } from '../paths.js'
-import { BUILTIN_OUTLINE, BUILTIN_OUTLINE_SHA, BUILTIN_VARY, BUILTIN_VARY_SHA, BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA, parseWorkflow, placeholdersIn, type ComfyGraph, type WorkflowKind } from './workflow.js'
+import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE, BUILTIN_OUTLINE_SHA, BUILTIN_VARY, BUILTIN_VARY_SHA, BUILTIN_WORKFLOW, BUILTIN_WORKFLOW_SHA, parseWorkflow, placeholdersIn, type ComfyGraph, type WorkflowKind } from './workflow.js'
 
 // ─── fixed in code, not knobs ─────────────────────────────────────────
 // A different sampler, scheduler or model family means a custom workflow file.
@@ -53,10 +53,10 @@ export function comfyWorkflow(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /** The variable that names each kind's workflow file; '' = that kind's built-in graph (image box §4). */
-export const WORKFLOW_VARS: Record<WorkflowKind, string> = { generate: 'LOCALCODE_COMFYUI_WORKFLOW', vary: 'LOCALCODE_COMFYUI_WORKFLOW_VARY', outline: 'LOCALCODE_COMFYUI_WORKFLOW_OUTLINE' }
+export const WORKFLOW_VARS: Record<WorkflowKind, string> = { generate: 'LOCALCODE_COMFYUI_WORKFLOW', vary: 'LOCALCODE_COMFYUI_WORKFLOW_VARY', outline: 'LOCALCODE_COMFYUI_WORKFLOW_OUTLINE', edit: 'LOCALCODE_COMFYUI_WORKFLOW_EDIT' }
 export function comfyWorkflowFor(kind: WorkflowKind, env: NodeJS.ProcessEnv = process.env): string {
   if (kind === 'generate') return comfyWorkflow(env)
-  const v = kind === 'vary' ? env.LOCALCODE_COMFYUI_WORKFLOW_VARY : env.LOCALCODE_COMFYUI_WORKFLOW_OUTLINE
+  const v = kind === 'vary' ? env.LOCALCODE_COMFYUI_WORKFLOW_VARY : kind === 'edit' ? env.LOCALCODE_COMFYUI_WORKFLOW_EDIT : env.LOCALCODE_COMFYUI_WORKFLOW_OUTLINE
   return v && v.trim() ? v.trim() : ''
 }
 
@@ -114,9 +114,10 @@ export type ComfyConfig = {
   checkpoint: string | null
   /** The text-to-image graph (today's pictures). */
   workflow: ComfyWorkflow
-  /** The two photo transforms (image box §4). */
+  /** The photo transforms (image box §4; edit = F193). */
   vary: ComfyWorkflow
   outline: ComfyWorkflow
+  edit: ComfyWorkflow
   width: number
   height: number
   steps: number
@@ -153,6 +154,7 @@ const BUILTINS: Record<WorkflowKind, ComfyWorkflow> = {
   generate: { source: 'builtin', sha256: BUILTIN_WORKFLOW_SHA, graph: BUILTIN_WORKFLOW, usesCheckpoint: true },
   vary: { source: 'builtin', sha256: BUILTIN_VARY_SHA, graph: BUILTIN_VARY, usesCheckpoint: true },
   outline: { source: 'builtin', sha256: BUILTIN_OUTLINE_SHA, graph: BUILTIN_OUTLINE, usesCheckpoint: false },
+  edit: { source: 'builtin', sha256: BUILTIN_EDIT_SHA, graph: BUILTIN_EDIT, usesCheckpoint: false },
 }
 
 function loadWorkflow(setting: string, kind: WorkflowKind = 'generate'): { ok: true; workflow: ComfyWorkflow } | { ok: false; reason: string } {
@@ -188,10 +190,12 @@ export function comfyConfig(env: NodeJS.ProcessEnv = process.env): { ok: true; c
   if (!vary.ok) return vary
   const outline = loadWorkflow(comfyWorkflowFor('outline', env), 'outline')
   if (!outline.ok) return outline
+  const edit = loadWorkflow(comfyWorkflowFor('edit', env), 'edit')
+  if (!edit.ok) return edit
   return {
     ok: true,
     cfg: {
-      ...base, checkpoint: comfyCheckpoint(env) || null, workflow: wf.workflow, vary: vary.workflow, outline: outline.workflow, ...size,
+      ...base, checkpoint: comfyCheckpoint(env) || null, workflow: wf.workflow, vary: vary.workflow, outline: outline.workflow, edit: edit.workflow, ...size,
       steps: comfySteps(env), cfg: comfyCfg(env), timeoutMs: comfyTimeoutS(env) * 1000,
       sampler: SAMPLER, scheduler: SCHEDULER, negative: NEGATIVE_PROMPT,
     },

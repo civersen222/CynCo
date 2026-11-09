@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { ComfyClient, ComfyError, probeComfy } from '../../imagegen/client.js'
+import { ComfyClient, ComfyError, NODE_PACKS, probeComfy } from '../../imagegen/client.js'
 import { comfyConfig, type ComfyConfig } from '../../imagegen/config.js'
 import { RUN_ID } from '../../imagegen/store.js'
 import { BUILTIN_WORKFLOW, fillWorkflow } from '../../imagegen/workflow.js'
@@ -227,5 +227,12 @@ describe('uploadImage and free', () => {
     await c.free()
     const call = mock.calls.find(k => k.path === '/free')!
     expect(call.body).toEqual({ unload_models: true, free_memory: true })
+  })
+})
+
+describe('NODE_PACKS (what a missing transform node tells the operator to install)', () => {
+  it('names the pack for the line-art node and for the GGUF loader the edit graph uses (F193)', () => {
+    expect(NODE_PACKS.LineArtPreprocessor).toBe('comfyui_controlnet_aux')
+    expect(NODE_PACKS.UnetLoaderGGUF).toBe('ComfyUI-GGUF')
   })
 })
