@@ -1,6 +1,6 @@
 # Wakefulness core: the GPU box sleeps, the doorman wakes it, the model loads on demand
 
-**Date:** 2026-11-08 · **Status:** built (slices 1–6 of the design; 2b open) · **Design record:** `2026-11-08-wakefulness-design.md` (facts, goals, the six slices, the post-review decisions)
+**Date:** 2026-11-08 · **Status:** built (all slices of the design, 2b as Ollama on the 4070 box) · **Design record:** `2026-11-08-wakefulness-design.md` (facts, goals, the six slices, the post-review decisions)
 **Guards:** `scripts/doorman/test_doorman.py`; `engine/__tests__/power/{activity,awake}.test.ts`; `engine/__tests__/daemon/{gpuBusyFile,wakeSchedule,taskRunner}.test.ts`; `engine/__tests__/llama/{lazyLoad,processManager}.test.ts` (`describe('ProcessManager.ensureRunningLazy')`).
 
 ## Decision
