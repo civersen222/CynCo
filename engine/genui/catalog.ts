@@ -170,7 +170,7 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
   },
   Image: {
     group: 'Content', children: 'none',
-    description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "edit" (change it as the "prompt" instructs: add, remove, replace, restyle something), "vary" (a variation toward the "prompt") or "outline" (line art, no prompt).',
+    description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "edit" (change it as the "prompt" instructs: add, remove, replace, restyle something — even when the ask says "variation"), "vary" (reimagine the whole picture toward the "prompt") or "outline" (line art, no prompt).',
     props: {
       prompt: str('what the picture shows'),
       // Another take of one design (engine/imagegen keys on it; F176). ComfyUI's KSampler takes up to 2^64, but JS must stay exact.

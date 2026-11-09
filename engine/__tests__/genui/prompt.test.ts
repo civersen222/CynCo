@@ -16,7 +16,7 @@ import { validateSpec } from '../../genui/spec.js'
 describe('genui prompt section', () => {
   const text = genuiPromptSection('project')
   const session = genuiPromptSection('session')
-  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation). Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself. A photo in the project can be transformed instead: Image "source" (its path) + "transform" "edit" ("prompt" = the change to make: add, remove or replace something), "vary" ("prompt" = an idea to drift toward) or "outline" (line art to paint from).'
+  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design: the same prompt with different "seed"s. Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself. A photo in the project can be transformed instead: Image "source" (its path) + "transform" "edit" ("prompt" = the change: add, remove or replace something — even when the ask says "variation"), "vary" (reimagine the whole picture) or "outline" (line art to paint from).'
   /** The options example as the session section prints it. */
   const sessionOptionsExample = () => {
     const at = session.indexOf('{"surface":"path-options"')
@@ -99,7 +99,7 @@ describe('genui prompt section', () => {
   // asked for, that a prompt may be as long as the design needs, and that
   // the engine paints — never the chat.
   it('says that takes are Images with one prompt and different seeds, prompts may be paragraphs, and the chat never paints', () => {
-    expect(text).toContain('Several takes of one design are several Images with the same prompt and different "seed"s (change the prompt for a camera or lighting variation).')
+    expect(text).toContain('Several takes of one design: the same prompt with different "seed"s.')
     expect(text).toContain('as long as the design needs (whole paragraphs are fine)')
     expect(text).toContain('Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.')
     for (const s of ['Several takes', 'whole paragraphs', 'never call an image server']) expect(session).not.toContain(s)
