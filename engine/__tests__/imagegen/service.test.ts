@@ -10,6 +10,7 @@ import { comfyConfig, UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
 import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { BUILTIN_CLASSES, canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
+import { OUTLINE_INSTRUCTION } from '../../imagegen/workflow.js'
 import { sha256Of } from '../../projects/layout.js'
 import { PNG } from 'pngjs'
 
@@ -1786,7 +1787,7 @@ describe('ImageService: files from the project (an Image whose src is a path)', 
 // varied toward an idea or turned into outlines, on ComfyUI.
 describe('ImageService: transforms', () => {
   const EDIT_NODES = ['UnetLoaderGGUF', 'LoraLoaderModelOnly', 'ModelSamplingAuraFlow', 'CFGNorm', 'CLIPLoader', 'VAELoader', 'FluxKontextImageScale', 'TextEncodeQwenImageEditPlus']
-  const NODES = [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode', 'LineArtPreprocessor', ...EDIT_NODES]
+  const NODES = [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode', ...EDIT_NODES]
   const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 1, 2, 3])
   function photo(rel = 'knowledge/yard.jpg'): string { mkdirSync(join(dir, 'knowledge'), { recursive: true }); writeFileSync(join(dir, rel), JPG); return rel }
   function tspec(props: Record<string, unknown>): UiSpec {
@@ -1896,21 +1897,24 @@ describe('ImageService: transforms', () => {
     expect(main).toMatch(/makeLookClient\(/)
     expect(main).toMatch(/\.unload\(\)/)
   })
-  it('outline: the preprocessor graph has no text encoder, needs no checkpoint, and the record carries an empty prompt', async () => {
+  it('outline: the edit recipe with the tracing-sheet instruction as the prompt (plus the model\'s extras), fixed 4-step sampling, checkpoint none; no line-art node', async () => {
     mock = await startMockComfy({ nodes: NODES })
     const s = start(); const rel = photo('knowledge/porch.png')
-    const sp = tspec({ source: rel, transform: 'outline' })
+    const sp = tspec({ source: rel, transform: 'outline', prompt: 'mark the vanishing point' })
     s.annotate(sp, at()).start()
     await s.whenIdle()
     const key = keyOf(sp, 0)
     const g = graphOf()
-    expect(node(g, 'CLIPTextEncode')).toBeUndefined()
-    expect(node(g, 'LineArtPreprocessor')).toBeDefined()
+    expect(node(g, 'LineArtPreprocessor')).toBeUndefined()
+    expect(node(g, 'UnetLoaderGGUF')).toBeDefined()
     expect(node(g, 'LoadImage')!.inputs.image).toBe(`cynco-${key}.png`)
+    const prompts = Object.values(g).filter(n => n.class_type === 'TextEncodeQwenImageEditPlus').map(n => String(n.inputs.prompt))
+    expect(prompts.some(p => p.startsWith(OUTLINE_INSTRUCTION) && p.endsWith('Also: mark the vanishing point'))).toBe(true)
     const sc = readSidecar(dir, key)!
     expect(sc.status).toBe('done')
     expect(sc.transform).toBe('outline')
-    expect(sc.prompt).toBe('')
+    expect(sc.prompt).toBe(OUTLINE_INSTRUCTION + ' Also: mark the vanishing point')
+    expect([sc.steps, sc.cfg, sc.sampler, sc.scheduler, sc.negative]).toEqual([4, 1, 'euler', 'simple', ''])
     expect(sc.checkpoint).toBe('none')
     expect(mock.calls.some(c => c.path === '/free')).toBe(true)
   })
@@ -1942,8 +1946,8 @@ describe('ImageService: transforms', () => {
     expect(mock.calls.some(c => c.path === '/upload/image' || c.path === '/prompt')).toBe(false)
   })
 
-  it('a server without the line-art node names the node pack', async () => {
-    mock = await startMockComfy({ nodes: [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode'] })
+  it('a server without the GGUF loader names the node and its pack for an outline', async () => {
+    mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })
     const s = start(); const rel = photo()
     const sp = tspec({ source: rel, transform: 'outline' })
     s.annotate(sp, at()).start()
@@ -1951,7 +1955,7 @@ describe('ImageService: transforms', () => {
     const key = keyOf(sp, 0)
     const sc = readSidecar(dir, key)!
     expect(sc.status).toBe('failed')
-    expect(sc.reason).toContain('LineArtPreprocessor')
-    expect(sc.reason).toContain('comfyui_controlnet_aux')
+    expect(sc.reason).toContain('UnetLoaderGGUF')
+    expect(sc.reason).toContain('ComfyUI-GGUF')
   })
 })

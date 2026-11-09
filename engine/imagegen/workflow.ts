@@ -20,7 +20,7 @@ export const GENERATE_PLACEHOLDERS = ['prompt', 'negative', 'seed', 'width', 'he
 /** Every placeholder any workflow may use: the generate set plus the transforms' `image` (the uploaded input's ComfyUI name) and `denoise` (image box §4). */
 export const PLACEHOLDERS = [...GENERATE_PLACEHOLDERS, 'image', 'denoise'] as const
 export type Placeholder = typeof PLACEHOLDERS[number]
-/** generate = today's text-to-image; vary = the owner's photo varied toward an idea; outline = clean line art from a photo; edit = the photo changed as instructed (F193). */
+/** generate = today's text-to-image; vary = the owner's photo varied toward an idea; edit = the photo changed as instructed (F193); outline = a tracing sheet to paint from, drawn by the edit recipe with a fixed instruction (2026-11-09). */
 export type WorkflowKind = 'generate' | 'vary' | 'outline' | 'edit'
 /** The kinds that start from a project photo. */
 export type TransformKind = Exclude<WorkflowKind, 'generate'>
@@ -83,16 +83,26 @@ export const BUILTIN_VARY: ComfyGraph = {
 export const BUILTIN_VARY_SHA = 'builtin-vary-1'
 
 /**
- * outline (image box §4): clean black-on-white lines to paint from. The
- * preprocessor's output is the deliverable — no diffusion, so no model-family
- * mismatch (SDXL has no native lineart ControlNet). Needs comfyui_controlnet_aux.
+ * outline (image box §4, redone 2026-11-09): a tracing sheet to paint from. The first
+ * version ran a line-art preprocessor (`comfyui_controlnet_aux`) whose raw output was
+ * white lines on black with every blade of grass as noise — nothing the owner would
+ * trace. The edit model draws exactly what a painter wants (check 5: black ink
+ * contours, perspective guides, a marked vanishing point), so an outline is the edit
+ * recipe with this instruction fixed in front of whatever the model adds (`outlinePrompt`).
+ * Owner's words: "this is my way to bridge my poor drawing ability".
  */
-export const BUILTIN_OUTLINE: ComfyGraph = {
-  '10': { class_type: 'LoadImage', inputs: { image: '{{image}}' } },
-  '20': { class_type: 'LineArtPreprocessor', inputs: { image: ['10', 0], coarse: 'disable', resolution: 1024 } },
-  '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['20', 0] } },
+export const OUTLINE_INSTRUCTION =
+  'Turn this photo into a clean tracing sheet for painting: black ink contour lines on a pure white background, no shading, no colour, no hatching, no grey. ' +
+  'Keep every major shape and edge exactly where it is: horizon, buildings, trees, paths, people, animals, furniture, clouds. ' +
+  'Simplify textures to their outlines: grass, foliage, water, gravel and fabric become a few clean lines, never texture.'
+
+/** The outline's full prompt: the fixed instruction, then the model's extra guides ("draw the horizon line…") when it gave any. */
+export function outlinePrompt(extras: string): string {
+  const more = extras.trim()
+  return more ? `${OUTLINE_INSTRUCTION} Also: ${more}` : OUTLINE_INSTRUCTION
 }
-export const BUILTIN_OUTLINE_SHA = 'builtin-outline-1'
+
+// `BUILTIN_OUTLINE` itself is defined after `BUILTIN_EDIT` below: the same graph under its own version, so an operator may override one without the other.
 
 /**
  * edit (F193): the photo changed as the instruction says — add, remove, replace,
@@ -131,6 +141,10 @@ export const BUILTIN_EDIT: ComfyGraph = {
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: '{{filename_prefix}}', images: ['8', 0] } },
 }
 export const BUILTIN_EDIT_SHA = 'builtin-edit-1'
+
+/** The outline's graph: the edit graph, node for node (`outlinePrompt` supplies the prompt). */
+export const BUILTIN_OUTLINE: ComfyGraph = { ...BUILTIN_EDIT }
+export const BUILTIN_OUTLINE_SHA = 'builtin-outline-2'
 
 /**
  * The size a transform paints at: the photo's aspect, about the configured area
@@ -204,7 +218,7 @@ export function parseWorkflow(text: string, path: string, kind: WorkflowKind = '
     }
   }
   const used = placeholdersIn(graph)
-  if (kind !== 'outline' && !used.has('prompt')) return { ok: false, reason: `${path} has no "{{prompt}}" placeholder, so nothing would describe the picture` }
+  if (!used.has('prompt')) return { ok: false, reason: `${path} has no "{{prompt}}" placeholder, so nothing would describe the picture` }
   if (kind !== 'generate' && !used.has('image')) return { ok: false, reason: `${path} has no "{{image}}" placeholder, so the ${kind} would never see the photo` }
   if (!Object.values(graph).some(n => n.class_type === 'SaveImage')) return { ok: false, reason: `${path} has no SaveImage node; the engine downloads saved images only` }
   return { ok: true, graph }

@@ -3983,3 +3983,15 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** `LookClient.unload` (`/api/generate`, `keep_alive: 0`) and `ImageServiceDeps.beforeTransform`, which the service awaits before a transform's upload; main.ts wires the unload when `LOCALCODE_VISION_URL` is set. The next look reloads the vision model in seconds. A failing unload is logged and the job paints anyway. Pinned by `lookClient.test` (request shape), `service.test` (once per transform, before the upload, not for a generated picture, a throwing hook is logged), and a main.ts wiring test.
 
 **Rule:** one GPU, one owner: whoever is about to need most of it asks the others to leave first, and a cap that fires is a sign of a resident neighbour before it is a sign of a slow model.
+
+## F195 — Check 5: the outline transform produced white edge noise on black; the edit model drew the tracing sheet the owner wanted
+
+**Where:** `BUILTIN_OUTLINE` (`engine/imagegen/workflow.ts`), the `LineArtPreprocessor` graph from `comfyui_controlnet_aux`, run by hand on the park photo of check 5 (2026-11-09) beside the edit the phone turn produced.
+
+**How:** the phone request ("I want to paint this image myself using watercolor. Give me a line image…") went to `edit` by the model's choice and came back as clean black ink contours with a horizon, converging sight lines and a marked vanishing point — exactly a tracing sheet. The outline graph on the same photo gave the preprocessor's raw output: white lines on black, every blade of grass as texture. The owner: it "doesn't really do anything for me"; the edit's sheet "is basically what I would want … this is my way to bridge my poor drawing ability".
+
+**Why:** the outline was designed before the box had an instruction-editing model, when a deterministic edge extractor was the only way to get lines without an SDXL-family mismatch; it was never inverted to black-on-white as promised, and edge extraction cannot simplify texture the way a drawing does.
+
+**Fix:** the outline transform is the edit recipe with `OUTLINE_INSTRUCTION` fixed in front of the model's extra guides (`outlinePrompt`); same graph, same Lightning sampling, `checkpoint: 'none'`; the model may pass guides in `prompt`. The line-art graph and the `comfyui_controlnet_aux` requirement are gone (the pack may stay installed; nothing calls it). Pinned by `workflow.test`, `service.test`, `store.test`, `client.test`, `genui/{validateSpec,catalog,prompt}.test`.
+
+**Rule:** a transform is judged by what the owner would actually use, not by whether its node ran; when a better recipe exists for the same verb, the verb moves to it rather than keeping both.

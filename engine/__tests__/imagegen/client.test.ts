@@ -231,8 +231,8 @@ describe('uploadImage and free', () => {
 })
 
 describe('NODE_PACKS (what a missing transform node tells the operator to install)', () => {
-  it('names the pack for the line-art node and for the GGUF loader the edit graph uses (F193)', () => {
-    expect(NODE_PACKS.LineArtPreprocessor).toBe('comfyui_controlnet_aux')
+  it('names the pack for the GGUF loader the edit and outline graphs use (F193); the line-art pack is no longer needed', () => {
+    expect(NODE_PACKS.LineArtPreprocessor).toBeUndefined()
     expect(NODE_PACKS.UnetLoaderGGUF).toBe('ComfyUI-GGUF')
   })
 })

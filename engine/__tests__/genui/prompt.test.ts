@@ -16,7 +16,7 @@ import { validateSpec } from '../../genui/spec.js'
 describe('genui prompt section', () => {
   const text = genuiPromptSection('project')
   const session = genuiPromptSection('session')
-  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, pose, lighting), as long as the design needs (whole paragraphs are fine). For a physical thing that may be modelled or 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design: the same prompt with different "seed"s. Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself. A photo in the project can be transformed instead: Image "source" (its path) + "transform" "edit" ("prompt" = the change: add, remove or replace something — even when the ask says "variation"), "vary" (reimagine the whole picture) or "outline" (line art to paint from).'
+  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, lighting); paragraphs are fine. For a physical thing that may be 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design: the same prompt with different "seed"s. The engine paints these; never call an image server, write a ComfyUI workflow or save renders yourself. Or transform a project photo: Image "source" (its path) + "transform" "edit" ("prompt" = the change to make, even if asked as a "variation"), "vary" (reimagine the picture) or "outline" (a tracing sheet to paint from; "prompt" = extra guides).'
   /** The options example as the session section prints it. */
   const sessionOptionsExample = () => {
     const at = session.indexOf('{"surface":"path-options"')
@@ -100,9 +100,9 @@ describe('genui prompt section', () => {
   // the engine paints — never the chat.
   it('says that takes are Images with one prompt and different seeds, prompts may be paragraphs, and the chat never paints', () => {
     expect(text).toContain('Several takes of one design: the same prompt with different "seed"s.')
-    expect(text).toContain('as long as the design needs (whole paragraphs are fine)')
-    expect(text).toContain('Pictures are painted by the engine from these prompts — never call an image server, write a ComfyUI workflow, or save renders yourself.')
-    for (const s of ['Several takes', 'whole paragraphs', 'never call an image server']) expect(session).not.toContain(s)
+    expect(text).toContain('paragraphs are fine')
+    expect(text).toContain('The engine paints these; never call an image server, write a ComfyUI workflow or save renders yourself.')
+    for (const s of ['Several takes', 'paragraphs are fine', 'never call an image server']) expect(session).not.toContain(s)
   })
 
   // F171: "Write your prose first, then one RenderUI call" ended the turn on
