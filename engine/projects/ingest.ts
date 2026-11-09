@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { IndexStore } from '../index/store.js'
 import { EmbedClient } from '../index/embedClient.js'
 import type { Chunk } from '../index/types.js'
-import { extractFile } from './extract/index.js'
+import { extractFile, type LookInput } from './extract/index.js'
 import { chunkSegments, chunkTranscriptTurns, type ProseChunk } from './proseChunker.js'
 import { appendJournal, projectDir, readFileIndex, sha256Of, writeFileIndex, type FileOrigin } from './layout.js'
 
@@ -105,7 +105,7 @@ async function writeChunks(store: IndexStore, embed: EmbedClient | null, filePat
   return degraded ? { count, degraded } : { count }
 }
 
-export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledge' | 'artifact', relPath: string, origin: FileOrigin): Promise<IngestEvent> {
+export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledge' | 'artifact', relPath: string, origin: FileOrigin, extra: { lookInput?: LookInput } = {}): Promise<IngestEvent> {
   const now = deps.now ?? (() => new Date().toISOString())
   const dir = projectDir(deps.home, slug)
   const area = AREA_DIR[kind]
@@ -120,7 +120,7 @@ export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledg
     deps.emit?.(ev)
     return ev
   }
-  const extracted = await extractFile(bytes, relPath)
+  const extracted = await extractFile(bytes, relPath, extra.lookInput)
   if (!extracted.ok) {
     appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${extracted.reason}`, now)
     return finish({ slug, filePath, kind, indexed: false, reason: extracted.reason })
