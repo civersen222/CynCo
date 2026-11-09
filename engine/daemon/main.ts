@@ -9,9 +9,11 @@ import { MissionLedger } from './missionLedger.js'
 import { MissionRunner } from './missionRunner.js'
 import { NtfyChannel } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
+import { defaultControlPath, readControl } from './control.js'
+import { exec } from 'child_process'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
-import { missionsDir as resolveMissionsDir } from '../paths.js'
+import { cyncoHome, missionsDir as resolveMissionsDir } from '../paths.js'
 import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
@@ -24,6 +26,19 @@ wireHoldAwake(activity, { log: (line) => console.log(`[daemon] ${line}`) })
 const TICK_MS = 30000
 
 const missionsDir = resolveMissionsDir()
+// The desk widget's pause switch (engine/daemon/control.ts). Read on every tick and every 5 s inside a run.
+const controlPath = process.env.CYNCO_CONTROL_FILE ?? defaultControlPath(cyncoHome())
+const isPaused = () => readControl(controlPath).paused
+
+/** precheck 'command': the trigger's own gate, run in the mission workspace with a two-minute cap. */
+function runPrecheck(command: string, cwd?: string): Promise<{ code: number | null; stdout: string }> {
+  return new Promise((resolve) => {
+    exec(command, { cwd, timeout: 120000, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => {
+      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0
+      resolve({ code, stdout: String(stdout ?? '') })
+    })
+  })
+}
 const ntfyUrl = process.env.CYNCO_NTFY_URL
 if (!ntfyUrl) {
   console.error('[daemon] CYNCO_NTFY_URL is required (e.g. http://<tailscale-ip>:8090)')
@@ -68,7 +83,7 @@ for (const entry of readdirSync(missionsDir)) {
   const dir = join(missionsDir, entry)
   if (!existsSync(join(dir, 'mission.json'))) continue
   const ledger = MissionLedger.load(dir)
-  const taskRunner = new TaskRunner({ workDir: join(dir, 'tasks') })
+  const taskRunner = new TaskRunner({ workDir: join(dir, 'tasks'), shouldPause: isPaused })
   runners.push(new MissionRunner(ledger, {
     runTask: (input) => taskRunner.run(input),
     publish: (p) => ntfy.publish(p),
@@ -76,6 +91,8 @@ for (const entry of readdirSync(missionsDir)) {
     fetchMflSnapshot,
     fetchRosterSnapshot,
     now: () => new Date(),
+    runPrecheck,
+    isPaused,
   }))
   console.log(`[daemon] Loaded mission: ${ledger.config.id} (${ledger.config.triggers.length} triggers)`)
 }
@@ -133,4 +150,4 @@ const shutdown = () => {
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
-console.log(`[daemon] CynCo liveness daemon up — ${runners.length} mission(s), tick every ${TICK_MS / 1000}s`)
+console.log(`[daemon] CynCo liveness daemon up — ${runners.length} mission(s), tick every ${TICK_MS / 1000}s; pause switch ${controlPath}${isPaused() ? ' (PAUSED)' : ''}`)
