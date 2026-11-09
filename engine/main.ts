@@ -48,6 +48,7 @@ import { isLoopbackAddress } from './dashboard/access.js'
 import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
+import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
 import { cyncoHome } from './paths.js'
 import { embedBaseUrlFor } from './index/embedClient.js'
 import { makeProjectsDeps } from './projects/api.js'
@@ -148,10 +149,14 @@ import { bootstrapProvider } from './bootstrapProvider.js'
 let siblingRelease: (() => Promise<void>) | null = null
 {
   const { lazySettings } = await import('./llama/lazyLoad.js')
-  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner } = await import('./power/siblingEngine.js')
+  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner, defaultServicesRunnerSync } = await import('./power/siblingEngine.js')
   if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform }) === 'handoff') {
-    const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), log: (l) => console.log(l) })
-    if (handoff.wasRunning) siblingRelease = handoff.release
+    const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), servicesSync: defaultServicesRunnerSync(), log: (l) => console.log(l) })
+    if (handoff.wasRunning) {
+      siblingRelease = handoff.release
+      // A crash or a shutdown that throws before cleanShutdown's release still gives the GPU back.
+      process.on('exit', () => handoff.releaseSync())
+    }
   }
 }
 const { provider, contextLength } = await bootstrapProvider(config)
@@ -489,9 +494,8 @@ try {
       // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
       getAwayRuns: () => {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')
-        const { cyncoHome } = require('./paths.js')
-        const { join } = require('path')
-        return collectAwayRuns(process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions'))
+        const { missionsDir } = require('./paths.js')
+        return collectAwayRuns(missionsDir())
       },
       getSessionInfo: () => {
         let modelName = config.model || ''
@@ -581,7 +585,6 @@ try {
 // ─── Brain Activations Consumer (Tier 3 — default-on, degrades silently) ─────
 // Only wired when provider is llama-cpp (Ollama has no activation tap).
 // (declared above the dashboard server for the setBrainLayer late-binding)
-const { brainEnabled, lensEnabled } = await import('./brain/brainSwitch.js')
 if (!brainEnabled()) console.log('[brain] off for this engine (LOCALCODE_BRAIN=off): no jlens sidecar, no activations consumer')
 if (config.provider === 'llama-cpp' && dashboardServer && brainEnabled()) {
   // The lens half of the J-Space viewer. Managed here so the workspace works

@@ -33,7 +33,7 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 - **`runTradeScan`** (`tradeScan.ts:163`) — the multi-pass orchestrator dispatched from `oneShot.ts` when `taskType === 'trade-scan'`.
 
 ## Data flow
-1. `main.ts` loads every `<mission-id>/mission.json` under `CYNCO_MISSIONS_DIR`, builds a `MissionLedger` + `TaskRunner` per mission, and starts a 30s `setInterval` calling `runner.tick()` on each `MissionRunner`.
+1. `main.ts` loads every `<mission-id>/mission.json` under `missionsDir()` (`engine/paths.ts`: `CYNCO_MISSIONS_DIR` or `<cyncoHome>/missions`, shared with the dashboard's `/api/away`), builds a `MissionLedger` + `TaskRunner` per mission, and starts a 30s `setInterval` calling `runner.tick()` on each `MissionRunner`.
 2. `MissionRunner.tick()` (`missionRunner.ts:85`) calls `evaluateTrigger` (`scheduler.ts:127`) per trigger; a due trigger's `nextFire` is persisted to `state.json` *before* firing, then `fire()` (`missionRunner.ts:175`) runs.
 3. `fire()` optionally runs the `mfl-delta` precheck, builds mission context (goal + last 3 runs + roster snapshots), and calls `deps.runTask(input)` — in production this is `TaskRunner.run()`.
 4. `TaskRunner.run()` (`taskRunner.ts:115`) checks `isGpuBusy()`; if free, it writes the task file (`taskFile.ts:10`) and spawns `bun engine/main.ts --run-task <path>` as a child process (ntfy env vars stripped), enforcing `timeoutMs` with a hard kill.

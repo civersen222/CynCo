@@ -12,7 +12,7 @@
  * machine I won't be using it on my phone." `scripts/cynco-services.ps1` is
  * the one owner of start/stop, so this module only drives it.
  */
-import { execFile } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -27,23 +27,45 @@ export function siblingDecision(env: { lazy: boolean; runTask: boolean; platform
 
 export type ServicesRunner = (action: 'status' | 'stop' | 'start') => Promise<string>
 
-export function defaultServicesRunner(scriptPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'cynco-services.ps1')): ServicesRunner {
+const DEFAULT_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'cynco-services.ps1')
+
+/**
+ * The services script matches the engine by command line (`bun engine\main.ts`),
+ * which this desk engine also is: without `-ExcludePid <our pid>` a `status`
+ * could report the desk engine as the running phone engine and `stop` could
+ * kill the caller (PR #190 review). Pure; pinned by siblingEngine.test.ts.
+ */
+export function servicesArgs(scriptPath: string, action: 'status' | 'stop' | 'start', excludePid: number): string[] {
+  return ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, action, 'engine', '-ExcludePid', String(excludePid)]
+}
+
+export function defaultServicesRunner(scriptPath = DEFAULT_SCRIPT, excludePid = process.pid): ServicesRunner {
   return (action) => new Promise((resolve, reject) => {
-    execFile('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, action, 'engine'], { timeout: 30_000, windowsHide: true }, (err, stdout) => {
+    execFile('powershell', servicesArgs(scriptPath, action, excludePid), { timeout: 30_000, windowsHide: true }, (err, stdout) => {
       if (err) reject(err)
       else resolve(String(stdout))
     })
   })
 }
 
-export type TakeOver = { wasRunning: boolean; release: () => Promise<void> }
+export type ServicesRunnerSync = (action: 'status' | 'stop' | 'start') => string
+
+/** Blocking twin for `process.on('exit')`, where nothing asynchronous runs any more. */
+export function defaultServicesRunnerSync(scriptPath = DEFAULT_SCRIPT, excludePid = process.pid): ServicesRunnerSync {
+  return (action) => String(execFileSync('powershell', servicesArgs(scriptPath, action, excludePid), { timeout: 20_000, windowsHide: true }))
+}
+
+export type TakeOver = { wasRunning: boolean; release: () => Promise<void>; releaseSync: () => void }
 
 /**
  * Stop the phone engine if it is running; `release()` starts it again (once).
+ * `releaseSync()` is the same promise for `process.on('exit')`: a desk engine
+ * that crashes or whose shutdown throws still gives the GPU back (a hard kill
+ * from Task Manager runs neither; `cynco-services.ps1 start engine` then).
  * Never throws: a failure to read or stop it is logged and the desk engine
  * proceeds — the worst case is then exactly today's behaviour.
  */
-export async function takeOverFromHeadless(deps: { services: ServicesRunner; log: (line: string) => void }): Promise<TakeOver> {
+export async function takeOverFromHeadless(deps: { services: ServicesRunner; servicesSync?: ServicesRunnerSync; log: (line: string) => void }): Promise<TakeOver> {
   let wasRunning = false
   try {
     const status = await deps.services('status')
@@ -65,6 +87,17 @@ export async function takeOverFromHeadless(deps: { services: ServicesRunner; log
       try {
         await deps.services('start')
         deps.log('[power] phone engine restarted')
+      } catch (e) {
+        deps.log(`[power] phone engine not restarted (${e instanceof Error ? e.message : String(e)}); run cynco-services.ps1 start engine`)
+      }
+    },
+    releaseSync: () => {
+      if (released || !wasRunning) return
+      released = true
+      if (!deps.servicesSync) { deps.log('[power] phone engine not restarted (no sync runner); run cynco-services.ps1 start engine'); return }
+      try {
+        deps.servicesSync('start')
+        deps.log('[power] phone engine restarted (exit hook)')
       } catch (e) {
         deps.log(`[power] phone engine not restarted (${e instanceof Error ? e.message : String(e)}); run cynco-services.ps1 start engine`)
       }

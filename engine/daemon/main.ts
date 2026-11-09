@@ -13,7 +13,7 @@ import { defaultControlPath, readControl } from './control.js'
 import { exec } from 'child_process'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
-import { cyncoHome } from '../paths.js'
+import { cyncoHome, missionsDir as resolveMissionsDir } from '../paths.js'
 import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
@@ -25,7 +25,7 @@ wireHoldAwake(activity, { log: (line) => console.log(`[daemon] ${line}`) })
 
 const TICK_MS = 30000
 
-const missionsDir = process.env.CYNCO_MISSIONS_DIR ?? join(cyncoHome(), 'missions')
+const missionsDir = resolveMissionsDir()
 // The desk widget's pause switch (engine/daemon/control.ts). Read on every tick and every 5 s inside a run.
 const controlPath = process.env.CYNCO_CONTROL_FILE ?? defaultControlPath(cyncoHome())
 const isPaused = () => readControl(controlPath).paused

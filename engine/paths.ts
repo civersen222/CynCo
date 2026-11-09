@@ -32,3 +32,15 @@ export function cyncoHome(): string {
   if (override !== undefined && override !== '') return override
   return join(homedir(), '.cynco')
 }
+
+/**
+ * Where the liveness daemon's missions live: `CYNCO_MISSIONS_DIR` (empty =
+ * unset) or `<cyncoHome()>/missions`. The daemon loads `<id>/mission.json`
+ * from here and the dashboard's `/api/away` tails `<id>/runs.jsonl`; both
+ * call this, so the two cannot drift apart (PR #190 review).
+ */
+export function missionsDir(): string {
+  const override = process.env.CYNCO_MISSIONS_DIR
+  if (override !== undefined && override !== '') return override
+  return join(cyncoHome(), 'missions')
+}
