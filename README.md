@@ -509,6 +509,8 @@ column with the send box pinned to the bottom. The headless phone engine runs wi
 (no jlens sidecar, no activation tap), and on every engine the lens sidecar is off unless
 `LOCALCODE_JLENS=on`; the Brain tab says which. The desk page is unchanged.
 
+**Files from the phone (slice 5).** While a project is bound, an **Attach** button beside the send box takes files or a camera photo straight into that project's knowledge through the same upload route the Projects tab uses, and the chat says what was added and whether it indexed. `.docx` and `.xlsx` now extract alongside `.md`, `.txt`, `.pdf` and `.epub` (a dependency-free zip reader; images are stored, not yet captioned).
+
 ## Fine-Tuned Models (Coming)
 
 CynCo collects governance decision data during every session, per VSM system, in `~/.cynco/training/s{1-5}-decisions.jsonl` (`engine/training/decisionJournal.ts`). This data is the foundation for fine-tuned models that will replace the rule-based governance with learned governance:

@@ -138,9 +138,9 @@ describe('knowledge: add/list/remove', () => {
   it('refuses an unsupported file type with 415', async () => {
     const d = deps()
     const slug = ((await createProjectApi(d, { name: 'Diorama' })).body as { slug: string }).slug
-    const r = await addKnowledgeApi(d, slug, { name: 'resume.docx', bytes: new Uint8Array([1, 2, 3]) })
+    const r = await addKnowledgeApi(d, slug, { name: 'deck.pptx', bytes: new Uint8Array([1, 2, 3]) })
     expect(r.status).toBe(415)
-    expect(r.body).toEqual({ error: 'unsupported file type .docx' })
+    expect(r.body).toEqual({ error: 'unsupported file type .pptx' })
   })
 
   it('refuses a file over UPLOAD_MAX_BYTES with 413', async () => {
