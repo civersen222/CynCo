@@ -562,6 +562,58 @@ describe('MissionRunner resume after a pause', () => {
   })
 })
 
+describe('MissionRunner pause during a run (review fixes)', () => {
+  const parkedInput = { missionId: 'mfl-dynasty', triggerId: 'news', prompt: 'Check news', context: 'ctx', allowedTools: ['Mfl'], timeoutMs: 15 * 60 * 1000, outcomePath: '', leagues: [] }
+
+  it('a resumed run paused again is parked again with its new clock and journal, never a failure', async () => {
+    const { deps, ranTasks, published } = makeDeps({
+      runTask: async (input: any): Promise<TaskOutcome> => {
+        ranTasks.push(input)
+        return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { sessionId: 'session-88', elapsedMs: 3 * 60 * 1000 } }
+      },
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 12).toISOString())
+    ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+    ledger.state.failureStreak = 1
+    ledger.state.paused = { triggerId: 'news', remainingMs: 10 * 60 * 1000, sessionId: 'session-77', pausedAt: '2026-06-11T18:00:00.000Z', input: parkedInput }
+    ledger.saveState()
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks).toHaveLength(1)
+    expect(ranTasks[0].resumeSessionId).toBe('session-77')
+    expect(ledger.state.paused?.triggerId).toBe('news')
+    expect(ledger.state.paused?.sessionId).toBe('session-88')
+    expect(ledger.state.paused?.remainingMs).toBe(7 * 60 * 1000)
+    expect((ledger.state.paused?.input as any).resumeSessionId).toBeUndefined()
+    expect(ledger.state.failureStreak).toBe(1)
+    expect(ledger.recentRuns(1)[0].ok).toBe(true)
+    expect(published).toHaveLength(0)
+  })
+
+  it('a pause that lands during one fire stops the tick: the next due trigger never spawns and the parked run survives', async () => {
+    let paused = false
+    const { deps, ranTasks } = makeDeps({
+      isPaused: () => paused,
+      runTask: async (input: any): Promise<TaskOutcome> => {
+        ranTasks.push(input)
+        paused = true
+        return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { sessionId: 'session-1', elapsedMs: 60 * 1000 } }
+      },
+      fetchMflSnapshot: async () => 'hash-changed',
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    const pollDue = new Date(2026, 5, 11, 11, 58).toISOString()
+    ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+    ledger.setNextFire('poll', pollDue)
+    await new MissionRunner(ledger, deps as any).tick()
+    expect(ranTasks).toHaveLength(1)
+    expect(ledger.state.paused?.triggerId).toBe(ranTasks[0].triggerId)
+    expect(ledger.state.paused?.sessionId).toBe('session-1')
+    const second = ranTasks[0].triggerId === 'poll' ? 'news' : 'poll'
+    expect(new Date(ledger.state.nextFire[second]).getTime()).toBeLessThanOrEqual(deps.now().getTime())
+  })
+})
+
 describe('MissionRunner skipped triggers are visible', () => {
   it('a skip-policy trigger missed past the grace window is logged with its id and due time, not dropped silently', async () => {
     const { deps, ranTasks } = makeDeps()

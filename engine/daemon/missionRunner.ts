@@ -107,11 +107,16 @@ export class MissionRunner {
     }
     this.pauseLogged = false
     if (this.ledger.state.paused) await this.resumePaused(this.ledger.state.paused, now)
+    if (this.deps.isPaused?.()) return
     await this.drainOnDemand(now)
     for (const trigger of this.ledger.config.triggers) {
       const due = this.ledger.state.nextFire[trigger.id]
       const evaln = evaluateTrigger(trigger, due, now)
       if (evaln.action === 'wait') continue
+      // A pause that landed during an earlier fire in this tick: stop here, leave this trigger's
+      // nextFire alone (the from-now move handles it when the pause lifts), and never spawn a run
+      // whose kill would overwrite the PausedRun just parked.
+      if (this.deps.isPaused?.()) break
       if (evaln.action === 'skip') {
         // Usually another run held the daemon past this trigger's grace window. Say so: a silent skip of a
         // game-day pass is indistinguishable from the trigger never having been scheduled.
@@ -133,6 +138,7 @@ export class MissionRunner {
       if (req.notBefore !== undefined && now.getTime() < req.notBefore) return
       const template = this.ledger.config.commands?.['lineup']
       if (!template) { this.onDemand.shift(); continue } // template vanished since queuing — drop
+      if (this.deps.isPaused?.()) return // stays queued until the pause lifts
       const prompt = template.replace(/\{week\}/g, req.week !== undefined ? `week ${req.week}` : 'the upcoming week')
       const trigger: TriggerSpec = {
         id: 'on-demand-lineup', kind: 'daily', at: '00:00', precheck: 'none', missedPolicy: 'skip', prompt,
@@ -167,9 +173,33 @@ export class MissionRunner {
       }
       outcome = { ok: false, summary: '', recommendations: [], error: err instanceof Error ? err.message : String(err) }
     }
+    if (outcome.paused) {
+      // Paused again mid-resume: park it again with the clock it has left, never a failure.
+      const { resumeSessionId: _prev, ...rest } = input
+      this.park(trigger.id, rest, outcome.paused, now, paused.sessionId)
+      return
+    }
     delete this.ledger.state.paused
     this.ledger.saveState()
     await this.complete(trigger, input, outcome, now)
+  }
+
+  /** Remember a run the control file interrupted (state.paused) and record it as an ok run. */
+  private park(triggerId: string, input: TaskFileInput, paused: NonNullable<TaskOutcome['paused']>, now: Date, fallbackSessionId?: string): void {
+    const remainingMs = Math.max(input.timeoutMs - paused.elapsedMs, 0)
+    const { outcomePath: _dropped, ...rest } = input
+    const sessionId = paused.sessionId ?? fallbackSessionId
+    this.ledger.state.paused = {
+      triggerId, input: { ...rest, outcomePath: '' }, remainingMs,
+      ...(sessionId ? { sessionId } : {}),
+      pausedAt: now.toISOString(),
+    }
+    this.ledger.recordRun({
+      ts: now.toISOString(), triggerId, ok: true,
+      summary: `paused on request after ${Math.round(paused.elapsedMs / 60000)} min (${Math.round(remainingMs / 60000)} min left); resumes when the pause lifts`,
+      recommendationIds: [], entropy: null,
+    })
+    this.ledger.saveState()
   }
 
   private async fire(trigger: TriggerSpec, now: Date): Promise<FireResult> {
@@ -278,19 +308,7 @@ export class MissionRunner {
 
     if (outcome.paused) {
       // Not a failure: remember the run and relaunch it when the control file clears.
-      const remainingMs = Math.max(input.timeoutMs - outcome.paused.elapsedMs, 0)
-      const { outcomePath: _dropped, ...rest } = input
-      this.ledger.state.paused = {
-        triggerId: trigger.id, input: { ...rest, outcomePath: '' }, remainingMs,
-        ...(outcome.paused.sessionId ? { sessionId: outcome.paused.sessionId } : {}),
-        pausedAt: now.toISOString(),
-      }
-      this.ledger.recordRun({
-        ts: now.toISOString(), triggerId: trigger.id, ok: true,
-        summary: `paused on request after ${Math.round(outcome.paused.elapsedMs / 60000)} min (${Math.round(remainingMs / 60000)} min left); resumes when the pause lifts`,
-        recommendationIds: [], entropy: null,
-      })
-      this.ledger.saveState()
+      this.park(trigger.id, input, outcome.paused, now)
       return { status: 'ran' }
     }
 

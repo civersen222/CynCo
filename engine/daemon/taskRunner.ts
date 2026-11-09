@@ -113,6 +113,11 @@ export class TaskRunner {
   }
 
   async run(input: TaskFileInput): Promise<TaskOutcome> {
+    // Already paused: report it the way the poll path does, without spawning a run only to kill it.
+    if (this.opts.shouldPause?.()) {
+      console.log(`[task:${input.triggerId}] paused before start — not spawned`)
+      return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { elapsedMs: 0 } }
+    }
     const busy = await (this.opts.isGpuBusyImpl ?? isGpuBusy)()
     if (busy) throw new GpuBusyError()
 

@@ -161,13 +161,35 @@ describe('TaskRunner pause', () => {
   it('a task that finishes normally is not paused even when asked late', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
     try {
+      // Not paused at start (that path never spawns); the pause request arrives only after launch.
+      let asks = 0
       const runner = new TaskRunner({
         workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false,
-        shouldPause: () => true, pausePollMs: 60000,
+        shouldPause: () => asks++ > 0, pausePollMs: 60000,
       })
       const outcome = await runner.run(makeInput(dir, 'do the thing'))
       expect(outcome.ok).toBe(true)
       expect(outcome.paused).toBeUndefined()
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+describe('TaskRunner already paused', () => {
+  it('shouldPause true before run spawns nothing and reports the PAUSED outcome the poll path produces', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      let gpuProbed = false
+      const runner = new TaskRunner({
+        workDir: dir,
+        spawnCmd: ['definitely-not-a-real-binary-cynco'],
+        isGpuBusyImpl: async () => { gpuProbed = true; return false },
+        gpuBusyPath: join(dir, 'gpu-busy.json'),
+        shouldPause: () => true,
+      })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome).toEqual({ ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { elapsedMs: 0 } })
+      expect(gpuProbed).toBe(false)
+      expect(require('fs').readdirSync(dir)).toEqual([])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
