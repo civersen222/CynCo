@@ -155,7 +155,7 @@ Add to the daemon's launch script (the one Task Scheduler runs):
 
 While a one-shot runs, the daemon holds the PC awake (`engine/power/awake.ts`); with nothing running it holds
 nothing, and the owner's "Sleep after" setting decides. `scripts/cynco-services.ps1` shows and starts/stops the
-daemon, the headless phone engine and the approval listener, and reports whether the doorman's ntfy answers.
+daemon, the headless phone engine, the embedding server (`embed`: `llama-server --embeddings` on 127.0.0.1:9165, `docs/decisions/2026-11-08-embeddings-own-llama-server.md`) and the approval listener, and reports whether the doorman's ntfy answers.
 
 ## Security posture
 
