@@ -625,6 +625,49 @@ body.remote #panelConnection, body.remote #panelContext { display: none; }
 .away-list .away-meta { color: #9a9aa6; font-size: 12px; }
 .away-list .away-ok { color: #3fb950; } .away-list .away-fail { color: #f85149; }
 .away-list .away-summary { margin-top: 4px; white-space: pre-wrap; }
+/* Missions tab: every pass of every mission (docs/superpowers/specs/2026-11-08-mission-schedule-control-design.md §4.5) */
+.mt-head-line { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; }
+.mt-state.paused { color:#d29922; }
+.mt-gpu, .mt-empty, .mt-goal { color:#9a9aa6; font-size:12px; font-weight:normal; }
+.mt-gpu { margin-top:6px; }
+.mt-list { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.mt-card { min-width:0; }
+.mt-card .panel-title { overflow-wrap:anywhere; }
+.mt-row { display:flex; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid #2a2a2a; font-size:12px; }
+.mt-row.busy { opacity:.6; }
+.mt-name { flex:0 0 140px; color:#d4d4d4; font-weight:600; }
+.mt-cadence { flex:1 1 180px; color:#a0a0a0; }
+.mt-next { flex:0 0 130px; }
+.mt-last { flex:2 1 200px; min-width:0; color:#a0a0a0; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mt-last-full { display:none; }
+.mt-last.open { white-space:normal; }
+.mt-last.open .mt-last-text { display:none; }
+.mt-last.open .mt-last-full { display:inline; white-space:pre-wrap; }
+.lr-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; box-sizing:border-box; }
+.lr-dot.go { background:#3fb950; } .lr-dot.skip { background:#9a9aa6; } .lr-dot.fail { background:#f85149; }
+.lr-dot.paused { background:#d29922; } .lr-dot.dropped { background:#db6d28; } .lr-dot.none { border:1px solid #666; }
+.sw-toggle { position:relative; flex:0 0 auto; width:36px; height:20px; padding:0; border-radius:10px; border:1px solid #444; background:#333; cursor:pointer; }
+.sw-toggle .sw-knob { position:absolute; top:calc(50% - 7px); left:2px; width:14px; height:14px; border-radius:50%; background:#808080; transition:left .15s; }
+.sw-toggle[aria-checked="true"] { background:#2d4a3a; border-color:#4ec9b0; }
+.sw-toggle[aria-checked="true"] .sw-knob { left:calc(100% - 16px); background:#4ec9b0; }
+.mt-edit, .mt-pause, .mt-editor button { background:none; border:1px solid #444; color:#d4d4d4; border-radius:3px; padding:2px 10px; font-size:12px; cursor:pointer; font-family:inherit; }
+.mt-link { background:none; border:none; color:#569cd6; padding:0 2px; font-size:11px; text-decoration:underline; cursor:pointer; font-family:inherit; }
+.mt-edited { font-size:10px; color:#d29922; border:1px solid #d29922; border-radius:3px; padding:0 4px; }
+.mt-editor { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:8px; margin:4px 0 8px; background:#252535; border-radius:4px; font-size:12px; }
+.mt-editor input, .mt-editor select { background:#1e1e2e; color:#d4d4d4; border:1px solid #444; border-radius:3px; padding:2px 4px; font-family:inherit; font-size:12px; }
+.mt-editor input[name="everyHours"], .mt-editor input[name="timeoutMin"] { width:52px; }
+.mt-editor .mt-sh { display:none; gap:6px; align-items:center; }
+.mt-editor[data-shape="daily"] .mt-sh-daily, .mt-editor[data-shape="every"] .mt-sh-every, .mt-editor[data-shape="weekly"] .mt-sh-weekly { display:inline-flex; }
+.mt-editor input[readonly] { color:#808080; }
+.mt-msg.err { color:#f85149; }
+.mt-card button:disabled { opacity:.4; cursor:not-allowed; }
+body.remote .mt-row { flex-wrap: wrap; }
+body.remote .mt-name { flex:1 1 auto; min-width:0; }
+body.remote .mt-cadence { order:3; flex:1 1 60%; }
+body.remote .mt-next { order:3; flex:0 0 auto; }
+body.remote .mt-last { order:4; flex:1 1 100%; }
+body.remote .sw-toggle { min-height: 44px; min-width: 56px; border-radius: 22px; }
+body.remote .mt-edit, body.remote .mt-pause { min-height: 44px; }
 .genui-issues { margin-top: 8px; font-size: 11px; }
 .genui-issues-btn { background: none; border: 1px solid #333; color: #808080; border-radius: 3px; padding: 1px 8px;
   font-size: 11px; cursor: pointer; font-family: inherit; }
@@ -879,6 +922,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
   <button class="tab-btn" onclick="switchTab('config')">Config</button>
   <button class="tab-btn" onclick="switchTab('projects')">Projects</button>
   <button class="tab-btn" id="tabAway" onclick="switchTab('away')" hidden>Away</button>
+  <button class="tab-btn" id="tabMissions" onclick="switchTab('missions')">Missions</button>
 </div>
 
 <!-- ── Chat Tab ────────────────────────────────────────────── -->
@@ -1261,6 +1305,16 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div class="panel-title">While you were away</div>
     <div id="awayList" class="away-list">loading…</div>
   </div>
+</div>
+</div>
+
+<div id="tab-missions" class="tab-content">
+<div class="grid">
+  <div class="panel full-width">
+    <div class="panel-title">Missions</div>
+    <div id="missionsHeader">loading…</div>
+  </div>
+  <div id="missionsList" class="mt-list full-width"></div>
 </div>
 </div>
 
@@ -3531,10 +3585,11 @@ setInterval(fetchSessions, 15000);
 // ── Wakefulness slice 4: the phone-sized remote view ────────────────────────
 // Pure, lifted by text in engine/__tests__/dashboard/remoteView.test.ts.
 function remoteTabSet(isRemote) {
-  return isRemote ? ['chat', 'projects', 'away'] : ['chat', 'governance', 'brain', 'history', 'config', 'projects'];
+  return isRemote ? ['chat', 'projects', 'away', 'missions'] : ['chat', 'governance', 'brain', 'history', 'config', 'projects', 'missions'];
 }
 function initialHashFor(isRemote, hash) {
   if (!isRemote) return hash;
+  if (hash === '#missions') return hash;
   return hash && hash.indexOf('#projects') === 0 ? hash : '#projects';
 }
 function renderAwayRows(runs) {
@@ -3578,6 +3633,7 @@ function applyRemoteLayout() {
   var want = initialHashFor(true, location.hash);
   if (want !== location.hash) location.hash = want;
   if (want.indexOf('#projects') === 0) switchTab('projects');
+  else if (want === '#missions') switchTab('missions');
 }
 function loadAway() {
   var el = document.getElementById('awayList');
@@ -3587,6 +3643,328 @@ function loadAway() {
     .then(function(data) { el.innerHTML = renderAwayRows(data && data.runs); })
     .catch(function(err) { el.innerHTML = '<div class="away-row away-meta">could not load: ' + escHtml(err.message) + '</div>'; });
 }
+
+/* ── Missions tab (docs/superpowers/specs/2026-11-08-mission-schedule-control-design.md) ── */
+// Pure (string in, HTML string out), lifted by text in engine/__tests__/dashboard/missionsView.test.ts.
+function pad2(n) {
+  return (n < 10 ? '0' : '') + n;
+}
+function clockText(d) {
+  var h = d.getHours();
+  return ((h % 12) || 12) + ':' + pad2(d.getMinutes()) + ' ' + (h < 12 ? 'AM' : 'PM');
+}
+/** Local-time words for an instant: 'today 4:25 PM', 'Thu 7:45 PM' (within 6 days), 'Nov 15 9:45 AM', or a dash. */
+function whenText(iso, nowIso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  var now = nowIso ? new Date(nowIso) : new Date();
+  if (isNaN(d.getTime())) return '—';
+  var day0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  var now0 = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  var days = Math.round((day0 - now0) / 86400000);
+  if (days === 0) return 'today ' + clockText(d);
+  if (Math.abs(days) <= 6) return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()] + ' ' + clockText(d);
+  return ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()] + ' ' + d.getDate() + ' ' + clockText(d);
+}
+function agoText(iso, nowIso) {
+  var t = new Date(iso).getTime();
+  var now = nowIso ? new Date(nowIso).getTime() : Date.now();
+  if (isNaN(t)) return '';
+  var s = Math.round((now - t) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 172800) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+/** The editor's plain shape → the TriggerSpec cadence fields it writes; null when it names no cadence. */
+function cronFromEditor(e) {
+  if (!e) return null;
+  function hm(s) { var p = String(s || '').split(':'); return [parseInt(p[0], 10), parseInt(p[1], 10)]; }
+  if (e.shape === 'daily') return { kind: 'daily', at: e.at };
+  if (e.shape === 'every') {
+    var f = hm(e.from), t = hm(e.to);
+    return { kind: 'cron', cron: f[1] + ' ' + f[0] + '-' + t[0] + '/' + e.everyHours + ' * * *' };
+  }
+  if (e.shape === 'weekly') {
+    var a = hm(e.at);
+    return { kind: 'cron', cron: a[1] + ' ' + a[0] + ' * * ' + e.day };
+  }
+  var c = String(e.cron || '').trim();
+  return c ? { kind: 'cron', cron: c } : null;
+}
+/** The inverse of cronFromEditor for the shapes it can recognise; anything else is the advanced field. */
+function editorFromTrigger(t) {
+  var DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  if (t.kind === 'daily' && t.at) return { shape: 'daily', at: t.at };
+  if (t.kind === 'weekly' && t.at && DAYS.indexOf(t.day) >= 0) return { shape: 'weekly', day: DAYS.indexOf(t.day), at: t.at };
+  var c = t.kind === 'cron' ? String(t.cron || '').trim() : '';
+  var m = /^(\d{1,2}) (\d{1,2})-(\d{1,2})\/(\d{1,2}) \* \* \*$/.exec(c);
+  if (m) return { shape: 'every', everyHours: +m[4], from: pad2(+m[2]) + ':' + pad2(+m[1]), to: pad2(+m[3]) + ':' + pad2(+m[1]) };
+  m = /^(\d{1,2}) (\d{1,2}) \* \* ([0-6])$/.exec(c);
+  if (m) return { shape: 'weekly', day: +m[3], at: pad2(+m[2]) + ':' + pad2(+m[1]) };
+  m = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(c);
+  if (m) return { shape: 'daily', at: pad2(+m[2]) + ':' + pad2(+m[1]) };
+  return { shape: 'advanced', cron: c };
+}
+/** One trigger: name · cadence (edited/reset) · next · last run · switch · Edit. `locked` disables the controls. */
+function missionTriggerRow(t, nowIso, locked) {
+  var dis = locked ? ' disabled' : '';
+  var lr = t.lastRun;
+  var dot = lr && ['go', 'skip', 'fail', 'paused', 'dropped'].indexOf(lr.kind) >= 0 ? lr.kind : 'none';
+  var when = escHtml(whenText(t.nextFire, nowIso));
+  var next = !t.enabled ? '— off' : (t.nextFirePreview ? '<em>' + when + '</em>' : when);
+  var edited = t.overridden && t.overridden.length
+    ? ' <span class="mt-edited" title="' + escHtml('changed here: ' + t.overridden.join(', ')) + '">edited</span>' +
+      ' <button type="button" class="mt-link" data-act="reset"' + dis + '>reset</button>'
+    : '';
+  var summary = lr ? String(lr.summary || '') : '';
+  var line = summary.split('\n')[0];
+  var last = lr ? escHtml(agoText(lr.ts, nowIso)) + (line ? ' · ' + escHtml(line) : '') : 'never ran';
+  var label = t.name || t.id;
+  return '<div class="mt-row" data-trigger="' + escHtml(t.id) + '">' +
+    '<span class="mt-name" title="' + escHtml(t.id) + '">' + escHtml(label) + '</span>' +
+    '<span class="mt-cadence">' + escHtml(t.cadenceText) + edited + '</span>' +
+    '<span class="mt-next">' + next + '</span>' +
+    '<span class="mt-last" data-act="last" title="' + escHtml(summary) + '"><span class="lr-dot ' + dot + '"></span>' +
+      '<span class="mt-last-text">' + last + '</span><span class="mt-last-full">' + escHtml(summary) + '</span></span>' +
+    '<button type="button" class="sw-toggle" role="switch" data-act="toggle" aria-checked="' + (t.enabled ? 'true' : 'false') + '"' +
+      ' aria-label="' + escHtml((t.enabled ? 'turn off ' : 'turn on ') + label) + '"' + dis + '><span class="sw-knob"></span></button>' +
+    '<button type="button" class="mt-edit" data-act="edit"' + dis + '>Edit</button>' +
+  '</div>';
+}
+/** Daemon state, the one Pause/Resume button, and the GPU line when a pass is running. */
+function missionsHeaderHtml(view, nowIso) {
+  var p = (view && view.paused) || { paused: false };
+  var since = function(iso) { return whenText(iso, nowIso).replace(/^today /, ''); };
+  var state = p.paused
+    ? 'Paused' + (p.requestedAt ? ' since ' + since(p.requestedAt) : '') + (p.by ? ' (' + p.by + ')' : '')
+    : 'Daemon: running';
+  var out = '<div class="mt-head-line"><span class="mt-state' + (p.paused ? ' paused' : '') + '">' + escHtml(state) + '</span>' +
+    '<button type="button" class="mt-pause" data-act="pause" data-paused="' + (p.paused ? 'false' : 'true') + '">' + (p.paused ? 'Resume' : 'Pause') + '</button></div>';
+  var ms = (view && view.missions) || [];
+  for (var i = 0; i < ms.length; i++) {
+    var r = ms[i].running;
+    if (!r) continue;
+    out += '<div class="mt-gpu">' + escHtml('GPU: ' + r.triggerId + ' since ' + since(r.since) +
+      (r.timeoutMs ? ', up to ' + Math.round(r.timeoutMs / 60000) + ' min' : '')) + '</div>';
+  }
+  return out;
+}
+/** One card per mission, each trigger wrapped in an .mt-item that the inline editor opens under. */
+function missionsListHtml(view, nowIso) {
+  var ms = (view && view.missions) || [];
+  if (!ms.length) return '<div class="panel full-width"><div class="mt-empty">no missions</div></div>';
+  var out = '';
+  for (var i = 0; i < ms.length; i++) {
+    var m = ms[i];
+    var goal = String(m.goal || '').split('\n')[0];
+    if (goal.length > 90) goal = goal.slice(0, 89) + '…';
+    out += '<div class="panel full-width mt-card" data-mission="' + escHtml(m.id) + '">' +
+      '<div class="panel-title" title="' + escHtml(m.goal) + '">' + escHtml(m.id) + (goal ? ' <span class="mt-goal">— ' + escHtml(goal) + '</span>' : '') + '</div>';
+    if (m.error) out += '<div class="mt-msg err">' + escHtml(m.error) + '</div>';
+    // A bad schedule.json reads as empty here while the daemon keeps its last good overrides: the switches
+    // would show the wrong state, so they are locked (the server 409s an edit too) until the file is fixed.
+    var locked = m.scheduleStatus === 'bad';
+    if (locked) out += '<div class="mt-msg err">' + escHtml('schedule file unreadable — the daemon keeps its last good settings; fix or delete ~/.cynco/missions/' + m.id + '/schedule.json') + '</div>';
+    var ts = m.triggers || [];
+    for (var j = 0; j < ts.length; j++) {
+      out += '<div class="mt-item" data-mission="' + escHtml(m.id) + '" data-trigger="' + escHtml(ts[j].id) + '">' + missionTriggerRow(ts[j], nowIso, locked) + '</div>';
+    }
+    if (m.orphans && m.orphans.length) out += '<div class="mt-empty">' + escHtml('schedule.json names unknown triggers: ' + m.orphans.join(', ')) + '</div>';
+    out += '</div>';
+  }
+  return out;
+}
+/** The inline editor for one shape (all four shapes are in the form; CSS shows the selected one). */
+function cadenceEditor(e, timeoutMs) {
+  var shape = e.shape;
+  var ev = shape === 'every' ? e : { everyHours: 2, from: '07:00', to: '21:00' };
+  var at = shape === 'daily' || shape === 'weekly' ? e.at : '09:00';
+  var day = shape === 'weekly' ? e.day : 0;
+  var preview = cronFromEditor(e);
+  var cron = shape === 'advanced' ? e.cron : cronPreviewText(preview);
+  function opt(v, label, cur) { return '<option value="' + v + '"' + (String(v) === String(cur) ? ' selected' : '') + '>' + label + '</option>'; }
+  var days = '';
+  var names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  for (var d = 0; d < 7; d++) days += opt(d, names[d], day);
+  var tmin = timeoutMs ? String(Math.round(timeoutMs / 60000)) : '';
+  return '<form class="mt-editor" data-shape="' + escHtml(shape) + '" data-timeout-min="' + tmin + '">' +
+    '<select name="shape" aria-label="cadence shape">' + opt('daily', 'Daily at', shape) + opt('every', 'Every N hours between', shape) +
+      opt('weekly', 'Weekly on', shape) + opt('advanced', 'Advanced (cron)', shape) + '</select>' +
+    '<span class="mt-sh mt-sh-daily"><input type="time" name="dailyAt" value="' + escHtml(at) + '" aria-label="time"></span>' +
+    '<span class="mt-sh mt-sh-every">every <input type="number" name="everyHours" min="1" max="12" value="' + escHtml(String(ev.everyHours)) + '" aria-label="hours">' +
+      ' hours between <input type="time" name="from" value="' + escHtml(ev.from) + '" aria-label="from"> and <input type="time" name="to" value="' + escHtml(ev.to) + '" aria-label="to"></span>' +
+    '<span class="mt-sh mt-sh-weekly"><select name="day" aria-label="day">' + days + '</select> at <input type="time" name="weeklyAt" value="' + escHtml(at) + '" aria-label="time"></span>' +
+    '<label class="mt-adv">cron <input type="text" name="cron" value="' + escHtml(cron) + '"' + (shape === 'advanced' ? '' : ' readonly') + ' spellcheck="false"></label>' +
+    '<label>timeout <input type="number" name="timeoutMin" min="1" max="120" value="' + tmin + '" placeholder="mission"> min</label>' +
+    '<button type="submit">Save</button><button type="button" data-act="cancel">Cancel</button><span class="mt-msg"></span>' +
+  '</form>';
+}
+function cronPreviewText(c) {
+  if (!c) return '';
+  if (c.kind === 'cron') return c.cron;
+  var p = String(c.at || '').split(':');
+  return p.length === 2 ? parseInt(p[1], 10) + ' ' + parseInt(p[0], 10) + ' * * *' : '';
+}
+/** The poll re-renders the trigger list only while no editor is open (the header always). */
+function missionsListShouldRender(hasOpenEditor) {
+  return !hasOpenEditor;
+}
+
+// DOM wiring: one fetch + render, a 10 s poll while the tab is active, delegated handlers on the tab.
+var missionsState = { timer: null, view: null, open: {} };
+function readEditor(form) {
+  var v = function(n) { return form.elements[n] ? form.elements[n].value : ''; };
+  var shape = v('shape');
+  if (shape === 'daily') return { shape: 'daily', at: v('dailyAt') };
+  if (shape === 'every') return { shape: 'every', everyHours: parseInt(v('everyHours'), 10), from: v('from'), to: v('to') };
+  if (shape === 'weekly') return { shape: 'weekly', day: parseInt(v('day'), 10), at: v('weeklyAt') };
+  return { shape: 'advanced', cron: v('cron') };
+}
+function findMissionTrigger(mid, tid) {
+  var ms = (missionsState.view && missionsState.view.missions) || [];
+  for (var i = 0; i < ms.length; i++) {
+    if (ms[i].id !== mid) continue;
+    for (var j = 0; j < ms[i].triggers.length; j++) if (ms[i].triggers[j].id === tid) return { m: ms[i], j: j };
+  }
+  return null;
+}
+function renderMissions(view) {
+  missionsState.view = view;
+  var now = new Date().toISOString();
+  var head = document.getElementById('missionsHeader');
+  var list = document.getElementById('missionsList');
+  if (!head || !list) return;
+  head.innerHTML = missionsHeaderHtml(view, now);
+  // While an editor is open the list is left alone: moving its node would blur the focused input
+  // (on a phone that closes the keyboard and collapses an open picker every 10 s).
+  if (!missionsListShouldRender(!!list.querySelector('.mt-item.editing'))) return;
+  list.innerHTML = missionsListHtml(view, now);
+  var items = list.querySelectorAll('.mt-item');
+  for (var i = 0; i < items.length; i++) {
+    var key = items[i].getAttribute('data-mission') + '/' + items[i].getAttribute('data-trigger');
+    if (missionsState.open[key]) { var l = items[i].querySelector('.mt-last'); if (l) l.classList.add('open'); }
+  }
+}
+/** The trigger's .mt-item as it is on screen now (a poll may have replaced the one a handler held). */
+function liveMissionItem(mid, tid) {
+  var items = document.querySelectorAll('#missionsList .mt-item');
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].getAttribute('data-mission') === mid && items[i].getAttribute('data-trigger') === tid) return items[i];
+  }
+  return null;
+}
+function loadMissions() {
+  fetch('/api/missions')
+    .then(function(r) { return r.json(); })
+    .then(renderMissions)
+    .catch(function(err) {
+      var head = document.getElementById('missionsHeader');
+      if (head) head.innerHTML = '<span class="mt-msg err">could not load: ' + escHtml(err.message) + '</span>';
+    });
+}
+function startMissionsPoll() {
+  stopMissionsPoll();
+  loadMissions();
+  missionsState.timer = setInterval(loadMissions, 10000);
+}
+function stopMissionsPoll() {
+  if (missionsState && missionsState.timer) { clearInterval(missionsState.timer); missionsState.timer = null; }
+}
+function setDaemonPaused(paused) {
+  fetch('/api/daemon/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused: paused }) })
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); })
+    .catch(function(err) { console.warn('[missions] pause failed: ' + err.message); })
+    .then(loadMissions);
+}
+/** PUT one trigger's override; the response is the updated row, which replaces the LIVE row (re-queried,
+ *  since a poll may have re-rendered the list during the request); no live row → reload. */
+function saveTrigger(item, body, onDone) {
+  var mid = item.getAttribute('data-mission'), tid = item.getAttribute('data-trigger');
+  var row = item.querySelector('.mt-row');
+  if (row) row.classList.add('busy');
+  fetch('/api/missions/' + encodeURIComponent(mid) + '/triggers/' + encodeURIComponent(tid), {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+    .then(function(r) { return r.json().then(function(j) { if (!r.ok) throw new Error((j && j.error) || ('HTTP ' + r.status)); return j; }); })
+    .then(function(t) {
+      var hit = findMissionTrigger(mid, tid);
+      if (hit) hit.m.triggers[hit.j] = t;
+      var live = liveMissionItem(mid, tid);
+      var cur = live && live.querySelector('.mt-row');
+      if (cur) cur.outerHTML = missionTriggerRow(t, new Date().toISOString());
+      else loadMissions();
+      if (onDone) onDone(null, live);
+    })
+    .catch(function(err) {
+      var live = liveMissionItem(mid, tid);
+      var cur = live && live.querySelector('.mt-row');
+      if (cur) cur.classList.remove('busy');
+      if (onDone) onDone(err, live);
+      else alert('Could not save ' + tid + ': ' + err.message);
+    });
+}
+function closeMissionEditor(item) {
+  var f = item.querySelector('.mt-editor');
+  if (f) f.remove();
+  item.classList.remove('editing');
+}
+(function wireMissionsTab() {
+  var tab = document.getElementById('tab-missions');
+  if (!tab) return;
+  tab.addEventListener('click', function(ev) {
+    var el = ev.target.closest('[data-act]');
+    if (!el || !tab.contains(el) || el.disabled) return;
+    var act = el.getAttribute('data-act');
+    if (act === 'pause') { setDaemonPaused(el.getAttribute('data-paused') === 'true'); return; }
+    var item = el.closest('.mt-item');
+    if (!item) return;
+    // A second tap while this row's PUT is in flight does nothing.
+    var row = item.querySelector('.mt-row');
+    if (row && row.classList.contains('busy') && act !== 'last') return;
+    var key = item.getAttribute('data-mission') + '/' + item.getAttribute('data-trigger');
+    if (act === 'toggle') saveTrigger(item, { enabled: el.getAttribute('aria-checked') !== 'true' });
+    else if (act === 'reset') saveTrigger(item, { reset: true });
+    else if (act === 'last') { el.classList.toggle('open'); missionsState.open[key] = el.classList.contains('open'); }
+    else if (act === 'cancel') closeMissionEditor(item);
+    else if (act === 'edit') {
+      if (item.classList.contains('editing')) { closeMissionEditor(item); return; }
+      var others = tab.querySelectorAll('.mt-item.editing');
+      for (var i = 0; i < others.length; i++) closeMissionEditor(others[i]);
+      var hit = findMissionTrigger(item.getAttribute('data-mission'), item.getAttribute('data-trigger'));
+      if (!hit) return;
+      var t = hit.m.triggers[hit.j];
+      item.classList.add('editing');
+      item.insertAdjacentHTML('beforeend', cadenceEditor(editorFromTrigger(t), t.timeoutMs));
+    }
+  });
+  // The editor: the shape select shows its inputs; the cron field previews what Save will write.
+  tab.addEventListener('input', function(ev) {
+    var form = ev.target.closest('.mt-editor');
+    if (!form) return;
+    var shape = form.elements.shape.value;
+    form.setAttribute('data-shape', shape);
+    form.elements.cron.readOnly = shape !== 'advanced';
+    if (shape !== 'advanced') form.elements.cron.value = cronPreviewText(cronFromEditor(readEditor(form)));
+  });
+  tab.addEventListener('submit', function(ev) {
+    var form = ev.target.closest('.mt-editor');
+    if (!form) return;
+    ev.preventDefault();
+    var item = form.closest('.mt-item');
+    var body = cronFromEditor(readEditor(form)) || {};
+    var min = form.elements.timeoutMin.value;
+    // Only a changed timeout is written: the field shows the effective one, and saving it back would pin it.
+    if (min !== '' && min !== form.getAttribute('data-timeout-min')) body.timeoutMs = Math.round(parseFloat(min) * 60000);
+    var msg = form.querySelector('.mt-msg');
+    if (!Object.keys(body).length) { msg.className = 'mt-msg err'; msg.textContent = 'nothing to save'; return; }
+    msg.className = 'mt-msg'; msg.textContent = 'saving…';
+    saveTrigger(item, body, function(err, live) {
+      if (!err) { closeMissionEditor(live || item); return; }
+      msg.className = 'mt-msg err'; msg.textContent = err.message;
+    });
+  });
+})();
 
 function switchTab(name) {
   var tabs = document.querySelectorAll('.tab-content');
@@ -3600,6 +3978,8 @@ function switchTab(name) {
   }
   if (name === 'brain') drawSparkline();
   if (name === 'away') loadAway();
+  if (name === 'missions') startMissionsPoll();
+  else stopMissionsPoll();
   if (name === 'projects' && !projectsState.routing) {
     // A chat hash would re-open the chat and bounce back to the Chat tab, so
     // the Projects tab lands on that chat's project instead.
@@ -3610,6 +3990,7 @@ function switchTab(name) {
   }
 }
 window.addEventListener('resize', drawSparkline);
+if (location.hash === '#missions') switchTab('missions');
 
 // ── Chat ──────────────────────────────────────────────────
 var chatActiveTools = {};

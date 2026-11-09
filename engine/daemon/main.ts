@@ -133,7 +133,9 @@ const interval = setInterval(async () => {
   ticking = true
   try {
     for (const runner of runners) await runner.tick()
-    await wakePublisher.publishIfChanged(runners.map((r) => r.ledger))
+    // Only switched-on passes wake the PC (schedule.json can turn one off).
+    const enabledIds = new Set(runners.flatMap((r) => r.effectiveTriggers().filter((t) => t.enabled).map((t) => t.id)))
+    await wakePublisher.publishIfChanged(runners.map((r) => r.ledger), enabledIds)
   } catch (err) {
     console.error(`[daemon] Tick error: ${err instanceof Error ? err.message : err}`)
   } finally {

@@ -151,6 +151,8 @@ export interface MissionState {
   failureStreak: number
   /** A run interrupted by a pause request, waiting to be resumed. */
   paused?: PausedRun
+  /** triggerId -> cadence fingerprint last scheduled from schedule.json; a change re-anchors that trigger's nextFire. */
+  scheduleSeen?: Record<string, string>
 }
 
 export interface ApprovalCommand {

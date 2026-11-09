@@ -23,6 +23,8 @@ switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/
 
 Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.
 
+Mission schedule control — built 2026-11-08 on branch `mission-schedule-control` (PR pending): the owner moves, switches off or pauses any daemon pass from a Missions tab (desk and phone) and the widget, with no restart; Resume picks up from now. Record: `docs/decisions/2026-11-08-mission-schedule-control.md`.
+
 ## Next (in rough order)
 
 1. **The rest of the phone channel the owner decided on 2026-10-05** (the projects-mode brainstorm,

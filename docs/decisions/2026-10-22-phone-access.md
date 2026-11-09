@@ -126,3 +126,5 @@ request. End to end: an engine against a stub model, the desk page on loopback a
 from the desk via the Tailscale address (pair, prompt, stream, Stop, revoke). The owner's own
 phone, Windows Firewall for `bun.exe` on the Tailscale interface, and iOS/Android keyboard
 behaviour are manual checks that remain.
+
+**Amendment 2026-11-08.** `GET /api/missions`, `PUT /api/missions/<id>/triggers/<tid>` and `POST /api/daemon/pause` are inference-scoped, so a paired phone and the desk page can read and change mission schedules and pause the daemon. They are operational switches, not engine configuration; the reasoning and the limits are in `2026-11-08-mission-schedule-control.md`. The management-scope rule for configuration above is unchanged.

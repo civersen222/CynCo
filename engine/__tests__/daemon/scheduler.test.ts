@@ -1,6 +1,6 @@
 // engine/__tests__/daemon/scheduler.test.ts
 import { describe, expect, it } from 'bun:test'
-import { computeNextFire, evaluateTrigger } from '../../daemon/scheduler.js'
+import { computeNextFire, evaluateTrigger, validateCron } from '../../daemon/scheduler.js'
 import type { TriggerSpec } from '../../daemon/types.js'
 
 const interval = (mins: number): TriggerSpec => ({
@@ -133,5 +133,19 @@ describe('evaluateTrigger', () => {
     const r = evaluateTrigger(t, undefined, now)
     expect(r.action).toBe('init')
     if (r.action === 'init') expect(r.next.getTime()).toBe(now.getTime() + 60 * 60000)
+  })
+})
+
+describe('validateCron', () => {
+  it('null for a valid expression, a message otherwise', () => {
+    expect(validateCron('25 9-17/4 * * *')).toBeNull()
+    expect(typeof validateCron('99 * * * *')).toBe('string')
+    expect(validateCron('0 0 31 2 *')).toContain('never fires')
+    expect(validateCron('* * *')).toContain('5 fields')
+  })
+
+  it('a stepped hour window fires at 9:25 the next morning after 18:00', () => {
+    expect(computeNextFire(cron('25 9-17/4 * * *'), new Date(2026, 10, 8, 18, 0)).getTime())
+      .toBe(new Date(2026, 10, 9, 9, 25).getTime())
   })
 })

@@ -6,6 +6,7 @@ import { evaluateTrigger, computeNextFire } from './scheduler.js'
 import { GpuBusyError } from './taskRunner.js'
 import { serializeHandoff } from '../memory/handoff.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
+import { applySchedule, cadenceFingerprint, readSchedule, type EffectiveTrigger, type Schedule } from './schedule.js'
 import type { ApprovalCommand, PausedRun, Recommendation, TaskFileInput, TaskOutcome, TriggerSpec } from './types.js'
 
 // GPU-busy defer backoff (spec §2/§7): 5 → 10 → 20 → 40 → 60 min, capped.
@@ -66,6 +67,12 @@ export class MissionRunner {
    *  a daemon restart drops them; the user just resends the command. */
   private onDemand: { week?: number; notBefore?: number }[] = []
   private pauseLogged = false
+  /** Last good schedule.json (keyed by mtime); a torn or invalid file keeps it, a missing file clears it. */
+  private scheduleCache: { mtimeMs: number | null; schedule: Schedule } | null = null
+  private badScheduleLogged: number | null = null
+  /** `${mtimeMs}|${triggerId}` already reported as an uncomputable override — log once, not every tick. */
+  private brokenOverrideLogged = new Set<string>()
+  private lastEffective: EffectiveTrigger[] | null = null
 
   constructor(
     /** Public (read) so the daemon can collect every mission's nextFire for the doorman wake schedule. */
@@ -83,6 +90,102 @@ export class MissionRunner {
     return validTimeout(trigger.timeoutMs) ?? validTimeout(this.ledger.config.timeoutMs) ?? DEFAULT_TIMEOUT_MS
   }
 
+  /** The triggers as the last tick saw them: mission.json with schedule.json laid over it. */
+  effectiveTriggers(): EffectiveTrigger[] {
+    return this.lastEffective ?? this.resolveTriggers(this.deps.now())
+  }
+
+  /** Re-reads schedule.json: 'ok' replaces the cache, 'absent' clears it (the owner's reset), 'bad' keeps it. */
+  private loadSchedule(): { schedule: Schedule; mtimeMs: number | null } {
+    const read = readSchedule(this.ledger.dir)
+    if (read.status === 'ok') this.scheduleCache = { mtimeMs: read.mtimeMs, schedule: read.schedule }
+    else if (read.status === 'absent') this.scheduleCache = null
+    else if (this.badScheduleLogged !== read.mtimeMs) {
+      this.badScheduleLogged = read.mtimeMs
+      console.log(`[mission:${this.ledger.config.id}] schedule.json is unreadable or invalid — keeping the last good overrides`)
+    }
+    return this.scheduleCache ?? { schedule: { triggers: {} }, mtimeMs: null }
+  }
+
+  /**
+   * Effective triggers for this tick. validateOverride checks fields one at a time, so an override
+   * can still describe a cadence computeNextFire cannot compute (kind 'cron' with no cron); that
+   * trigger keeps its mission.json cadence (its on/off switch still applies) and the tick goes on.
+   */
+  private resolveTriggers(now: Date): EffectiveTrigger[] {
+    const { schedule, mtimeMs } = this.loadSchedule()
+    const declared = new Map(this.ledger.config.triggers.map((t) => [t.id, t]))
+    this.lastEffective = applySchedule(this.ledger.config.triggers, schedule).triggers.map((t) => {
+      try {
+        computeNextFire(t, now)
+        return t
+      } catch (err) {
+        const key = `${mtimeMs}|${t.id}`
+        if (!this.brokenOverrideLogged.has(key)) {
+          this.brokenOverrideLogged.add(key)
+          console.log(`[mission:${this.ledger.config.id}] schedule.json override for "${t.id}" ignored (${err instanceof Error ? err.message : err}) — keeping its mission.json cadence`)
+        }
+        return { ...declared.get(t.id)!, enabled: t.enabled, overridden: t.overridden.filter((k) => k === 'enabled') }
+      }
+    })
+    return this.lastEffective
+  }
+
+  /** A slot already due moves to its next slot from now, without firing. Returns whether it moved. */
+  private moveFromNowIfDue(trigger: TriggerSpec, now: Date): boolean {
+    const due = this.ledger.state.nextFire[trigger.id]
+    if (due === undefined || new Date(due).getTime() > now.getTime()) return false
+    this.ledger.setNextFire(trigger.id, computeNextFire(trigger, now).toISOString())
+    return true
+  }
+
+  /** A switched-off trigger is never evaluated, but its grid keeps moving so switching it on fires no catch-up. */
+  private advanceDisabled(trigger: EffectiveTrigger, now: Date): void {
+    if (this.ledger.state.nextFire[trigger.id] === undefined) {
+      this.ledger.setNextFire(trigger.id, computeNextFire(trigger, now).toISOString())
+      return
+    }
+    this.moveFromNowIfDue(trigger, now)
+  }
+
+  /** A cadence the owner changed since the last tick restarts the grid from now; the first sighting only records it. */
+  private applyFingerprint(trigger: EffectiveTrigger, now: Date): void {
+    const fp = cadenceFingerprint(trigger)
+    const seen = this.ledger.state.scheduleSeen?.[trigger.id]
+    if (seen !== undefined && seen !== fp) {
+      this.ledger.setNextFire(trigger.id, computeNextFire(trigger, now).toISOString())
+      console.log(`[mission:${this.ledger.config.id}] cadence of "${trigger.id}" changed — next slot from now`)
+    }
+    this.ledger.state.scheduleSeen = { ...this.ledger.state.scheduleSeen, [trigger.id]: fp }
+  }
+
+  /**
+   * An earlier fire in this tick can hold it for up to 45 min, and the owner may edit schedule.json
+   * meanwhile: re-read it right before this trigger fires. Switched off → not fired (its nextFire is
+   * already advanced; the next tick's advanceDisabled keeps it moving). Cadence changed → the grid
+   * restarts from now and the trigger fires only if that still makes it due. Returns what to fire.
+   */
+  private recheckBeforeFire(trigger: EffectiveTrigger): EffectiveTrigger | null {
+    const at = this.deps.now()
+    const fresh = this.resolveTriggers(at).find((t) => t.id === trigger.id)
+    if (!fresh) return trigger
+    if (!fresh.enabled) {
+      console.log(`[mission:${this.ledger.config.id}] "${trigger.id}" was switched off in schedule.json during this tick — not firing it`)
+      return null
+    }
+    if (cadenceFingerprint(fresh) === cadenceFingerprint(trigger)) return fresh
+    this.applyFingerprint(fresh, at)
+    const evaln = evaluateTrigger(fresh, this.ledger.state.nextFire[fresh.id], at)
+    if (evaln.action !== 'fire') {
+      this.ledger.saveState()
+      console.log(`[mission:${this.ledger.config.id}] "${trigger.id}" cadence changed during this tick and it is no longer due — not firing it`)
+      return null
+    }
+    this.ledger.setNextFire(fresh.id, evaln.next.toISOString())
+    this.ledger.saveState()
+    return fresh
+  }
+
   async tick(): Promise<void> {
     const now = this.deps.now()
     if (this.deps.isPaused?.()) {
@@ -90,26 +193,26 @@ export class MissionRunner {
       this.pauseLogged = true
       return
     }
+    const effective = this.resolveTriggers(now)
     if (this.pauseLogged) {
       // Resume picks the schedule up from now: a slot that came due while paused moves to its
       // next slot instead of firing as a catch-up (owner decision 2026-11-08). Only on this edge,
       // never at startup, so run-once-on-startup still catches up after a restart.
       let moved = 0
-      for (const trigger of this.ledger.config.triggers) {
-        const due = this.ledger.state.nextFire[trigger.id]
-        if (due !== undefined && new Date(due).getTime() <= now.getTime()) {
-          this.ledger.setNextFire(trigger.id, computeNextFire(trigger, now).toISOString())
-          moved++
-        }
-      }
+      for (const trigger of effective) if (this.moveFromNowIfDue(trigger, now)) moved++
       if (moved > 0) this.ledger.saveState()
       console.log(`[mission:${this.ledger.config.id}] pause lifted — ${moved} trigger(s) moved to their next slot`)
     }
     this.pauseLogged = false
-    if (this.ledger.state.paused) await this.resumePaused(this.ledger.state.paused, now)
+    if (this.ledger.state.paused) await this.resumePaused(this.ledger.state.paused, effective, now)
     if (this.deps.isPaused?.()) return
     await this.drainOnDemand(now)
-    for (const trigger of this.ledger.config.triggers) {
+    for (const trigger of effective) {
+      if (!trigger.enabled) {
+        this.advanceDisabled(trigger, now)
+        continue
+      }
+      this.applyFingerprint(trigger, now)
       const due = this.ledger.state.nextFire[trigger.id]
       const evaln = evaluateTrigger(trigger, due, now)
       if (evaln.action === 'wait') continue
@@ -127,7 +230,9 @@ export class MissionRunner {
       // on restart with the old nextFire still on disk.
       this.ledger.saveState()
       if (evaln.action === 'init' || evaln.action === 'skip') continue
-      await this.fire(trigger, now)
+      const current = this.recheckBeforeFire(trigger)
+      if (!current) continue
+      await this.fire(current, now)
     }
     this.ledger.saveState()
   }
@@ -153,8 +258,17 @@ export class MissionRunner {
   }
 
   /** Relaunch a run the control file interrupted: same task, the journal to continue from, the clock it had left. */
-  private async resumePaused(paused: PausedRun, now: Date): Promise<void> {
-    const trigger = this.ledger.config.triggers.find((t) => t.id === paused.triggerId)
+  private async resumePaused(paused: PausedRun, effective: EffectiveTrigger[], now: Date): Promise<void> {
+    const declared = effective.find((t) => t.id === paused.triggerId)
+    if (declared && !declared.enabled) {
+      // Switched off while parked: the owner no longer wants this pass. A cadence change does not drop it.
+      delete this.ledger.state.paused
+      this.ledger.recordRun({ ts: now.toISOString(), triggerId: paused.triggerId, ok: true, summary: `dropped on disable: ${paused.triggerId}`, recommendationIds: [], entropy: null })
+      this.ledger.saveState()
+      console.log(`[mission:${this.ledger.config.id}] parked run "${paused.triggerId}" dropped — the trigger is switched off in schedule.json`)
+      return
+    }
+    const trigger: TriggerSpec = declared
       ?? { id: paused.triggerId, kind: 'daily' as const, at: '00:00', precheck: 'none' as const, missedPolicy: 'skip' as const, prompt: paused.input.prompt }
     const input: TaskFileInput = {
       ...paused.input,

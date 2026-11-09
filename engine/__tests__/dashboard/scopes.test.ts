@@ -175,6 +175,17 @@ describe('changing configuration needs the management scope', () => {
     expect(res.status).toBe(403)
   })
 
+  // Operational switches, not engine configuration: docs/decisions/2026-11-08-mission-schedule-control.md
+  test('mission schedule and pause are operational switches: inference is enough', async () => {
+    const res = await fetch(url('/api/missions/x/triggers/y'), {
+      method: 'PUT',
+      headers: { ...bearer(INFERENCE), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: false }),
+    })
+    expect(res.status).not.toBe(401)
+    expect(res.status).not.toBe(403)
+  })
+
   test('the management token is accepted', async () => {
     const res = await fetch(url('/config/engine'), {
       method: 'POST',

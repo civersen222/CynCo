@@ -49,7 +49,8 @@ import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
-import { cyncoHome } from './paths.js'
+import { cyncoHome, missionsDir } from './paths.js'
+import { defaultControlPath } from './daemon/control.js'
 import { embedBaseUrlFor } from './index/embedClient.js'
 import { makeProjectsDeps } from './projects/api.js'
 import { projectsHome } from './projects/layout.js'
@@ -496,6 +497,10 @@ try {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')
         const { missionsDir } = require('./paths.js')
         return collectAwayRuns(missionsDir())
+      },
+      missions: {
+        missionsDir: missionsDir(),
+        controlPath: process.env.CYNCO_CONTROL_FILE ?? defaultControlPath(cyncoHome()),
       },
       getSessionInfo: () => {
         let modelName = config.model || ''

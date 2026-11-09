@@ -95,6 +95,16 @@ function nextCronFire(expr: string, from: Date): Date {
   throw new Error(`Cron expression "${expr}" never fires within 4 years`)
 }
 
+/** null when `expr` is a 5-field cron that fires within 4 years; otherwise the reason it does not. */
+export function validateCron(expr: string): string | null {
+  try {
+    nextCronFire(expr, new Date())
+    return null
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e)
+  }
+}
+
 export function computeNextFire(t: TriggerSpec, from: Date): Date {
   if (t.kind === 'interval') {
     return new Date(from.getTime() + (t.everyMinutes ?? 60) * 60000)
