@@ -34,6 +34,8 @@ export function askInstruction(question: string): string {
 }
 
 export const LOOK_TIMEOUT_MS = 60_000
+/** An unload is a bookkeeping call: a box that does not answer it in 10 s is not waited for. */
+export const UNLOAD_TIMEOUT_MS = 10_000
 /**
  * Ollama's default window is 4096 tokens; a 12 MP phone photo alone is ~4100 image
  * tokens on qwen3-vl (Ollama caps the image near 4 MP), so the first real photo was
@@ -84,6 +86,27 @@ export class LookClient {
     const r = await this.chat(askInstruction(question), image)
     if (!r.ok) return r
     return { ok: true, answer: r.content.trim(), model: r.model, ms: r.ms }
+  }
+
+  /**
+   * Drop the vision model from the box's VRAM now (F194): one `/api/generate` with
+   * `keep_alive: 0` and no prompt, which Ollama documents as the unload. The image box's
+   * 16 GB is shared with ComfyUI, and the 12 GB edit model spilled to system memory
+   * (446 s, then a 300 s timeout) while the look's model was still resident; the next
+   * look reloads it in a few seconds.
+   */
+  async unload(): Promise<{ ok: true } | { ok: false; reason: string }> {
+    try {
+      const resp = await this.fetchFn(`${this.url}/api/generate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.model, keep_alive: 0 }),
+        signal: AbortSignal.timeout(UNLOAD_TIMEOUT_MS),
+      })
+      if (!resp.ok) return { ok: false, reason: `image box did not unload the vision model: HTTP ${resp.status}` }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: `image box did not unload the vision model: ${e instanceof Error ? e.message : String(e)}` }
+    }
   }
 
   /** The one request shape both calls share: `/api/chat`, the image as base64, `keep_alive`, the window, the deadline; every failure is a reason. */

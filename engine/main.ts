@@ -56,6 +56,7 @@ import { makeProjectsDeps } from './projects/api.js'
 import { projectsHome } from './projects/layout.js'
 import { openBinding } from './projects/binding.js'
 import { ImageService } from './imagegen/service.js'
+import { makeLookClient } from './vision/lookClient.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -393,7 +394,10 @@ let activationsConsumer: ActivationsConsumer | null = null
 // same way the loop's emit does. The config check runs here, once; the server
 // probe runs in the background and only logs (a picture nobody asked for is
 // not worth an alert — a failing server reaches the card through the job).
-const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) } })
+// The image box's GPU is shared by its vision model and ComfyUI (F194): a transform first asks Ollama to drop the look's model.
+const visionForImages = makeLookClient(process.env)
+const unloadVisionBeforeTransform = visionForImages ? async () => { const r = await visionForImages.unload(); console.log(`[imagegen] vision model ${r.ok ? 'unloaded from the image box before the transform' : `not unloaded: ${r.reason}`}`) } : undefined
+const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) }, ...(unloadVisionBeforeTransform ? { beforeTransform: unloadVisionBeforeTransform } : {}) })
 void imageService.probe()
 
 const loop = new ConversationLoop({

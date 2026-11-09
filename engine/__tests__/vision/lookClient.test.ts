@@ -64,6 +64,16 @@ describe('LookClient.look', () => {
     const r = await c.ask(png, 'image/png', 'q')
     expect(r).toEqual({ ok: false, reason: 'image box did not answer: HTTP 500 {"error":"boom"}' })
   })
+  it('unload: one /api/generate with keep_alive 0 and no prompt, so Ollama drops the vision model from the box\'s VRAM before a transform (F194)', async () => {
+    const f = fakeFetch(() => new Response('{"done":true}', { status: 200 }))
+    const c = new LookClient({ url: 'http://box:11434', model: 'qwen3-vl:8b-instruct', fetchFn: f.fn })
+    const r = await c.unload()
+    expect(r).toEqual({ ok: true })
+    expect(f.calls[0].url).toBe('http://box:11434/api/generate')
+    expect(f.calls[0].body).toEqual({ model: 'qwen3-vl:8b-instruct', keep_alive: 0 })
+    const bad = new LookClient({ url: 'http://box:11434', model: 'm', fetchFn: fakeFetch(() => new Response('x', { status: 500 })).fn })
+    expect(await bad.unload()).toEqual({ ok: false, reason: 'image box did not unload the vision model: HTTP 500' })
+  })
   it('a server that never answers is a bounded refusal', async () => {
     const f = fakeFetch((_u, init) => new Promise((_res, rej) => { (init.signal as AbortSignal).addEventListener('abort', () => rej(new Error('The operation timed out'))) }))
     const c = new LookClient({ url: 'http://box:11434', model: 'm', fetchFn: f.fn, timeoutMs: 20 })
