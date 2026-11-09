@@ -159,6 +159,33 @@ export class MissionRunner {
     this.ledger.state.scheduleSeen = { ...this.ledger.state.scheduleSeen, [trigger.id]: fp }
   }
 
+  /**
+   * An earlier fire in this tick can hold it for up to 45 min, and the owner may edit schedule.json
+   * meanwhile: re-read it right before this trigger fires. Switched off → not fired (its nextFire is
+   * already advanced; the next tick's advanceDisabled keeps it moving). Cadence changed → the grid
+   * restarts from now and the trigger fires only if that still makes it due. Returns what to fire.
+   */
+  private recheckBeforeFire(trigger: EffectiveTrigger): EffectiveTrigger | null {
+    const at = this.deps.now()
+    const fresh = this.resolveTriggers(at).find((t) => t.id === trigger.id)
+    if (!fresh) return trigger
+    if (!fresh.enabled) {
+      console.log(`[mission:${this.ledger.config.id}] "${trigger.id}" was switched off in schedule.json during this tick — not firing it`)
+      return null
+    }
+    if (cadenceFingerprint(fresh) === cadenceFingerprint(trigger)) return fresh
+    this.applyFingerprint(fresh, at)
+    const evaln = evaluateTrigger(fresh, this.ledger.state.nextFire[fresh.id], at)
+    if (evaln.action !== 'fire') {
+      this.ledger.saveState()
+      console.log(`[mission:${this.ledger.config.id}] "${trigger.id}" cadence changed during this tick and it is no longer due — not firing it`)
+      return null
+    }
+    this.ledger.setNextFire(fresh.id, evaln.next.toISOString())
+    this.ledger.saveState()
+    return fresh
+  }
+
   async tick(): Promise<void> {
     const now = this.deps.now()
     if (this.deps.isPaused?.()) {
@@ -203,7 +230,9 @@ export class MissionRunner {
       // on restart with the old nextFire still on disk.
       this.ledger.saveState()
       if (evaln.action === 'init' || evaln.action === 'skip') continue
-      await this.fire(trigger, now)
+      const current = this.recheckBeforeFire(trigger)
+      if (!current) continue
+      await this.fire(current, now)
     }
     this.ledger.saveState()
   }

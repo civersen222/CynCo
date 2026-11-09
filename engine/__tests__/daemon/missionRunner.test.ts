@@ -992,6 +992,41 @@ describe('MissionRunner schedule.json overrides', () => {
     expect(JSON.parse(readFileSync(join(mdir(), 'state.json'), 'utf-8')).paused).toBeUndefined()
   })
 
+  it('a trigger switched off while an earlier pass in the same tick runs is not fired', async () => {
+    const { ledger, runner, ranTasks, deps } = setup()
+    const run = deps.runTask
+    deps.runTask = async (input: any) => {
+      if (input.triggerId === 'poll') writeSchedule({ triggers: { news: { enabled: false } } })
+      return run(input)
+    }
+    ledger.setNextFire('poll', at(11, 59).toISOString())
+    ledger.setNextFire('news', at(11, 59).toISOString())
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: any[]) => { lines.push(a.join(' ')) }
+    try { await runner.tick() } finally { console.log = orig }
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks.map((t: any) => t.triggerId)).toEqual(['poll'])
+    expect(ledger.recentRuns(5).some((r) => r.triggerId === 'news')).toBe(false)
+    expect(lines.some((l) => l.includes('news') && /switched off/.test(l))).toBe(true)
+  })
+
+  it('a trigger whose cadence moved off now while an earlier pass in the same tick runs is not fired', async () => {
+    const { ledger, runner, ranTasks, deps } = setup()
+    const run = deps.runTask
+    deps.runTask = async (input: any) => {
+      if (input.triggerId === 'poll') writeSchedule({ triggers: { news: { kind: 'cron', cron: '0 18 * * *' } } })
+      return run(input)
+    }
+    ledger.setNextFire('poll', at(11, 59).toISOString())
+    ledger.setNextFire('news', at(11, 59).toISOString())
+    await runner.tick()
+    expect(ranTasks.length).toBe(1)
+    expect(ranTasks.map((t: any) => t.triggerId)).toEqual(['poll'])
+    expect(ledger.state.nextFire['news']).toBe(at(18).toISOString())
+    expect(ledger.state.scheduleSeen?.['news']).toBe('cron|0 18 * * *|||120')
+  })
+
   it('an override whose cadence cannot be computed falls back to mission.json for that trigger and logs it', async () => {
     writeSchedule({ triggers: { poll: { kind: 'cron' } } })   // passes per-field validation, but no cron expression
     const { now, ledger, runner, ranTasks } = setup()
