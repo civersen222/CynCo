@@ -61,7 +61,7 @@ describe('keys and seeds', () => {
     expect(imageKey({ ...FIELDS, seed: 1001 })).toBe(take1)
     expect(imageKey({ ...FIELDS, seed: seedFor(FIELDS.prompt, FIELDS.negative) })).toBe(def)
     const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
-      g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
+      g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
       a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
       b: { type: 'Image', props: { prompt: 'a tall green alien', seed: 1001, alt: 'B' } },
       c: { type: 'Image', props: { prompt: 'a tall green alien', seed: 0, alt: 'C' } },
@@ -538,7 +538,7 @@ describe('servedProjectFile', () => {
 
 describe('pictureRequests (image box §4)', () => {
   const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
-    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
     a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
     b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
     c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'C' } },

@@ -39,7 +39,7 @@ import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
 import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { fillWorkflow, fitToArea, workflowClasses } from './workflow.js'
+import { EDIT_SAMPLING, fillWorkflow, fitToArea, workflowClasses, type TransformKind } from './workflow.js'
 import { imageDimensions } from '../vision/imageSize.js'
 
 export type AnnotateAt = {
@@ -82,7 +82,7 @@ const SHUTDOWN_BOUND_MS = 3000
 const POLL_FAILURES_TOLERATED = 3
 
 /** The graph a job submits and, for a transform (image box §4), what it starts from. */
-type JobExtra = { wf?: ComfyWorkflow; transform?: 'vary' | 'outline'; source?: { path: string; sha256: string }; denoise?: number }
+type JobExtra = { wf?: ComfyWorkflow; transform?: TransformKind; source?: { path: string; sha256: string }; denoise?: number }
 /** vary's default denoise: the thing stays itself, the idea shows (image box §4). */
 const VARY_DENOISE = 0.55
 
@@ -479,7 +479,8 @@ export class ImageService implements ImageAnnotator {
         // A transform paints at the photo's aspect (check 4 squashed a portrait into the configured square).
         fit = fitToArea(imageDimensions(bytes), cfg.width * cfg.height)
       }
-      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as 'vary' | 'outline', source: source.sha256, ...(fit ?? {}) } : undefined)
+      // An edit samples as its Lightning LoRA needs, with no negative, whatever the generate configuration says (F193).
+      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(im.kind === 'edit' ? EDIT_SAMPLING : {}) } : undefined)
       const key = imageKey(fields)
       const repeat = decided.has(key)
       let state = decided.get(key)
@@ -501,7 +502,7 @@ export class ImageService implements ImageAnnotator {
             if (twin.pin) pins.push([twin.pin, fields.checkpoint])
           } else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
-            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as 'vary' | 'outline', source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}) } : { wf }))
+            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as TransformKind, source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}) } : { wf }))
             state = { status: 'queued', ...base }
           }
         }
@@ -573,7 +574,7 @@ export class ImageService implements ImageAnnotator {
    * found gone is the pick and starts a probe at once — or, with one running, takes that one's answer, a fresh probe
    * following it only when it fails or still picks the gone checkpoint; `runJob` paints with the one the key names.
    */
-  private keyFields(cfg: ComfyConfig, wf: ComfyWorkflow, prompt: string, seed?: number, extra?: { transform: 'vary' | 'outline'; source: string; width?: number; height?: number }): KeyFields {
+  private keyFields(cfg: ComfyConfig, wf: ComfyWorkflow, prompt: string, seed?: number, extra?: { transform: TransformKind; source: string; width?: number; height?: number; steps?: number; cfg?: number; sampler?: string; scheduler?: string; negative?: string }): KeyFields {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,

@@ -170,13 +170,13 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
   },
   Image: {
     group: 'Content', children: 'none',
-    description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "vary" (toward the "prompt") or "outline" (line art, no prompt).',
+    description: 'A picture: "prompt" describes it and the engine paints it (the same prompt with another whole-number "seed" is another take; leave seed out for one picture); "src" is a real http(s) image URL or the project-relative path of a png/jpg/gif/webp/svg file you wrote. Give one, not both. Or transform a project photo: "source" (its path) + "transform": "edit" (change it as the "prompt" instructs: add, remove, replace, restyle something), "vary" (a variation toward the "prompt") or "outline" (line art, no prompt).',
     props: {
       prompt: str('what the picture shows'),
       // Another take of one design (engine/imagegen keys on it; F176). ComfyUI's KSampler takes up to 2^64, but JS must stay exact.
       seed: int('a whole number; the same prompt with another seed is another take — leave it out for one picture', { min: 0, max: Number.MAX_SAFE_INTEGER }),
       src: str('image URL, or a file path from the project folder'), alt: str('what it shows', { required: true }), caption: str('text under the image'),
-      source: str('the project path of a photo to transform (knowledge/…)'), transform: str('"vary" (with a prompt) or "outline"'),
+      source: str('the project path of a photo to transform (knowledge/…)'), transform: str('"edit" (prompt = the instruction), "vary" (prompt = the idea) or "outline"'),
     },
     example: { prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' },
   },
