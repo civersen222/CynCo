@@ -19,13 +19,18 @@ const DEFAULT_TAIL_BYTES = 256 * 1024
 function readTail(path: string, tailBytes: number): string {
   const size = statSync(path).size
   const start = Math.max(0, size - tailBytes)
-  const buf = Buffer.alloc(size - start)
+  // Read one byte before the cut: if it is a newline the cut sits on a line
+  // start and the first line is whole; otherwise drop the torn first line.
+  const from = start > 0 ? start - 1 : 0
+  const buf = Buffer.alloc(size - from)
   const fd = openSync(path, 'r')
-  try { readSync(fd, buf, 0, buf.length, start) } finally { closeSync(fd) }
+  try { readSync(fd, buf, 0, buf.length, from) } finally { closeSync(fd) }
+  if (start === 0) return buf.toString('utf-8')
+  if (buf[0] === 0x0a) return buf.subarray(1).toString('utf-8')
   const text = buf.toString('utf-8')
-  // A tail cut mid-line: drop the first partial line.
-  return start > 0 ? text.slice(text.indexOf('\n') + 1) : text
+  return text.slice(text.indexOf(NL_CHAR) + 1)
 }
+const NL_CHAR = String.fromCharCode(10)
 
 export function collectAwayRuns(missionsDir: string, opts: { limit?: number; tailBytes?: number } = {}): AwayRun[] {
   const limit = opts.limit ?? DEFAULT_LIMIT
@@ -39,17 +44,19 @@ export function collectAwayRuns(missionsDir: string, opts: { limit?: number; tai
     if (!existsSync(file)) continue
     let text: string
     try { text = readTail(file, tailBytes) } catch (e) { console.log(`[away] cannot read ${file}: ${e instanceof Error ? e.message : String(e)}`); continue }
-    for (const line of text.split('\n')) {
+    let skipped = 0
+    for (const line of text.split(NL_CHAR)) {
       if (!line.trim()) continue
       try {
         const r = JSON.parse(line)
         if (typeof r?.ts !== 'string' || typeof r?.triggerId !== 'string') continue
         out.push({ ts: r.ts, mission, triggerId: r.triggerId, ok: Boolean(r.ok), summary: typeof r.summary === 'string' ? r.summary : '' })
-      } catch (e) {
-        // a torn or foreign line in an append-only log: skip it, keep the rest
-        console.log(`[away] skipped a line in ${file}: ${e instanceof Error ? e.message : String(e)}`)
+      } catch {
+        // a torn or foreign line in an append-only log: skip it, keep the rest; counted, logged once below
+        skipped++
       }
     }
+    if (skipped > 0) console.log(`[away] skipped ${skipped} unparsable line(s) in ${file}`)
   }
   out.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
   return out.slice(0, limit)
