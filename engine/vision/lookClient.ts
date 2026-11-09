@@ -30,8 +30,7 @@ export type AskResult = { ok: true; answer: string; model: string; ms: number } 
 
 /** The aimed instruction: the user's (or the model's) question, with a standing order not to invent what the picture does not show. */
 export function askInstruction(question: string): string {
-  return `Answer this question about the picture: ${question}
-Say what you can see that supports the answer. If the picture does not show it, say so plainly.`
+  return `Answer this question about the picture: ${question}\nSay what you can see that supports the answer. If the picture does not show it, say so plainly.`
 }
 
 export const LOOK_TIMEOUT_MS = 60_000

@@ -7346,9 +7346,9 @@ function uploadKnowledgeFiles(files, onStatus, slugOverride) {
   next();
 }
 
-/** Over 3 MP or 20 MB a photo is shrunk before upload (image box design §3): ~2900 image tokens on qwen3-vl, where a 12 MP photo was ~4100 and refused (F190); and a smaller upload from the phone. */
+/** Over 16 MP or 20 MB a photo is shrunk before upload (image box design §3). A 12 MP phone photo arrives whole: the box keeps ~4 MP of one look (F190 fixed the window), and the zoom (F192) cuts a large picture into full-detail tiles, so the pixels must reach the engine. */
 function needsDownscale(width, height, bytes) {
-  return width * height > 3000000 || bytes > 20 * 1024 * 1024;
+  return width * height > 16000000 || bytes > 20 * 1024 * 1024;
 }
 
 /** The photo as a JPEG under the cap, or the file itself when it is small enough or cannot be decoded. Never rejects. */
@@ -7361,7 +7361,7 @@ function downscaleImage(file) {
       img.onload = function() {
         URL.revokeObjectURL(url);
         if (!needsDownscale(img.width, img.height, file.size)) { resolve(file); return; }
-        var scale = Math.min(1, Math.sqrt(3000000 / (img.width * img.height)));
+        var scale = Math.min(1, Math.sqrt(16000000 / (img.width * img.height)));
         var c = document.createElement('canvas');
         c.width = Math.max(1, Math.round(img.width * scale)); c.height = Math.max(1, Math.round(img.height * scale));
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);

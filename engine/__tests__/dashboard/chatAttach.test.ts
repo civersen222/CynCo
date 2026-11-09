@@ -65,10 +65,11 @@ describe('image attachments on the page', () => {
     expect(indexedLabel({ indexed: false, reason: 'unsupported file type .heic' })).toBe('kept but not indexed: unsupported file type .heic')
     expect(indexedLabel({ indexed: true, chunks: 2 })).toBe('indexed (2 chunks)')
   })
-  it('needsDownscale: 3 MP or 20 MB is the line (a 12 MP phone photo was ~4100 image tokens, over the box\'s window — F190)', () => {
+  it('needsDownscale: 16 MP or 20 MB is the line — a 12 MP phone photo arrives whole, because the zoom (F192) cuts it into full-detail tiles', () => {
     const needsDownscale = lift('needsDownscale')
     expect(needsDownscale(2000, 1500, 1e6)).toBe(false)
-    expect(needsDownscale(4000, 3000, 1e6)).toBe(true)
+    expect(needsDownscale(4000, 3000, 1e6)).toBe(false)
+    expect(needsDownscale(5000, 4000, 1e6)).toBe(true)
     expect(needsDownscale(100, 100, 21 * 1024 * 1024)).toBe(true)
   })
   it('uploadKnowledgeFiles shrinks image files first and onProjectIngest neither toasts the pending record nor stays silent when the look lands', () => {

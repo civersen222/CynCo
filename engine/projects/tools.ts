@@ -19,6 +19,8 @@ import { htmlToText } from './extract/epub.js'
 import { IMAGE_EXTS } from './extract/index.js'
 import { imageMime } from '../vision/lookRunner.js'
 import type { AskResult } from '../vision/lookClient.js'
+import { imageDimensions } from '../vision/imageSize.js'
+import { BOX_MAX_PIXELS, cropTiles, tileGrid } from '../vision/tiles.js'
 
 /** `ask`: the image box's aimed look (`LookRunner.ask`), for LookAt; absent = no vision model configured. */
 export type ProjectToolContext = { home: string; slug: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void; ask?: (bytes: Uint8Array, mime: string, question: string) => Promise<AskResult> }
@@ -173,15 +175,24 @@ export const addToKnowledgeTool: ToolImpl = {
  * "which item is selected" on a dense screen came back empty four times out
  * of four; aimed, the box answered in under 4 s). Replaces the role ImageView
  * could not fill here: it returned bytes to a model that cannot see.
+ *
+ * The zoom (F192): the box keeps ~4 MP of any picture, so on a 12 MP photo of
+ * a table the checkboxes, bold names and small marks were read wrong. With
+ * `zoom` auto (the default) a picture larger than that is cut into two to four
+ * tiles (`engine/vision/tiles.ts`) and each tile is asked the question at full
+ * detail; the answers come back labelled by place and the model puts them
+ * together. One look per tile is the cost; the grid depends on the picture's
+ * size, never on the question.
  */
 export const lookAtTool: ToolImpl = {
   name: 'LookAt',
-  description: 'Ask the image box one question about a picture in this project (a photo or screenshot in knowledge/ or artifacts/): what is selected, a value, a colour, a detail the attached-image block did not give. Returns the box\'s answer in words. You cannot see pictures yourself; this is how you look.',
+  description: 'Ask the image box one question about a picture in this project (a photo or screenshot in knowledge/ or artifacts/): what is selected, a value, a colour, a detail the attached-image block did not give. Returns the box\'s answer in words. You cannot see pictures yourself; this is how you look. A large picture is looked at in 2–4 full-detail tiles (zoom auto); say zoom "on" when small things matter — checkboxes, bold vs plain, little marks, small numbers — and "off" for one quick look at the whole.',
   inputSchema: {
     type: 'object',
     properties: {
       file: { type: 'string', description: 'The picture\'s project path, e.g. knowledge/photo.jpg (a bare name means knowledge/)' },
       question: { type: 'string', description: 'One specific question about the picture, in plain words' },
+      zoom: { type: 'string', enum: ['auto', 'on', 'off'], description: 'auto (default): tiles when the picture is larger than the box keeps (~4 MP); on: tiles anyway; off: one look at the whole picture' },
     },
     required: ['file', 'question'],
   },
@@ -203,9 +214,27 @@ export const lookAtTool: ToolImpl = {
     if (!real.inside) return { output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true }
     const question = String(input.question ?? '').trim()
     if (!question) return { output: 'LookAt: question is required.', isError: true }
-    const r = await context.ask(new Uint8Array(readFileSync(real.real)), imageMime(rel), question)
+    const bytes = new Uint8Array(readFileSync(real.real)), mime = imageMime(rel)
+    const zoom = input.zoom === 'on' ? 'on' : input.zoom === 'off' ? 'off' : 'auto'
+    const dims = zoom === 'off' ? null : imageDimensions(bytes)
+    const grid = dims && (zoom === 'on' || dims.width * dims.height > BOX_MAX_PIXELS) ? tileGrid(dims.width, dims.height) : null
+    let note = ''
+    if (grid && grid.length > 1) {
+      let tiles: Array<{ label: string; bytes: Uint8Array }> | null = null
+      try { tiles = cropTiles(bytes, mime, grid) } catch (e) { note = `(zoom unavailable: ${e instanceof Error ? e.message : String(e)}; looked at the whole picture)\n` }
+      if (tiles) {
+        // One tile at a time: the box runs one model, and the order of the answers is the order of the places.
+        const answers: string[] = []; let ms = 0; let model = ''; let ok = 0
+        for (const t of tiles) {
+          const r = await context.ask(t.bytes, 'image/jpeg', `${question}\n(This is the ${t.label} of a larger picture; answer for what this part shows.)`)
+          if (r.ok) { ok++; ms += r.ms; model = r.model; answers.push(`[${t.label}] ${r.answer}`) } else answers.push(`[${t.label}] ${r.reason}`)
+        }
+        if (ok === 0) return { output: `LookAt: ${answers.join('; ')}`, isError: true }
+        return { output: `Looked closely: ${tiles.length} tiles (${tiles.map(t => t.label).join(', ')}), each answered for its part.\n${answers.join('\n')}\n(image box, ${model}, ${(ms / 1000).toFixed(1)} s total)`, isError: false }
+      }
+    }
+    const r = await context.ask(bytes, mime, question)
     if (!r.ok) return { output: `LookAt: ${r.reason}`, isError: true }
-    return { output: `${r.answer}
-(image box, ${r.model}, ${(r.ms / 1000).toFixed(1)} s)`, isError: false }
+    return { output: `${note}${r.answer}\n(image box, ${r.model}, ${(r.ms / 1000).toFixed(1)} s)`, isError: false }
   },
 }
