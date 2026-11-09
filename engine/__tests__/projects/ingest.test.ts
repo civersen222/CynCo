@@ -49,12 +49,19 @@ describe('ingestFile', () => {
     expect(readJournal(dir)[0]).toMatchObject({ event: 'knowledge.unindexed' })
     expect(existsSync(join(dir, 'knowledge', 'scan.pdf'))).toBe(true)
   })
-  it('embedding failure records the reason and leaves the file for rescan', async () => {
+  it('embedding failure keeps every chunk keyword-searchable, records the reason, and leaves the file for rescan', async () => {
     writeFileSync(join(dir, 'knowledge', 'a.md'), '# A\n\ntext here\n', 'utf8')
     const ev = await ingestFile(deps(new StubEmbed(true)), slug, 'knowledge', 'a.md', 'pasted')
     expect(ev.indexed).toBe(false)
     expect(ev.reason).toMatch(/^embeddings unavailable: /)
-    expect(readFileIndex(dir, 'knowledge').files['a.md'].indexed).toBe(false)
+    expect(ev.reason).toMatch(/kept for keyword search/)
+    expect(ev.chunks).toBe(1)
+    expect(readFileIndex(dir, 'knowledge').files['a.md']).toMatchObject({ indexed: false, chunks: 1 })
+    // the phone's docx must be findable by project search even while the embedding server is down
+    const store = openProjectStore(dir)
+    expect(store.allChunks(['knowledge'])).toHaveLength(1)
+    store.close()
+    expect(readJournal(dir)[0]).toMatchObject({ event: 'knowledge.unindexed', detail: expect.stringMatching(/keyword/) })
   })
   it('no embed client at all indexes keyword-only rows (empty embedding)', async () => {
     writeFileSync(join(dir, 'knowledge', 'a.md'), '# A\n\ntext here\n', 'utf8')

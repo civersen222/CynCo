@@ -7,6 +7,7 @@
  * RETRIEVAL_TAG so the loop can find and replace the previous one (R4).
  */
 import type { SearchHit } from './search.js'
+import type { IngestEvent } from './ingest.js'
 
 export const RETRIEVAL_TAG = '[Project knowledge]'
 export const MAX_PASSAGES = 8
@@ -52,4 +53,31 @@ export function citationsUsed(assistantText: string, citations: Citation[]): Cit
     if (c) { seen.add(n); out.push(c) }
   }
   return out
+}
+
+/**
+ * Files added to the project since the model's last turn — uploads from the
+ * dashboard or the phone's Attach button, research saves — as a fact the model
+ * is told at the top of the next `[Project knowledge]` block. Without it a
+ * phone that attached a docx and asked "did you get it?" was answered from an
+ * `Ls` of the wrong folder: "nothing landed" (2026-11-08). Chat ingests are
+ * not files the user added and are skipped; only this project's events count.
+ */
+export class IngestNotes {
+  private pending: IngestEvent[] = []
+  constructor(readonly slug: string, private readonly cap = 20) {}
+
+  add(ev: IngestEvent): void {
+    if (ev.slug !== this.slug || ev.kind === 'chat') return
+    this.pending.push(ev)
+    if (this.pending.length > this.cap) this.pending.splice(0, this.pending.length - this.cap)
+  }
+
+  /** The block text, or null when nothing was added; drains. */
+  take(): string | null {
+    if (this.pending.length === 0) return null
+    const lines = this.pending.map(e => `- ${e.filePath} — ${e.indexed ? `indexed (${e.chunks ?? 0} passage(s))` : `kept, not vector-indexed: ${e.reason ?? 'no reason given'}`}`)
+    this.pending = []
+    return `${RETRIEVAL_TAG}\nFiles added to this project since your last turn (uploaded or saved; they live at the paths shown, under the project folder):\n${lines.join('\n')}\n`
+  }
 }

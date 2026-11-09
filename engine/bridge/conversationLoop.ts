@@ -117,7 +117,8 @@ import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
 import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
 import { searchProjects } from '../projects/search.js'
-import { buildRetrievalBlock, citationsUsed, retrievalShare, RETRIEVAL_TAG } from '../projects/retrieval.js'
+import { buildRetrievalBlock, citationsUsed, retrievalShare, IngestNotes, RETRIEVAL_TAG } from '../projects/retrieval.js'
+import type { IngestEvent } from '../projects/ingest.js'
 import { setProjectToolContext } from '../projects/tools.js'
 import { ingestChat } from '../projects/ingest.js'
 import { classifyRisk, describeRisk } from './guardianRules.js'
@@ -504,6 +505,8 @@ export class ConversationLoop {
   private toolScorer = new ToolScorer()
   /** Projects mode: the open project, or null for an ordinary coding session. */
   private project: ProjectBinding | null = null
+  /** Files added to the bound project since the last turn, told to the model at the next turn (retrieval.ts `IngestNotes`). */
+  private ingestNotes: IngestNotes | null = null
   /** The in-flight `handleUserMessage` turn, so a session switch can await its end. */
   private currentTurn: Promise<void> | null = null
   /**
@@ -1260,6 +1263,13 @@ export class ConversationLoop {
     try { this.images?.warm?.() } catch (e) { console.log(`[imagegen] warm failed: ${e instanceof Error ? e.message : String(e)}`) }
   }
 
+  /** main.ts feeds every `project.ingest` here; only the bound project's file events are kept. */
+  noteProjectIngest(ev: IngestEvent): void {
+    if (!this.project) return
+    if (!this.ingestNotes || this.ingestNotes.slug !== this.project.slug) this.ingestNotes = new IngestNotes(this.project.slug)
+    this.ingestNotes.add(ev)
+  }
+
   private async injectProjectRetrieval(text: string): Promise<void> {
     const p = this.project!
     for (let i = this.messages.length - 1; i >= 0; i--) {
@@ -1268,15 +1278,20 @@ export class ConversationLoop {
       if (m.role === 'system' && typeof first?.text === 'string' && first.text.startsWith(RETRIEVAL_TAG)) this.messages.splice(i, 1)
     }
     p.citations = []
+    // Files added since the last turn go first, and survive a failed search: a
+    // phone that just attached a file must hear it landed even with no passages.
+    const note = (this.ingestNotes && this.ingestNotes.slug === p.slug) ? this.ingestNotes.take() : null
+    let blockText: string | null = null
     try {
       const r = await searchProjects({ home: p.home, embed: p.embed }, { query: text, scope: { slug: p.slug }, limit: 8, excludeFilePath: p.chatFile ? `chats/${p.chatFile}` : undefined })
       const block = buildRetrievalBlock(r.hits, Math.floor(p.contextLength * retrievalShare()))
-      if (!block) return
-      p.citations = block.citations
-      this.messages.splice(this.messages.length - 1, 0, { role: 'system', content: [{ type: 'text', text: block.text }] })
+      if (block) { p.citations = block.citations; blockText = block.text }
     } catch (e) {
       console.log(`[projects] retrieval skipped: ${e instanceof Error ? e.message : String(e)}`)
     }
+    const parts = [note, blockText].filter((s): s is string => !!s)
+    if (parts.length === 0) return
+    this.messages.splice(this.messages.length - 1, 0, { role: 'system', content: [{ type: 'text', text: parts.join('\n') }] })
   }
 
   /**
