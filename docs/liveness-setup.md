@@ -5,32 +5,28 @@ it schedules mission triggers, polls MFL for changes, wakes the engine for one-s
 and pushes recommendations to your phone via self-hosted ntfy over Tailscale.
 No public ports are opened anywhere in this setup.
 
-## 1. ntfy server (on the CynCo box)
+## 1. ntfy server (on the doorman)
 
-1. Download the Windows binary from https://github.com/binwiederhier/ntfy/releases (or `scoop install ntfy`).
-2. Find your Tailscale IP: `tailscale ip -4` (e.g. `100.101.102.103`).
-3. Create `ntfy.yml`:
+Since 2026-11-08 (wakefulness slice 6) ntfy runs on the always-on doorman, not on the GPU PC: the
+PC sleeps, and a server that sleeps with it loses phone commands and cannot carry the NAS alert.
+`bash scripts/doorman/deploy.sh` (from the repo root, over the tailnet) starts it as a Docker
+container (`scripts/doorman/ntfy/docker-compose.yml`) bound to the doorman's Tailscale address only
+(`100.110.117.10:8090`, from `server.template.yml`), with a 168 h message cache in a named volume and
+`restart: unless-stopped`. There is no auth file: tailnet membership is the authentication, and the
+Approve/Reject http actions on the phone need anonymous publish. Leave `CYNCO_NTFY_TOKEN` unset.
 
-   ```yaml
-   listen-http: "100.101.102.103:8090"   # Tailscale interface ONLY — never 0.0.0.0
-   auth-file: "C:/cynco/ntfy/auth.db"
-   auth-default-access: "deny-all"
-   ```
+The same deploy installs `naswatch.service` (`scripts/doorman/naswatch.py`): it pings the router first
+and then the NAS every minute and publishes to the `cynco-alerts` topic only when a target changes
+state (`/etc/doorman/naswatch.json`, from `naswatch.example.json`). To retire either: `docker compose
+down` in `/opt/doorman/ntfy`, `sudo systemctl disable --now naswatch`.
 
-4. Create a user + access tokens:
-
-   ```
-   ntfy user add --role=admin cynco
-   ntfy token add cynco          # token for the daemon (CYNCO_NTFY_TOKEN)
-   ntfy access cynco "cynco-*" rw
-   ```
-
-5. Run `ntfy serve --config ntfy.yml` (register it with Task Scheduler the same way as the daemon below).
+The old PC server (Windows binary, Task Scheduler task "Dynasty ntfy", `fantasyman\dynasty\ops\ntfy.yml`)
+is disabled, not deleted; re-enable it and point `CYNCO_NTFY_URL` back at it to roll back.
 
 ## 2. Phone
 
 1. Install Tailscale on your phone and join your tailnet.
-2. Install the ntfy app, add server `http://100.101.102.103:8090` with the token.
+2. Install the ntfy app, add server `http://100.110.117.10:8090` (the doorman; no token).
 3. Subscribe to `cynco-alerts`. Approve/Reject buttons on recommendations publish back to
    `cynco-commands` automatically — the daemon hears them over its outbound SSE connection.
 
@@ -135,7 +131,7 @@ open (llama-server already running), scheduled tasks defer 10 minutes and retry.
 ## 6. Smoke test
 
 ```bash
-# Terminal 1: ntfy serve --config ntfy.yml
+# ntfy already runs on the doorman (scripts/doorman/deploy.sh) - nothing to start here
 # Terminal 2:
 CYNCO_NTFY_URL=http://100.101.102.103:8090 CYNCO_NTFY_TOKEN=tk_... \
 LOCALCODE_PROVIDER=llama-cpp \
@@ -159,11 +155,11 @@ Add to the daemon's launch script (the one Task Scheduler runs):
 
 While a one-shot runs, the daemon holds the PC awake (`engine/power/awake.ts`); with nothing running it holds
 nothing, and the owner's "Sleep after" setting decides. `scripts/cynco-services.ps1` shows and starts/stops the
-daemon, the headless phone engine, ntfy and the approval listener.
+daemon, the headless phone engine and the approval listener, and reports whether the doorman's ntfy answers.
 
 ## Security posture
 
-- ntfy listens only on the Tailscale interface; phone access requires tailnet membership + token.
+- ntfy listens only on the doorman's Tailscale interface; tailnet membership is the authentication (no auth file, no token).
 - The daemon makes outbound connections only (MFL API, ntfy publish, ntfy SSE).
 - The Mfl tool is read-only by whitelist; MFL write endpoints (TYPE=import) are unreachable until Phase C.
 - Phone commands are limited to `{recId, verdict}` — free-text commands are not parsed in Phase B.

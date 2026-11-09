@@ -18,7 +18,7 @@ trigger's wake shows in Power-Troubleshooter ~3 min early and `runs.jsonl` shows
 
 Remaining slices, each its own plan: **2b** busy fallback to a 14B model on the 4070 Ti Super
 box (`LOCALCODE_LLAMA_FALLBACK_URL`); **4** the phone-sized remote view — BUILT 2026-11-08 (Chat · Projects · Away, `LOCALCODE_BRAIN=off` on the phone engine, the jlens sidecar off everywhere unless `LOCALCODE_JLENS=on`); **5** phone files — BUILT 2026-11-08 (Attach in the chat, docx/xlsx extraction);
-**6** ntfy and the NAS watchdog on the doorman. Then the tiers: the 4070 and 1080 Ti boxes on the
+**6** ntfy and the NAS watchdog on the doorman — BUILT 2026-11-08 (ntfy container on `100.110.117.10:8090`, `naswatch.service`, PC ntfy task disabled). Then the tiers: the 4070 and 1080 Ti boxes on the
 switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/tiering-preview.md`).
 
 Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.

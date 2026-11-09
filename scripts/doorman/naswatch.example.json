@@ -1,0 +1,10 @@
+{
+  "ntfy_url": "http://100.110.117.10:8090",
+  "topic": "cynco-alerts",
+  "interval_s": 60,
+  "threshold": 3,
+  "targets": [
+    { "name": "router", "host": "192.168.0.1", "kind": "router" },
+    { "name": "NAS", "host": "192.168.0.165", "kind": "nas" }
+  ]
+}

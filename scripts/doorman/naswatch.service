@@ -1,0 +1,14 @@
+[Unit]
+Description=CynCo NAS watchdog (router first, alert the phone on a state change)
+After=network-online.target doorman.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cynco
+ExecStart=/usr/bin/python3 /opt/doorman/naswatch.py --config /etc/doorman/naswatch.json
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

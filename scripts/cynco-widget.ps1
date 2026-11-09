@@ -6,8 +6,8 @@
 #
 #   CynCo ON      = the dashboard answers on 127.0.0.1:<port>
 #   CynCo remote  = the dashboard also answers on the Tailscale address
-#   Fantasyman ON = daemon + ntfy + listener all running (cynco-services.ps1)
-#   Fantasyman remote = Tailscale is up and ntfy listens on its address
+#   Fantasyman ON = daemon + listener running here (cynco-services.ps1)
+#   Fantasyman remote = Tailscale is up and the doorman's ntfy answers (slice 6: ntfy moved there)
 #
 # Starting CynCo while a daemon one-shot is running is refused: a new engine
 # kills whatever llama-server answers on the model port as "stale" (F182).
@@ -56,7 +56,6 @@ function Get-TailscaleUp {
 function Get-FantasyState($procs) {
   $up = @()
   if ($procs | Where-Object { $_.CommandLine -match 'engine\\daemon\\main|engine/daemon/main' }) { $up += 'daemon' }
-  if ($procs | Where-Object { $_.CommandLine -match 'ntfy\.exe' })                               { $up += 'ntfy' }
   if ($procs | Where-Object { $_.CommandLine -match 'approval_listener\.py' })                    { $up += 'listener' }
   return $up
 }
@@ -110,8 +109,8 @@ function Refresh {
   }
 
   $f = $script:state.fantasy
-  $ntfyRemote = $tsHost -and (Test-Tcp $tsHost 8090)
-  if ($f.Count -eq 3) {
+  $ntfyRemote = Test-Tcp '100.110.117.10' 8090   # ntfy runs on the doorman (slice 6)
+  if ($f.Count -eq 2) {
     $ui.dotFantasy.Fill = if ($ts -and $ntfyRemote) { '#3fb950' } else { '#d29922' }
     $ui.txtFantasy.Text = if ($ts -and $ntfyRemote) { 'on - phone ok' } elseif (-not $ts) { 'on - Tailscale down' } else { 'on - ntfy not listening' }
     $ui.btnFantasy.Content = 'Stop'
@@ -143,7 +142,7 @@ $ui.btnCynco.Add_Click({
   Start-Sleep -Milliseconds 800; Refresh
 })
 $ui.btnFantasy.Add_Click({
-  $action = if ($script:state.fantasy.Count -eq 3) { 'stop' } else { 'start' }
+  $action = if ($script:state.fantasy.Count -eq 2) { 'stop' } else { 'start' }
   $out = & powershell -NoProfile -ExecutionPolicy Bypass -File $services $action 2>&1
   $ui.txtNote.Text = ($out -join ' - ')
   Start-Sleep -Milliseconds 800; Refresh
