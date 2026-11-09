@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
+import { pictureRequests } from '../../imagegen/store.js'
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -532,5 +533,25 @@ describe('servedProjectFile', () => {
     } finally {
       rmSync(outside, { recursive: true, force: true })
     }
+  })
+})
+
+describe('pictureRequests (image box §4)', () => {
+  const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd'] },
+    a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
+    b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
+    c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'C' } },
+    d: { type: 'Image', props: { src: 'sketches/front.png', alt: 'D' } },
+  }) }
+  it('names each picture\'s kind, prompt and source', () => {
+    expect(pictureRequests(spec).map(r => [r.id, r.kind, r.prompt, r.source])).toEqual([
+      ['a', 'generate', 'a tall green alien', undefined],
+      ['b', 'vary', 'add a pergola', 'knowledge/yard.jpg'],
+      ['c', 'outline', '', 'knowledge/porch.jpg'],
+    ])
+  })
+  it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {
+    expect(promptedImages(spec).map(im => im.id)).toEqual(['a'])
   })
 })

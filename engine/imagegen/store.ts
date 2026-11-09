@@ -25,6 +25,7 @@
  * regular file under a cap, the format's signature — and under its own.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import type { WorkflowKind } from './workflow.js'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { UiElement, UiImageState, UiSpec } from '../bridge/protocol.js'
@@ -450,16 +451,38 @@ function reachableElements(spec: UiSpec): Array<{ id: string; el: UiElement; pro
  * engine paints": `annotate` queues these and a reloaded chat
  * (`withValidatedSurfaces`) looks these up.
  */
-export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> {
-  const out: Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> = []
+export type PictureRequest = { id: string; el: UiElement; kind: WorkflowKind; prompt: string; alt: string; seed?: number; source?: string }
+
+/**
+ * Every reachable Image the engine must make a picture for, in draw order:
+ * generate (a prompt, today's path), vary (a source photo + a prompt) or
+ * outline (a source photo). Image box §4. A vary's prompt is never painted
+ * from scratch: `promptedImages` is the generate subset.
+ */
+export function pictureRequests(spec: UiSpec): PictureRequest[] {
+  const out: PictureRequest[] = []
   for (const { id, el, props } of reachableElements(spec)) {
-    if (el.type !== 'Image' || !props || typeof props.prompt !== 'string') continue
+    if (el.type !== 'Image' || !props) continue
+    const alt = typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : ''
+    const transform = props.transform === 'vary' || props.transform === 'outline' ? props.transform : null
+    const source = transform ? projectImagePath(props.source) : null
+    if (transform && source) {
+      const prompt = typeof props.prompt === 'string' ? normPrompt(props.prompt) : ''
+      if (transform === 'vary' && !prompt) continue
+      out.push({ id, el, kind: transform, prompt: transform === 'outline' ? '' : prompt, alt, source })
+      continue
+    }
+    if (typeof props.prompt !== 'string') continue
     const prompt = normPrompt(props.prompt)
     if (!prompt) continue
     const seed = typeof props.seed === 'number' && Number.isSafeInteger(props.seed) && props.seed >= 0 ? props.seed : undefined
-    out.push({ id, el, prompt, alt: typeof props.alt === 'string' ? normPrompt(props.alt).slice(0, 200) : '', ...(seed !== undefined ? { seed } : {}) })
+    out.push({ id, el, kind: 'generate', prompt, alt, ...(seed !== undefined ? { seed } : {}) })
   }
   return out
+}
+
+export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> {
+  return pictureRequests(spec).filter(r => r.kind === 'generate').map(({ id, el, prompt, alt, seed }) => ({ id, el, prompt, alt, ...(seed !== undefined ? { seed } : {}) }))
 }
 
 /**

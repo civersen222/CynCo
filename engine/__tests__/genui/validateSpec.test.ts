@@ -197,7 +197,7 @@ describe('validateSpec', () => {
   it('missing required props: dropped when undrawable (Image with neither prompt nor src), kept and reported otherwise', () => {
     const img = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { alt: 'x' } } } })
     expect(img.spec?.elements.i).toBeUndefined()
-    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
+    expect(img.errors).toContain('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project, or a "source" photo with a "transform" — the element was dropped')
     const inp = one('Input', { label: 'L' })
     expect(inp.spec?.elements.x.type).toBe('Input')
     expect(inp.errors).toEqual(['x (Input): missing name'])
@@ -294,7 +294,7 @@ describe('validateSpec: Image prompt or src', () => {
       expect(r.spec?.elements.i, src).toBeUndefined()
       expect(r.errors, src).toEqual([
         `i.src: "${src}" ${hint}`,
-        'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
+        'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project, or a "source" photo with a "transform" — the element was dropped',
         'c.children: "i" is not an element id — nothing was drawn for it (the element was dropped)',
       ])
     }
@@ -341,7 +341,7 @@ describe('validateSpec: Image prompt or src', () => {
     expect(fake.spec?.elements.i).toBeUndefined()
     expect(fake.errors.slice(0, 2)).toEqual([
       `i.src: "aliens/a.bmp" ${PATH_HINT}`,
-      'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped',
+      'i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project, or a "source" photo with a "transform" — the element was dropped',
     ])
     expect(one('Image', { SRC: 'javascript:alert(1)', alt: 'a' }).errors[0]).toBe(`x.src: "javascript:alert(1)" ${HINT}`)
     const both = one('Image', { prompt: 'a tall green alien', Src: 'https://e.com/a.png', alt: 'A' })
@@ -439,7 +439,7 @@ describe('validateSpec: Image src as a file in the project', () => {
       const r = validateSpec({ root: 'c', elements: { c: { type: 'Card', children: ['i'] }, i: { type: 'Image', props: { src, alt: 'Tower' } } } })
       expect(r.spec?.elements.i, JSON.stringify(src)).toBeUndefined()
       expect(r.errors[0], JSON.stringify(src)).toBe(`i.src: "${src.slice(0, 60)}" ${hint}`)
-      expect(r.errors[1], JSON.stringify(src)).toBe('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project — the element was dropped')
+      expect(r.errors[1], JSON.stringify(src)).toBe('i (Image): needs "prompt" (a description of the picture), a real http(s) "src" or the path of an image file in the project, or a "source" photo with a "transform" — the element was dropped')
     }
     // the rule the hint states is the one applied: the number it names is the cap
     expect(PATH_HINT).toContain(`at most ${PROJECT_IMAGE_PATH_MAX} characters`)
@@ -515,5 +515,37 @@ describe('validateSpec: an Image seed', () => {
     expect(partial.spec?.elements.x.props).toEqual({ prompt: 'a tall green alien', alt: 'A' })
     expect(partial.errors).toEqual([])
     expect(one('Slider', { name: 's', label: 'S', value: 2.5 }).spec?.elements.x.props?.value).toBe(2.5)
+  })
+})
+
+// The image box (docs/decisions/2026-11-08-image-box-design.md §4): an Image may name a
+// photo in the project ("source") and a transform of it: vary (with a prompt) or outline.
+describe('validateSpec: Image source + transform', () => {
+  it('vary keeps source, transform and the prompt', () => {
+    const r = one('Image', { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola over the patio', alt: 'Yard' })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola over the patio', alt: 'Yard' })
+  })
+  it('outline needs no prompt and is drawable on its own', () => {
+    const r = one('Image', { source: 'knowledge/porch.jpg', transform: 'outline', alt: 'Porch outline' })
+    expect(r.errors).toEqual([])
+    expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/porch.jpg', transform: 'outline', alt: 'Porch outline' })
+  })
+  it('vary without a prompt is dropped, naming the prompt', () => {
+    const r = one('Image', { source: 'knowledge/yard.jpg', transform: 'vary', alt: 'Yard' })
+    expect(r.spec).toBeNull()
+    expect(r.errors.join(' ')).toMatch(/vary.*prompt|prompt.*vary/)
+  })
+  it('a source outside the project, or an unknown transform, is dropped with a note', () => {
+    const bad = one('Image', { source: '../elsewhere/x.png', transform: 'outline', alt: 'x' })
+    expect(bad.spec).toBeNull()
+    expect(bad.errors.join(' ')).toContain('source')
+    const odd = one('Image', { source: 'knowledge/x.jpg', transform: 'blur', prompt: 'soft', alt: 'x' })
+    expect(odd.errors.join(' ')).toContain('blur')
+    expect(odd.spec?.elements.x.props).toEqual({ prompt: 'soft', alt: 'x' })
+  })
+  it('a transform with a src as well keeps the source and drops the src', () => {
+    const r = one('Image', { source: 'knowledge/x.jpg', src: 'https://example.com/a.png', transform: 'outline', alt: 'x' })
+    expect(r.spec?.elements.x.props).toEqual({ source: 'knowledge/x.jpg', transform: 'outline', alt: 'x' })
   })
 })
