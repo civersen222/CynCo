@@ -53,3 +53,31 @@ describe('chat attach', () => {
     expect((js.match(/showChatAttach\((true|false|[a-zA-Z!]+)\)/g) || []).length).toBeGreaterThanOrEqual(2)
   })
 })
+
+// The image box (design §3 + Review Focus 1): a photo's row says it is being looked
+// at, a refused type keeps the server's words, and big photos shrink before upload.
+describe('image attachments on the page', () => {
+  const js = scripts()
+  const lift = (name: string) => new Function(`${fnSource(name)}; return ${name};`)()
+  it('indexedLabel says "kept, looking…" for the pending record and keeps the old form otherwise', () => {
+    const indexedLabel = lift('indexedLabel')
+    expect(indexedLabel({ indexed: false, reason: 'looking at the picture…' })).toBe('kept, looking…')
+    expect(indexedLabel({ indexed: false, reason: 'unsupported file type .heic' })).toBe('kept but not indexed: unsupported file type .heic')
+    expect(indexedLabel({ indexed: true, chunks: 2 })).toBe('indexed (2 chunks)')
+  })
+  it('needsDownscale: 12 MP or 20 MB is the line', () => {
+    const needsDownscale = lift('needsDownscale')
+    expect(needsDownscale(4000, 3000, 1e6)).toBe(false)
+    expect(needsDownscale(6000, 4000, 1e6)).toBe(true)
+    expect(needsDownscale(100, 100, 21 * 1024 * 1024)).toBe(true)
+  })
+  it('uploadKnowledgeFiles shrinks image files first and onProjectIngest neither toasts the pending record nor stays silent when the look lands', () => {
+    const up = fnSource('uploadKnowledgeFiles')
+    expect(up).toContain('downscaleImage(')
+    expect(up).toMatch(/image\//)
+    const ing = fnSource('onProjectIngest')
+    expect(ing).toContain('looking at the picture…')
+    expect(ing).toContain('Looked at ')
+    expect(js).toContain('function downscaleImage(')
+  })
+})

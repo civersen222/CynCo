@@ -6526,6 +6526,8 @@ function projToast(text) {
 function indexedLabel(rec) {
   if (!rec) return '';
   if (rec.indexed) return 'indexed' + (typeof rec.chunks === 'number' ? ' (' + rec.chunks + ' chunks)' : '');
+  // An image upload answers before the image box has looked (PENDING_REASON in engine/vision/lookRunner.ts).
+  if (rec.reason === 'looking at the picture…') return 'kept, looking…';
   return 'kept but not indexed: ' + (rec.reason || 'no reason given');
 }
 
@@ -7324,17 +7326,55 @@ function uploadKnowledgeFiles(files, onStatus, slugOverride) {
     }
     var f = list.shift();
     status('busy', 'uploading ' + f.name + '…');
-    var form = new FormData();
-    form.append('file', f, f.name);
-    projFetch(projUrl(slug) + '/knowledge', { method: 'POST', body: form }).then(function(r) {
+    // A phone photo can be 50 MP: shrink it here, where the bytes already are, before it crosses the tailnet (image box §3).
+    var prepared = (f.type && String(f.type).indexOf('image/') === 0 && typeof downscaleImage === 'function') ? downscaleImage(f) : Promise.resolve(f);
+    prepared.then(function(g) {
+      var form = new FormData();
+      form.append('file', g, g.name);
+      return projFetch(projUrl(slug) + '/knowledge', { method: 'POST', body: form });
+    }).then(function(r) {
       var rec = r.event || r;
-      results.push({ kind: rec.indexed ? 'ok' : 'warn', text: 'Added ' + r.name + ' — ' + indexedLabel(rec) });
+      var pending = rec.reason === 'looking at the picture…';
+      results.push({ kind: rec.indexed || pending ? 'ok' : 'warn', text: 'Added ' + r.name + ' — ' + indexedLabel(rec) });
     }).catch(function(err) {
       console.warn('[projects] upload ' + f.name + ': ' + err.message);
       results.push({ kind: 'err', text: f.name + ' not added: ' + err.message });
     }).then(next);
   };
   next();
+}
+
+/** Over 12 MP or 20 MB a photo is shrunk before upload (image box design §3). */
+function needsDownscale(width, height, bytes) {
+  return width * height > 12000000 || bytes > 20 * 1024 * 1024;
+}
+
+/** The photo as a JPEG under the cap, or the file itself when it is small enough or cannot be decoded. Never rejects. */
+function downscaleImage(file) {
+  return new Promise(function(resolve) {
+    var url = null;
+    try {
+      url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function() {
+        URL.revokeObjectURL(url);
+        if (!needsDownscale(img.width, img.height, file.size)) { resolve(file); return; }
+        var scale = Math.min(1, Math.sqrt(12000000 / (img.width * img.height)));
+        var c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(img.width * scale)); c.height = Math.max(1, Math.round(img.height * scale));
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob(function(b) {
+          resolve(b ? new File([b], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }) : file);
+        }, 'image/jpeg', 0.9);
+      };
+      img.onerror = function() { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    } catch (e) {
+      console.warn('[projects] downscale skipped for ' + file.name + ': ' + e.message);
+      if (url) { try { URL.revokeObjectURL(url); } catch (e2) { console.warn('[projects] revoke failed: ' + e2.message); } }
+      resolve(file);
+    }
+  });
 }
 
 function removeKnowledge(name) {
@@ -7409,7 +7449,12 @@ function rescanProjectFiles() {
 function onProjectIngest(event) {
   var fp = String(event.filePath || '');
   var rec = { indexed: !!event.indexed, reason: event.reason, chunks: event.chunks };
-  if (!event.indexed) {
+  var isPicture = /\.(png|jpe?g|webp|gif)$/i.test(fp);
+  // A picture's look landed (image box): say so in the chat it was attached to.
+  if (isPicture && event.indexed && event.kind === 'knowledge' && projectsState.active && projectsState.active.slug === event.slug) {
+    appendChatMsg('system', 'Looked at ' + fp + ' — ' + indexedLabel(rec));
+  }
+  if (!event.indexed && event.reason !== 'looking at the picture…') {
     var key = fp + '|' + (event.reason || '');
     if (event.kind !== 'chat' || !projectsState.chatToasted[key]) {
       projectsState.chatToasted[key] = true;
