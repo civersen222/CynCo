@@ -29,11 +29,11 @@ function lift<T>(name: string, deps: string[] = []): T {
 
 describe('remoteTabSet', () => {
   const remoteTabSet = lift<(r: boolean) => string[]>('remoteTabSet')
-  it('a phone sees Chat, Projects and Away only', () => {
-    expect(remoteTabSet(true)).toEqual(['chat', 'projects', 'away'])
+  it('a phone sees Chat, Projects, Away and Missions only', () => {
+    expect(remoteTabSet(true)).toEqual(['chat', 'projects', 'away', 'missions'])
   })
-  it('the desk is unchanged', () => {
-    expect(remoteTabSet(false)).toEqual(['chat', 'governance', 'brain', 'history', 'config', 'projects'])
+  it('the desk keeps its tabs and gains Missions', () => {
+    expect(remoteTabSet(false)).toEqual(['chat', 'governance', 'brain', 'history', 'config', 'projects', 'missions'])
   })
 })
 
@@ -41,6 +41,7 @@ describe('initialHashFor', () => {
   const initialHashFor = lift<(r: boolean, h: string) => string>('initialHashFor')
   it('a phone with no hash lands in Projects', () => { expect(initialHashFor(true, '')).toBe('#projects') })
   it('a phone that already has a projects hash keeps it', () => { expect(initialHashFor(true, '#projects/fantasy-football')).toBe('#projects/fantasy-football') })
+  it('a phone opened on #missions stays on Missions', () => { expect(initialHashFor(true, '#missions')).toBe('#missions') })
   it('the desk keeps whatever it had', () => { expect(initialHashFor(false, '')).toBe(''); expect(initialHashFor(false, '#x')).toBe('#x') })
 })
 
