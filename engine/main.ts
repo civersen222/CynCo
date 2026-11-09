@@ -437,7 +437,7 @@ const loop = new ConversationLoop({
 const projectsDeps = makeProjectsDeps({
   home: projectsHome(),
   embedBaseUrl: embedBaseUrlFor(config),
-  emitEvent: (e) => { wsServer.emit(e as any); dashboardServer?.broadcast(e as any) },
+  emitEvent: (e) => { loop.noteProjectIngest(e); wsServer.emit(e as any); dashboardServer?.broadcast(e as any) },
   contextLength,
 })
 

@@ -79,21 +79,30 @@ function openForModel(dir: string, embedModel: string, now: () => string, remove
   return { ok: true, store }
 }
 
-async function writeChunks(store: IndexStore, embed: EmbedClient | null, filePath: string, kind: IngestKind, fileHash: string, chunks: ProseChunk[]): Promise<{ ok: true; count: number } | { ok: false; reason: string }> {
+/**
+ * Store every chunk. An embedding failure mid-file does not throw the file
+ * away: the remaining chunks go in with no vector (as when there is no embed
+ * client at all), so keyword search still finds them, and `degraded` carries
+ * the reason for the file record; a rescan re-embeds once the server is back.
+ * (2026-11-08: a docx attached from the phone vanished from search because the
+ * PC's Ollama had lost its llama-server binary.)
+ */
+async function writeChunks(store: IndexStore, embed: EmbedClient | null, filePath: string, kind: IngestKind, fileHash: string, chunks: ProseChunk[]): Promise<{ count: number; degraded?: string }> {
   store.removeFile(filePath)
   let count = 0
+  let degraded: string | undefined
   for (const c of chunks) {
     let embedding: number[] = []
-    if (embed) {
+    if (embed && !degraded) {
       try { embedding = await embed.embed(c.text) } catch (e) {
-        return { ok: false, reason: `embeddings unavailable: ${e instanceof Error ? e.message : String(e)}` }
+        degraded = `embeddings unavailable: ${e instanceof Error ? e.message : String(e)} — kept for keyword search; a rescan re-embeds`
       }
     }
     const row: Chunk = { filePath, chunkType: kind, name: c.heading, startLine: c.ordinal, endLine: c.ordinal, content: c.text, fileHash }
     store.insertChunk(row, embedding)
     count++
   }
-  return { ok: true, count }
+  return degraded ? { count, degraded } : { count }
 }
 
 export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledge' | 'artifact', relPath: string, origin: FileOrigin): Promise<IngestEvent> {
@@ -125,9 +134,9 @@ export async function ingestFile(deps: IngestDeps, slug: string, kind: 'knowledg
   const store = opened.store
   try {
     const w = await writeChunks(store, deps.embed, filePath, kind, sha256, chunks)
-    if (!w.ok) {
-      appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${w.reason}`, now)
-      return finish({ slug, filePath, kind, indexed: false, reason: w.reason })
+    if (w.degraded) {
+      appendJournal(dir, kind === 'knowledge' ? 'knowledge.unindexed' : 'artifact.unindexed', `${relPath} (${origin}) — not indexed: ${w.degraded} (${w.count} keyword chunk(s) kept)`, now)
+      return finish({ slug, filePath, kind, indexed: false, reason: w.degraded, chunks: w.count })
     }
     appendJournal(dir, kind === 'knowledge' ? 'knowledge.added' : 'artifact.saved', `${relPath} (${origin}) — ${w.count} chunk(s)`, now)
     return finish({ slug, filePath, kind, indexed: true, chunks: w.count })
@@ -150,7 +159,7 @@ export async function ingestChat(deps: IngestDeps, slug: string, chatFile: strin
   const store = opened.store
   try {
     const w = await writeChunks(store, deps.embed, filePath, 'chat', sha256Of(JSON.stringify(turns)), chunks)
-    const ev: IngestEvent = w.ok ? { slug, filePath, kind: 'chat', indexed: true, chunks: w.count } : { slug, filePath, kind: 'chat', indexed: false, reason: w.reason }
+    const ev: IngestEvent = w.degraded ? { slug, filePath, kind: 'chat', indexed: false, reason: w.degraded, chunks: w.count } : { slug, filePath, kind: 'chat', indexed: true, chunks: w.count }
     deps.emit?.(ev)
     return ev
   } finally {
