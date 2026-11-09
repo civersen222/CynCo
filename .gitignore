@@ -67,6 +67,8 @@ thoughts/
 src/thoughts/
 src.zip
 docker-compose.yml
+# ...except the doorman's ntfy container, which deploy.sh copies to the mini PC (F188)
+!scripts/doorman/ntfy/docker-compose.yml
 bunfig.toml
 src/
 # ...but the vendored cybernetics copy IS versioned: without this, a re-vendor that

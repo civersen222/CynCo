@@ -3899,3 +3899,27 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Why:** three faults stacked. (1) The PC's Ollama 0.40.13 had lost its `lib/ollama/` binaries (its updater had staged 0.40.15 since 2026-11-05 and never been allowed to finish), so every embed call failed with "llama-server binary not found". (2) `writeChunks` treated the first failed embedding as fatal for the file: it had already `removeFile`d the old rows and returned without storing any chunk, so a file the index.json recorded as "kept" was in fact absent from `project.db` and keyword search could not find it either — unlike the no-embed-client path, which stores keyword-only rows. (3) Nothing told the model a file had been added: the retrieval block is built from search hits for the user's words, and an upload is not a message, so the only way for the model to learn of it was to guess a folder.
 
 **Fix:** (2) `writeChunks` degrades instead of aborting: after an embedding failure the remaining chunks are stored with no vector, the file record says `indexed: false` with the reason "… kept for keyword search; a rescan re-embeds", and the chunk count is recorded (pinned by `ingest.test.ts`). (3) `IngestNotes` (`engine/projects/retrieval.ts`): `main.ts` feeds every `project.ingest` event to `ConversationLoop.noteProjectIngest`, and the next turn's block opens with "Files added to this project since your last turn: knowledge/<name> — indexed (n passage(s)) | kept, not vector-indexed: <reason>", injected even when the search finds nothing (pinned by `retrieval.test.ts`). (1) was answered by not repairing Ollama: the owner chose to serve embeddings from CynCo's own llama-server instead (`scripts/run-embed-server.cmd`, service `embed`, port 9165, `docs/decisions/2026-11-08-embeddings-own-llama-server.md`); the model file is Ollama's own nomic blob copied out of its store, and a rescan of `pc-wakefulness` then embedded the docx (1 chunk) with no `[embed]` failure. Ollama remains installed and unused on the PC.
+
+## F188 — The doorman reported the image box down while it was up: no ARP reply over Wi-Fi
+
+**Where:** the doorman's health probe for the `image` target (`scripts/doorman/doorman.py`, `_probe_up` → `probe_url` = `targets.json` `image.health`, Ollama `/api/version` at `192.168.0.47`), first deployed 2026-11-09 after PR #200.
+
+**How:** `/status` said `with: [{"name": "image", "up": false}]` while this PC had just read Ollama's version and ComfyUI's stats from the same address. From the mini PC, `curl` to either port timed out and `ip neigh` showed `192.168.0.47 dev wlo1 INCOMPLETE` after every retry; the main PC's `arp -a` had the entry (`2c-98-11-0b-6e-a9`, the box's Wi-Fi adapter).
+
+**Why:** the doorman and the image box are both Wi-Fi clients of the same SSID (the doorman's `enp1s0` is on the DHCP-less switch island and carries no IPv4). The box never answered the doorman's ARP requests, though it answered the main PC's and though unicast traffic flowed the moment the MAC was pinned by hand (`ip neigh replace … nud permanent` → both probes `200`). An access-point quirk between two wireless clients (broadcast delivery to a power-saving station), not a firewall: Windows' firewall cannot drop ARP, and a dropped TCP would time out rather than succeed once ARP is bypassed.
+
+**Fix:** a declared static neighbour on the doorman, as a systemd-networkd drop-in beside the netplan-generated wlo1 unit: `/etc/systemd/network/10-netplan-wlo1.network.d/image-box-neigh.conf` with `[Neighbor] Address=192.168.0.47 LinkLayerAddress=2c:98:11:0b:6e:a9`; `networkctl reload` + `reconfigure wlo1` → `PERMANENT`, `/status` shows the box up. Recorded in `docs/decisions/2026-11-08-wakefulness.md` (doorman). Cost: if the box's Wi-Fi adapter or its DHCP lease changes, the probe lies until the drop-in is edited; the wake packet is unaffected (it goes to the wired MAC over the island).
+
+**Rule:** a probe that must cross Wi-Fi between two clients is checked from the prober's own shell at deploy time (`curl` from the mini PC, not from the PC), and a `/status` that disagrees with a working service is a path fault to trace at layer 2 before anything in the code is suspected.
+
+## F189 — `deploy.sh` could not run from the main checkout: the ntfy compose file was never committed
+
+**Where:** `scripts/doorman/deploy.sh` line 14 (`scp … ntfy/docker-compose.yml`), run from `C:\Users\civer\localcode` on 2026-11-09 to deploy PR #200's doorman.
+
+**How:** `scp: stat local ".../scripts/doorman/ntfy/docker-compose.yml": No such file or directory`; `set -e` stopped the deploy before any file was copied. The file existed in the worktree that built slice 6 (PR #192) and on the mini PC, nowhere else.
+
+**Why:** `.gitignore` line 69 ignores every `docker-compose.yml` (an old rule for local scratch stacks), so `git add` in slice 6 silently skipped the one file deploy.sh depends on, and the guard set has no check that a script's `scp` sources are tracked. Slice 6 was verified by running deploy from the worktree that had the file.
+
+**Fix:** `!scripts/doorman/ntfy/docker-compose.yml` under the ignore rule and the file committed (this entry's PR). Deploy was completed from the main checkout after copying the file by hand.
+
+**Rule:** before merging a deploy script, run it once from a fresh clone (or `git ls-files` every path it copies); an ignore pattern with a bare filename is a trap for every later directory that uses that name.
