@@ -117,7 +117,7 @@ import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
 import { appendTranscript, newChatFile, readTranscript, turnsOf, type TranscriptMessage } from '../projects/chat.js'
 import { searchProjects } from '../projects/search.js'
-import { buildRetrievalBlock, citationsUsed, retrievalShare, attachedImages, formatLookBlock, formatNotes, IngestNotes, RETRIEVAL_TAG } from '../projects/retrieval.js'
+import { buildRetrievalBlock, citationsUsed, retrievalShare, attachedImages, formatLookBlock, formatNoLookBlock, formatNotes, IngestNotes, RETRIEVAL_TAG } from '../projects/retrieval.js'
 import type { IngestEvent } from '../projects/ingest.js'
 import { setProjectToolContext } from '../projects/tools.js'
 import { ingestChat } from '../projects/ingest.js'
@@ -1295,15 +1295,21 @@ export class ConversationLoop {
     for (const filePath of attachedImages(events)) {
       const rel = filePath.slice('knowledge/'.length)
       const runner = p.looks ?? null
-      if (!runner) { this.sayVision(`${rel}: no vision model configured — answering without the picture`); continue }
+      if (!runner) {
+        const reason = 'no vision model configured (LOCALCODE_VISION_URL unset)'
+        looks.push(formatNoLookBlock(filePath, reason)); this.sayVision(`${rel}: ${reason} — answering without the picture`); continue
+      }
       let look = runner.recent(p.slug, rel)
+      let reason = 'the image box did not answer (asleep or cold)'
       if (!look) {
         const pending = runner.pending(p.slug, rel)
-        if (pending) { try { await pending } catch (e) { console.log(`[vision] waiting on ${rel}: ${e instanceof Error ? e.message : String(e)}`) } }
+        if (pending) {
+          try { const ev = await pending; if (ev.reason) reason = ev.reason } catch (e) { reason = e instanceof Error ? e.message : String(e); console.log(`[vision] waiting on ${rel}: ${reason}`) }
+        }
         look = runner.recent(p.slug, rel)
       }
       if (look) { looks.push(formatLookBlock(filePath, look)); this.sayVision(`looked at ${rel} on the image box (${look.model}, ${(look.ms / 1000).toFixed(1)} s)`) }
-      else this.sayVision(`the image box did not answer for ${rel} (asleep or cold) — answering without the picture`)
+      else { looks.push(formatNoLookBlock(filePath, reason)); this.sayVision(`the image box did not answer for ${rel}: ${reason} — answering without the picture`) }
     }
     let blockText: string | null = null
     try {

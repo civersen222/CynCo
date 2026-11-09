@@ -13,8 +13,8 @@ CynCo's eyes: a photo attached in a project chat is looked at once by the vision
 ## Important types & functions
 - **`visionSettings`** (`settings.ts:19`) — `{ url: string | null; model }`; `DEFAULT_VISION_MODEL` (`settings.ts:17`). Set the two variables as permanent user variables on the PC so the desk engine and the headless phone engine see the same box.
 - **`LOOK_INSTRUCTION`** (`lookClient.ts:19`) — asks for the three labelled sections in order; the order is the diagnostic use case ("which line do I pick", "is this light meant to be red"), so the look needs no aiming by the user's question and one look per photo serves the turn and the index alike.
-- **`parseLook`** (`lookClient.ts:33`) — a missing label is `''`, never a failure; a section reading `none` is `''`.
-- **`LookClient`** (`lookClient.ts:47`), **`look`** (`lookClient.ts:62`) — plain `fetch` (never `fetchGuarded`, which refuses 192.168/16); `keep_alive: '10m'`; `LOOK_TIMEOUT_MS` (`lookClient.ts:29`) = 60 000, cold load included; refusals: `image box did not answer: <error>`. **`makeLookClient`** (`lookClient.ts:90`) — null when no URL is set.
+- **`parseLook`** (`lookClient.ts:40`) — a missing label is `''`, never a failure; a section reading `none` is `''`.
+- **`LookClient`** (`lookClient.ts:54`), **`look`** (`lookClient.ts:69`) — plain `fetch` (never `fetchGuarded`, which refuses 192.168/16); `keep_alive: '10m'`; `options.num_ctx` = **`LOOK_NUM_CTX`** (`lookClient.ts:36`) = 8192, because Ollama's 4096 default refused a 12 MP phone photo's ~4100 image tokens with HTTP 400 (F190); `LOOK_TIMEOUT_MS` (`lookClient.ts:29`) = 60 000, cold load included; refusals: `image box did not answer: <error>`. **`makeLookClient`** (`lookClient.ts:98`) — null when no URL is set.
 - **`LookRunner`** (`lookRunner.ts:26`): **`start`** (`lookRunner.ts:39`), **`pending`** (`lookRunner.ts:78`), **`recent`** (`lookRunner.ts:84`); `finish` is the ingest, bound by `makeProjectsDeps` (`engine/projects/api.ts`). **`PENDING_REASON`** (`lookRunner.ts:20`) = `looking at the picture…`. **`imageMime`** (`lookRunner.ts:107`).
 
 ## Data flow
@@ -27,7 +27,8 @@ CynCo's eyes: a photo attached in a project chat is looked at once by the vision
 `LOCALCODE_VISION_URL` (and `_MODEL`). Absent: `makeLookClient` is null, `ProjectsDeps.looks` is null, the extractor answers `no vision model configured`, the turn says so once per picture and continues text-only. Nothing else depends on this package.
 
 ## Gotchas
+- The page shrinks uploads over 3 MP (or 20 MB) to 3 MP JPEG before they leave the phone (`needsDownscale` / `downscaleImage`, `engine/dashboard/index.html`): ~2900 image tokens on qwen3-vl and a smaller upload; the client's window is the second guard.
 - One look per photo, at upload, in the background: an upload that waited on a cold 16 GB box would hold the phone's Attach for up to a minute, and a second aimed look per turn would double the cost (builder-check call in the design record).
-- A failed look (`image box did not answer: …`) is recorded like a failed embedding: the file stays, the record carries the reason, a rescan retries.
+- A failed look (`image box did not answer: …`) is recorded like a failed embedding: the file stays, the record carries the reason, a rescan retries. The turn gets **`formatNoLookBlock`** (`engine/projects/retrieval.ts:128`) with that reason — the model is told it cannot see pictures and must say so — because told only that a picture had landed, the text-only model spent twenty iterations on ImageView and pixel scripts (F190); project chats no longer offer ImageView (`PROJECT_TOOL_NAMES`, `engine/projects/profile.ts`).
 - `recent` is in-memory: after an engine restart the turn falls back to the retrieval search (the chunks are in `project.db`), and a rescan re-looks.
 - Pinned by `engine/__tests__/vision/{settings,lookClient,lookRunner}.test.ts`, `engine/__tests__/projects/{extract,ingest,api,retrieval}.test.ts` (image cases), `engine/__tests__/dashboard/chatAttach*.test.ts`.

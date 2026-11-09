@@ -27,6 +27,13 @@ export type Look = { text: string; state: string; description: string; model: st
 export type LookResult = { ok: true; look: Look } | { ok: false; reason: string }
 
 export const LOOK_TIMEOUT_MS = 60_000
+/**
+ * Ollama's default window is 4096 tokens; a 12 MP phone photo alone is ~4100 image
+ * tokens on qwen3-vl (Ollama caps the image near 4 MP), so the first real photo was
+ * refused with HTTP 400 (F190). 8192 holds the capped image, the instruction and the
+ * answer; the dashboard also shrinks uploads to 3 MP (~2900 tokens) before they arrive.
+ */
+export const LOOK_NUM_CTX = 8192
 const LABELS = ['TEXT', 'STATE', 'DESCRIPTION'] as const
 
 /** Split the reply by its three labels; a label that is missing yields ''. */
@@ -69,6 +76,7 @@ export class LookClient {
           model: this.model,
           stream: false,
           keep_alive: '10m',
+          options: { num_ctx: LOOK_NUM_CTX },
           messages: [{ role: 'user', content: LOOK_INSTRUCTION, images: [Buffer.from(image).toString('base64')] }],
         }),
         signal: AbortSignal.timeout(this.timeoutMs),

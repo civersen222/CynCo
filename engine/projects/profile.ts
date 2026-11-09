@@ -15,8 +15,11 @@ import { HOUSE_CONDUCT, VSM_GOVERNANCE, TOOL_RESULTS_ARE_DATA } from '../engine/
 import type { ToolImpl } from '../tools/types.js'
 import { getShellInfo } from '../tools/shellInfo.js'
 
+// No ImageView: a project chat's model is text-only and the image box looks at every
+// picture at upload (engine/vision); offered, the tool sent the model tiling and pixel-
+// scripting a photo it could never see (F190).
 export const PROJECT_TOOL_NAMES: readonly string[] = [
-  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch', 'ImageView',
+  'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch',
   'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'AskUser', 'RenderUI',
 ]
 
