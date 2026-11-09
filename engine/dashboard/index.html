@@ -902,6 +902,8 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!chatEnterInsertsNewline()){event.preventDefault();sendChatMessage()}"></textarea>
+      <input type="file" id="chatAttach" multiple accept=".md,.markdown,.txt,.pdf,.epub,.docx,.xlsx,image/*" style="display:none" onchange="uploadKnowledgeFiles(this.files, chatAttachStatus, projectsState.active && projectsState.active.slug)">
+      <button class="btn btn-grey" id="chatAttachBtn" hidden onclick="document.getElementById('chatAttach').click()" title="Attach a file or a photo to this project's knowledge">Attach</button>
       <button class="chat-stop" id="chatStop" onclick="abortTurn()" title="Stop the running turn">Stop</button>
       <button class="chat-send" onclick="sendChatMessage()">Send</button>
     </div>
@@ -2823,7 +2825,7 @@ function seedSessionCounters(data) {
   if (p && p.slug && !projectsState.active) {
     document.getElementById('chatProjectLabel').textContent =
       'Project: ' + (projectsState.names[p.slug] || p.slug) + ' › ' + (p.title || 'new chat');
-    document.getElementById('chatProjectStrip').classList.add('visible');
+    document.getElementById('chatProjectStrip').classList.add('visible'); if (typeof showChatAttach === 'function') showChatAttach(true);
   }
 }
 
@@ -6114,7 +6116,10 @@ function projStatus(id, kind, text) {
   var el = document.getElementById(id);
   if (!el) return;
   var cls = kind === 'ok' ? 'proj-ok' : kind === 'warn' ? 'proj-warn' : kind === 'err' ? 'proj-err' : 'proj-muted';
-  el.innerHTML = text ? '<span class="' + cls + '">' + escHtml(text) + '</span>' : '';
+  // Built from nodes, not innerHTML: the text may be a file name or a server
+  // error (CodeQL js/xss-through-dom on PR #191; escHtml was already applied).
+  while (el.firstChild) el.removeChild(el.firstChild);
+  if (text) { var span = document.createElement('span'); span.className = cls; span.textContent = text; el.appendChild(span); }
 }
 
 function projToast(text) {
@@ -6597,7 +6602,7 @@ function unbindProjectPane(line) {
   projectsState.renderedChat = null;
   restoreCodingCwd();
   showConnProject(null);
-  document.getElementById('chatProjectStrip').classList.remove('visible');
+  document.getElementById('chatProjectStrip').classList.remove('visible'); if (typeof showChatAttach === 'function') showChatAttach(false);
   appendChatMsg('system', line);
   var ph = parseProjectsHash();
   if (ph && ph.chat !== undefined) history.replaceState(null, '', '#projects/' + encodeURIComponent(ph.slug));
@@ -6666,7 +6671,7 @@ function onProjectOpened(event) {
   if (key && prev && prev.slug === event.slug && prev.chat === event.chat && projectsState.renderedChat === key) {
     projectsState.active = { slug: event.slug, chat: event.chat, title: event.title };
     setLabel();
-    strip.classList.add('visible');
+    strip.classList.add('visible'); if (typeof showChatAttach === 'function') showChatAttach(true);
     return;
   }
   var seq = ++projectsState.openedSeq;
@@ -6676,7 +6681,7 @@ function onProjectOpened(event) {
     projectsState.renderedChat = null;
     restoreCodingCwd();
     showConnProject(null);
-    strip.classList.remove('visible');
+    strip.classList.remove('visible'); if (typeof showChatAttach === 'function') showChatAttach(false);
     appendChatMsg('system', 'Left the project — back to the coding session.');
     var ph = parseProjectsHash();
     if (ph && ph.chat !== undefined) history.replaceState(null, '', '#projects/' + encodeURIComponent(ph.slug));
@@ -6691,7 +6696,7 @@ function onProjectOpened(event) {
     }).catch(function(err) { console.warn('[projects] folder for the CWD box: ' + err.message); });
   }
   setLabel();
-  strip.classList.add('visible');
+  strip.classList.add('visible'); if (typeof showChatAttach === 'function') showChatAttach(true);
   if (!projectsState.names[event.slug]) {
     projFetch(projUrl(event.slug)).then(function(meta) { projectsState.names[event.slug] = meta.name; setLabel(); })
       .catch(function(err) { console.warn('[projects] name for strip: ' + err.message); });
@@ -6889,22 +6894,44 @@ function addKnowledgePaste() {
   });
 }
 
-function uploadKnowledgeFiles(files) {
-  var slug = projectsState.slug;
-  if (!slug || !files || !files.length) return;
+// ── Attach from the chat (wakefulness slice 5) ───────────────────────────────
+// The same upload route the Projects tab uses; shown only while a project is
+// bound (showChatAttach moves with the project strip). The accept list is the
+// extractors' set plus images. Pinned by engine/__tests__/dashboard/chatAttach.test.ts.
+function chatAttachAccept() {
+  return '.md,.markdown,.txt,.pdf,.epub,.docx,.xlsx,image/*';
+}
+function showChatAttach(bound) {
+  var btn = document.getElementById('chatAttachBtn');
+  if (btn) btn.hidden = !bound;
+}
+function chatAttachStatus(kind, text) {
+  appendChatMsg('system', (kind === 'err' ? 'attach failed: ' : kind === 'warn' ? 'attached (not indexed): ' : kind === 'busy' ? '' : 'attached: ') + text);
+}
+
+function uploadKnowledgeFiles(files, onStatus, slugOverride) {
+  // The Projects tab uploads to the project it shows (projectsState.slug); the
+  // chat's Attach passes the project the CHAT is bound to (projectsState.active.slug)
+  // — a phone that never opened the Projects tab has no tab project at all
+  // (review of slice 5, critical #1).
+  var slug = slugOverride || projectsState.slug;
+  var status = onStatus || function(kind, text) { projStatus('knowledgeStatus', kind, text); };
+  if (!files || !files.length) return;
+  if (!slug) { status('err', 'no project bound — open a project chat first'); return; }
   var list = Array.prototype.slice.call(files);
   var results = [];
   var next = function() {
     if (!list.length) {
-      document.getElementById('knowledgeUpload').value = '';
+      var ku = document.getElementById('knowledgeUpload'); if (ku) ku.value = '';
+      var ca = document.getElementById('chatAttach'); if (ca) ca.value = '';
       var bad = results.filter(function(r) { return r.kind !== 'ok'; });
-      projStatus('knowledgeStatus', bad.some(function(r) { return r.kind === 'err'; }) ? 'err' : bad.length ? 'warn' : 'ok',
+      status(bad.some(function(r) { return r.kind === 'err'; }) ? 'err' : bad.length ? 'warn' : 'ok',
         results.map(function(r) { return r.text; }).join(' · '));
       loadKnowledge(slug);
       return;
     }
     var f = list.shift();
-    projStatus('knowledgeStatus', 'busy', 'uploading ' + f.name + '…');
+    status('busy', 'uploading ' + f.name + '…');
     var form = new FormData();
     form.append('file', f, f.name);
     projFetch(projUrl(slug) + '/knowledge', { method: 'POST', body: form }).then(function(r) {
