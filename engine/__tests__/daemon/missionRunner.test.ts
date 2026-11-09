@@ -517,6 +517,51 @@ describe('MissionRunner per-mission and per-trigger timeoutMs', () => {
   })
 })
 
+describe('MissionRunner resume after a pause', () => {
+  // run-once-on-startup: a missed slot would otherwise catch up the moment the pause lifts.
+  beforeEach(() => {
+    const catchUp: MissionConfig = { ...config, triggers: config.triggers.map((t) => ({ ...t, missedPolicy: 'run-once-on-startup' as const })) }
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(catchUp), 'utf-8')
+  })
+
+  it('lifting a pause that spanned a due time moves nextFire forward and fires nothing', async () => {
+    let paused = true
+    const now = { t: new Date(2026, 5, 11, 12, 0, 0) }
+    const { deps, ranTasks } = makeDeps({ isPaused: () => paused, now: () => now.t })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    const runner = new MissionRunner(ledger, deps as any)
+    paused = false; await runner.tick()            // init: nextFire = 13:00 for 'poll' (every 60 min), 14:00 for 'news'
+    paused = true;  now.t = new Date(2026, 5, 11, 15, 30, 0); await runner.tick()
+    paused = false; await runner.tick()
+    expect(ranTasks).toHaveLength(0)
+    expect(new Date(ledger.state.nextFire['poll']).getTime()).toBeGreaterThan(now.t.getTime())
+    expect(new Date(ledger.state.nextFire['news']).getTime()).toBeGreaterThan(now.t.getTime())
+    expect(ledger.recentRuns(5)).toHaveLength(0)
+  })
+
+  it('a parked PausedRun still resumes when the pause lifts', async () => {
+    let paused = true
+    const now = { t: new Date(2026, 5, 11, 15, 30, 0) }
+    const { deps, ranTasks } = makeDeps({ isPaused: () => paused, now: () => now.t })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('news', new Date(2026, 5, 11, 14, 0).toISOString())   // passed during the pause
+    ledger.setNextFire('poll', new Date(2026, 5, 11, 13, 0).toISOString())
+    ledger.state.paused = {
+      triggerId: 'news', remainingMs: 7 * 60 * 1000, sessionId: 'session-77', pausedAt: '2026-06-11T18:00:00.000Z',
+      input: { missionId: 'mfl-dynasty', triggerId: 'news', prompt: 'Check news', context: 'ctx', allowedTools: ['Mfl'], timeoutMs: 15 * 60 * 1000, outcomePath: '', leagues: [] },
+    }
+    ledger.saveState()
+    const runner = new MissionRunner(ledger, deps as any)
+    await runner.tick()
+    paused = false; await runner.tick()
+    expect(ranTasks).toHaveLength(1)
+    expect(ranTasks[0].resumeSessionId).toBe('session-77')
+    expect(ledger.state.paused).toBeUndefined()
+    expect(new Date(ledger.state.nextFire['poll']).getTime()).toBeGreaterThan(now.t.getTime())
+    expect(new Date(ledger.state.nextFire['news']).getTime()).toBeGreaterThan(now.t.getTime())
+  })
+})
+
 describe('MissionRunner skipped triggers are visible', () => {
   it('a skip-policy trigger missed past the grace window is logged with its id and due time, not dropped silently', async () => {
     const { deps, ranTasks } = makeDeps()

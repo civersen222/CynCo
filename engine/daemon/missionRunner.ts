@@ -90,7 +90,21 @@ export class MissionRunner {
       this.pauseLogged = true
       return
     }
-    if (this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] pause lifted`)
+    if (this.pauseLogged) {
+      // Resume picks the schedule up from now: a slot that came due while paused moves to its
+      // next slot instead of firing as a catch-up (owner decision 2026-11-08). Only on this edge,
+      // never at startup, so run-once-on-startup still catches up after a restart.
+      let moved = 0
+      for (const trigger of this.ledger.config.triggers) {
+        const due = this.ledger.state.nextFire[trigger.id]
+        if (due !== undefined && new Date(due).getTime() <= now.getTime()) {
+          this.ledger.setNextFire(trigger.id, computeNextFire(trigger, now).toISOString())
+          moved++
+        }
+      }
+      if (moved > 0) this.ledger.saveState()
+      console.log(`[mission:${this.ledger.config.id}] pause lifted — ${moved} trigger(s) moved to their next slot`)
+    }
     this.pauseLogged = false
     if (this.ledger.state.paused) await this.resumePaused(this.ledger.state.paused, now)
     await this.drainOnDemand(now)
