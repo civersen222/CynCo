@@ -1,6 +1,6 @@
 # The image box: CynCo's eyes and sketchpad on the 4070 Ti Super
 
-**Date:** 2026-11-08 · **Status:** approved; Part A (vision: in the turn and into knowledge) BUILT 2026-11-08 — `engine/vision/CLAUDE.md`; Parts B (transforms) and C (wake together) in the plan · **Owner's words:** "the 4070 I think is the image box … use the existing comfyui functionality for larger image work"; "the only thing I use image generation for is brainstorming things I'm trying to make IRL … take a picture I've taken and turn it into outlines for a watercolor painting"; "we should just always wake the 4070 pc when we do the main one."
+**Date:** 2026-11-08 · **Status:** approved; all three parts BUILT 2026-11-08 — A vision (`engine/vision/CLAUDE.md`), C wake together (doorman `with`/`health`), B transforms (`engine/imagegen/CLAUDE.md`); live checks pending the owner steps · **Owner's words:** "the 4070 I think is the image box … use the existing comfyui functionality for larger image work"; "the only thing I use image generation for is brainstorming things I'm trying to make IRL … take a picture I've taken and turn it into outlines for a watercolor painting"; "we should just always wake the 4070 pc when we do the main one."
 
 Companion records: `docs/decisions/2026-11-08-wakefulness-design.md` (the boxes, the doorman, slice 2b), the owner's `pc-wakefulness/knowledge/tiering-preview.md` (the tier map this refines), `engine/imagegen/CLAUDE.md` (the ComfyUI client this extends), `engine/projects/CLAUDE.md` (attachments, ingest, the per-turn knowledge block).
 
