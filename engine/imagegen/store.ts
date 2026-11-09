@@ -63,7 +63,8 @@ export type ImageOrigin = { chatFile: string; toolId: string; elementId: string;
 
 /** Sidecar schema 1: everything a later step (image → 3D → STL) needs to know about how the picture was made. */
 export type ImageSidecar = {
-  schema: 1
+  /** 1 = a generated picture; 2 = a transform of a project photo (image box §4), with `transform`, `source` and, for vary, `denoise`. */
+  schema: 1 | 2
   key: string
   status: ImageStatus
   reason?: string
@@ -80,8 +81,12 @@ export type ImageSidecar = {
   cfg: number
   sampler: string
   scheduler: string
-  /** The resolved checkpoint name, or 'auto' until a probe resolves it. */
+  /** The resolved checkpoint name, 'auto' until a probe resolves it, or 'none' for a graph with no checkpoint (outline). */
   checkpoint: string
+  transform?: 'vary' | 'outline'
+  /** The project photo the transform started from, by path and content. */
+  source?: { path: string; sha256: string }
+  denoise?: number
   workflow: { source: string; sha256: string }
   /** The filled graph actually submitted; null until the job starts. */
   apiPrompt: Record<string, unknown> | null
@@ -101,6 +106,8 @@ export type ImageSidecar = {
 export type KeyFields = {
   prompt: string; negative: string; seed: number; width: number; height: number; steps: number; cfg: number
   sampler: string; scheduler: string; checkpoint: string; workflow: string
+  /** Transforms (image box §4): the kind and the source photo's sha256, so another photo or another transform is another picture. Absent for a generated picture (its keys are unchanged). */
+  transform?: 'vary' | 'outline'; source?: string
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -310,7 +317,7 @@ const optional = (v: unknown, check: (x: unknown) => boolean) => v === undefined
 /** The first field that is wrong, or null when the record is a valid sidecar for `key`. */
 function sidecarFault(v: unknown, key: string): string | null {
   if (!isObj(v)) return 'not an object'
-  if (v.schema !== 1) return 'schema'
+  if (v.schema !== 1 && v.schema !== 2) return 'schema'
   if (v.key !== key) return 'key'
   if (!str(v.status) || !STATUSES.has(v.status as string)) return 'status'
   for (const f of ['runId', 'prompt', 'negative', 'alt', 'sampler', 'scheduler', 'checkpoint', 'queuedAt']) if (!str(v[f])) return f

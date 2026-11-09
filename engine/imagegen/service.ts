@@ -31,15 +31,15 @@
  * marks it and every queued job failed.
  */
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { dirname, join, extname } from 'node:path'
 import type { UiImageEvent, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
-import { ComfyClient, ComfyError, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
-import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig } from './config.js'
-import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pngPath, promptedImages, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { fillWorkflow } from './workflow.js'
+import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
+import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
+import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { fillWorkflow, workflowClasses } from './workflow.js'
 
 export type AnnotateAt = {
   /** The bound project chat, or null (a coding session: pictures are project-only). */
@@ -79,6 +79,11 @@ export const WARM_MIN_AGE_MS = 30_000
 const SHUTDOWN_BOUND_MS = 3000
 /** Consecutive failed /history polls before the job fails with the last one's reason. */
 const POLL_FAILURES_TOLERATED = 3
+
+/** The graph a job submits and, for a transform (image box §4), what it starts from. */
+type JobExtra = { wf?: ComfyWorkflow; transform?: 'vary' | 'outline'; source?: { path: string; sha256: string }; denoise?: number }
+/** vary's default denoise: the thing stays itself, the idea shows (image box §4). */
+const VARY_DENOISE = 0.55
 
 type Job = {
   /** dir|key: one job per picture per project, however many surfaces show it. */
@@ -411,7 +416,7 @@ export class ImageService implements ImageAnnotator {
       this.log(`[imagegen] annotating RenderUI ${at.toolId} threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
       const reason = `picture generation failed inside the engine (${errText(e)})`
       try {
-        for (const im of promptedImages(spec)) im.el.image = { status: 'off', reason }
+        for (const im of pictureRequests(spec)) im.el.image = { status: 'off', reason }
       } catch (e2) {
         this.log(`[imagegen] marking RenderUI ${at.toolId}'s pictures off failed too: ${errText(e2)}`)
       }
@@ -420,7 +425,7 @@ export class ImageService implements ImageAnnotator {
   }
 
   private annotateInner(spec: UiSpec, at: AnnotateAt): Annotation {
-    const images = promptedImages(spec)
+    const images = pictureRequests(spec)
     if (images.length === 0) return { note: null, start: noop }
     const summary = (q: number, c: number, o: number, reason: string | null) =>
       this.log(`[imagegen] RenderUI ${at.toolId} (surface ${at.surfaceId}): ${images.length} pictures — ${q} queued, ${c} already made${o ? `, ${o} not generated: ${reason}` : ''}`)
@@ -452,7 +457,25 @@ export class ImageService implements ImageAnnotator {
     // Jobs this call's pictures wait behind: the queue and a job still in flight (a settled one is committing, not painting).
     const ahead = this.queue.length + (this.running && !this.running.settled ? 1 : 0)
     for (const im of images) {
-      const fields = this.keyFields(cfg, im.prompt, im.seed)
+      // A transform (image box §4) starts from a photo in the project: no photo, no job, and nothing is uploaded.
+      const wf = im.kind === 'generate' ? cfg.workflow : cfg[im.kind]
+      let source: { path: string; sha256: string } | null = null
+      if (im.kind !== 'generate') {
+        const srcPath = im.source ?? ''
+        let bytes: Uint8Array | null = null
+        if (isProjectFile(dir, srcPath)) {
+          try { bytes = new Uint8Array(readFileSync(join(dir, srcPath))) } catch (e) { this.log(`[imagegen] reading ${srcPath} for a ${im.kind} failed: ${errText(e)}`) }
+        }
+        if (!bytes) {
+          const reason = `${srcPath || '(no source)'} is not in the project — attach or save the photo first, then ask for the ${im.kind} again`
+          im.el.image = { status: 'off', reason }
+          o++
+          firstOff ??= reason
+          continue
+        }
+        source = { path: srcPath, sha256: sha256Of(bytes) }
+      }
+      const fields = this.keyFields(cfg, wf, im.prompt, im.seed, source ? { transform: im.kind as 'vary' | 'outline', source: source.sha256 } : undefined)
       const key = imageKey(fields)
       const repeat = decided.has(key)
       let state = decided.get(key)
@@ -474,7 +497,7 @@ export class ImageService implements ImageAnnotator {
             if (twin.pin) pins.push([twin.pin, fields.checkpoint])
           } else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
-            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }))
+            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as 'vary' | 'outline', source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}) } : { wf }))
             state = { status: 'queued', ...base }
           }
         }
@@ -546,11 +569,13 @@ export class ImageService implements ImageAnnotator {
    * found gone is the pick and starts a probe at once — or, with one running, takes that one's answer, a fresh probe
    * following it only when it fails or still picks the gone checkpoint; `runJob` paints with the one the key names.
    */
-  private keyFields(cfg: ComfyConfig, prompt: string, seed?: number): KeyFields {
+  private keyFields(cfg: ComfyConfig, wf: ComfyWorkflow, prompt: string, seed?: number, extra?: { transform: 'vary' | 'outline'; source: string }): KeyFields {
     return {
       prompt, negative: cfg.negative, seed: seed ?? seedFor(prompt, cfg.negative), width: cfg.width, height: cfg.height,
       steps: cfg.steps, cfg: cfg.cfg, sampler: cfg.sampler, scheduler: cfg.scheduler,
-      checkpoint: cfg.checkpoint ?? (cfg.workflow.usesCheckpoint ? this.lastCheckpoint : null) ?? 'auto', workflow: cfg.workflow.sha256,
+      // 'none' for a graph with no checkpoint (outline): never 'auto', so no probe pick is waited for or keyed on.
+      checkpoint: !wf.usesCheckpoint ? 'none' : cfg.checkpoint ?? this.lastCheckpoint ?? 'auto', workflow: wf.sha256,
+      ...(extra ?? {}),
     }
   }
 
@@ -564,7 +589,7 @@ export class ImageService implements ImageAnnotator {
    * same picture and never counts. Null when a checkpoint is configured (its keys always named it).
    */
   private autoTwin(dir: string, f: KeyFields): { key: string; status: 'queued' | 'running' | 'done'; pin: Job | null } | null {
-    if (!this.config.ok || this.config.cfg.checkpoint || f.checkpoint === 'auto') return null
+    if (!this.config.ok || this.config.cfg.checkpoint || f.checkpoint === 'auto' || f.checkpoint === 'none') return null
     const key = imageKey({ ...f, checkpoint: 'auto' })
     const job = this.jobs.get(`${dir}|${key}`)
     if (job && !job.settled) {
@@ -576,13 +601,14 @@ export class ImageService implements ImageAnnotator {
     return sc && sc.status === 'done' && sc.checkpoint === f.checkpoint && existsSync(pngPath(dir, key)) ? { key, status: 'done', pin: null } : null
   }
 
-  private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }): Job {
+  private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }, extra: JobExtra = {}): Job {
     const queuedAt = this.now()
     const sidecar: ImageSidecar = {
-      schema: 1, key, status: 'queued', runId: RUN_ID,
+      schema: extra.transform ? 2 : 1, key, status: 'queued', runId: RUN_ID,
       prompt: f.prompt, negative: f.negative, alt, seed: f.seed, seedFrom, width: f.width, height: f.height, steps: f.steps, cfg: f.cfg,
       sampler: f.sampler, scheduler: f.scheduler, checkpoint: f.checkpoint,
-      workflow: { source: cfg.workflow.source, sha256: cfg.workflow.sha256 },
+      workflow: { source: (extra.wf ?? cfg.workflow).source, sha256: (extra.wf ?? cfg.workflow).sha256 },
+      ...(extra.transform && extra.source ? { transform: extra.transform, source: extra.source, ...(extra.denoise !== undefined ? { denoise: extra.denoise } : {}) } : {}),
       apiPrompt: null,
       comfy: { host: cfg.host, promptId: randomUUID(), outputs: [] },
       queuedAt: iso(queuedAt),
@@ -640,6 +666,7 @@ export class ImageService implements ImageAnnotator {
   private async runJob(job: Job): Promise<void> {
     if (!this.config.ok || !this.client) return this.finish(job, { status: 'failed', reason: this.config.ok ? 'no ComfyUI client' : this.config.reason })
     const cfg = this.config.cfg, client = this.client, sc = job.sidecar
+    const wf = sc.transform ? cfg[sc.transform] : cfg.workflow
     const ready = await this.ensureReady(cfg)
     if (this.stopped) return
     if (!ready.ok) return this.finish(job, { status: 'failed', reason: ready.reason })
@@ -653,7 +680,7 @@ export class ImageService implements ImageAnnotator {
     // 'auto', so the job paints on the pick), and a key's checkpoint it no longer holds fails the job here, before any
     // POST, with our own reason. Either drops that checkpoint (`dropVanished`). ComfyUI's 400 refusing it
     // (`'<name>' not in`) is the check for a list read before it left, and drops it the same way.
-    const listed = cfg.workflow.usesCheckpoint && !cfg.checkpoint ? ready.checkpoints : undefined
+    const listed = wf.usesCheckpoint && !cfg.checkpoint ? ready.checkpoints : undefined
     if (listed && job.pinned !== null && !listed.includes(job.pinned)) {
       const gone = job.pinned
       job.pinned = null
@@ -669,13 +696,39 @@ export class ImageService implements ImageAnnotator {
       return this.finish(job, { status: 'failed', reason: `the checkpoint ${gone} this picture was keyed on is no longer on the image server${pick ? ` — ask again and it is painted on ${pick}` : ''}` })
     }
     const keyed = sc.checkpoint === 'auto' ? null : sc.checkpoint
-    if (keyed && cfg.workflow.usesCheckpoint && ready.checkpoint && ready.checkpoint !== keyed) {
+    if (keyed && wf.usesCheckpoint && ready.checkpoint && ready.checkpoint !== keyed) {
       this.log(`[imagegen] ${job.key.slice(0, 8)}: painting with ${keyed}, the pick when it was asked (the probe now picks ${ready.checkpoint})`)
     }
     const ckpt = keyed ?? ready.checkpoint ?? ''
-    const graph = fillWorkflow(cfg.workflow.graph, {
+    // A transform's graph may use nodes the generate probe never checks (image box §4): checked here, when one is asked,
+    // so a server without the line-art pack still paints every generated picture and names the pack for the outline.
+    if (sc.transform) {
+      for (const cls of workflowClasses(wf.graph)) {
+        let present = false
+        try { present = await client.hasNode(cls) } catch (e) { if (this.stopped) return; return this.finish(job, { status: 'failed', reason: reasonOf(e) }) }
+        if (!present) {
+          const pack = NODE_PACKS[cls]
+          return this.finish(job, { status: 'failed', reason: `ComfyUI at ${client.host} has no "${cls}" node, which the ${sc.transform} workflow uses — install it${pack ? ` (the ${pack} node pack)` : ''} or change the workflow` })
+        }
+      }
+    }
+    // A transform's input goes up first (image box §4); the photo must still be where the ask found it.
+    let uploaded: string | undefined
+    if (sc.transform && sc.source) {
+      if (!isProjectFile(job.dir, sc.source.path)) return this.finish(job, { status: 'failed', reason: `the source photo ${sc.source.path} is no longer in the project` })
+      try {
+        const bytes = new Uint8Array(readFileSync(join(job.dir, sc.source.path)))
+        uploaded = await client.uploadImage(bytes, `cynco-${job.key}${extname(sc.source.path).toLowerCase() || '.png'}`)
+      } catch (e) {
+        this.log(`[imagegen] ${job.key.slice(0, 8)}: uploading ${sc.source.path} failed: ${reasonOf(e)}`)
+        if (this.stopped) return
+        return this.finish(job, { status: 'failed', reason: reasonOf(e) })
+      }
+    }
+    const graph = fillWorkflow(wf.graph, {
       prompt: sc.prompt, negative: sc.negative, seed: sc.seed, width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg,
       sampler: sc.sampler, scheduler: sc.scheduler, checkpoint: ckpt, filename_prefix: `cynco/${job.key}`,
+      ...(uploaded !== undefined ? { image: uploaded } : {}), ...(sc.denoise !== undefined ? { denoise: sc.denoise } : {}),
     })
     sc.status = 'running'
     sc.startedAt = iso(this.now())
@@ -698,7 +751,7 @@ export class ImageService implements ImageAnnotator {
         // ComfyUI queued nothing. A refusal of the checkpoint painted with says it has left the server: its
         // value_not_in_list detail, `<input>: '<name>' not in [...]` (or `(list of length N)`), puts the refused value,
         // quoted, before `not in`, so only that form counts — a refusal of another loader whose list merely names it does not.
-        if (cfg.workflow.usesCheckpoint && !cfg.checkpoint && ckpt && e.reason.includes(`'${ckpt}' not in`)) this.dropVanished(job.key, ckpt)
+        if (wf.usesCheckpoint && !cfg.checkpoint && ckpt && e.reason.includes(`'${ckpt}' not in`)) this.dropVanished(job.key, ckpt)
       } else {
         // The POST may have been queued with its answer lost: withdraw it before the next job goes out.
         await this.withdraw(client, job, sent)
@@ -770,6 +823,10 @@ export class ImageService implements ImageAnnotator {
     }
     sc.sha256 = sha256Of(bytes)
     sc.bytes = bytes.byteLength
+    // After a transform, give the box its VRAM back: SDXL must not sit beside the vision model and the 14B fallback (image box §4).
+    if (sc.transform) {
+      try { await client.free() } catch (e) { this.log(`[imagegen] ${job.key.slice(0, 8)}: /free after the ${sc.transform} failed: ${reasonOf(e)}`) }
+    }
     await this.finish(job, { status: 'done' })
   }
 

@@ -9,7 +9,8 @@ import { createProject, readJournal } from '../../projects/layout.js'
 import { comfyConfig, UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
 import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
-import { canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
+import { BUILTIN_CLASSES, canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
+import { sha256Of } from '../../projects/layout.js'
 
 const CAN_SYMLINK_FILES = canSymlinkFiles()
 
@@ -1777,5 +1778,105 @@ describe('ImageService: files from the project (an Image whose src is a path)', 
     expect(made.note).toMatch(/^Files: not in the project — tower\/templates\/tower_v1.svg, tower\/missing.png; write the file first, or describe the picture in "prompt" and the engine generates it\. Pictures: 1 generating — /)
     made.start()
     await svc.whenIdle()
+  })
+})
+
+// The image box (docs/decisions/2026-11-08-image-box-design.md §4): the owner's own photo,
+// varied toward an idea or turned into outlines, on ComfyUI.
+describe('ImageService: transforms', () => {
+  const NODES = [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode', 'LineArtPreprocessor']
+  const JPG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 1, 2, 3])
+  function photo(rel = 'knowledge/yard.jpg'): string { mkdirSync(join(dir, 'knowledge'), { recursive: true }); writeFileSync(join(dir, rel), JPG); return rel }
+  function tspec(props: Record<string, unknown>): UiSpec {
+    const elements: UiSpec['elements'] = Object.create(null)
+    elements.c = { type: 'Card', props: { title: 'Yard' }, children: ['img-0'] }
+    elements['img-0'] = { type: 'Image', props: { alt: 'Yard', ...props } }
+    return { root: 'c', elements }
+  }
+  const graphOf = (i = 0) => (posts()[i].body as { prompt: Record<string, { class_type: string; inputs: Record<string, unknown> }> }).prompt
+  const node = (g: ReturnType<typeof graphOf>, cls: string) => Object.values(g).find(n => n.class_type === cls)
+
+  it('vary: uploads the photo first, submits the vary graph with the uploaded name and denoise 0.55, frees the models after, records schema 2', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const rel = photo()
+    const sp = tspec({ source: rel, transform: 'vary', prompt: 'add a pergola over the patio' })
+    s.annotate(sp, at()).start()
+    expect(imageOf(sp, 0).status).toBe('queued')
+    await s.whenIdle()
+    const key = keyOf(sp, 0)
+    const paths = mock.calls.map(c => c.path)
+    expect(paths.indexOf('/upload/image')).toBeGreaterThan(-1)
+    expect(paths.indexOf('/upload/image')).toBeLessThan(paths.indexOf('/prompt'))
+    expect(paths.indexOf('/free')).toBeGreaterThan(paths.indexOf('/view'))
+    const g = graphOf()
+    expect(node(g, 'LoadImage')!.inputs.image).toBe(`cynco-${key}.jpg`)
+    expect(node(g, 'KSampler')!.inputs.denoise).toBe(0.55)
+    expect(node(g, 'CLIPTextEncode')!.inputs.text).toBe('add a pergola over the patio')
+    const sc = readSidecar(dir, key)!
+    expect(sc.status).toBe('done')
+    expect(sc.schema).toBe(2)
+    expect(sc.transform).toBe('vary')
+    expect(sc.denoise).toBe(0.55)
+    expect(sc.source).toEqual({ path: rel, sha256: sha256Of(new Uint8Array(JPG)) })
+    expect(existsSync(pngPath(dir, key))).toBe(true)
+  })
+
+  it('outline: the preprocessor graph has no text encoder, needs no checkpoint, and the record carries an empty prompt', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const rel = photo('knowledge/porch.png')
+    const sp = tspec({ source: rel, transform: 'outline' })
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    const key = keyOf(sp, 0)
+    const g = graphOf()
+    expect(node(g, 'CLIPTextEncode')).toBeUndefined()
+    expect(node(g, 'LineArtPreprocessor')).toBeDefined()
+    expect(node(g, 'LoadImage')!.inputs.image).toBe(`cynco-${key}.png`)
+    const sc = readSidecar(dir, key)!
+    expect(sc.status).toBe('done')
+    expect(sc.transform).toBe('outline')
+    expect(sc.prompt).toBe('')
+    expect(sc.checkpoint).toBe('none')
+    expect(mock.calls.some(c => c.path === '/free')).toBe(true)
+  })
+
+  it('a different photo or a different transform is a different picture', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const a = photo('knowledge/a.jpg'); writeFileSync(join(dir, 'knowledge', 'b.jpg'), Buffer.concat([JPG, Buffer.from([9])]))
+    const sp = { root: 'g', elements: Object.assign(Object.create(null), {
+      g: { type: 'Grid', props: {}, children: ['img-0', 'img-1', 'img-2'] },
+      'img-0': { type: 'Image', props: { source: a, transform: 'outline', alt: 'a' } },
+      'img-1': { type: 'Image', props: { source: 'knowledge/b.jpg', transform: 'outline', alt: 'b' } },
+      'img-2': { type: 'Image', props: { source: a, transform: 'vary', prompt: 'softer', alt: 'c' } },
+    }) } as UiSpec
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    expect(new Set([keyOf(sp, 0), keyOf(sp, 1), keyOf(sp, 2)]).size).toBe(3)
+  })
+
+  it('a source that is not in the project is off with the not-in-the-project wording, and nothing is uploaded (Review Focus 5)', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start()
+    const sp = tspec({ source: 'knowledge/never-written.jpg', transform: 'outline' })
+    const note = s.annotate(sp, at())
+    note.start()
+    await s.whenIdle()
+    const st = imageOf(sp, 0)
+    expect(st.status).toBe('off')
+    if (st.status === 'off') expect(st.reason).toContain('not in the project')
+    expect(mock.calls.some(c => c.path === '/upload/image' || c.path === '/prompt')).toBe(false)
+  })
+
+  it('a server without the line-art node names the node pack', async () => {
+    mock = await startMockComfy({ nodes: [...BUILTIN_CLASSES, 'LoadImage', 'ImageScale', 'VAEEncode'] })
+    const s = start(); const rel = photo()
+    const sp = tspec({ source: rel, transform: 'outline' })
+    s.annotate(sp, at()).start()
+    await s.whenIdle()
+    const key = keyOf(sp, 0)
+    const sc = readSidecar(dir, key)!
+    expect(sc.status).toBe('failed')
+    expect(sc.reason).toContain('LineArtPreprocessor')
+    expect(sc.reason).toContain('comfyui_controlnet_aux')
   })
 })

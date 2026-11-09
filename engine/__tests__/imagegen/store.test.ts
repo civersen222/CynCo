@@ -108,7 +108,7 @@ describe('sidecars', () => {
   it('a tampered sidecar reads as no record', () => {
     const k = imageKey(FIELDS)
     const bad: Array<Record<string, unknown>> = [
-      { status: 'painted' }, { width: '1024' }, { key: imageKey({ ...FIELDS, cfg: 1 }) }, { schema: 2 }, { origin: null }, { comfy: { host: 'h', promptId: 'p', outputs: [{ filename: 1 }] } },
+      { status: 'painted' }, { width: '1024' }, { key: imageKey({ ...FIELDS, cfg: 1 }) }, { schema: 3 }, { origin: null }, { comfy: { host: 'h', promptId: 'p', outputs: [{ filename: 1 }] } },
       { reason: 42 }, { apiPrompt: 'x' }, { workflow: { source: 'builtin' } },
     ]
     mkdirSync(join(dir, 'images'), { recursive: true })
@@ -553,5 +553,16 @@ describe('pictureRequests (image box §4)', () => {
   })
   it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {
     expect(promptedImages(spec).map(im => im.id)).toEqual(['a'])
+  })
+})
+
+describe('transform keys and schema-2 records (image box §4)', () => {
+  it('imageKey differs by source sha and by transform, and is unchanged for a generate picture', () => {
+    const base = imageKey(FIELDS)
+    expect(imageKey({ ...FIELDS })).toBe(base)
+    const o1 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'aa'.repeat(32) })
+    const o2 = imageKey({ ...FIELDS, prompt: '', transform: 'outline', source: 'bb'.repeat(32) })
+    const v1 = imageKey({ ...FIELDS, transform: 'vary', source: 'aa'.repeat(32) })
+    expect(new Set([base, o1, o2, v1]).size).toBe(4)
   })
 })

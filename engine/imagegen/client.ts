@@ -49,6 +49,9 @@ function megabytes(n: number): string {
   return `${Math.round(n / (1024 * 1024))} MB`
 }
 
+/** Where a custom node a built-in transform graph uses comes from, for the probe's refusal. */
+export const NODE_PACKS: Record<string, string> = { LineArtPreprocessor: 'comfyui_controlnet_aux' }
+
 export class ComfyClient {
   readonly host: string
   private readonly port: string
@@ -211,7 +214,7 @@ export class ComfyClient {
    */
   async uploadImage(bytes: Uint8Array, name: string): Promise<string> {
     const form = new FormData()
-    form.append('image', new Blob([bytes]), name)
+    form.append('image', new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer]), name)
     form.append('overwrite', 'true')
     form.append('type', 'input')
     const res = await this.call('/upload/image', this.timeouts.upload, { method: 'POST', body: form })
