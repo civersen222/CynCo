@@ -2051,6 +2051,22 @@ describe('ImageService: transforms', () => {
     s.annotate(tspec({ source: rel, transform: 'vary', prompt: 'add a pergola' }), at()).start(); await s.whenIdle()
     expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
   })
+  it('the look for a sheet behind a generated picture gets the card to itself (F200): the box is freed before the vision model is asked, and a look with nothing of ours loaded frees nothing first', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const freesAtAsk: number[] = []
+    const s = start({ askAboutPhoto: async () => { freesAtAsk.push(mock!.calls.filter(c => c.path === '/free').length); return { ok: true, answer: 'A porch.' } } })
+    const rel = photo('knowledge/porch.png')
+    s.annotate(spec(['a red barn']), at()).start()
+    s.annotate(tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' }), at({ toolId: 'tool-2' })).start()
+    await s.whenIdle()
+    expect(posts().length).toBe(2)
+    expect(freesAtAsk).toEqual([1])
+    // once before the look, once after the transform; the empty queue then has nothing left to free
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(2)
+    // the box is already empty: the next look is not preceded by another /free
+    s.annotate(tspec({ source: rel, transform: 'outline', prompt: 'only the roof line' }), at({ toolId: 'tool-3' })).start(); await s.whenIdle()
+    expect(freesAtAsk).toEqual([1, 2])
+  })
   it('a job that failed on the server still leaves nothing loaded (F198): the box is freed when the queue is empty', async () => {
     mock = await startMockComfy({ nodes: NODES, executionError: { node_id: '3', node_type: 'KSampler', exception_message: 'boom' } })
     const s = start(); const rel = photo()

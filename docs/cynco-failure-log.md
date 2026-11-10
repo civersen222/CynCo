@@ -4043,3 +4043,15 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** `withValidatedSurfaces` looks up `pictureRequests(spec)`, the same list `annotate` queues from; `promptedImages`, left without a caller, is removed. Pinned by `projects/api.test` (an outline with and without a request, an edit and a variation each come back `done` with their key).
 
 **Rule:** the live frame and the reload read one definition of "a picture the engine made"; when a new kind of picture is added, the reload test gets that kind in the same change.
+
+## F200 — A sheet's look timed out behind a generated picture, and the request was dropped
+
+**Where:** the live check of F197 through the running engine (2026-11-09, project `pc-wakefulness`, chat `20261110T035902-paint-me-one-picture-to-brainstorm-from-a-small-red-barn-in.jsonl`): two generated pictures (`ddae4f7d`, `13ba002c`), then tracing sheet `1e7e5cbc` with a request, in one queue.
+
+**How:** the engine log has `[imagegen] 1e7e5cbc sheet: the photo could not be looked at (image box did not answer: The operation timed out.); drawing the plain sheet, without the request`. The sheet waited 65 s in the queue (`LOOK_TIMEOUT_MS` is 60 s) and the guides asked for were not drawn. The next sheet with a request, on an empty box, was looked at in 13.9 s (`93c345f4`).
+
+**Why:** not reproduced. The look ran while ComfyUI still held SDXL: the queue was not empty, so F198's free had not run. Measured by hand afterwards on a quiet box: with SDXL held the vision model answered in 5.5 s and 1.3 GB of the card was left; on the empty box it answered in 7.8 s with 8.6 GB left. The box's own desktop use moved its free memory by about 1 GB the same evening (15.75 and 14.7 GB read on an empty box). That the vision model did not fit and ran partly off the card is a hypothesis, not a measurement.
+
+**Fix:** `runJob` frees ComfyUI before a look when something of ours is loaded (`loaded`) — the mirror of F194, where the vision model leaves before the edit model comes. The edit model would have pushed the checkpoint out anyway, so the cost is one `/free`. Pinned by `imagegen/service.test` ("the look for a sheet behind a generated picture gets the card to itself").
+
+**Rule:** on the shared 16 GB card, one model at a time, in both directions: whoever is about to load asks the other tenant to leave first.

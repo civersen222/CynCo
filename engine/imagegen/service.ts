@@ -793,6 +793,12 @@ export class ImageService implements ImageAnnotator {
       let seen = ''
       let by: { model?: string; ms?: number } = {}
       let reason: string | null = null
+      // The look gets the card to itself (F200): a checkpoint a generated picture left loaded goes first, as the
+      // vision model goes before the edit model (F194). The edit model would have pushed that checkpoint out anyway.
+      if (this.loaded) {
+        await this.freeBox(client, 'before the look')
+        if (this.stopped) return
+      }
       try {
         const r = await this.askAboutPhoto(photo, sc.source.path, redo ? fixQuestion(redo.said) : SHEET_QUESTION)
         if (r.ok) {
