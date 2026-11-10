@@ -102,6 +102,31 @@ export function outlinePrompt(extras: string): string {
   return more ? `${OUTLINE_INSTRUCTION} Also: ${more}` : OUTLINE_INSTRUCTION
 }
 
+/**
+ * A redo (F196). The edit model obeys concrete, located text and ignores a vague
+ * complaint (the owner's remark alone restored nothing), and a chat model asked to
+ * correct a picture re-describes the scene with inventions. So a redo runs from the
+ * same photo with the owner's words behind the recipe's own prompt (`withFix`), and,
+ * when the vision model can be asked, with what that photo actually shows of the
+ * thing the owner means (`fixQuestion`). Wording measured on the image box 2026-11-09.
+ */
+const endsSentence = (s: string) => (/[.!?…]$/.test(s) ? s : `${s}.`)
+const inQuotes = (s: string) => s.replace(/"/g, "'")
+/** The vision model's answer is cut to this many characters in the prompt: located text, not an essay. */
+const FIX_SEEN_CAP = 600
+
+/** What the vision model is asked about the original photo: it never sees the failed picture, and must not judge the remark. */
+export function fixQuestion(said: string): string {
+  return `A new picture was made from this photo, and its owner says the new picture got something wrong: "${inQuotes(said)}". You cannot see the new picture, only this photo. In one or two short sentences, say what this photo shows of the thing the owner means and exactly where it is in the frame (top or bottom, left or right, how much of the frame). Name only things visible in this photo, and do not judge the owner's remark.`
+}
+
+/** The recipe's prompt with what was wrong behind it: the owner's words (the picture's key is built on this form), then what the photo shows when that is known. */
+export function withFix(prompt: string, said: string, seen?: string): string {
+  let shown = (seen ?? '').replace(/\s+/g, ' ').trim()
+  if (shown.length > FIX_SEEN_CAP) shown = `${shown.slice(0, FIX_SEEN_CAP)}…`
+  return `${endsSentence(prompt.trim())} An earlier attempt got this wrong — the owner said: "${inQuotes(said)}".${shown ? ` What the photo shows: ${endsSentence(shown)}` : ''} Put that right, working only from the photo.`
+}
+
 // `BUILTIN_OUTLINE` itself is defined after `BUILTIN_EDIT` below: the same graph under its own version, so an operator may override one without the other.
 
 /**

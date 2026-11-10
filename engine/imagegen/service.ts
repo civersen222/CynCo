@@ -39,7 +39,8 @@ import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
 import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { EDIT_SAMPLING, fillWorkflow, fitToArea, outlinePrompt, workflowClasses, type TransformKind } from './workflow.js'
+import { EDIT_SAMPLING, fillWorkflow, fitToArea, fixQuestion, outlinePrompt, withFix, workflowClasses, type TransformKind } from './workflow.js'
+import { activity as engineActivity, type ActivityRegistry } from '../power/activity.js'
 import { imageDimensions } from '../vision/imageSize.js'
 
 export type AnnotateAt = {
@@ -67,6 +68,14 @@ export type ImageServiceDeps = {
    * A failure is logged and the job paints anyway.
    */
   beforeTransform?: () => Promise<void>
+  /**
+   * One aimed question about a project photo (F196): a redo asks what the photo shows of the thing the owner
+   * says came out wrong, before `beforeTransform` unloads the model that answers. main.ts passes the vision
+   * client's `ask`. Absent, refused or thrown, the redo paints from the owner's words alone and the record says why.
+   */
+  askAboutPhoto?: (photo: Uint8Array, fileName: string, question: string) => Promise<{ ok: true; answer: string; model?: string; ms?: number } | { ok: false; reason: string }>
+  /** Where the picture queue registers as activity (wakefulness: hold-awake and the chat model's idle unload); the engine's shared registry unless a test passes its own. */
+  activity?: Pick<ActivityRegistry, 'begin'>
   /** Test seams; the env clamps apply only to env values. */
   pollMs?: number
   timeoutMs?: number
@@ -88,7 +97,7 @@ const SHUTDOWN_BOUND_MS = 3000
 const POLL_FAILURES_TOLERATED = 3
 
 /** The graph a job submits and, for a transform (image box §4), what it starts from. */
-type JobExtra = { wf?: ComfyWorkflow; transform?: TransformKind; source?: { path: string; sha256: string }; denoise?: number }
+type JobExtra = { wf?: ComfyWorkflow; transform?: TransformKind; source?: { path: string; sha256: string }; denoise?: number; fix?: { said: string; base: string } }
 /** vary's default denoise: the thing stays itself, the idea shows (image box §4). */
 const VARY_DENOISE = 0.55
 
@@ -116,6 +125,8 @@ type Job = {
    */
   onServer: Promise<string | null> | null
   settled: boolean
+  /** A redo's prompt before the correction went in (F196): `runJob` composes it again with what the vision model saw. */
+  fixBase?: string
 }
 
 type Outcome = { status: 'done' } | { status: 'failed'; reason: string }
@@ -200,6 +211,8 @@ export class ImageService implements ImageAnnotator {
   private readonly pollMs: number
   private readonly timeoutMs: number
   private readonly beforeTransform: (() => Promise<void>) | null
+  private readonly askAboutPhoto: ImageServiceDeps['askAboutPhoto'] | null
+  private readonly activity: Pick<ActivityRegistry, 'begin'>
   /**
    * The probe a job trusts (`ensureReady`): a failure for 60 s, a success for 10 minutes, which no failure replaces (F179).
    * `dropVanished` clears it when it unsets the pick, and takes a gone checkpoint off a good one's list, `at` unchanged.
@@ -255,6 +268,8 @@ export class ImageService implements ImageAnnotator {
     this.pollMs = deps.pollMs ?? POLL_MS
     this.timeoutMs = deps.timeoutMs ?? (config.ok ? config.cfg.timeoutMs : 300_000)
     this.beforeTransform = deps.beforeTransform ?? null
+    this.askAboutPhoto = deps.askAboutPhoto ?? null
+    this.activity = deps.activity ?? engineActivity
     if (config.ok && config.cfg.checkpoint && !config.cfg.workflow.usesCheckpoint) {
       this.log(`[imagegen] LOCALCODE_COMFYUI_CHECKPOINT="${config.cfg.checkpoint}" is ignored: the workflow at ${config.cfg.workflow.source} has no {{checkpoint}}`)
     }
@@ -471,7 +486,14 @@ export class ImageService implements ImageAnnotator {
       let fit: { width: number; height: number } | null = null
       let source: { path: string; sha256: string } | null = null
       if (im.kind !== 'generate') {
-        const srcPath = im.source ?? ''
+        let srcPath = im.source ?? ''
+        // A redo (F196) runs from the photo, never from the picture that came out wrong: asked of a made
+        // picture, it takes the source that picture records. Without "fix" a made picture is a source like any other.
+        if (im.fix) {
+          const made = /^images\/([0-9a-f]{32})\.png$/.exec(srcPath)
+          const from = made ? readSidecar(dir, made[1]) : null
+          if (from?.transform && typeof from.source?.path === 'string') srcPath = from.source.path
+        }
         let bytes: Uint8Array | null = null
         if (isProjectFile(dir, srcPath)) {
           try { bytes = new Uint8Array(readFileSync(join(dir, srcPath))) } catch (e) { this.log(`[imagegen] reading ${srcPath} for a ${im.kind} failed: ${errText(e)}`) }
@@ -490,7 +512,9 @@ export class ImageService implements ImageAnnotator {
       // An edit — and an outline, which is the edit recipe with the tracing-sheet instruction in front (2026-11-09) —
       // samples as its Lightning LoRA needs, with no negative, whatever the generate configuration says (F193).
       const byRecipe = im.kind === 'edit' || im.kind === 'outline'
-      const prompt = im.kind === 'outline' ? outlinePrompt(im.prompt) : im.prompt
+      const recipe = im.kind === 'outline' ? outlinePrompt(im.prompt) : im.prompt
+      // A redo is another picture of the same photo: what the owner said was wrong is part of its prompt, so of its key (F196).
+      const prompt = im.fix ? withFix(recipe, im.fix) : recipe
       const fields = this.keyFields(cfg, wf, prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(byRecipe ? EDIT_SAMPLING : {}) } : undefined)
       const key = imageKey(fields)
       const repeat = decided.has(key)
@@ -513,7 +537,7 @@ export class ImageService implements ImageAnnotator {
             if (twin.pin) pins.push([twin.pin, fields.checkpoint])
           } else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
-            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as TransformKind, source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}) } : { wf }))
+            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as TransformKind, source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}), ...(im.fix ? { fix: { said: im.fix, base: recipe } } : {}) } : { wf }))
             state = { status: 'queued', ...base }
           }
         }
@@ -624,13 +648,13 @@ export class ImageService implements ImageAnnotator {
       prompt: f.prompt, negative: f.negative, alt, seed: f.seed, seedFrom, width: f.width, height: f.height, steps: f.steps, cfg: f.cfg,
       sampler: f.sampler, scheduler: f.scheduler, checkpoint: f.checkpoint,
       workflow: { source: (extra.wf ?? cfg.workflow).source, sha256: (extra.wf ?? cfg.workflow).sha256 },
-      ...(extra.transform && extra.source ? { transform: extra.transform, source: extra.source, ...(extra.denoise !== undefined ? { denoise: extra.denoise } : {}) } : {}),
+      ...(extra.transform && extra.source ? { transform: extra.transform, source: extra.source, ...(extra.denoise !== undefined ? { denoise: extra.denoise } : {}), ...(extra.fix ? { fix: { said: extra.fix.said } } : {}) } : {}),
       apiPrompt: null,
       comfy: { host: cfg.host, promptId: randomUUID(), outputs: [] },
       queuedAt: iso(queuedAt),
       origin: { chatFile: p.chatFile, ...o },
     }
-    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', pinned: null, onServer: null, settled: false }
+    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', pinned: null, onServer: null, settled: false, ...(extra.transform && extra.fix ? { fixBase: extra.fix.base } : {}) }
   }
 
   // ─── worker ─────────────────────────────────────────────────────────
@@ -653,10 +677,14 @@ export class ImageService implements ImageAnnotator {
   private async pump(): Promise<void> {
     if (this.pumping || this.stopped) return
     this.pumping = true
+    // Wakefulness: the queue is one activity from its first job until it is empty, so the PC does not sleep and the
+    // chat model is not unloaded under a picture the owner is waiting for (a job may outlast the turn that asked for it).
+    let release: (() => void) | null = null
     try {
       while (!this.stopped) {
         const job = this.queue.shift()
         if (!job) break
+        release ??= this.activity.begin('picture', 'image queue')
         this.running = job
         try {
           await this.runJob(job)
@@ -676,6 +704,7 @@ export class ImageService implements ImageAnnotator {
       }
     } finally {
       this.pumping = false
+      release?.()
     }
   }
 
@@ -728,18 +757,46 @@ export class ImageService implements ImageAnnotator {
         }
       }
     }
+    // A transform's photo must still be where the ask found it (image box §4).
+    let photo: Uint8Array | null = null
+    if (sc.transform && sc.source) {
+      if (!isProjectFile(job.dir, sc.source.path)) return this.finish(job, { status: 'failed', reason: `the source photo ${sc.source.path} is no longer in the project` })
+      try { photo = new Uint8Array(readFileSync(join(job.dir, sc.source.path))) } catch (e) {
+        this.log(`[imagegen] ${job.key.slice(0, 8)}: reading ${sc.source.path} failed: ${reasonOf(e)}`)
+        return this.finish(job, { status: 'failed', reason: reasonOf(e) })
+      }
+    }
+    // A redo (F196): the vision model says what the photo shows of the thing that came out wrong, and that located
+    // text goes into the prompt behind the owner's words. It is asked now, while it may still be loaded: the unload
+    // below (F194) comes after. No answer is no reason not to paint — the key was built on the owner's words alone.
+    let prompt = sc.prompt
+    if (photo && sc.source && sc.fix && job.fixBase !== undefined && this.askAboutPhoto) {
+      const said = sc.fix.said
+      let reason: string | null = null
+      try {
+        const r = await this.askAboutPhoto(photo, sc.source.path, fixQuestion(said))
+        const seen = r.ok ? r.answer.replace(/\s+/g, ' ').trim() : ''
+        if (r.ok && seen) {
+          prompt = withFix(job.fixBase, said, seen)
+          sc.fix = { said, seen: seen.slice(0, 2000), ...(r.model ? { model: r.model } : {}), ...(r.ms !== undefined ? { ms: r.ms } : {}) }
+        } else reason = r.ok ? 'the vision model gave no answer' : r.reason
+      } catch (e) { reason = errText(e) }
+      if (this.stopped) return
+      if (reason !== null) {
+        sc.fix = { said, reason }
+        this.log(`[imagegen] ${job.key.slice(0, 8)} redo: the photo could not be looked at for the correction (${reason}); painting from the owner's words alone`)
+      }
+    }
     // Make room on the shared GPU first (F194): the vision model's VRAM goes before the edit model comes.
     if (sc.transform && this.beforeTransform) {
       try { await this.beforeTransform() } catch (e) { this.log(`[imagegen] ${job.key.slice(0, 8)}: before the transform: ${reasonOf(e)} — painting anyway`) }
       if (this.stopped) return
     }
-    // A transform's input goes up first (image box §4); the photo must still be where the ask found it.
+    // A transform's input goes up first (image box §4).
     let uploaded: string | undefined
-    if (sc.transform && sc.source) {
-      if (!isProjectFile(job.dir, sc.source.path)) return this.finish(job, { status: 'failed', reason: `the source photo ${sc.source.path} is no longer in the project` })
+    if (photo && sc.source) {
       try {
-        const bytes = new Uint8Array(readFileSync(join(job.dir, sc.source.path)))
-        uploaded = await client.uploadImage(bytes, `cynco-${job.key}${extname(sc.source.path).toLowerCase() || '.png'}`)
+        uploaded = await client.uploadImage(photo, `cynco-${job.key}${extname(sc.source.path).toLowerCase() || '.png'}`)
       } catch (e) {
         this.log(`[imagegen] ${job.key.slice(0, 8)}: uploading ${sc.source.path} failed: ${reasonOf(e)}`)
         if (this.stopped) return
@@ -747,7 +804,7 @@ export class ImageService implements ImageAnnotator {
       }
     }
     const graph = fillWorkflow(wf.graph, {
-      prompt: sc.prompt, negative: sc.negative, seed: sc.seed, width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg,
+      prompt, negative: sc.negative, seed: sc.seed, width: sc.width, height: sc.height, steps: sc.steps, cfg: sc.cfg,
       sampler: sc.sampler, scheduler: sc.scheduler, checkpoint: ckpt, filename_prefix: `cynco/${job.key}`,
       ...(uploaded !== undefined ? { image: uploaded } : {}), ...(sc.denoise !== undefined ? { denoise: sc.denoise } : {}),
     })

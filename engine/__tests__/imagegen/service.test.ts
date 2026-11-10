@@ -10,7 +10,8 @@ import { comfyConfig, UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
 import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { BUILTIN_CLASSES, canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
-import { OUTLINE_INSTRUCTION } from '../../imagegen/workflow.js'
+import { fixQuestion, OUTLINE_INSTRUCTION, withFix } from '../../imagegen/workflow.js'
+import { ActivityRegistry } from '../../power/activity.js'
 import { sha256Of } from '../../projects/layout.js'
 import { PNG } from 'pngjs'
 
@@ -1890,6 +1891,95 @@ describe('ImageService: transforms', () => {
     s2.annotate(sp2, at()).start(); await s2.whenIdle()
     expect(readSidecar(dir, keyOf(sp2, 0))!.status).toBe('done')
     expect(logs.some(l => /before the transform.*ollama down/.test(l))).toBe(true)
+  })
+  const editPrompts = (i = 0) => Object.values(graphOf(i)).filter(n => n.class_type === 'TextEncodeQwenImageEditPlus').map(n => String(n.inputs.prompt))
+  it('a redo with "fix" (F196) is another picture made from the same photo: the vision model is asked about that photo before it is unloaded, and what it saw goes into the prompt behind the owner\'s words', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const order: string[] = []; const asked: Array<{ bytes: number; name: string; q: string }> = []
+    const s = start({
+      askAboutPhoto: async (bytes, name, q) => { order.push('ask'); asked.push({ bytes: bytes.length, name, q }); return { ok: true, answer: 'Ferns fill the top third of the frame.', model: 'qwen3-vl', ms: 12 } },
+      beforeTransform: async () => { order.push('unload') },
+    })
+    const rel = photo('knowledge/porch.png')
+    const first = tspec({ source: rel, transform: 'outline' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    const said = 'the ferns at the top are missing'
+    const redo = tspec({ source: rel, transform: 'outline', fix: said })
+    s.annotate(redo, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(keyOf(redo, 0)).not.toBe(keyOf(first, 0))
+    expect(order).toEqual(['unload', 'ask', 'unload'])
+    expect(asked).toEqual([{ bytes: JPG.length, name: rel, q: fixQuestion(said) }])
+    expect(editPrompts(1)).toContain(withFix(OUTLINE_INSTRUCTION, said, 'Ferns fill the top third of the frame.'))
+    const sc = readSidecar(dir, keyOf(redo, 0))!
+    expect(sc.status).toBe('done')
+    expect(sc.source).toEqual({ path: rel, sha256: sha256Of(new Uint8Array(JPG)) })
+    expect(sc.fix).toEqual({ said, seen: 'Ferns fill the top third of the frame.', model: 'qwen3-vl', ms: 12 })
+    // the same redo asked again is the same picture: nothing is painted or asked twice
+    const again = tspec({ source: rel, transform: 'outline', fix: said })
+    s.annotate(again, at({ toolId: 'tool-3' })).start(); await s.whenIdle()
+    expect(imageOf(again, 0)).toMatchObject({ status: 'done', key: keyOf(redo, 0) })
+    expect(posts().length).toBe(2); expect(asked.length).toBe(1)
+  })
+  it('a redo that names the made picture as its source runs from the photo that picture was made from; without "fix" a made picture is a source like any other', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const rel = photo('knowledge/porch.png')
+    const first = tspec({ source: rel, transform: 'outline' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    const made = `images/${keyOf(first, 0)}.png`
+    const redo = tspec({ source: made, transform: 'outline', fix: 'the ferns are missing' })
+    s.annotate(redo, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    const sc = readSidecar(dir, keyOf(redo, 0))!
+    expect(sc.status).toBe('done')
+    expect(sc.source).toEqual({ path: rel, sha256: sha256Of(new Uint8Array(JPG)) })
+    // the same key as the redo asked with the photo itself
+    const direct = tspec({ source: rel, transform: 'outline', fix: 'the ferns are missing' })
+    s.annotate(direct, at({ toolId: 'tool-3' }))
+    expect(imageOf(direct, 0)).toMatchObject({ status: 'done', key: keyOf(redo, 0) })
+    const chain = tspec({ source: made, transform: 'edit', prompt: 'add a bird' })
+    s.annotate(chain, at({ toolId: 'tool-4' })).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(chain, 0))!.source!.path).toBe(made)
+  })
+  it('a redo still paints when the vision model cannot be asked: refused, thrown or not there at all, the owner\'s words alone go into the prompt and the record says why', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const rel = photo('knowledge/porch.png')
+    const run = async (deps: Partial<ImageServiceDeps>, said: string) => {
+      const s = start(deps); const sp = tspec({ source: rel, transform: 'edit', prompt: 'add a pergola', fix: said })
+      s.annotate(sp, at()).start(); await s.whenIdle()
+      expect(editPrompts(posts().length - 1)).toContain(withFix('add a pergola', said))
+      return readSidecar(dir, keyOf(sp, 0))!
+    }
+    const refused = await run({ askAboutPhoto: async () => ({ ok: false, reason: 'the image box is asleep' }) }, 'the pergola floats')
+    expect(refused).toMatchObject({ status: 'done', prompt: withFix('add a pergola', 'the pergola floats'), fix: { said: 'the pergola floats', reason: 'the image box is asleep' } })
+    expect(logs.some(l => /the photo could not be looked at.*the image box is asleep/.test(l))).toBe(true)
+    const thrown = await run({ askAboutPhoto: async () => { throw new Error('socket hang up') } }, 'the pergola is too small')
+    expect(thrown).toMatchObject({ status: 'done', fix: { said: 'the pergola is too small', reason: 'socket hang up' } })
+    const none = await run({}, 'the pergola is purple')
+    expect(none.status).toBe('done'); expect(none.fix).toEqual({ said: 'the pergola is purple' })
+  })
+  it('the picture queue is one "picture" activity from its first job until it is idle, whether the jobs paint or fail (wakefulness: the PC stays awake and the chat model stays loaded while a picture is made)', async () => {
+    mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })
+    const reg = new ActivityRegistry(); const seen: string[] = []
+    reg.onBusy(() => seen.push('busy ' + reg.snapshot().map(a => `${a.kind}:${a.label}`).join()))
+    reg.onIdle(() => seen.push('idle'))
+    const s = start({ activity: reg }); const rel = photo()
+    expect(reg.count()).toBe(0)
+    const sp = spec(['a tall green alien', 'a short blue alien'])
+    const bad = tspec({ source: rel, transform: 'outline' })
+    s.annotate(sp, at()).start(); s.annotate(bad, at({ toolId: 'tool-2' })).start()
+    await s.whenIdle()
+    expect(readSidecar(dir, keyOf(sp, 1))!.status).toBe('done'); expect(readSidecar(dir, keyOf(bad, 0))!.status).toBe('failed')
+    expect(seen).toEqual(['busy picture:image queue', 'idle'])
+    // a queue the engine stops under lets go as well
+    const more = spec(['a wide red alien'])
+    s.annotate(more, at({ toolId: 'tool-3' })).start()
+    await s.shutdown(); await s.whenIdle()
+    expect(reg.count()).toBe(0)
+  })
+  it('main.ts hands the image service the vision client\'s ask as askAboutPhoto, so a redo is grounded in the original photo (F196)', () => {
+    const main = readFileSync(join(import.meta.dirname, '../../main.ts'), 'utf8')
+    expect(main).toMatch(/askAboutPhoto/)
+    expect(main).toMatch(/visionForImages\.ask\(/)
+    expect(main).toMatch(/imageMime\(/)
   })
   it('main.ts hands the image service the vision client\'s unload as beforeTransform when a vision URL is set (F194)', () => {
     const main = readFileSync(join(import.meta.dirname, '../../main.ts'), 'utf8')

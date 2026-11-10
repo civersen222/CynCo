@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE_SHA, EDIT_SAMPLING, OUTLINE_INSTRUCTION, outlinePrompt, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
+import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE_SHA, EDIT_SAMPLING, OUTLINE_INSTRUCTION, outlinePrompt, fixQuestion, withFix, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -94,6 +94,17 @@ describe('vary and outline', () => {
     expect(OUTLINE_INSTRUCTION).toMatch(/black ink/i); expect(OUTLINE_INSTRUCTION).toMatch(/white/i); expect(OUTLINE_INSTRUCTION).toMatch(/no shading/i)
     expect(outlinePrompt('')).toBe(OUTLINE_INSTRUCTION)
     expect(outlinePrompt('draw the horizon line and mark the vanishing point')).toBe(OUTLINE_INSTRUCTION + ' Also: draw the horizon line and mark the vanishing point')
+  })
+  it('a redo carries what was wrong (F196): fixQuestion asks about the original photo without judging the remark; withFix puts the owner\'s words, and what the photo shows when known, behind the instruction', () => {
+    expect(fixQuestion('the ferns are gone')).toBe('A new picture was made from this photo, and its owner says the new picture got something wrong: "the ferns are gone". You cannot see the new picture, only this photo. In one or two short sentences, say what this photo shows of the thing the owner means and exactly where it is in the frame (top or bottom, left or right, how much of the frame). Name only things visible in this photo, and do not judge the owner\'s remark.')
+    expect(fixQuestion('the "ferns" are gone')).toContain('wrong: "the \'ferns\' are gone". You')
+    expect(withFix('add a pergola', 'the ferns are gone')).toBe('add a pergola. An earlier attempt got this wrong — the owner said: "the ferns are gone". Put that right, working only from the photo.')
+    expect(withFix(OUTLINE_INSTRUCTION, 'the "ferns" are gone', '  Ferns fill\n the top third ')).toBe(OUTLINE_INSTRUCTION + ' An earlier attempt got this wrong — the owner said: "the \'ferns\' are gone". What the photo shows: Ferns fill the top third. Put that right, working only from the photo.')
+    // a rambling answer is cut, and still reads as a sentence before the closing order
+    const long = withFix('x.', 'y', 'z'.repeat(2000))
+    expect(long.startsWith('x. An earlier attempt')).toBe(true)
+    expect(long.length).toBeLessThan(800)
+    expect(long.endsWith('z… Put that right, working only from the photo.')).toBe(true)
   })
   it('an outline workflow needs {{image}} and {{prompt}} like an edit: the generate graph is refused as kind outline naming the image', () => {
     const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'outline')

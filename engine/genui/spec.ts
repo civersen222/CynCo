@@ -430,6 +430,13 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
         if (p.src !== undefined) { delete p.src; report(ctx, `${at}: a transform works on "source"; "src" was dropped`) }
       }
     }
+    // "fix" (F196): what a redo must put right. Only the edit recipe takes a correction, so it rides on an edit or an outline.
+    if (p.fix !== undefined) {
+      const fix = toStr(p.fix)?.trim()
+      if (p.transform !== 'edit' && p.transform !== 'outline') { delete p.fix; report(ctx, `${at}: "fix" goes with a "transform" "edit" or "outline" — dropped`) }
+      else if (!fix) { delete p.fix; report(ctx, `${at}.fix: empty — dropped`) }
+      else p.fix = fix
+    }
   }
   return p
 }

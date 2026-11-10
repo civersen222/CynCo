@@ -16,7 +16,7 @@ import { validateSpec } from '../../genui/spec.js'
 describe('genui prompt section', () => {
   const text = genuiPromptSection('project')
   const session = genuiPromptSection('session')
-  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, lighting); paragraphs are fine. For a physical thing that may be 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design: the same prompt with different "seed"s. The engine paints these; never call an image server, write a ComfyUI workflow or save renders yourself. Or transform a project photo: Image "source" (its path) + "transform" "edit" ("prompt" = the change to make, even if asked as a "variation"), "vary" (reimagine the picture) or "outline" (a tracing sheet to paint from; "prompt" = extra guides).'
+  const SHAPES_PICTURE = 'Each design gets a picture: an Image with a "prompt" in its card — a detailed description (subject, shape, materials, colours, lighting); paragraphs are fine. For a physical thing that may be 3D-printed: one subject, whole, centred, front three-quarter view, plain light-grey background, no text. Several takes of one design: the same prompt with different "seed"s. The engine paints these; never call an image server, write a ComfyUI workflow or save renders yourself. Or transform a project photo: Image "source" + "transform" "edit" (a change, even if asked as a "variation"), "vary" or "outline" (a tracing sheet to paint from). To redo one that came out wrong: the same Image plus "fix" = everything wrong so far, as the user put it; do not re-describe the scene.'
   /** The options example as the session section prints it. */
   const sessionOptionsExample = () => {
     const at = session.indexOf('{"surface":"path-options"')
@@ -79,7 +79,7 @@ describe('genui prompt section', () => {
   // was an empty one. A design now gets a picture the engine paints, framed so
   // a later image → 3D step can use it.
   it('gives each design a prompted picture, framed for a later 3D model, and never names the server\'s setup', () => {
-    expect(text).toMatch(/- Image\(prompt: string, seed: int, src: string, alt\*: string, caption: string, source: string, transform: string\) — A picture: "prompt" describes it and the engine paints it \(the same prompt with another whole-number "seed" is another take; leave seed out for one picture\); "src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote\. Give one, not both\./)
+    expect(text).toMatch(/- Image\(prompt: string, seed: int, src: string, alt\*: string, caption: string, source: string, transform: string, fix: string\) — A picture: "prompt" describes it and the engine paints it \(the same prompt with another whole-number "seed" is another take; leave seed out for one picture\); "src" is a real http\(s\) image URL or the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote\. Give one, not both\./)
     // a file the model wrote into the project (an SVG template, a sketch) is shown by its path: the one sentence, in both modes
     expect(session).toMatch(/the project-relative path of a png\/jpg\/gif\/webp\/svg file you wrote/)
     expect(text).not.toMatch(/An idea with no picture/)

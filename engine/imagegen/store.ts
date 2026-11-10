@@ -87,6 +87,8 @@ export type ImageSidecar = {
   /** The project photo the transform started from, by path and content. */
   source?: { path: string; sha256: string }
   denoise?: number
+  /** A redo (F196): what the owner said was wrong, and what the vision model saw of it in the source photo (or why it could not be asked). */
+  fix?: { said: string; seen?: string; model?: string; ms?: number; reason?: string }
   workflow: { source: string; sha256: string }
   /** The filled graph actually submitted; null until the job starts. */
   apiPrompt: Record<string, unknown> | null
@@ -325,6 +327,7 @@ function sidecarFault(v: unknown, key: string): string | null {
   for (const f of ['reason', 'sha256', 'startedAt', 'finishedAt']) if (!optional(v[f], str)) return f
   for (const f of ['bytes', 'queueMs', 'genMs', 'execMs']) if (!optional(v[f], num)) return f
   if (!optional(v.seedFrom, x => x === 'model' || x === 'prompt')) return 'seedFrom'
+  if (!optional(v.fix, f => isObj(f) && str(f.said) && optional(f.seen, str) && optional(f.model, str) && optional(f.ms, num) && optional(f.reason, str))) return 'fix'
   if (!isObj(v.workflow) || !str(v.workflow.source) || !str(v.workflow.sha256)) return 'workflow'
   if (v.apiPrompt !== null && !isObj(v.apiPrompt)) return 'apiPrompt'
   const c = v.comfy
@@ -458,12 +461,14 @@ function reachableElements(spec: UiSpec): Array<{ id: string; el: UiElement; pro
  * engine paints": `annotate` queues these and a reloaded chat
  * (`withValidatedSurfaces`) looks these up.
  */
-export type PictureRequest = { id: string; el: UiElement; kind: WorkflowKind; prompt: string; alt: string; seed?: number; source?: string }
+export type PictureRequest = { id: string; el: UiElement; kind: WorkflowKind; prompt: string; alt: string; seed?: number; source?: string; fix?: string }
+/** A redo's "fix" is the owner's complaint, not an essay: it is part of the picture's key. */
+const FIX_CAP = 300
 
 /**
  * Every reachable Image the engine must make a picture for, in draw order:
  * generate (a prompt, today's path), vary or edit (a source photo + a prompt) or
- * outline (a source photo; the prompt, if any, is extra guidance the service appends to the tracing-sheet instruction). Image box §4. A vary's prompt is never painted
+ * outline (a source photo; the prompt, if any, is extra guidance the service appends to the tracing-sheet instruction). An edit or an outline may carry "fix", what a redo must put right (F196). Image box §4. A vary's prompt is never painted
  * from scratch: `promptedImages` is the generate subset.
  */
 export function pictureRequests(spec: UiSpec): PictureRequest[] {
@@ -476,7 +481,8 @@ export function pictureRequests(spec: UiSpec): PictureRequest[] {
     if (transform && source) {
       const prompt = typeof props.prompt === 'string' ? normPrompt(props.prompt) : ''
       if ((transform === 'vary' || transform === 'edit') && !prompt) continue
-      out.push({ id, el, kind: transform, prompt, alt, source })
+      const fix = transform !== 'vary' && typeof props.fix === 'string' ? normPrompt(props.fix).slice(0, FIX_CAP) : ''
+      out.push({ id, el, kind: transform, prompt, alt, source, ...(fix ? { fix } : {}) })
       continue
     }
     if (typeof props.prompt !== 'string') continue

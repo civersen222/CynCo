@@ -9,7 +9,7 @@
  * 0→1, `onIdle` on 1→0. Design: docs/decisions/2026-11-08-wakefulness-design.md.
  */
 
-export type ActivityKind = 'turn' | 'request' | 'oneshot'
+export type ActivityKind = 'turn' | 'request' | 'oneshot' | 'picture'
 
 export type ActivitySnapshot = { kind: ActivityKind; label?: string; since: number }
 

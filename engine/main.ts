@@ -57,6 +57,7 @@ import { projectsHome } from './projects/layout.js'
 import { openBinding } from './projects/binding.js'
 import { ImageService } from './imagegen/service.js'
 import { makeLookClient } from './vision/lookClient.js'
+import { imageMime } from './vision/lookRunner.js'
 
 // ─── MCP Discovery (standalone — standalone implementation) ──────
 
@@ -397,7 +398,9 @@ let activationsConsumer: ActivationsConsumer | null = null
 // The image box's GPU is shared by its vision model and ComfyUI (F194): a transform first asks Ollama to drop the look's model.
 const visionForImages = makeLookClient(process.env)
 const unloadVisionBeforeTransform = visionForImages ? async () => { const r = await visionForImages.unload(); console.log(`[imagegen] vision model ${r.ok ? 'unloaded from the image box before the transform' : `not unloaded: ${r.reason}`}`) } : undefined
-const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) }, ...(unloadVisionBeforeTransform ? { beforeTransform: unloadVisionBeforeTransform } : {}) })
+// A redo asks the vision model what the original photo shows of the thing that came out wrong (F196), before that model is unloaded.
+const askVisionAboutPhoto = visionForImages ? (photo: Uint8Array, name: string, question: string) => visionForImages.ask(photo, imageMime(name), question) : undefined
+const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) }, ...(unloadVisionBeforeTransform ? { beforeTransform: unloadVisionBeforeTransform } : {}), ...(askVisionAboutPhoto ? { askAboutPhoto: askVisionAboutPhoto } : {}) })
 void imageService.probe()
 
 const loop = new ConversationLoop({
