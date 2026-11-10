@@ -4031,3 +4031,27 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** `ImageService` remembers that a prompt of its own went to the server (`loaded`) and frees the box when the picture queue is empty (`pump` → `freeBox`), whatever the jobs were and however they ended; `shutdown` frees after its interrupt. A transform's own `/free` is unchanged and is not repeated. Pinned by the six F198 tests in `imagegen/service.test`. What the engine cannot see is in `docs/NOW.md`.
 
 **Rule:** whoever loads a model on a shared box unloads it when its own queue is empty, on every path out, not only the successful one. A hand-run measurement on the image box ends with `/free` and an Ollama unload, and is not done until `/system_stats` and `/api/ps` show the box empty.
+
+## F199 — A reopened chat showed none of the pictures made from a photo
+
+**Where:** the owner's phone, 2026-11-09: "when I go back to any of these image chats, the images that are shared with me as part of the chats are no longer there". Reopening every chat of project `pc-wakefulness` the way the page does: 13 pictures, 2 came back (`done`, served) and 11 came back with no picture state at all. The 2 were generated from a prompt; the 11 were every outline, edit and variation of a photo.
+
+**How:** nothing was lost. Each of the 11 had its PNG and sidecar in `images/`, its entry in `images/index.json` (`<chatFile>#<toolId>#<elementId>`), and `GET /api/projects/:slug/images/<key>.png` answered 200. `getChatApi` → `withValidatedSurfaces` gave picture state to `promptedImages(spec)` only, and that was the generate subset of `pictureRequests`; an Image with a `source` and a `transform` was skipped, came back without `image`, and the page had nothing to draw.
+
+**Why:** the reload lookup was written for generated pictures (F174). Photo transforms were added to `annotate` (the live frame) through `pictureRequests`, and the reload kept the older, narrower helper; its comment already said the reload "looks these up". The reload tests built only prompt Images, so nothing failed.
+
+**Fix:** `withValidatedSurfaces` looks up `pictureRequests(spec)`, the same list `annotate` queues from; `promptedImages`, left without a caller, is removed. Pinned by `projects/api.test` (an outline with and without a request, an edit and a variation each come back `done` with their key).
+
+**Rule:** the live frame and the reload read one definition of "a picture the engine made"; when a new kind of picture is added, the reload test gets that kind in the same change.
+
+## F200 — A sheet's look timed out behind a generated picture, and the request was dropped
+
+**Where:** the live check of F197 through the running engine (2026-11-09, project `pc-wakefulness`, chat `20261110T035902-paint-me-one-picture-to-brainstorm-from-a-small-red-barn-in.jsonl`): two generated pictures (`ddae4f7d`, `13ba002c`), then tracing sheet `1e7e5cbc` with a request, in one queue.
+
+**How:** the engine log has `[imagegen] 1e7e5cbc sheet: the photo could not be looked at (image box did not answer: The operation timed out.); drawing the plain sheet, without the request`. The sheet waited 65 s in the queue (`LOOK_TIMEOUT_MS` is 60 s) and the guides asked for were not drawn. The next sheet with a request, on an empty box, was looked at in 13.9 s (`93c345f4`).
+
+**Why:** not reproduced. The look ran while ComfyUI still held SDXL: the queue was not empty, so F198's free had not run. Measured by hand afterwards on a quiet box: with SDXL held the vision model answered in 5.5 s and 1.3 GB of the card was left; on the empty box it answered in 7.8 s with 8.6 GB left. The box's own desktop use moved its free memory by about 1 GB the same evening (15.75 and 14.7 GB read on an empty box). That the vision model did not fit and ran partly off the card is a hypothesis, not a measurement.
+
+**Fix:** `runJob` frees ComfyUI before a look when something of ours is loaded (`loaded`) — the mirror of F194, where the vision model leaves before the edit model comes. The edit model would have pushed the checkpoint out anyway, so the cost is one `/free`. Pinned by `imagegen/service.test` ("the look for a sheet behind a generated picture gets the card to itself").
+
+**Rule:** on the shared 16 GB card, one model at a time, in both directions: whoever is about to load asks the other tenant to leave first.
