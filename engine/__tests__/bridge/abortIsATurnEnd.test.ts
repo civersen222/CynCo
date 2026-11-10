@@ -84,6 +84,18 @@ function write(cwd: string): Script {
   }
 }
 
+/** One Bash call. */
+function bash(command: string): Script {
+  return function* (): Generator<StreamEvent> {
+    yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tb0', name: 'Bash', input: {} } } as any
+    yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ command }) } } as any
+    yield { type: 'content_block_stop', index: 0 } as any
+    yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+    yield { type: 'message_stop' } as any
+  }
+}
+
 function done(text = 'done'): Script {
   return function* (): Generator<StreamEvent> {
     yield { type: 'message_start', message: { id: 'm2', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
@@ -198,6 +210,63 @@ describe('Stop is a turn end', () => {
     expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
     expect(loop.isProcessing).toBe(false)
     expect(loop.pendingDecisions()).toEqual([])
+  }, 60000)
+
+  // F201: Stop reaches the GPU and the shell, not only the loop.
+  for (const mode of ['before the first event', 'mid-stream'] as const) {
+    it(`Stop while the model call is open (${mode}) cancels the provider request and ends the turn with "aborted", not an error`, async () => {
+      globalContract.clear()
+      const cwd = mkdtempSync(join(tmpdir(), 'cynco-abort-end-'))
+      dirs.push(cwd)
+      const events: any[] = []
+      const signals: Array<AbortSignal | undefined> = []
+      let loop: ConversationLoop | null = null
+      // As a fetch does: rejects when the signal it was given aborts; given none, fails late and says so.
+      const provider = {
+        ...mockProvider([]),
+        async *stream(r: CompletionRequest): AsyncGenerator<StreamEvent> {
+          const signal = (r as any).signal as AbortSignal | undefined
+          signals.push(signal)
+          setTimeout(() => loop!.abort(), 100)
+          if (mode === 'mid-stream') {
+            yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+            yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+            yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } } as any
+          }
+          await new Promise<never>((_, reject) => {
+            const t = setTimeout(() => reject(new Error('the provider was never told to stop')), 4000)
+            signal?.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })) })
+          })
+        },
+      } as Provider
+      loop = new ConversationLoop({ cwd, config: config(), provider, emit: (e: any) => { events.push(e) }, allowedTools: ['Read'] })
+
+      const started = Date.now()
+      await loop.handleUserMessage('hello')
+
+      expect(signals.length, 'one model call, never retried').toBe(1)
+      expect(signals[0]?.aborted, 'the provider must hold the turn signal').toBe(true)
+      expect(Date.now() - started).toBeLessThan(3500)
+      expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
+      expect(events.filter(e => e.type === 'session.error')).toEqual([])
+      expect(loop.isProcessing).toBe(false)
+    }, 60000)
+  }
+
+  it('Stop while a Bash command runs kills it and ends the turn with "aborted"', async () => {
+    const { loop, events, provider } = setup(() => [bash(`node -e "setTimeout(() => {}, 9000)"`), done()], { allowedTools: ['Bash'] })
+    let started = 0
+    const timer = setInterval(() => {
+      if (events.some(e => e.type === 'tool.start')) { clearInterval(timer); started = Date.now(); setTimeout(() => loop.abort(), 300) }
+    }, 10)
+    try {
+      await loop.handleUserMessage('wait a while')
+    } finally { clearInterval(timer) }
+    expect(started, 'the Bash call must have started').toBeGreaterThan(0)
+    expect(Date.now() - started, 'the turn waited for the command instead of killing it').toBeLessThan(6000)
+    expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
+    expect(provider.calls()).toBe(1)
+    expect(loop.isProcessing).toBe(false)
   }, 60000)
 
   it('AskBroker lists an open question until it is answered', async () => {

@@ -143,6 +143,7 @@ export class LlamaCppProvider implements Provider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: request.signal,
       })
       const oai = await resp.json()
       return fromOpenAIResponse(oai as any)
@@ -168,6 +169,7 @@ export class LlamaCppProvider implements Provider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: request.signal,
     })
 
     // Errors must THROW, not silently end the stream. 2026-06-12 incident:
@@ -187,6 +189,7 @@ export class LlamaCppProvider implements Provider {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: request.signal,
         })
         detail = ''
         try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }
@@ -202,6 +205,7 @@ export class LlamaCppProvider implements Provider {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
+          signal: request.signal,
         })
         detail = ''
         try { if (!resp.ok) detail = (await resp.text()).slice(0, 500) } catch (err) { console.log('[llama-cpp] could not read error body:', err) }

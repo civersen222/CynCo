@@ -52,5 +52,10 @@ export type ToolImpl = {
    * overrides this and loads everything up front.
    */
   core: boolean
-  execute: (input: Record<string, unknown>, cwd: string) => Promise<ToolResult>
+  /**
+   * `signal` is the turn's abort signal. A tool that starts something that
+   * outlives the call (Bash's child process) ends it when the signal aborts;
+   * the rest ignore it.
+   */
+  execute: (input: Record<string, unknown>, cwd: string, signal?: AbortSignal) => Promise<ToolResult>
 }
