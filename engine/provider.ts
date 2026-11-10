@@ -59,6 +59,12 @@ export type CompletionRequest = {
    * it ignore it.
    */
   tool_choice?: 'auto' | 'required'
+  /**
+   * The turn's abort signal. A provider hands it to its fetch, so a Stop
+   * closes the connection — and llama-server and Ollama both cancel a
+   * generation whose client has gone. Never written into the request body.
+   */
+  signal?: AbortSignal
 }
 
 // ─── Provider Interface ──────────────────────────────────────────

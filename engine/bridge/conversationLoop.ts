@@ -3437,7 +3437,9 @@ export class ConversationLoop {
             }
             break // the assistant message came without the selector — fall through to all tools
           }
-          if (!routed) {
+          // A Stop during the stage-1 call ends it with no assistant message.
+          // That is the user stopping, not the model declining the selector.
+          if (!routed && !this.abortController?.signal.aborted) {
             // The stage-1 call cost a full prefill and a full generation and
             // narrowed nothing. Falling through silently made that happen on
             // every iteration for the whole run; one refusal is enough.
@@ -3999,6 +4001,13 @@ export class ConversationLoop {
           transportNotice = String((yielded as any).message ?? '')
         }
       }
+
+      // A Stop cancels the provider request, so the stream ends here as often
+      // as inside the loop above (callModel returns quietly on an aborted
+      // signal — before the first event too, where the check above never ran).
+      // The same exit, and before the push and the stream-cut test below: a
+      // stopped stream has no message_stop either, and is not a cut.
+      if (this.abortController?.signal.aborted) return
 
       // One assistant message per model call, pushed when the stream has
       // ended — never per yield. Pushing each cumulative yield put a turn of N
@@ -5414,7 +5423,7 @@ export class ConversationLoop {
     const shellSigBefore = toolName === 'Bash'
       ? collectPathSignatures(this.executor['cwd'])
       : null
-    const result = await this.executor.execute(toolName, toolInput)
+    const result = await this.executor.execute(toolName, toolInput, this.abortController?.signal)
 
     // CodeIndex-first: an identifier-shaped Grep gets the symbol card prepended.
     // Never denied — symbol top-3 ≈ Grep quality (PR #104), so refusing the Grep

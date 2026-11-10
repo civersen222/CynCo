@@ -174,7 +174,7 @@ export class ToolExecutor {
     this.scoredThisCall = new Set()
   }
 
-  async execute(toolName: string, input: Record<string, unknown>): Promise<ToolResult> {
+  async execute(toolName: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const tool = getToolByName(toolName)
     if (!tool) {
       return { output: `Error: unknown tool "${toolName}"`, isError: true }
@@ -241,7 +241,7 @@ export class ToolExecutor {
     }
 
     try {
-      const result = await tool.execute(input, this.cwd)
+      const result = await tool.execute(input, this.cwd, signal)
 
       // A successful edit means every recorded failure describes a repository
       // that no longer exists. Cleared BEFORE this call is judged, so an edit

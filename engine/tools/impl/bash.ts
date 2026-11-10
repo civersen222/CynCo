@@ -1,4 +1,4 @@
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import type { ToolImpl } from '../types.js'
 import { checkBashSafety } from '../bashSafety.js'
 import { diagnoseError } from '../errorDiagnosis.js'
@@ -49,6 +49,54 @@ export function formatBashFailure(command: string, rawOutput: string): string {
  * carries what the tool knows (which shell, which signal) and the text says
  * outright that the command it wrote is not the suspect.
  */
+/**
+ * Kill a process and everything it started. `child.kill()` ends the shell
+ * only; the pytest, build or server it launched runs on, holding the GPU, a
+ * port or a file lock. Windows: `taskkill /T`, which has to run while the tree
+ * is alive. Elsewhere: the descendants are collected (`pgrep -P`) before
+ * anything is killed, because a dead parent's children are re-parented and
+ * can no longer be found from it.
+ */
+export function killProcessTree(pid: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (process.platform === 'win32') {
+      execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }, err => {
+        if (err) console.log(`[bash] taskkill /T ${pid}: ${String(err.message).trim().split('\n').pop()}`)
+        resolve()
+      })
+      return
+    }
+    const found: number[] = []
+    const finish = () => {
+      for (const p of [...found.reverse(), pid]) {
+        try { process.kill(p, 'SIGKILL') } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ESRCH') console.log(`[bash] kill ${p}: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+      resolve()
+    }
+    const walk = (parents: number[]) => {
+      if (parents.length === 0) { finish(); return }
+      let pending = parents.length
+      const next: number[] = []
+      for (const parent of parents) {
+        // pgrep exits 1 with no output when a process has no children.
+        execFile('pgrep', ['-P', String(parent)], (_err, out) => {
+          for (const line of String(out ?? '').split('\n')) {
+            const n = Number(line.trim())
+            if (Number.isInteger(n) && n > 0) next.push(n)
+          }
+          if (--pending === 0) { found.push(...next); walk(next) }
+        })
+      }
+    }
+    walk([pid])
+  })
+}
+
+/** How long a stopped command's pipes get to close before the call returns without them. */
+const STOP_GRACE_MS = 2000
+
 export function failedOutput(
   stderr: string,
   stdout: string,
@@ -149,8 +197,12 @@ export const bashTool: ToolImpl = {
   },
   tier: 'approval',
   core: true,
-  execute: async (input, cwd) => {
+  execute: async (input, cwd, signal) => {
     const command = input.command as string
+    // A call that reaches here after the Stop (a batch still unwinding) is not started.
+    if (signal?.aborted) {
+      return { output: 'Error: command stopped before it started — the turn was stopped.', isError: true }
+    }
     const timeout = Math.min((input.timeout as number) ?? bashDefaultTimeoutMs(), bashMaxTimeoutMs())
 
     const safety = checkBashSafety(command)
@@ -188,6 +240,30 @@ export const bashTool: ToolImpl = {
     const runnable = shellPreamble(shellInfo) + merged.command
 
     return new Promise((resolve) => {
+      // Stop (F201). The loop used to give up on the turn and
+      // leave the command running to its own end — up to the whole timeout,
+      // with whatever it started. The abort kills the tree; exec's callback
+      // then reports what was collected, as the timeout branch does.
+      const startedAt = Date.now()
+      let stopped = false
+      let answered = false
+      let grace: ReturnType<typeof setTimeout> | undefined
+      const stoppedResult = (partial: string) => ({
+        output: `Error: command stopped after ${Date.now() - startedAt}ms — the turn was stopped, and the ` +
+          `command and the processes it started were killed. Output collected before the kill:\n${partial}`,
+        isError: true,
+      })
+      const onAbort = () => {
+        stopped = true
+        const pid = child.pid
+        const killed = pid !== undefined && child.exitCode === null ? killProcessTree(pid) : Promise.resolve()
+        void killed.then(() => {
+          if (answered) return
+          child.kill()
+          // exec answers when the pipes close. A survivor holding one must not hold the turn.
+          grace = setTimeout(() => resolve(stoppedResult('(nothing)')), STOP_GRACE_MS)
+        })
+      }
       const child = exec(runnable, {
         cwd,
         encoding: 'utf-8',
@@ -197,6 +273,15 @@ export const bashTool: ToolImpl = {
         maxBuffer: 2 * 1024 * 1024, // 2MB
         shell,
       }, (err, stdout, stderr) => {
+        signal?.removeEventListener('abort', onAbort)
+        answered = true
+        if (grace) clearTimeout(grace)
+        // Before the timeout branch: a stopped child is `killed` too. A command
+        // that finished cleanly as the Stop landed keeps its real result.
+        if (stopped && err) {
+          resolve(stoppedResult(failedOutput(stderr, stdout, (err as any).code, undefined, '(nothing)')))
+          return
+        }
         if (err) {
           if (err.killed || (err as any).signal === 'SIGTERM') {
             // A bare "timeout after 60000ms" leaves the model unable to tell
@@ -228,6 +313,7 @@ export const bashTool: ToolImpl = {
         // it failed under advice it did not ask for.
         resolve({ output: withToolHint(command, succeeded), isError: false })
       })
+      signal?.addEventListener('abort', onAbort, { once: true })
     })
   },
 }

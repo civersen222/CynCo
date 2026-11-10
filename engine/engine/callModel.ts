@@ -241,6 +241,16 @@ function registerShutdownHook() {
 
 // ─── Main Function ──────────────────────────────────────────────
 
+/** The transport-retry backoff, ended early by a Stop. */
+function backoff(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (signal?.aborted) { resolve(); return }
+    const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve() }
+    const timer = setTimeout(done, ms)
+    signal?.addEventListener('abort', done)
+  })
+}
+
 export async function* localCallModel({
   messages,
   systemPrompt,
@@ -465,6 +475,11 @@ export async function* localCallModel({
     // Bound a single turn. A runaway turn once reached 44k tokens and was ended
     // only by the server truncating at its context ceiling.
     max_tokens: config.maxOutputTokens,
+    // The turn's abort signal rides with the request, so the provider's fetch
+    // can be cancelled: Stop closes the connection and the server stops
+    // generating, where it used to end the loop and leave the GPU working
+    // (F201). Not part of the body any provider sends.
+    signal,
   }
 
   // Include tools only for native tool use
@@ -549,6 +564,10 @@ export async function* localCallModel({
       firstEvent = first
       break
     } catch (err) {
+      // A Stop is an end, not a transport failure: nothing to retry and
+      // nothing to report. Asked of the signal, not of the error — an aborted
+      // fetch throws a different shape on Bun, on undici, and mid-body.
+      if (signal?.aborted) return
       if (!isRetryableError(err) || attempt >= MAX_TRANSPORT_RETRIES) throw err
       const message = err instanceof Error ? err.message : String(err)
       const delay = retryBaseMs * 2 ** attempt
@@ -561,7 +580,8 @@ export async function* localCallModel({
         subtype: 'api_retry' as const,
         message,
       }
-      await new Promise(r => setTimeout(r, delay))
+      await backoff(delay, signal)
+      if (signal?.aborted) return
     }
   }
 
@@ -730,6 +750,9 @@ export async function* localCallModel({
       }
     }
   } catch (err) {
+    // Stopped mid-stream: the provider's read rejected because its request was
+    // cancelled. The consumer asked for that; it is not a cut and not an error.
+    if (signal?.aborted) return
     if (isRetryableError(err)) {
       yield {
         type: 'system' as const,

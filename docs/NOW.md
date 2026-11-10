@@ -34,21 +34,19 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
    photos and files from the phone into a project (upload route hardening), and an inbox where
    away-time work lands as drafts the owner accepts. Slice 1 is the page, the Tailscale bind and
    pairing; these two are what make the phone useful for projects rather than only for chat.
-2. **Real cancellation.** Forward the turn's abort signal into the provider fetch
-   (`engine/engine/callModel.ts` → the Ollama / llama.cpp clients) and give the Bash tool a way
-   to kill its child, so Stop stops the GPU and the shell, not only the loop (F180's open item).
-3. **HTTPS and an installable page.** Enable certificates on the tailnet and point
+2. **HTTPS and an installable page.** Enable certificates on the tailnet and point
    `tailscale serve` at the Tailscale listener (never the loopback one — see the decision
    record), then a web manifest so the phone installs the page. Prerequisite for push.
-4. **Rebuild what streamed while the phone was away.** Put the loop's session id on
+3. **Rebuild what streamed while the phone was away.** Put the loop's session id on
    `/api/session` so a reconnecting page can fetch the transcript tail instead of showing a gap.
-5. **Tell the phone when the engine waits.** When an approval card or AskUser question opens and
+4. **Tell the phone when the engine waits.** When an approval card or AskUser question opens and
    no client is connected, push through the existing ntfy channel (`engine/daemon/ntfyChannel.ts`).
-6. **Device hygiene.** `lastSeen` per device, an expiry, "revoke all", and a tailnet ACL note
+5. **Device hygiene.** `lastSeen` per device, an expiry, "revoke all", and a tailnet ACL note
    limiting the dashboard port to the owner's devices.
 
 ## Backlog (worth doing, not started)
 
+- Left by real cancellation (F201), each small: (a) Stop has not been pressed against the live llama-server since the change — the socket closing is tested, the slot going idle is not; (b) Bash's own timeout kill (`exec`'s `timeout`) reaches only the shell, so a timed-out command's children may run on — unverified; `killProcessTree` is there to reuse; (c) a sub-agent's executor passes no abort signal, so stopping a turn does not kill a sub-agent's running Bash command; (d) `ensureReady` (the lazy model load) is not cancelled by Stop; (e) three process-tree kills now exist (`engine/daemon/taskRunner.ts`, `engine/brain/jlensSidecar.ts`, `engine/tools/impl/bash.ts`) with no shared helper.
 - The CI suite job builds the `polyglot-bench` Docker image from the network on every run (`benchmark/true/polyglot/container.test.ts`: the runner has docker, so `skipIf(!dockerPresent)` does not skip it) and nothing bounds the build: `ensureImage` is a `spawnSync` with no timeout, which the test's 900 s deadline cannot interrupt. Seen 2026-11-10 on PR #213 (run 42741117068): `apt` stalled 1,902 s fetching `openjdk-21-jdk-headless` from archive.ubuntu.com, the build took 2,469 s, the suite job went red at 43m54s with that one test failed (588 files green); the six runs before it that day were green in 4–7 minutes. Options: a timeout on the build, a CI-only skip, or caching the image; which one is the owner's call, since a skip also hides a broken Dockerfile.
 - The image box can still be left with a model loaded by something the engine cannot see (F198): an engine killed outright while a prompt runs, the ComfyUI page, a hand-run script. A `/free` at engine start when ComfyUI's queue is empty, or an idle sweep, would cover it; either unloads a model somebody else may have loaded on purpose, so it is the owner's call.
 - The vision model stays on the image box for 10 minutes after a look (`keep_alive: '10m'`, `engine/vision/lookClient.ts`) unless a transform unloads it first (F194). Unloading right after each look would cost a reload (seconds) on the next one; unmeasured, and the owner's call.

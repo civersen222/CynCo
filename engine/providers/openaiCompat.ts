@@ -65,6 +65,7 @@ export class OpenAICompatProvider implements Provider {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ ...body, stream: true }),
+      signal: request.signal,
     })
 
     yield {
@@ -105,6 +106,7 @@ export class OpenAICompatProvider implements Provider {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify(body),
+      signal: request.signal,
     })
     return fromOpenAIResponse(await resp.json() as any)
   }

@@ -54,7 +54,7 @@ export class OllamaProvider implements Provider {
 
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const body = this.buildRequestBody(request, false)
-    const resp = await this.postChat(body)
+    const resp = await this.postChat(body, request.signal)
     if (!resp.ok) throw await this.httpError(resp, request.model)
     const oai = await resp.json()
     return fromOpenAIResponse(oai as any)
@@ -62,7 +62,7 @@ export class OllamaProvider implements Provider {
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
     const body = this.buildRequestBody(request, true)
-    const resp = await this.postChat(body)
+    const resp = await this.postChat(body, request.signal)
 
     // Errors must THROW, not silently end the stream — the llama path's
     // 2026-06-12 lesson, repeated here (GLM review O1). Ollama answers a model
@@ -115,11 +115,12 @@ export class OllamaProvider implements Provider {
     yield { type: 'message_stop' }
   }
 
-  private postChat(body: Record<string, unknown>): Promise<Response> {
+  private postChat(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
     return this.fetchFn(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     })
   }
 
