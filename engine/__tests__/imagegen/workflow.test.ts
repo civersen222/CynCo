@@ -106,7 +106,7 @@ describe('vary and outline', () => {
     expect(long.length).toBeLessThan(800)
     expect(long.endsWith('z… Put that right, working only from the photo.')).toBe(true)
   })
-  it('a second sheet is drawn from what the photo shows (F197): SHEET_QUESTION asks about the photo and nothing else; sheetFromPhoto puts what was seen in front of the request, and the request in quotes', () => {
+  it('a tracing sheet with a request is drawn from what the photo shows (F197): SHEET_QUESTION asks about the photo and nothing else; sheetFromPhoto puts what was seen in front of the request, and the request in quotes', () => {
     expect(SHEET_QUESTION).toBe('Someone will trace this photo. In two short sentences, say what the main subject is, which parts of it can be seen and which are hidden or cut off by the frame, and where it sits in the frame (top or bottom, left or right, how much of the frame). Name only things visible in this photo.')
     const tail = ' Guide lines may be drawn over it; of the scene, draw only what the photo shows, where it is.'
     // unseen: the form the picture's key is built on

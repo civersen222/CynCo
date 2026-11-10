@@ -89,7 +89,7 @@ export type ImageSidecar = {
   denoise?: number
   /** A redo (F196): what the owner said was wrong, and what the vision model saw of it in the source photo (or why it could not be asked). */
   fix?: { said: string; seen?: string; model?: string; ms?: number; reason?: string }
-  /** A second sheet of a photo (F197): what the vision model said the photo shows, in front of the request in the submitted prompt (or why it could not be asked). */
+  /** A tracing sheet with a request (F197): what the vision model said the photo shows, in front of the request in the submitted prompt (or why it could not be asked). */
   shown?: { seen?: string; model?: string; ms?: number; reason?: string }
   workflow: { source: string; sha256: string }
   /** The filled graph actually submitted; null until the job starts. */

@@ -38,7 +38,7 @@ import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
-import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
 import { EDIT_SAMPLING, fillWorkflow, fitToArea, fixQuestion, outlinePrompt, SHEET_QUESTION, sheetFromPhoto, withFix, workflowClasses, type TransformKind } from './workflow.js'
 import { activity as engineActivity, type ActivityRegistry } from '../power/activity.js'
 import { imageDimensions } from '../vision/imageSize.js'
@@ -127,7 +127,7 @@ type Job = {
   settled: boolean
   /** A redo's prompt before the correction went in (F196): `runJob` composes it again with what the vision model saw. */
   fixBase?: string
-  /** A second sheet (F197): the model's request, to compose behind what the vision model says the photo shows. */
+  /** A sheet with a request (F197): the model's request, to compose behind what the vision model says the photo shows. */
   sheetExtras?: string
 }
 
@@ -517,15 +517,13 @@ export class ImageService implements ImageAnnotator {
       const recipe = im.kind === 'outline' ? outlinePrompt(im.prompt) : im.prompt
       // A redo is another picture of the same photo: what the owner said was wrong is part of its prompt, so of its key (F196).
       const keyed = (prompt: string) => this.keyFields(cfg, wf, prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(byRecipe ? EDIT_SAMPLING : {}) } : undefined)
-      let fields = keyed(im.fix ? withFix(recipe, im.fix) : recipe)
-      let key = imageKey(fields)
-      // A second sheet (F197): this chat already has a tracing sheet of this photo and now asks for another. The
-      // chat model wrote the request without seeing the photo, so it is drawn from what the photo shows
-      // (`sheetFromPhoto`; the vision model is asked in `runJob`). A sheet already made or queued under the plain
-      // prompt stays that picture: the first sheet shown again is not a second one.
-      const sheet = im.kind === 'outline' && !im.fix && !!source && !!im.prompt.trim()
-        && !this.jobs.has(`${dir}|${key}`) && !readSidecar(dir, key) && this.hasSheetOf(dir, chatFile, source.sha256)
-      if (sheet) { fields = keyed(sheetFromPhoto(im.prompt)); key = imageKey(fields) }
+      // A sheet with a request (F197): the chat model wrote the request without seeing the photo, and a request that
+      // describes the subject is drawn instead of the photo. So the sheet is drawn from what the photo shows
+      // (`sheetFromPhoto`; the vision model is asked in `runJob`). An engine with no vision model has nobody to ask:
+      // its sheet goes as before, the instruction and then the request.
+      const sheet = im.kind === 'outline' && !im.fix && !!source && !!im.prompt.trim() && !!this.askAboutPhoto
+      const fields = keyed(im.fix ? withFix(recipe, im.fix) : sheet ? sheetFromPhoto(im.prompt) : recipe)
+      const key = imageKey(fields)
       const repeat = decided.has(key)
       let state = decided.get(key)
       if (!state) {
@@ -648,17 +646,6 @@ export class ImageService implements ImageAnnotator {
     }
     const sc = readSidecar(dir, key)
     return sc && sc.status === 'done' && sc.checkpoint === f.checkpoint && existsSync(pngPath(dir, key)) ? { key, status: 'done', pin: null } : null
-  }
-
-  /** Whether this chat already has a finished tracing sheet of this photo (by content): the next one with a request of its own is a second sheet (F197). */
-  private hasSheetOf(dir: string, chatFile: string, sha256: string): boolean {
-    const origins = readOrigins(dir)
-    for (const o of Object.keys(origins)) {
-      if (!o.startsWith(`${chatFile}#`)) continue
-      const sc = readSidecar(dir, origins[o])
-      if (sc?.status === 'done' && sc.transform === 'outline' && sc.source?.sha256 === sha256) return true
-    }
-    return false
   }
 
   private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }, extra: JobExtra = {}): Job {
@@ -786,11 +773,11 @@ export class ImageService implements ImageAnnotator {
         return this.finish(job, { status: 'failed', reason: reasonOf(e) })
       }
     }
-    // A redo (F196) or a second sheet (F197): the vision model says what the photo shows — of the thing that came
+    // A redo (F196) or a sheet with a request (F197): the vision model says what the photo shows — of the thing that came
     // out wrong, or of the subject a new sheet must still be traced from — and that located text goes into the
     // prompt. It is asked now, while it may still be loaded: the unload below (F194) comes after. No answer is no
     // reason not to paint — the key was built on the prompt without it. A redo then paints from the owner's words;
-    // a second sheet is the plain sheet, since its request without what the photo shows is drawn instead of the photo.
+    // a sheet is the plain sheet, since its request without what the photo shows is drawn instead of the photo.
     let prompt = sc.prompt
     const redo = sc.fix && job.fixBase !== undefined ? { said: sc.fix.said, base: job.fixBase } : null
     const sheet = !redo && job.sheetExtras !== undefined ? { extras: job.sheetExtras } : null
@@ -817,12 +804,9 @@ export class ImageService implements ImageAnnotator {
         if (reason === null) prompt = sheetFromPhoto(sheet.extras, seen)
         else {
           prompt = outlinePrompt('')
-          this.log(`[imagegen] ${job.key.slice(0, 8)} second sheet: the photo could not be looked at (${reason}); drawing the plain sheet, without the request`)
+          this.log(`[imagegen] ${job.key.slice(0, 8)} sheet: the photo could not be looked at (${reason}); drawing the plain sheet, without the request`)
         }
       }
-    } else if (sheet) {
-      prompt = outlinePrompt('')
-      sc.shown = { reason: 'no vision model to ask' }
     }
     // Make room on the shared GPU first (F194): the vision model's VRAM goes before the edit model comes.
     if (sc.transform && this.beforeTransform) {

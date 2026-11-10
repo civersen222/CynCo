@@ -131,7 +131,7 @@ export function withFix(prompt: string, said: string, seen?: string): string {
 }
 
 /**
- * A second tracing sheet of a photo (F197). The chat model writes the request without
+ * A tracing sheet with a request (F197). The chat model writes the request without
  * seeing the photo, and a request that describes the subject is drawn instead of the
  * photo. Only a plain description of the photo in front of the request stopped that:
  * the vision model is asked what the photo shows (`SHEET_QUESTION` — never about the
