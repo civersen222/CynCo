@@ -18,7 +18,7 @@ import { appendJournal, createProject, isReservedFileName, projectDir, readFileI
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
-import { annotateFileImages, originKey, promptedImages, readOrigins, storedImageState } from '../imagegen/store.js'
+import { annotateFileImages, originKey, pictureRequests, readOrigins, storedImageState } from '../imagegen/store.js'
 
 /** `looks`: the image box's look runner (engine/vision); absent or null = no vision model configured, images are refused as before. */
 export type ProjectsDeps = { home: string; embed: EmbedClient | null; embedModel: string; emit: (e: IngestEvent) => void; contextLength: number; looks?: LookRunner | null }
@@ -189,7 +189,7 @@ export type SurfaceImagesAt = { dir: string; slug: string; chatFile: string }
  * `validateSpec` made of it. Serve the validated spec, so a reloaded chat
  * draws the surface it showed live (aliases, chart pairs and nested trees
  * resolved) and a spec with nothing drawable comes back as `spec: null`.
- * With `at`, each Image the engine paints (a `prompt`) gets the picture
+ * With `at`, each Image the engine paints (a `prompt`, or a photo with a `transform`: `pictureRequests`, F199) gets the picture
  * state it has now (F174), found through `images/index.json` by its origin
  * `<chatFile>#<toolId>#<elementId>` — the exact picture shown live, even if
  * the knobs changed since. A transcript block's id is the live toolId: the
@@ -218,7 +218,7 @@ export function withValidatedSurfaces<T>(t: T, at?: SurfaceImagesAt): T {
           } catch (e) {
             console.log(`[projects] file Images of ${at.chatFile} ${toolId} could not be annotated: ${e instanceof Error ? e.message : String(e)}`)
           }
-          for (const im of promptedImages(spec)) {
+          for (const im of pictureRequests(spec)) {
             try {
               origins ??= readOrigins(at.dir)
               im.el.image = storedImageState(at.dir, at.slug, originKey({ chatFile: at.chatFile, toolId, elementId: im.id }), origins)

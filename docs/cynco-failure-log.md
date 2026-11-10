@@ -4031,3 +4031,15 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** `ImageService` remembers that a prompt of its own went to the server (`loaded`) and frees the box when the picture queue is empty (`pump` → `freeBox`), whatever the jobs were and however they ended; `shutdown` frees after its interrupt. A transform's own `/free` is unchanged and is not repeated. Pinned by the six F198 tests in `imagegen/service.test`. What the engine cannot see is in `docs/NOW.md`.
 
 **Rule:** whoever loads a model on a shared box unloads it when its own queue is empty, on every path out, not only the successful one. A hand-run measurement on the image box ends with `/free` and an Ollama unload, and is not done until `/system_stats` and `/api/ps` show the box empty.
+
+## F199 — A reopened chat showed none of the pictures made from a photo
+
+**Where:** the owner's phone, 2026-11-09: "when I go back to any of these image chats, the images that are shared with me as part of the chats are no longer there". Reopening every chat of project `pc-wakefulness` the way the page does: 13 pictures, 2 came back (`done`, served) and 11 came back with no picture state at all. The 2 were generated from a prompt; the 11 were every outline, edit and variation of a photo.
+
+**How:** nothing was lost. Each of the 11 had its PNG and sidecar in `images/`, its entry in `images/index.json` (`<chatFile>#<toolId>#<elementId>`), and `GET /api/projects/:slug/images/<key>.png` answered 200. `getChatApi` → `withValidatedSurfaces` gave picture state to `promptedImages(spec)` only, and that was the generate subset of `pictureRequests`; an Image with a `source` and a `transform` was skipped, came back without `image`, and the page had nothing to draw.
+
+**Why:** the reload lookup was written for generated pictures (F174). Photo transforms were added to `annotate` (the live frame) through `pictureRequests`, and the reload kept the older, narrower helper; its comment already said the reload "looks these up". The reload tests built only prompt Images, so nothing failed.
+
+**Fix:** `withValidatedSurfaces` looks up `pictureRequests(spec)`, the same list `annotate` queues from; `promptedImages`, left without a caller, is removed. Pinned by `projects/api.test` (an outline with and without a request, an edit and a variation each come back `done` with their key).
+
+**Rule:** the live frame and the reload read one definition of "a picture the engine made"; when a new kind of picture is added, the reload test gets that kind in the same change.

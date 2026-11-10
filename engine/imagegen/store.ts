@@ -472,7 +472,7 @@ const FIX_CAP = 300
  * Every reachable Image the engine must make a picture for, in draw order:
  * generate (a prompt, today's path), vary or edit (a source photo + a prompt) or
  * outline (a source photo; the prompt, if any, is extra guidance the service appends to the tracing-sheet instruction). An edit or an outline may carry "fix", what a redo must put right (F196). Image box §4. A vary's prompt is never painted
- * from scratch: `promptedImages` is the generate subset.
+ * from scratch: each request carries its kind.
  */
 export function pictureRequests(spec: UiSpec): PictureRequest[] {
   const out: PictureRequest[] = []
@@ -495,10 +495,6 @@ export function pictureRequests(spec: UiSpec): PictureRequest[] {
     out.push({ id, el, kind: 'generate', prompt, alt, ...(seed !== undefined ? { seed } : {}) })
   }
   return out
-}
-
-export function promptedImages(spec: UiSpec): Array<{ id: string; el: UiElement; prompt: string; alt: string; seed?: number }> {
-  return pictureRequests(spec).filter(r => r.kind === 'generate').map(({ id, el, prompt, alt, seed }) => ({ id, el, prompt, alt, ...(seed !== undefined ? { seed } : {}) }))
 }
 
 /**

@@ -327,6 +327,29 @@ describe('chats: generated pictures on reload', () => {
     expect(readFileSync(join(dir, 'chats', file), 'utf8')).toBe(before)
   })
 
+  it('a picture made from a photo comes back on reload like a generated one (F199): an outline with and without a request, an edit and a variation each get their stored state', () => {
+    const slug = createProject(home, { name: 'Porch' }).slug
+    const dir = join(home, slug)
+    const { file } = newChatFile(dir, 'Give me a tracing sheet of this photo')
+    const from = (transform: string, prompt?: string) => ({ type: 'Image', props: { source: 'knowledge/porch.jpg', transform, alt: transform, ...(prompt ? { prompt } : {}) } })
+    const spec = { root: 'g', elements: {
+      g: { type: 'Grid', props: { columns: 2 }, children: ['sheet', 'guided', 'edit', 'vary'] },
+      sheet: from('outline'), guided: from('outline', 'mark the horizon line'), edit: from('edit', 'remove the lens flare'), vary: from('vary', 'add a pergola'),
+    } }
+    appendTranscript(dir, file, { role: 'user', content: [{ type: 'text', text: 'Give me a tracing sheet of this photo' }] })
+    appendTranscript(dir, file, { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'RenderUI', input: { surface: 'sheets', spec } }] })
+    const keys = { sheet: '1'.repeat(32), guided: '2'.repeat(32), edit: '3'.repeat(32), vary: '4'.repeat(32) }
+    for (const key of Object.values(keys)) { writeSidecar(dir, sidecar(key)); writeFileSync(pngPath(dir, key), PNG_1X1) }
+    recordOrigins(dir, Object.entries(keys).map(([elementId, key]) => [originKey({ chatFile: file, toolId: 'toolu_1', elementId }), key] as [string, string]))
+    const r = getChatApi(deps(), slug, file)
+    expect(r.status).toBe(200)
+    const base = { status: 'done', slug, w: 1024, h: 768 }
+    expect(imagesOf(r.body, 0)).toEqual({
+      g: undefined,
+      sheet: { ...base, key: keys.sheet }, guided: { ...base, key: keys.guided }, edit: { ...base, key: keys.edit }, vary: { ...base, key: keys.vary },
+    })
+  })
+
   it('the one-argument call is unchanged: no picture state at all, even with records on disk', () => {
     const { dir, file } = setup()
     const one = withValidatedSurfaces(readTranscript(dir, file)!) as any

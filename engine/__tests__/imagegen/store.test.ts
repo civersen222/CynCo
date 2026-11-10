@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { createProject } from '../../projects/layout.js'
 import {
-  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, isProjectFile, isSvg, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, promptedImages, publicSidecar,
+  annotateFileImages, canonicalJson, ensureImageIgnore, fileImages, FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, isProjectFile, isSvg, KEY_RE, normPrompt, originKey, ORIGINS_CAP, pngPath, publicSidecar,
   readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, servedImage, servedProjectFile, sidecarPath, storeFault, storedImageState, SVG_CAP_BYTES, writeSidecar, type ImageSidecar, type KeyFields,
 } from '../../imagegen/store.js'
 import type { UiSpec } from '../../bridge/protocol.js'
@@ -67,7 +67,7 @@ describe('keys and seeds', () => {
       c: { type: 'Image', props: { prompt: 'a tall green alien', seed: 0, alt: 'C' } },
       d: { type: 'Image', props: { prompt: 'a tall green alien', seed: 2.5, alt: 'D' } }, // an unvalidated spec (a replayed transcript): not a seed
     }) }
-    expect(promptedImages(spec).map(im => [im.id, im.seed])).toEqual([['a', undefined], ['b', 1001], ['c', 0], ['d', undefined]])
+    expect(pictureRequests(spec).map(im => [im.id, im.seed])).toEqual([['a', undefined], ['b', 1001], ['c', 0], ['d', undefined]])
   })
 
   it('a sidecar records where its seed came from; a record with another value there reads as no record', () => {
@@ -575,9 +575,6 @@ describe('pictureRequests (image box §4)', () => {
       ['h', 'outline', '', 'knowledge/porch.jpg'],
       ['i', 'vary', 'a pergola', 'knowledge/yard.jpg'],
     ])
-  })
-  it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {
-    expect(promptedImages(spec).map(im => im.id)).toEqual(['a'])
   })
 })
 
