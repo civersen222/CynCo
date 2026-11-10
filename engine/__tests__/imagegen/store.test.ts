@@ -538,20 +538,30 @@ describe('servedProjectFile', () => {
 
 describe('pictureRequests (image box §4)', () => {
   const spec: UiSpec = { root: 'g', elements: Object.assign(Object.create(null), {
-    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f'] },
+    g: { type: 'Grid', props: {}, children: ['a', 'b', 'c', 'd', 'e', 'f', 'h', 'i'] },
     a: { type: 'Image', props: { prompt: 'a tall green alien', alt: 'A' } },
     b: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'add a pergola', alt: 'B' } },
     c: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', prompt: 'mark the vanishing point', alt: 'C' } },
     d: { type: 'Image', props: { src: 'sketches/front.png', alt: 'D' } },
     e: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', prompt: 'add a pergola over the table', alt: 'E' } },
     f: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'edit', alt: 'F' } },
+    h: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', fix: '  the ferns at the\n top are missing ', alt: 'H' } },
+    i: { type: 'Image', props: { source: 'knowledge/yard.jpg', transform: 'vary', prompt: 'a pergola', fix: 'wrong', alt: 'I' } },
   }) }
+  it('carries "fix" (what a redo must put right, F196) for an edit or an outline only: whitespace normalised, at most 300 characters', () => {
+    const by = Object.fromEntries(pictureRequests(spec).map(r => [r.id, r.fix]))
+    expect(by).toEqual({ a: undefined, b: undefined, c: undefined, e: undefined, h: 'the ferns at the top are missing', i: undefined })
+    const long: UiSpec = { root: 'x', elements: Object.assign(Object.create(null), { x: { type: 'Image', props: { source: 'knowledge/porch.jpg', transform: 'outline', fix: 'w'.repeat(900), alt: 'X' } } }) }
+    expect(pictureRequests(long)[0].fix).toBe('w'.repeat(300))
+  })
   it('names each picture\'s kind, prompt and source', () => {
     expect(pictureRequests(spec).map(r => [r.id, r.kind, r.prompt, r.source])).toEqual([
       ['a', 'generate', 'a tall green alien', undefined],
       ['b', 'vary', 'add a pergola', 'knowledge/yard.jpg'],
       ['c', 'outline', 'mark the vanishing point', 'knowledge/porch.jpg'],
       ['e', 'edit', 'add a pergola over the table', 'knowledge/yard.jpg'],
+      ['h', 'outline', '', 'knowledge/porch.jpg'],
+      ['i', 'vary', 'a pergola', 'knowledge/yard.jpg'],
     ])
   })
   it('promptedImages is the generate subset, so a vary prompt is never painted from scratch', () => {

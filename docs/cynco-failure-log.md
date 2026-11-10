@@ -3995,3 +3995,15 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** the outline transform is the edit recipe with `OUTLINE_INSTRUCTION` fixed in front of the model's extra guides (`outlinePrompt`); same graph, same Lightning sampling, `checkpoint: 'none'`; the model may pass guides in `prompt`. The line-art graph and the `comfyui_controlnet_aux` requirement are gone (the pack may stay installed; nothing calls it). Pinned by `workflow.test`, `service.test`, `store.test`, `client.test`, `genui/{validateSpec,catalog,prompt}.test`.
 
 **Rule:** a transform is judged by what the owner would actually use, not by whether its node ran; when a better recipe exists for the same verb, the verb moves to it rather than keeping both.
+
+## F196 — A correction did not reach the recipe: the redo of the tracing sheet still left the foliage out
+
+**Where:** the phone chat after check 5 (2026-11-09), headless engine log: the outline of the park photo, then the owner's "Looks like you forgot to include the foliage in the outline", then a second `RenderUI` Image from the chat model.
+
+**How:** the only channel a correction had was the chat model writing a new `prompt`. It re-described the scene in its own words, with details the photo does not have, and the redone sheet still had no foliage. By hand on the box: the complaint alone behind the instruction changed nothing; the same instruction with located text about the photo (what is there and where in the frame) brought it back.
+
+**Why:** the edit model follows concrete, located instructions and passes over a remark about a picture it never sees; the chat model no longer sees the photo (it has the look's text), so what it adds is invention; and nothing said that a redo starts from the photo rather than from the picture that came out wrong.
+
+**Fix:** an edit or outline Image takes `fix`, the complaint as the user put it (`engine/genui/spec.ts`, catalog and prompt: "do not re-describe the scene"). `ImageService` runs the redo from the original photo — a made picture named as `source` resolves to the photo its sidecar records — asks the vision model `fixQuestion(said)` about that photo before F194's unload, and submits `withFix(recipe, said, seen)`; without an answer it paints from the owner's words and the sidecar's `fix.reason` says why. In the same change the picture queue registers as a `picture` activity (`engine/power/activity.ts`), so the PC does not sleep and the chat model is not unloaded under a queued picture. Pinned by `imagegen/{workflow,store,service}.test` and `genui/{validateSpec,catalog,prompt}.test`.
+
+**Rule:** a correction is data for the recipe, not a new prompt for the chat model to write; ask the model that can see the source what is there.
