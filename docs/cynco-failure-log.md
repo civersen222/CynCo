@@ -4019,3 +4019,15 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 **Fix:** every outline with a request is drawn from what the photo shows, on an engine that has a vision model (first built for a second sheet of a photo only; the owner chose every sheet the same day). The vision model is asked `SHEET_QUESTION` — what the photo shows, which parts are hidden or cut off, where it sits; never anything about the request — before F194's unload, and `sheetFromPhoto(extras, seen)` is submitted: the instruction, what the photo shows, then the request in quotes. The sidecar's `shown` records what was seen. When the look fails, the plain sheet is drawn without the request and `shown.reason` says why; an engine with no vision model draws the sheet as it did before. The catalog now says an outline's `prompt` is "guides (e.g. horizon) or omissions, never the subject". Pinned by `imagegen/{workflow,store,service}.test` and `genui/catalog.test`.
 
 **Rule:** text from a model that cannot see the source is a request, never a description of the source: put what the seeing model says in front of it, and when nobody can look, leave the request out rather than draw it.
+
+## F198 — The image box held a model in VRAM while nobody was using it
+
+**Where:** the image box (RTX 4070 Ti Super, ComfyUI on 8188), 2026-11-09 evening. The owner: "im getting constant high gpu use pings from the image box NOW and it's not even being used. if it's not being used the models should not be loaded". ComfyUI's `/system_stats` showed 5.4 of 16 GB free with an empty queue, about 40 minutes after its last job; Ollama had nothing loaded. One `/free` brought it to 14.7 GB free.
+
+**How:** the last three prompts on ComfyUI (18:23:48–18:25:16) were not the engine's. They came from a measurement script run by hand for F197, which posts edit prompts straight to `/prompt` and never calls `/free`. The engine's own last jobs (17:46–17:47) were transforms, each followed by its `/free`.
+
+**Why:** ComfyUI keeps a model until it is told to drop it, and only one path told it: a transform that finished (`runJob`, image box §4). A generated picture, a transform that failed on the server, an engine stopped under a running prompt and any client other than the engine all left the model where it was. The hand-run script copied the request shape and not the clean-up.
+
+**Fix:** `ImageService` remembers that a prompt of its own went to the server (`loaded`) and frees the box when the picture queue is empty (`pump` → `freeBox`), whatever the jobs were and however they ended; `shutdown` frees after its interrupt. A transform's own `/free` is unchanged and is not repeated. Pinned by the six F198 tests in `imagegen/service.test`. What the engine cannot see is in `docs/NOW.md`.
+
+**Rule:** whoever loads a model on a shared box unloads it when its own queue is empty, on every path out, not only the successful one. A hand-run measurement on the image box ends with `/free` and an Ollama unload, and is not done until `/system_stats` and `/api/ps` show the box empty.

@@ -84,7 +84,7 @@ The 4070 Ti Super box (16 GB, Windows, LAN `192.168.0.47`, tailnet host `THUNDER
 - **Upload.** `ComfyClient` gains `uploadImage(bytes, name)` → `POST /upload/image` (multipart), returning the stored name used in `{{image}}`. The input is the project's own file (`knowledge/<name>` or `images/<key>.png`), read by the engine, never a path the model types.
 - **Asking for one.** The RenderUI `Image` element gains `source` (a project-relative image path, validated by the existing `projectImagePath` rule) and `transform: 'vary' | 'outline'`; `prompt` is the idea (`vary`), the instruction (`edit`) or optional extra guides (`outline`). The validator, the catalog and the prompt section say so; the image store records `source` and `transform` in the sidecar with the other settings so the History tab and a reopened chat show what was done to what.
 - **Node check.** The service's startup probe (which already checks the built-in workflow's nodes) checks the two transform workflows' nodes too and says which custom node pack is missing by name.
-- **VRAM.** After each transform job the engine calls ComfyUI's `/free` with `unload_models` so SDXL (~6.5 GB) does not sit beside the vision model (~6 GB) and the 14B fallback (9.3 GB) on a 16 GB card; the look's `keep_alive` is Ollama's to manage. (Builder-check call.)
+- **VRAM.** After each transform job the engine calls ComfyUI's `/free` with `unload_models` so SDXL (~6.5 GB) does not sit beside the vision model (~6 GB) and the 14B fallback (9.3 GB) on a 16 GB card; the look's `keep_alive` is Ollama's to manage. (Builder-check call.) Since 2026-11-09 (F198) every job is followed by a `/free` once the picture queue is empty, and so is an engine stop: `engine/imagegen/CLAUDE.md`.
 
 ### 5. Wake together
 
