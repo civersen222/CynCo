@@ -49,6 +49,10 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
 
 ## Backlog (worth doing, not started)
 
+- A second sheet (F197) is pinned by unit tests and its wording was measured by hand on one photo; it has not yet run from the phone end to end: check the first live one's sidecar (`shown.seen`) against the photo.
+- Only a second sheet of a photo is drawn from what the photo shows (F197). A first sheet whose request describes the subject can still be drawn instead of the photo; the catalog now tells the chat model an outline's `prompt` is guides or omissions, never the subject, and whether that changes what it writes is unmeasured. Grounding every outline that carries a request would cost one look (8–19 s) per sheet; it kept a first sheet's guides in the two runs measured. The owner's call.
+- On a sheet drawn from what the photo shows (F197), things the request asks to leave out are only partly left out: the background panel stayed on most of the measured sheets. The description of the photo names them; a question that names only the subject, or a second pass, is untried.
+- The RenderUI prompt section is 4 characters under its 13,000-character bound in project mode (`genui/prompt.test.ts`): the next wording added to the catalog or the prompt must cut elsewhere, or the bound is raised on purpose.
 - `dashboard/phoneAccess.test.ts` ("/api/phone tells the desk the code, the listeners…") reads the machine's own `LOCALCODE_DASHBOARD_HOST`: on the owner's PC, where it names the tailnet address, the test sees two listeners and fails; with the variable unset it passes (18/18). The test should set the variable itself, as the block at its line 336 does.
 - Redo with a correction (F196) is pinned by unit tests and its wording was measured by hand on the image box, but it has not yet run from the phone end to end: check the first live redo's sidecar (`fix.seen`) against the photo.
 - An outline's horizon, vanishing point and sight lines are the edit model's drawing, not a measurement. If the owner paints perspective from them, compute them from the photo (line detection → vanishing point) and draw them over the sheet.

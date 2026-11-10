@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE_SHA, EDIT_SAMPLING, OUTLINE_INSTRUCTION, outlinePrompt, fixQuestion, withFix, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
+import { BUILTIN_EDIT, BUILTIN_EDIT_SHA, BUILTIN_OUTLINE_SHA, EDIT_SAMPLING, OUTLINE_INSTRUCTION, outlinePrompt, fixQuestion, withFix, SHEET_QUESTION, sheetFromPhoto, BUILTIN_OUTLINE, BUILTIN_VARY, BUILTIN_WORKFLOW, fillWorkflow, parseWorkflow, placeholdersIn, workflowClasses, GENERATE_PLACEHOLDERS, PLACEHOLDERS, type ComfyGraph, type FillValues, fitToArea } from '../../imagegen/workflow.js'
 
 const VALUES: FillValues = {
   prompt: 'a tall green alien', negative: 'blurry', seed: 123456789012, width: 1024, height: 768, steps: 40, cfg: 6,
@@ -105,6 +105,17 @@ describe('vary and outline', () => {
     expect(long.startsWith('x. An earlier attempt')).toBe(true)
     expect(long.length).toBeLessThan(800)
     expect(long.endsWith('z… Put that right, working only from the photo.')).toBe(true)
+  })
+  it('a second sheet is drawn from what the photo shows (F197): SHEET_QUESTION asks about the photo and nothing else; sheetFromPhoto puts what was seen in front of the request, and the request in quotes', () => {
+    expect(SHEET_QUESTION).toBe('Someone will trace this photo. In two short sentences, say what the main subject is, which parts of it can be seen and which are hidden or cut off by the frame, and where it sits in the frame (top or bottom, left or right, how much of the frame). Name only things visible in this photo.')
+    const tail = ' Guide lines may be drawn over it; of the scene, draw only what the photo shows, where it is.'
+    // unseen: the form the picture's key is built on
+    expect(sheetFromPhoto(' only the "eye line" ')).toBe(OUTLINE_INSTRUCTION + ` The painter asked for this sheet: "only the 'eye line'".` + tail)
+    expect(sheetFromPhoto('an eye line', "  A cat's head fills\n the lower half ")).toBe(OUTLINE_INSTRUCTION + ` What the photo shows: A cat's head fills the lower half. The painter asked for this sheet: "an eye line".` + tail)
+    // a rambling answer is cut, and the request still follows it
+    const long = sheetFromPhoto('x', 'z'.repeat(2000))
+    expect(long.length).toBeLessThan(OUTLINE_INSTRUCTION.length + 800)
+    expect(long.endsWith('z… The painter asked for this sheet: "x".' + tail)).toBe(true)
   })
   it('an outline workflow needs {{image}} and {{prompt}} like an edit: the generate graph is refused as kind outline naming the image', () => {
     const r = parseWorkflow(JSON.stringify(BUILTIN_WORKFLOW), 'mine.json', 'outline')

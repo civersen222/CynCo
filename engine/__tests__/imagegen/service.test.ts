@@ -10,7 +10,7 @@ import { comfyConfig, UNSET_REASON } from '../../imagegen/config.js'
 import { ImageService, CAP_REASON, CUT_OFF_REASON, PROJECT_ONLY_REASON, QUEUE_FULL_REASON, STOPPED_REASON, type AnnotateAt, type ImageServiceDeps } from '../../imagegen/service.js'
 import { FILES_ONLY_REASON, imageKey, INTERRUPTED_REASON, originKey, partPath, pngPath, readOrigins, readSidecar, sidecarPath, storedImageState, writeSidecar } from '../../imagegen/store.js'
 import { BUILTIN_CLASSES, canSymlinkFiles, closedPort, PNG_1X1, startMockComfy, until, type MockComfy } from './mockComfy.js'
-import { fixQuestion, OUTLINE_INSTRUCTION, withFix } from '../../imagegen/workflow.js'
+import { fixQuestion, OUTLINE_INSTRUCTION, outlinePrompt, SHEET_QUESTION, sheetFromPhoto, withFix } from '../../imagegen/workflow.js'
 import { ActivityRegistry } from '../../power/activity.js'
 import { sha256Of } from '../../projects/layout.js'
 import { PNG } from 'pngjs'
@@ -1955,6 +1955,100 @@ describe('ImageService: transforms', () => {
     expect(thrown).toMatchObject({ status: 'done', fix: { said: 'the pergola is too small', reason: 'socket hang up' } })
     const none = await run({}, 'the pergola is purple')
     expect(none.status).toBe('done'); expect(none.fix).toEqual({ said: 'the pergola is purple' })
+  })
+  it('a second tracing sheet of a photo this chat already has a sheet of (F197) is drawn from what the photo shows: the vision model is asked about the photo, never about the request, before it is unloaded, and its answer goes in front of the request', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const order: string[] = []; const asked: Array<{ bytes: number; name: string; q: string }> = []
+    const saw = 'A cat head fills the lower half of the frame; its body is cut off by the bottom edge.'
+    const s = start({
+      askAboutPhoto: async (bytes, name, q) => { order.push('ask'); asked.push({ bytes: bytes.length, name, q }); return { ok: true, answer: saw, model: 'qwen3-vl', ms: 9 } },
+      beforeTransform: async () => { order.push('unload') },
+    })
+    const rel = photo('knowledge/porch.png')
+    const first = tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    // the first sheet goes as before: the instruction, then the guides, and nobody is asked
+    expect(order).toEqual(['unload'])
+    expect(editPrompts(0)).toContain(outlinePrompt('mark the horizon line'))
+    const want = "only the cat's full body silhouette, ears and tail, and one eye line"
+    const second = tspec({ source: rel, transform: 'outline', prompt: want })
+    s.annotate(second, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(order).toEqual(['unload', 'ask', 'unload'])
+    expect(asked).toEqual([{ bytes: JPG.length, name: rel, q: SHEET_QUESTION }])
+    expect(editPrompts(1)).toContain(sheetFromPhoto(want, saw))
+    const sc = readSidecar(dir, keyOf(second, 0))!
+    expect(sc).toMatchObject({ status: 'done', transform: 'outline', prompt: sheetFromPhoto(want), source: { path: rel, sha256: sha256Of(new Uint8Array(JPG)) } })
+    expect(sc.shown).toEqual({ seen: saw, model: 'qwen3-vl', ms: 9 })
+    // the same sheet asked for again is the same picture: nothing is painted or asked twice
+    const again = tspec({ source: rel, transform: 'outline', prompt: want })
+    s.annotate(again, at({ toolId: 'tool-3' })).start(); await s.whenIdle()
+    expect(imageOf(again, 0)).toMatchObject({ status: 'done', key: keyOf(second, 0) })
+    expect(posts().length).toBe(2); expect(asked.length).toBe(1)
+  })
+  it('only a second sheet of the same photo in the same chat is drawn that way: the first sheet shown again, a sheet without guides, the photo in another chat and another photo go as before', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    let asks = 0
+    const s = start({ askAboutPhoto: async () => { asks++; return { ok: true, answer: 'A porch.' } } })
+    const rel = photo('knowledge/porch.png')
+    const first = tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    // a later call showing the first sheet again gets the picture already made
+    const shownAgain = tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' })
+    s.annotate(shownAgain, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(imageOf(shownAgain, 0)).toMatchObject({ status: 'done', key: keyOf(first, 0) })
+    expect(posts().length).toBe(1)
+    // no guides: nothing of the model's to put in its place
+    const bare = tspec({ source: rel, transform: 'outline' })
+    s.annotate(bare, at({ toolId: 'tool-3' })).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(bare, 0))!.prompt).toBe(OUTLINE_INSTRUCTION)
+    // another chat has no sheet of this photo yet
+    const elsewhere = tspec({ source: rel, transform: 'outline', prompt: 'mark the vanishing point' })
+    s.annotate(elsewhere, at({ project: { dir, slug, chatFile: 'other.jsonl' }, toolId: 'tool-4' })).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(elsewhere, 0))!.prompt).toBe(outlinePrompt('mark the vanishing point'))
+    // another photo in this chat (the photo is its content, not its name)
+    writeFileSync(join(dir, 'knowledge/yard.jpg'), Buffer.concat([JPG, Buffer.from([9])]))
+    const other = tspec({ source: 'knowledge/yard.jpg', transform: 'outline', prompt: 'mark the fence line' })
+    s.annotate(other, at({ toolId: 'tool-5' })).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(other, 0))!.prompt).toBe(outlinePrompt('mark the fence line'))
+    expect(asks).toBe(0)
+    for (const sp of [first, bare, elsewhere, other]) expect(readSidecar(dir, keyOf(sp, 0))!.shown).toBeUndefined()
+  })
+  it('a sheet that did not come out is not one to follow: after a failed first sheet the next one goes as a first sheet', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    let asks = 0
+    const s = start({ askAboutPhoto: async () => { asks++; return { ok: true, answer: 'A porch.' } } })
+    const rel = photo('knowledge/porch.png')
+    const first = tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    writeSidecar(dir, { ...readSidecar(dir, keyOf(first, 0))!, status: 'failed', reason: 'the image box went away' })
+    const next = tspec({ source: rel, transform: 'outline', prompt: 'only the roof line' })
+    s.annotate(next, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(next, 0))!.prompt).toBe(outlinePrompt('only the roof line'))
+    expect(asks).toBe(0)
+  })
+  it('a second sheet whose photo cannot be looked at is the plain sheet: a request without what the photo shows is drawn instead of the photo (measured), so it is left out, and the record says why', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const rel = photo('knowledge/porch.png')
+    const s = start({ askAboutPhoto: async () => ({ ok: false, reason: 'the image box is asleep' }) })
+    const first = tspec({ source: rel, transform: 'outline', prompt: 'mark the horizon line' })
+    s.annotate(first, at()).start(); await s.whenIdle()
+    const second = tspec({ source: rel, transform: 'outline', prompt: 'only the roof line' })
+    s.annotate(second, at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(editPrompts(1)).toContain(OUTLINE_INSTRUCTION)
+    expect(readSidecar(dir, keyOf(second, 0))).toMatchObject({ status: 'done', prompt: sheetFromPhoto('only the roof line'), shown: { reason: 'the image box is asleep' } })
+    expect(logs.some(l => /second sheet: the photo could not be looked at \(the image box is asleep\); drawing the plain sheet, without the request/.test(l))).toBe(true)
+    // thrown, or no vision model at all (a second service reads the first sheet from the project's store)
+    const s2 = start({ askAboutPhoto: async () => { throw new Error('socket hang up') } })
+    const third = tspec({ source: rel, transform: 'outline', prompt: 'only the steps' })
+    s2.annotate(third, at({ toolId: 'tool-3' })).start(); await s2.whenIdle()
+    expect(readSidecar(dir, keyOf(third, 0))).toMatchObject({ status: 'done', shown: { reason: 'socket hang up' } })
+    expect(editPrompts(2)).toContain(OUTLINE_INSTRUCTION)
+    const s3 = start()
+    const fourth = tspec({ source: rel, transform: 'outline', prompt: 'only the railing' })
+    s3.annotate(fourth, at({ toolId: 'tool-4' })).start(); await s3.whenIdle()
+    const sc = readSidecar(dir, keyOf(fourth, 0))!
+    expect(sc).toMatchObject({ status: 'done', prompt: sheetFromPhoto('only the railing'), shown: { reason: 'no vision model to ask' } })
+    expect(editPrompts(3)).toContain(OUTLINE_INSTRUCTION)
   })
   it('the picture queue is one "picture" activity from its first job until it is idle, whether the jobs paint or fail (wakefulness: the PC stays awake and the chat model stays loaded while a picture is made)', async () => {
     mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })

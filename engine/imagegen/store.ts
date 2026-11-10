@@ -89,6 +89,8 @@ export type ImageSidecar = {
   denoise?: number
   /** A redo (F196): what the owner said was wrong, and what the vision model saw of it in the source photo (or why it could not be asked). */
   fix?: { said: string; seen?: string; model?: string; ms?: number; reason?: string }
+  /** A second sheet of a photo (F197): what the vision model said the photo shows, in front of the request in the submitted prompt (or why it could not be asked). */
+  shown?: { seen?: string; model?: string; ms?: number; reason?: string }
   workflow: { source: string; sha256: string }
   /** The filled graph actually submitted; null until the job starts. */
   apiPrompt: Record<string, unknown> | null
@@ -328,6 +330,7 @@ function sidecarFault(v: unknown, key: string): string | null {
   for (const f of ['bytes', 'queueMs', 'genMs', 'execMs']) if (!optional(v[f], num)) return f
   if (!optional(v.seedFrom, x => x === 'model' || x === 'prompt')) return 'seedFrom'
   if (!optional(v.fix, f => isObj(f) && str(f.said) && optional(f.seen, str) && optional(f.model, str) && optional(f.ms, num) && optional(f.reason, str))) return 'fix'
+  if (!optional(v.shown, f => isObj(f) && optional(f.seen, str) && optional(f.model, str) && optional(f.ms, num) && optional(f.reason, str))) return 'shown'
   if (!isObj(v.workflow) || !str(v.workflow.source) || !str(v.workflow.sha256)) return 'workflow'
   if (v.apiPrompt !== null && !isObj(v.apiPrompt)) return 'apiPrompt'
   const c = v.comfy

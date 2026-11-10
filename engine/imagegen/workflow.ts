@@ -114,6 +114,10 @@ const endsSentence = (s: string) => (/[.!?…]$/.test(s) ? s : `${s}.`)
 const inQuotes = (s: string) => s.replace(/"/g, "'")
 /** The vision model's answer is cut to this many characters in the prompt: located text, not an essay. */
 const FIX_SEEN_CAP = 600
+const cutSeen = (seen?: string): string => {
+  const s = (seen ?? '').replace(/\s+/g, ' ').trim()
+  return s.length > FIX_SEEN_CAP ? `${s.slice(0, FIX_SEEN_CAP)}…` : s
+}
 
 /** What the vision model is asked about the original photo: it never sees the failed picture, and must not judge the remark. */
 export function fixQuestion(said: string): string {
@@ -122,9 +126,24 @@ export function fixQuestion(said: string): string {
 
 /** The recipe's prompt with what was wrong behind it: the owner's words (the picture's key is built on this form), then what the photo shows when that is known. */
 export function withFix(prompt: string, said: string, seen?: string): string {
-  let shown = (seen ?? '').replace(/\s+/g, ' ').trim()
-  if (shown.length > FIX_SEEN_CAP) shown = `${shown.slice(0, FIX_SEEN_CAP)}…`
+  const shown = cutSeen(seen)
   return `${endsSentence(prompt.trim())} An earlier attempt got this wrong — the owner said: "${inQuotes(said)}".${shown ? ` What the photo shows: ${endsSentence(shown)}` : ''} Put that right, working only from the photo.`
+}
+
+/**
+ * A second tracing sheet of a photo (F197). The chat model writes the request without
+ * seeing the photo, and a request that describes the subject is drawn instead of the
+ * photo. Only a plain description of the photo in front of the request stopped that:
+ * the vision model is asked what the photo shows (`SHEET_QUESTION` — never about the
+ * request, which it repeats back as if it were there) and the request rides behind it
+ * in quotes (`sheetFromPhoto`). Wording measured on the image box 2026-11-09.
+ */
+export const SHEET_QUESTION = 'Someone will trace this photo. In two short sentences, say what the main subject is, which parts of it can be seen and which are hidden or cut off by the frame, and where it sits in the frame (top or bottom, left or right, how much of the frame). Name only things visible in this photo.'
+
+/** The tracing-sheet instruction, what the photo shows when that is known, then the request in quotes (the picture's key is built on the form without what was seen). */
+export function sheetFromPhoto(extras: string, seen?: string): string {
+  const shown = cutSeen(seen)
+  return `${OUTLINE_INSTRUCTION}${shown ? ` What the photo shows: ${endsSentence(shown)}` : ''} The painter asked for this sheet: "${inQuotes(extras.trim())}". Guide lines may be drawn over it; of the scene, draw only what the photo shows, where it is.`
 }
 
 // `BUILTIN_OUTLINE` itself is defined after `BUILTIN_EDIT` below: the same graph under its own version, so an operator may override one without the other.

@@ -83,6 +83,18 @@ describe('keys and seeds', () => {
     expect(readSidecar(dir, k)).toBeNull()
   })
 
+  it('a sheet drawn from what the photo shows records it in "shown" (F197): what was seen, or why the photo could not be looked at; anything else there reads as no record', () => {
+    const k = imageKey(FIELDS)
+    writeSidecar(dir, sidecar(k, { shown: { seen: 'A cat head, lower half.', model: 'qwen3-vl', ms: 9000 } }))
+    expect(readSidecar(dir, k)?.shown).toEqual({ seen: 'A cat head, lower half.', model: 'qwen3-vl', ms: 9000 })
+    writeSidecar(dir, sidecar(k, { shown: { reason: 'the image box is asleep' } }))
+    expect(readSidecar(dir, k)?.shown).toEqual({ reason: 'the image box is asleep' })
+    writeFileSync(sidecarPath(dir, k), JSON.stringify({ ...sidecar(k), shown: { seen: 5 } }))
+    expect(readSidecar(dir, k)).toBeNull()
+    writeFileSync(sidecarPath(dir, k), JSON.stringify({ ...sidecar(k), shown: 'a cat' }))
+    expect(readSidecar(dir, k)).toBeNull()
+  })
+
   it('canonical JSON sorts keys at every depth', () => {
     expect(canonicalJson({ b: 1, a: { d: [2, { z: 1, y: 2 }], c: 'x' } })).toBe('{"a":{"c":"x","d":[2,{"y":2,"z":1}]},"b":1}')
   })

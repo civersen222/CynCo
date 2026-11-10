@@ -38,8 +38,8 @@ import { commitHistory, ensureHistory } from '../projects/history.js'
 import { appendJournal, sha256Of } from '../projects/layout.js'
 import { ComfyClient, ComfyError, NODE_PACKS, probeComfy, type HistoryEntry, type ProbeResult } from './client.js'
 import { comfyConfig, DOWNLOAD_CAP_BYTES, PER_CALL_CAP, POLL_MS, QUEUE_CAP, UNSET_REASON, type ComfyConfig, type ComfyWorkflow } from './config.js'
-import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
-import { EDIT_SAMPLING, fillWorkflow, fitToArea, fixQuestion, outlinePrompt, withFix, workflowClasses, type TransformKind } from './workflow.js'
+import { annotateFileImages, ensureImageIgnore, FILES_ONLY_REASON, imageKey, imagesDir, isProjectFile, originKey, partPath, pictureRequests, pngPath, readOrigins, readSidecar, recordOrigins, RUN_ID, seedFor, storeFault, writeSidecar, type ImageRef, type ImageSidecar, type KeyFields } from './store.js'
+import { EDIT_SAMPLING, fillWorkflow, fitToArea, fixQuestion, outlinePrompt, SHEET_QUESTION, sheetFromPhoto, withFix, workflowClasses, type TransformKind } from './workflow.js'
 import { activity as engineActivity, type ActivityRegistry } from '../power/activity.js'
 import { imageDimensions } from '../vision/imageSize.js'
 
@@ -97,7 +97,7 @@ const SHUTDOWN_BOUND_MS = 3000
 const POLL_FAILURES_TOLERATED = 3
 
 /** The graph a job submits and, for a transform (image box §4), what it starts from. */
-type JobExtra = { wf?: ComfyWorkflow; transform?: TransformKind; source?: { path: string; sha256: string }; denoise?: number; fix?: { said: string; base: string } }
+type JobExtra = { wf?: ComfyWorkflow; transform?: TransformKind; source?: { path: string; sha256: string }; denoise?: number; fix?: { said: string; base: string }; sheet?: { extras: string } }
 /** vary's default denoise: the thing stays itself, the idea shows (image box §4). */
 const VARY_DENOISE = 0.55
 
@@ -127,6 +127,8 @@ type Job = {
   settled: boolean
   /** A redo's prompt before the correction went in (F196): `runJob` composes it again with what the vision model saw. */
   fixBase?: string
+  /** A second sheet (F197): the model's request, to compose behind what the vision model says the photo shows. */
+  sheetExtras?: string
 }
 
 type Outcome = { status: 'done' } | { status: 'failed'; reason: string }
@@ -514,9 +516,16 @@ export class ImageService implements ImageAnnotator {
       const byRecipe = im.kind === 'edit' || im.kind === 'outline'
       const recipe = im.kind === 'outline' ? outlinePrompt(im.prompt) : im.prompt
       // A redo is another picture of the same photo: what the owner said was wrong is part of its prompt, so of its key (F196).
-      const prompt = im.fix ? withFix(recipe, im.fix) : recipe
-      const fields = this.keyFields(cfg, wf, prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(byRecipe ? EDIT_SAMPLING : {}) } : undefined)
-      const key = imageKey(fields)
+      const keyed = (prompt: string) => this.keyFields(cfg, wf, prompt, im.seed, source ? { transform: im.kind as TransformKind, source: source.sha256, ...(fit ?? {}), ...(byRecipe ? EDIT_SAMPLING : {}) } : undefined)
+      let fields = keyed(im.fix ? withFix(recipe, im.fix) : recipe)
+      let key = imageKey(fields)
+      // A second sheet (F197): this chat already has a tracing sheet of this photo and now asks for another. The
+      // chat model wrote the request without seeing the photo, so it is drawn from what the photo shows
+      // (`sheetFromPhoto`; the vision model is asked in `runJob`). A sheet already made or queued under the plain
+      // prompt stays that picture: the first sheet shown again is not a second one.
+      const sheet = im.kind === 'outline' && !im.fix && !!source && !!im.prompt.trim()
+        && !this.jobs.has(`${dir}|${key}`) && !readSidecar(dir, key) && this.hasSheetOf(dir, chatFile, source.sha256)
+      if (sheet) { fields = keyed(sheetFromPhoto(im.prompt)); key = imageKey(fields) }
       const repeat = decided.has(key)
       let state = decided.get(key)
       if (!state) {
@@ -537,7 +546,7 @@ export class ImageService implements ImageAnnotator {
             if (twin.pin) pins.push([twin.pin, fields.checkpoint])
           } else if (this.queue.length + newJobs.length >= QUEUE_CAP) state = { status: 'off', reason: QUEUE_FULL_REASON }
           else {
-            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as TransformKind, source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}), ...(im.fix ? { fix: { said: im.fix, base: recipe } } : {}) } : { wf }))
+            newJobs.push(this.makeJob(cfg, fields, key, im.alt, im.seed === undefined ? 'prompt' : 'model', { dir, slug, chatFile }, { toolId: at.toolId, elementId: im.id, surfaceId: at.surfaceId }, source ? { wf, transform: im.kind as TransformKind, source, ...(im.kind === 'vary' ? { denoise: VARY_DENOISE } : {}), ...(im.fix ? { fix: { said: im.fix, base: recipe } } : {}), ...(sheet ? { sheet: { extras: im.prompt } } : {}) } : { wf }))
             state = { status: 'queued', ...base }
           }
         }
@@ -641,6 +650,17 @@ export class ImageService implements ImageAnnotator {
     return sc && sc.status === 'done' && sc.checkpoint === f.checkpoint && existsSync(pngPath(dir, key)) ? { key, status: 'done', pin: null } : null
   }
 
+  /** Whether this chat already has a finished tracing sheet of this photo (by content): the next one with a request of its own is a second sheet (F197). */
+  private hasSheetOf(dir: string, chatFile: string, sha256: string): boolean {
+    const origins = readOrigins(dir)
+    for (const o of Object.keys(origins)) {
+      if (!o.startsWith(`${chatFile}#`)) continue
+      const sc = readSidecar(dir, origins[o])
+      if (sc?.status === 'done' && sc.transform === 'outline' && sc.source?.sha256 === sha256) return true
+    }
+    return false
+  }
+
   private makeJob(cfg: ComfyConfig, f: KeyFields, key: string, alt: string, seedFrom: 'model' | 'prompt', p: { dir: string; slug: string; chatFile: string }, o: { toolId: string; elementId: string; surfaceId: string }, extra: JobExtra = {}): Job {
     const queuedAt = this.now()
     const sidecar: ImageSidecar = {
@@ -654,7 +674,7 @@ export class ImageService implements ImageAnnotator {
       queuedAt: iso(queuedAt),
       origin: { chatFile: p.chatFile, ...o },
     }
-    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', pinned: null, onServer: null, settled: false, ...(extra.transform && extra.fix ? { fixBase: extra.fix.base } : {}) }
+    return { id: `${p.dir}|${key}`, dir: p.dir, slug: p.slug, key, sidecar, queuedAt, status: 'queued', pinned: null, onServer: null, settled: false, ...(extra.transform && extra.fix ? { fixBase: extra.fix.base } : {}), ...(extra.transform && extra.sheet ? { sheetExtras: extra.sheet.extras } : {}) }
   }
 
   // ─── worker ─────────────────────────────────────────────────────────
@@ -766,26 +786,43 @@ export class ImageService implements ImageAnnotator {
         return this.finish(job, { status: 'failed', reason: reasonOf(e) })
       }
     }
-    // A redo (F196): the vision model says what the photo shows of the thing that came out wrong, and that located
-    // text goes into the prompt behind the owner's words. It is asked now, while it may still be loaded: the unload
-    // below (F194) comes after. No answer is no reason not to paint — the key was built on the owner's words alone.
+    // A redo (F196) or a second sheet (F197): the vision model says what the photo shows — of the thing that came
+    // out wrong, or of the subject a new sheet must still be traced from — and that located text goes into the
+    // prompt. It is asked now, while it may still be loaded: the unload below (F194) comes after. No answer is no
+    // reason not to paint — the key was built on the prompt without it. A redo then paints from the owner's words;
+    // a second sheet is the plain sheet, since its request without what the photo shows is drawn instead of the photo.
     let prompt = sc.prompt
-    if (photo && sc.source && sc.fix && job.fixBase !== undefined && this.askAboutPhoto) {
-      const said = sc.fix.said
+    const redo = sc.fix && job.fixBase !== undefined ? { said: sc.fix.said, base: job.fixBase } : null
+    const sheet = !redo && job.sheetExtras !== undefined ? { extras: job.sheetExtras } : null
+    if (photo && sc.source && (redo || sheet) && this.askAboutPhoto) {
+      let seen = ''
+      let by: { model?: string; ms?: number } = {}
       let reason: string | null = null
       try {
-        const r = await this.askAboutPhoto(photo, sc.source.path, fixQuestion(said))
-        const seen = r.ok ? r.answer.replace(/\s+/g, ' ').trim() : ''
-        if (r.ok && seen) {
-          prompt = withFix(job.fixBase, said, seen)
-          sc.fix = { said, seen: seen.slice(0, 2000), ...(r.model ? { model: r.model } : {}), ...(r.ms !== undefined ? { ms: r.ms } : {}) }
-        } else reason = r.ok ? 'the vision model gave no answer' : r.reason
+        const r = await this.askAboutPhoto(photo, sc.source.path, redo ? fixQuestion(redo.said) : SHEET_QUESTION)
+        if (r.ok) {
+          seen = r.answer.replace(/\s+/g, ' ').trim()
+          by = { ...(r.model ? { model: r.model } : {}), ...(r.ms !== undefined ? { ms: r.ms } : {}) }
+          if (!seen) reason = 'the vision model gave no answer'
+        } else reason = r.reason
       } catch (e) { reason = errText(e) }
       if (this.stopped) return
-      if (reason !== null) {
-        sc.fix = { said, reason }
-        this.log(`[imagegen] ${job.key.slice(0, 8)} redo: the photo could not be looked at for the correction (${reason}); painting from the owner's words alone`)
+      const looked = reason === null ? { seen: seen.slice(0, 2000), ...by } : { reason }
+      if (redo) {
+        sc.fix = { said: redo.said, ...looked }
+        if (reason === null) prompt = withFix(redo.base, redo.said, seen)
+        else this.log(`[imagegen] ${job.key.slice(0, 8)} redo: the photo could not be looked at for the correction (${reason}); painting from the owner's words alone`)
+      } else if (sheet) {
+        sc.shown = looked
+        if (reason === null) prompt = sheetFromPhoto(sheet.extras, seen)
+        else {
+          prompt = outlinePrompt('')
+          this.log(`[imagegen] ${job.key.slice(0, 8)} second sheet: the photo could not be looked at (${reason}); drawing the plain sheet, without the request`)
+        }
       }
+    } else if (sheet) {
+      prompt = outlinePrompt('')
+      sc.shown = { reason: 'no vision model to ask' }
     }
     // Make room on the shared GPU first (F194): the vision model's VRAM goes before the edit model comes.
     if (sc.transform && this.beforeTransform) {

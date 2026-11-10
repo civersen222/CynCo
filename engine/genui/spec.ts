@@ -411,7 +411,7 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
     if (typeof p.prompt !== 'string' && p.seed !== undefined && p.seed !== null) { delete p.seed; report(ctx, `${at}.seed: only a prompted picture takes a seed — dropped`) }
     // Image box §4: a photo in the project transformed on ComfyUI. "source" is a
     // project path (the validator's own rule), "transform" edit (the instruction in
-    // "prompt", F193), vary (the idea in "prompt") or outline (a tracing sheet; "prompt" = optional extra guides). A transform beside a "src" keeps the source.
+    // "prompt", F193), vary (the idea in "prompt") or outline (a tracing sheet; "prompt" = optional guides or omissions, never the subject, F197). A transform beside a "src" keeps the source.
     if (p.transform !== undefined || p.source !== undefined) {
       const transform = toStr(p.transform)?.trim().toLowerCase()
       const source = projectImagePath(toStr(p.source))
