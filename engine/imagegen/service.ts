@@ -245,6 +245,8 @@ export class ImageService implements ImageAnnotator {
   private readonly jobs = new Map<string, Job>()
   private running: Job | null = null
   private pumping = false
+  /** A prompt of ours has gone to ComfyUI since the last /free: its model may still be in the box's VRAM (F198). */
+  private loaded = false
   private pumpRun: Promise<void> | null = null
   /** Commits no job makes (the origins of pictures already made), awaited by whenIdle and shutdown. */
   private readonly asideCommits = new Set<Promise<void>>()
@@ -690,7 +692,13 @@ export class ImageService implements ImageAnnotator {
     try {
       while (!this.stopped) {
         const job = this.queue.shift()
-        if (!job) break
+        if (!job) {
+          // The queue is empty: nothing of ours is in use on the box, so nothing of ours stays loaded there (F198).
+          // ComfyUI never unloads on its own. Still inside the activity; a job asked for meanwhile is run next.
+          if (!this.loaded || !this.client) break
+          await this.freeBox(this.client, 'with the queue empty')
+          continue
+        }
         release ??= this.activity.begin('picture', 'image queue')
         this.running = job
         try {
@@ -838,6 +846,7 @@ export class ImageService implements ImageAnnotator {
     // Before the POST: a crash from here on leaves a record naming the prompt id.
     writeSidecar(job.dir, sc)
     const sent = sc.comfy.promptId
+    this.loaded = true
     const submission = client.submit(graph, sent)
     job.onServer = submission.then(id => id, e => (e instanceof ComfyError && e.refused ? null : sent))
     let id: string
@@ -923,9 +932,8 @@ export class ImageService implements ImageAnnotator {
     sc.sha256 = sha256Of(bytes)
     sc.bytes = bytes.byteLength
     // After a transform, give the box its VRAM back: SDXL must not sit beside the vision model and the 14B fallback (image box §4).
-    if (sc.transform) {
-      try { await client.free() } catch (e) { this.log(`[imagegen] ${job.key.slice(0, 8)}: /free after the ${sc.transform} failed: ${reasonOf(e)}`) }
-    }
+    // A generated picture keeps its checkpoint for the next one in the queue; the empty queue frees it (F198).
+    if (sc.transform) await this.freeBox(client, `after the ${sc.transform} ${job.key.slice(0, 8)}`)
     await this.finish(job, { status: 'done' })
   }
 
@@ -977,6 +985,12 @@ export class ImageService implements ImageAnnotator {
       if (this.probing) this.reprobeAfter = this.probeSeq
       else this.startProbe(this.config.cfg).catch(e => this.log(`[imagegen] the probe after dropping ${ckpt} failed: ${errText(e)}`))
     }
+  }
+
+  /** Ask ComfyUI to unload its models and free its memory. One attempt: a failure is logged and not retried, so an unreachable box cannot hold the queue. */
+  private async freeBox(client: ComfyClient, when: string): Promise<void> {
+    this.loaded = false
+    try { await client.free() } catch (e) { this.log(`[imagegen] /free ${when} failed: ${reasonOf(e)}`) }
   }
 
   /** The worker gives up on a prompt ComfyUI may hold: it is the worker's to cancel now, not shutdown's. */
@@ -1110,6 +1124,8 @@ export class ImageService implements ImageAnnotator {
     const cancel = async () => {
       const id = onServer ? await onServer : null
       if (id && this.client) await this.cancelOnServer(this.client, id)
+      // The interrupted prompt's model is still on the box, and nothing of ours runs there after this (F198).
+      if (this.loaded && this.client) await this.freeBox(this.client, 'with the engine stopping')
     }
     const commits = async () => {
       for (const [dir, keys] of byDir) await this.commit(dir, keys, `images: ${keys.length} stopped with the engine`)

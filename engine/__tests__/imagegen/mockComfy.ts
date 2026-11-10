@@ -51,6 +51,8 @@ export type MockMode = {
   delay: Record<string, number>
   /** POST /upload/image answers 500 (image box §4). */
   uploadFail: boolean
+  /** POST /free answers 500. */
+  freeFail: boolean
 }
 
 export type MockCall = { method: string; path: string; query: Record<string, string>; body: unknown }
@@ -73,7 +75,7 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
   const mode: MockMode = {
     stats: 'ok', checkpoints: ['juggernautXL_v9.safetensors', 'sd15.safetensors'], nodes: [...BUILTIN_CLASSES],
     pendingPolls: 1, neverFinish: false, refuse: null, checkCheckpoints: false, executionError: null, interrupted: false,
-    filename: null, subfolder: null, noOutputs: false, view: 'png', oversizedBytes: 4096, ignoreClientId: false, delay: {}, uploadFail: false,
+    filename: null, subfolder: null, noOutputs: false, view: 'png', oversizedBytes: 4096, ignoreClientId: false, delay: {}, uploadFail: false, freeFail: false,
     ...overrides,
   }
   const calls: MockCall[] = []
@@ -196,7 +198,7 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
       if (!ct.startsWith('multipart/form-data') || !m) return json(res, 400, { error: 'expected multipart with an image field' })
       return json(res, 200, { name: m[1], subfolder: '', type: 'input' })
     }
-    if (u.pathname === '/free' && req.method === 'POST') return json(res, 200, {})
+    if (u.pathname === '/free' && req.method === 'POST') return mode.freeFail ? json(res, 500, { error: 'busy' }) : json(res, 200, {})
     return json(res, 404, { error: `no route ${u.pathname}` })
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))

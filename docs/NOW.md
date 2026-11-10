@@ -49,6 +49,9 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
 
 ## Backlog (worth doing, not started)
 
+- The image box can still be left with a model loaded by something the engine cannot see (F198): an engine killed outright while a prompt runs, the ComfyUI page, a hand-run script. A `/free` at engine start when ComfyUI's queue is empty, or an idle sweep, would cover it; either unloads a model somebody else may have loaded on purpose, so it is the owner's call.
+- The vision model stays on the image box for 10 minutes after a look (`keep_alive: '10m'`, `engine/vision/lookClient.ts`) unless a transform unloads it first (F194). Unloading right after each look would cost a reload (seconds) on the next one; unmeasured, and the owner's call.
+- The owner's "high gpu use pings" from the image box (2026-11-09) are not sent by anything in this repo; what sends them, and whether it reads held memory or utilisation, is untraced.
 - A sheet with a request (F197) is pinned by unit tests and its wording was measured by hand on one photo; it has not yet run from the phone end to end: check the first live one's sidecar (`shown.seen`) against the photo.
 - When the look for a sheet fails (F197), the plain sheet is drawn and the request is dropped; why is in the sidecar's `shown.reason` and the engine log only. `publicSidecar` does not carry `shown`, so on the phone the owner gets a sheet without the guides asked for and nothing saying so.
 - A redo (`fix`) of a tracing sheet composes on `outlinePrompt(extras)`: the first request rides along without what the photo shows (the F196 look is about the correction only). Whether a request that describes the subject is then drawn instead of the photo is unmeasured.

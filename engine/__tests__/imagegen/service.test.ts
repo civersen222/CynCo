@@ -2033,6 +2033,57 @@ describe('ImageService: transforms', () => {
     const sc = readSidecar(dir, keyOf(second, 0))!
     expect(sc).toMatchObject({ status: 'done', prompt: outlinePrompt('only the roof line') }); expect(sc.shown).toBeUndefined()
   })
+  it('a generated picture leaves nothing loaded on the image box (F198): one /free when the queue is empty, after the last picture and not between two', async () => {
+    mock = await startMockComfy()
+    const s = start()
+    s.annotate(spec(['a tall green alien', 'a short blue alien']), at()).start(); await s.whenIdle()
+    const paths = mock.calls.map(c => c.path)
+    expect(paths.filter(p => p === '/view').length).toBe(2)
+    expect(paths.filter(p => p === '/free').length).toBe(1)
+    expect(paths.indexOf('/free')).toBeGreaterThan(paths.lastIndexOf('/view'))
+    // a later picture loads the model again, and it is freed again
+    s.annotate(spec(['a wide red alien']), at({ toolId: 'tool-2' })).start(); await s.whenIdle()
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(2)
+  })
+  it('a transform frees the box once (F198): after its picture, and not again when the queue is empty', async () => {
+    mock = await startMockComfy({ nodes: NODES })
+    const s = start(); const rel = photo()
+    s.annotate(tspec({ source: rel, transform: 'vary', prompt: 'add a pergola' }), at()).start(); await s.whenIdle()
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
+  })
+  it('a job that failed on the server still leaves nothing loaded (F198): the box is freed when the queue is empty', async () => {
+    mock = await startMockComfy({ nodes: NODES, executionError: { node_id: '3', node_type: 'KSampler', exception_message: 'boom' } })
+    const s = start(); const rel = photo()
+    const bad = tspec({ source: rel, transform: 'outline' })
+    s.annotate(bad, at()).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(bad, 0))!.status).toBe('failed')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
+  })
+  it('a job that never reached the image server frees nothing (F198): nothing of ours was loaded', async () => {
+    mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })
+    const s = start(); const rel = photo()
+    const bad = tspec({ source: rel, transform: 'outline' })
+    s.annotate(bad, at()).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(bad, 0))!.status).toBe('failed')
+    expect(mock.calls.some(c => c.path === '/free')).toBe(false)
+  })
+  it('a /free the image server refuses is logged once and the queue still goes idle (F198)', async () => {
+    mock = await startMockComfy({ freeFail: true })
+    const s = start()
+    const sp = spec(['a tall green alien'])
+    s.annotate(sp, at()).start(); await s.whenIdle()
+    expect(readSidecar(dir, keyOf(sp, 0))!.status).toBe('done')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
+    expect(logs.filter(l => /^\[imagegen\] \/free with the queue empty failed: .*HTTP 500/.test(l)).length).toBe(1)
+  })
+  it('the engine stopping under a running picture frees the box after the interrupt (F198)', async () => {
+    mock = await startMockComfy({ neverFinish: true })
+    const s = start()
+    s.annotate(spec(['a tall green alien']), at()).start()
+    await until(() => events.some(e => e.status === 'running'), 'running')
+    await s.shutdown()
+    expect(mock.calls.filter(c => ['/interrupt', '/queue', '/free'].includes(c.path) && c.method !== 'GET').map(c => c.path)).toEqual(['/interrupt', '/queue', '/free'])
+  })
   it('the picture queue is one "picture" activity from its first job until it is idle, whether the jobs paint or fail (wakefulness: the PC stays awake and the chat model stays loaded while a picture is made)', async () => {
     mock = await startMockComfy({ nodes: NODES.filter(n => n !== 'UnetLoaderGGUF') })
     const reg = new ActivityRegistry(); const seen: string[] = []
