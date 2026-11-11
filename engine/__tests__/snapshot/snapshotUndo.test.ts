@@ -4,6 +4,9 @@ import * as os from 'os'
 import * as path from 'path'
 import { resetEventBus } from '../../vsm/eventBus.js'
 import { globalContract } from '../../tools/contract.js'
+// Imported here, not inside a test: the first test to load the loop's module
+// graph was billed for it (5.4 s under a full run against the 5 s default, F207).
+import { ConversationLoop } from '../../bridge/conversationLoop.js'
 
 describe('snapshot undo stack (P1.4)', () => {
   let tempDir = ''
@@ -24,7 +27,6 @@ describe('snapshot undo stack (P1.4)', () => {
   })
 
   async function makeLoop() {
-    const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
     // Mock provider: never called in this test — throw loudly if it is.
     const provider: any = {
       name: 'mock',
