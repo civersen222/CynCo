@@ -23,7 +23,7 @@ import { ntfyOptionsFromEnv } from '../../daemon/ntfyChannel.js'
 
 const tick = (ms = 15) => new Promise(r => setTimeout(r, ms))
 
-function rig(opts: { pending?: WaitingOn[]; clients?: number; publish?: (p: any) => Promise<boolean> } = {}) {
+function rig(opts: { pending?: WaitingOn[]; clients?: number; publish?: (p: any) => Promise<boolean>; openAt?: () => string | null } = {}) {
   const sent: any[] = []
   const logs: string[] = []
   const state = { pending: opts.pending ?? [], clients: opts.clients ?? 0 }
@@ -32,6 +32,7 @@ function rig(opts: { pending?: WaitingOn[]; clients?: number; publish?: (p: any)
     pending: () => state.pending,
     clientCount: () => state.clients,
     graceMs: 0,
+    openAt: opts.openAt,
     log: (l: string) => logs.push(l),
   })
   return { push, sent, logs, state }
@@ -155,5 +156,28 @@ describe('the five minutes a notice names', () => {
 
   it('are the question timeout in AskBroker', () => {
     expect(read('tools/askBroker.ts')).toContain('opts?.timeoutMs ?? 300000')
+  })
+})
+
+describe('the notice opens the dashboard when tapped', () => {
+  it('carries the address the phone last used as the ntfy click', async () => {
+    const { push, sent } = rig({ pending: [approval], openAt: () => 'http://100.64.0.9:9161/' })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick()
+    expect(sent).toHaveLength(1)
+    expect(sent[0].click).toBe('http://100.64.0.9:9161/')
+  })
+
+  it('goes out without a link when no paired device has connected since the engine started', async () => {
+    const { push, sent } = rig({ pending: [ask], openAt: () => null })
+    push.onEvent({ type: 'ask.request', requestId: 'q1' })
+    await tick()
+    expect(sent).toHaveLength(1)
+    expect('click' in sent[0]).toBe(false)
+  })
+
+  it('waitNotice leaves click out unless it is given a link', () => {
+    expect('click' in waitNotice(approval)).toBe(false)
+    expect(waitNotice(approval, 'http://100.64.0.9:9161/').click).toBe('http://100.64.0.9:9161/')
   })
 })

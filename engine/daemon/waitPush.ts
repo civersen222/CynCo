@@ -23,6 +23,8 @@ export interface WaitNotice {
   title: string
   message: string
   priority: number
+  /** Where a tap on the notification goes (ntfy's `click`). Absent when no address is known. */
+  click?: string
 }
 
 export interface WaitPushDeps {
@@ -30,12 +32,19 @@ export interface WaitPushDeps {
   pending: () => WaitingOn[]
   /** Dashboard sockets plus the TUI: anyone who was shown the card. */
   clientCount: () => number
+  /**
+   * The dashboard address to open from the notification, or null when none is known: the origin a
+   * paired device last opened the page on (`DashboardServer.lastRemoteOrigin`). The page itself, not a
+   * chat inside it: the engine holds one conversation and puts a connecting page in it, with the card,
+   * whereas asking for a chat by name is `project.open`, which ends the turn that is waiting.
+   */
+  openAt?: () => string | null
   graceMs?: number
   log?: (line: string) => void
 }
 
 /** The notification for one open wait. The five minutes are `requestApproval`'s and `AskBroker`'s own timeouts. */
-export function waitNotice(d: WaitingOn): WaitNotice {
+export function waitNotice(d: WaitingOn, link?: string | null): WaitNotice {
   const title = d.kind === 'approval' ? 'CynCo needs your approval' : 'CynCo has a question'
   const body = d.kind === 'approval'
     ? `${d.toolName}: ${d.description}`
@@ -45,7 +54,7 @@ export function waitNotice(d: WaitingOn): WaitNotice {
     : 'Goes on without an answer after 5 minutes.'
   const room = MAX_MESSAGE - tail.length - 1
   const text = body.length > room ? `${body.slice(0, room - 1)}…` : body
-  return { title, message: `${text}\n${tail}`, priority: 4 }
+  return { title, message: `${text}\n${tail}`, priority: 4, ...(link ? { click: link } : {}) }
 }
 
 export class WaitPush {
@@ -66,7 +75,7 @@ export class WaitPush {
     try {
       const waiting = this.deps.pending().find(d => d.requestId === requestId)
       if (!waiting || this.deps.clientCount() > 0) return
-      const ok = await this.deps.publish(waitNotice(waiting))
+      const ok = await this.deps.publish(waitNotice(waiting, this.deps.openAt?.()))
       // The request's own text stays out of the log: it is already in the transcript.
       log(ok ? `[wait-push] told the phone: ${waiting.kind} waiting` : `[wait-push] not delivered: ntfy did not take the ${waiting.kind} notice`)
     } catch (err) {

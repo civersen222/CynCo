@@ -352,3 +352,34 @@ describe('listeners', () => {
     expect((await fetch('http://127.0.0.2:19262/')).status).toBe(200)
   })
 })
+
+describe('the address a paired device last opened the page on (the wait push links to it)', () => {
+  it('is the Origin of the socket a paired device opened', async () => {
+    const t = await start()
+    expect(t.server.lastRemoteOrigin).toBeNull()
+    const { token } = await t.pair()
+    t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
+    expect(t.server.lastRemoteOrigin).toBe(`http://127.0.0.1:${t.port}`)
+  })
+
+  it('is not the page on the desk: a loopback address means nothing to the phone', async () => {
+    const t = await start()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${t.tokens.tokenFor('inference')}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
+    expect(t.server.lastRemoteOrigin).toBeNull()
+  })
+
+  it('is not set by a remote socket that was refused: only a paired device steers the link', async () => {
+    const t = await start(); t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=not-a-device`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(401)
+    expect(t.server.lastRemoteOrigin).toBeNull()
+  })
+
+  it('is not set by a client that sends no Origin: there is no page to go back to', async () => {
+    const t = await start()
+    const { token } = await t.pair()
+    t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`)).toBe(101)
+    expect(t.server.lastRemoteOrigin).toBeNull()
+  })
+})

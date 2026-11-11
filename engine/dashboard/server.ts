@@ -37,7 +37,7 @@ import {
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
 import { DEVICE_PREFIX, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
-  classifyClient, hostRefusal, originMismatch, parseListenHosts, isWildcardHost,
+  classifyClient, hostRefusal, originMismatch, pageOrigin, parseListenHosts, isWildcardHost,
   PairingGate, MAX_DEVICES, pairingPage, DEVICE_TOKEN_STORAGE_KEY, type ClientKind,
 } from './access.js'
 
@@ -537,6 +537,8 @@ export class DashboardServer {
   })
   /** When a request last arrived from off this machine — the cheapest "did anything get through the firewall" fact. */
   private lastRemoteRequestAt: string | null = null
+  /** Set on a paired device's socket only; read through `lastRemoteOrigin`. */
+  private remoteOrigin: string | null = null
   private clients: Set<ServerWebSocket<DashboardSocketData>> = new Set()
   /** Last broadcast per replayable type, resent to late-joining clients.
    *  brain.tier fires once at engine startup — browsers always connect later. */
@@ -632,7 +634,11 @@ export class DashboardServer {
           const auth = this.authenticate(req, 'inference', kind, { allowQueryToken: true })
           if (!auth.ok) return auth.response
           const success = server.upgrade(req, { data: { holder: auth.holder } })
-          if (success) return undefined
+          if (success) {
+            // Past the Host check, the Origin check and the device token: this is the address the phone has the page on.
+            if (kind === 'remote') this.remoteOrigin = pageOrigin(req.headers.get('origin')) ?? this.remoteOrigin
+            return undefined
+          }
           return new Response('WebSocket upgrade failed', { status: 400 })
         }
 
@@ -2206,6 +2212,13 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
 
   /** Connected dashboard sockets — what the wait push asks before it tells the phone (engine/daemon/waitPush.ts). */
   get clientCount(): number { return this.clients.size }
+
+  /**
+   * The page address a paired device last opened a socket from, or null until one has since this engine
+   * started. The wait push links its notification here: the device token lives in the browser per origin,
+   * so this is the one address known to open the dashboard on that phone instead of the pairing screen.
+   */
+  get lastRemoteOrigin(): string | null { return this.remoteOrigin }
 
   getPort(): number {
     // Prefer the server's actual bound port (non-zero when port=0 was requested).

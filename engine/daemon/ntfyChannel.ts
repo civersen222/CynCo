@@ -31,6 +31,8 @@ interface PublishPayload {
   message: string
   priority?: number
   actions?: NtfyAction[]
+  /** ntfy's `click`: the address a tap on the notification opens. */
+  click?: string
 }
 
 export class NtfyChannel {
