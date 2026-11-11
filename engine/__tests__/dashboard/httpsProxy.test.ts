@@ -43,7 +43,9 @@ async function start(proxyPort: number | null = 0) {
   /** A request as `tailscale serve` forwards it: the browser's Host, a loopback peer. */
   const proxied = (path: string, opts: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
     new Promise<{ status: number; text: string; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
-      const req = http.request({ host: '127.0.0.1', port: proxy!.port, path, method: opts.method ?? 'GET', headers: { Host: TSNET, ...(opts.headers ?? {}) } }, res => {
+      // A browser declares the length of what it sends, and the proxy forwards it; a chunked body is refused (411).
+      const length = opts.body ? { 'Content-Length': String(Buffer.byteLength(opts.body)) } : {}
+      const req = http.request({ host: '127.0.0.1', port: proxy!.port, path, method: opts.method ?? 'GET', headers: { Host: TSNET, ...length, ...(opts.headers ?? {}) } }, res => {
         let text = ''
         res.on('data', d => { text += d })
         res.on('end', () => resolve({ status: res.statusCode ?? 0, text, headers: res.headers }))

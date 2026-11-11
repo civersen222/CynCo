@@ -7,7 +7,7 @@
  * plain filesystem shape, so it can be tested against a temp dir alone.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, realpathSync, lstatSync, readlinkSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, renameSync, unlinkSync, realpathSync, lstatSync, readlinkSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
@@ -134,6 +134,23 @@ export function writeJsonAtomic(path: string, value: unknown): void {
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}` // unguessable, and 'wx' never follows a link planted there
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
   renameSync(tmp, path)
+}
+
+/**
+ * `writeJsonAtomic` for a file's bytes: a fresh file under an unguessable temp
+ * name, created `wx`, then renamed into place — so a link planted at the
+ * target is replaced, never written through, and a reader never sees half a
+ * file. Every upload lands through this. A failed rename removes the temp.
+ */
+export function writeBytesAtomic(path: string, bytes: Uint8Array): void {
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`
+  writeFileSync(tmp, bytes, { flag: 'wx' })
+  try {
+    renameSync(tmp, path)
+  } catch (e) {
+    try { unlinkSync(tmp) } catch (cleanup) { console.log(`[projects] could not remove ${tmp}: ${cleanup instanceof Error ? cleanup.message : String(cleanup)}`) }
+    throw e
+  }
 }
 
 export function createProject(home: string, input: { name: string; description?: string; instructions?: string; tags?: string[] }): ProjectMeta {
