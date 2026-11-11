@@ -170,10 +170,28 @@ export async function restoreDisplacedApps(deps: RestoreDeps): Promise<void> {
 }
 
 const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
+
+/**
+ * One argument as the Windows C runtime will read it back (F217). Backslashes are literal unless a double
+ * quote follows them, so: the backslashes before a quote are doubled and the quote escaped, and the ones at
+ * the end are doubled because the closing quote follows them. Escaping the quote alone turned `C:\my dir\`
+ * into an argument that swallowed its closing quote and ran into the next one.
+ */
+function quoteWindowsArg(arg: string, always = false): string {
+  if (!always && arg !== '' && !/[\s"]/.test(arg)) return arg
+  let out = '"'
+  let slashes = 0
+  for (const ch of arg) {
+    if (ch === '\\') { slashes++; continue }
+    out += '\\'.repeat(ch === '"' ? slashes * 2 + 1 : slashes) + ch
+    slashes = 0
+  }
+  return out + '\\'.repeat(slashes * 2) + '"'
+}
+
 /** One Windows command line from an executable and its arguments. */
 export function windowsCommandLine(exe: string, args: string[]): string {
-  const q = (a: string) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)
-  return [`"${exe}"`, ...args.map(q)].join(' ')
+  return [quoteWindowsArg(exe, true), ...args.map(a => quoteWindowsArg(a))].join(' ')
 }
 
 /**
