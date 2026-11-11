@@ -597,7 +597,7 @@ export class ConversationLoop {
   private sessionId: string = ''
   // Index-degradation state surfaced on context.status (Task 13).
   private indexDegraded?: boolean
-  /** This chat has been told that semantic search is off (F214); cleared when it is told the search is back. */
+  /** This chat has been told that semantic search is off (F215); cleared when it is told the search is back. */
   private saidEmbedOutage = false
   private lastQueryMode?: 'hybrid' | 'vector' | 'keyword'
   private snapshot?: WorkspaceSnapshot
@@ -1271,7 +1271,7 @@ export class ConversationLoop {
   }
 
   /**
-   * Semantic search being off, said in the chat (F214): once when this turn's retrieval found no embedding
+   * Semantic search being off, said in the chat (F215): once when this turn's retrieval found no embedding
    * server, and once when one answers again. On the busy-notice channel (governance.alert, source `llama-cpp`,
    * severity `info`), which the dashboard page already turns into a `model:` chat line, so the phone sees it.
    * The state is `embedOutage()` (engine/index/embedClient.ts); a chat opened during an outage hears it on

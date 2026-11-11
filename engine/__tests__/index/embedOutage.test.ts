@@ -1,4 +1,4 @@
-// Semantic search being off is said where the owner looks (F214).
+// Semantic search being off is said where the owner looks (F215).
 //
 // 2026-11-11: the embedding service was down for hours. The engine wrote
 // "No embedding endpoint answered … Semantic code search is OFF for this

@@ -4212,7 +4212,19 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 
 **Rule:** when the same question ("is the GPU taken?") has two sources, every decision that depends on it reads both, through one function. A fallback that covers the case you had in mind and not its sibling is found by asking what else puts the system in the same state.
 
-## F214 — The embedding service was down for hours and nothing told the owner; and every mission dispatch would have killed it (2026-11-11; no run lost)
+## F214 — A squash before a push carried a stale copy of main and would have reverted a PR merged a minute earlier (2026-11-11; caught before merge)
+
+**Where:** this repository's PR flow as one session ran it on 2026-11-11: a branch with work-in-progress commits and a merge of `origin/main`, squashed with `git reset --soft origin/main` and one commit.
+
+**How:** the inbox branch merged `origin/main`, ran the full suite, and then, in one command, fetched, squashed with `git reset --soft origin/main`, committed and pushed. Between the merge and the fetch the other session merged PR #233. `reset --soft` moved the branch onto the new main while the index still held the tree built on the old one, so the single commit carried the difference: `engine/llama/busyFallback.ts` and `engine/bootstrapProvider.ts` back to their earlier versions, `busyFallbackPortHolder.test.ts` deleted, F213 removed from this log. The pushed PR (#235) showed 25 files, five of them not the session's. The same command had printed the two new commits on main a line above the PR link. Seen on reading the pushed diff; nothing was merged.
+
+**Why:** a soft reset to a ref is only a squash when that ref is already an ancestor of the branch. The command checked that by eye (`git log HEAD..origin/main`, printed and not acted on) in the same chain that then did the reset. Three earlier PRs that day used the same chain and were safe only because main had not moved in the gap.
+
+**Fix:** the branch was put back on its pre-squash commit (`git reflog`), `origin/main` merged, and the diff against main read before the squash: twenty files, all the session's. The squash now runs only behind `git merge-base --is-ancestor origin/main HEAD`, and the file list of `git diff --stat origin/main HEAD` is read after the commit and before the push.
+
+**Rule:** squash against the commit you merged, not against wherever the remote is by the time you squash: fetch, merge, test, and then `git merge-base --is-ancestor origin/main HEAD && git reset --soft origin/main` with no fetch in between. And read the pushed diff's file list before a merge; a PR that touches files its description does not name is wrong until explained.
+
+## F215 — The embedding service was down for hours and nothing told the owner; and every mission dispatch would have killed it (2026-11-11; no run lost)
 
 **Where:** the `embed` service (Task Scheduler task `CynCo embed server`, `scripts/run-embed-server.cmd`: `~/.cynco/bin/llama-server.exe --embeddings --port 9165`); `warnEmbedUnavailable` in `engine/index/embedClient.ts`, the only place the outage was said; and the llama-server sweeps in `scripts/dispatch-mission.sh` and `killEngineTree` in `scripts/cynco-mission-driver.mjs`.
 

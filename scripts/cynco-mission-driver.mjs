@@ -1129,7 +1129,7 @@ try {
 // When any teardown path ends in "kill the tree by hand", the driver now IS
 // the hand: same match rules as dispatch-mission.sh (engines by command line,
 // the chat model's llama-server by cynco-llama-sweep.mjs, so Ollama's copy and
-// the embedding service are never touched, F214).
+// the embedding service are never touched, F215).
 function killEngineTree(reason) {
   const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-Command', q], { encoding: 'utf-8' }).stdout ?? '')
     .split(/\r?\n/).map((s) => s.trim()).filter(Boolean)

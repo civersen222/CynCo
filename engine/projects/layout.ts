@@ -12,13 +12,14 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
 export type ProjectMeta = { schema: 1; slug: string; name: string; description: string; tags: string[]; createdAt: string }
-export type FileOrigin = 'pasted' | 'uploaded' | 'phone' | 'research' | 'artifact' | 'chat'
+export type FileOrigin = 'pasted' | 'uploaded' | 'phone' | 'research' | 'artifact' | 'chat' | 'draft'
 export type FileRecord = { sha256: string; addedAt: string; origin: FileOrigin; indexed: boolean; reason?: string; chunks?: number; embedModel?: string }
 export type FileIndex = { files: Record<string, FileRecord> }
 export type JournalEvent =
   | 'created' | 'knowledge.added' | 'knowledge.removed' | 'knowledge.unindexed'
   | 'artifact.saved' | 'artifact.unindexed' | 'artifact.removed' | 'artifact.promoted' | 'chat.opened' | 'chat.renamed'
   | 'index.rebuilt' | 'history.failed' | 'registry.rebuilt' | 'image.generated' | 'image.failed'
+  | 'draft.added' | 'draft.accepted' | 'draft.discarded'
 
 export const INSTRUCTIONS_HINT = '<!-- Standing instructions for every chat in this project. Write them below this line. -->\n'
 export const PLAN_TEMPLATE = '# Plan\n\n<!-- One checkbox item per line: - [ ] item -->\n'

@@ -86,7 +86,7 @@ done
 # below then refuses forever on a process that never held our port. The chat
 # model's server lives under ~/.cynco (bin/ for the loop, bin-brain/ for the
 # activations tier). So does the embedding service since 2026-11-08, the same
-# binary with --embeddings, and it must survive a dispatch (F214): the selector
+# binary with --embeddings, and it must survive a dispatch (F215): the selector
 # is scripts/cynco-llama-sweep.mjs, shared with the driver's teardown.
 lc_llama_pids() { bun scripts/cynco-llama-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
 if ! LC_LLAMA_PIDS=$(lc_llama_pids); then

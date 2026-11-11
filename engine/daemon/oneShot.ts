@@ -13,6 +13,8 @@ import { S5Orchestrator } from '../s5/orchestrator.js'
 import { RuleBasedS5 } from '../s5/ruleBasedS5.js'
 import { ModelS5 } from '../s5/modelS5.js'
 import { readTaskFile, writeOutcome } from './taskFile.js'
+import { fileRunDraft } from '../projects/inbox.js'
+import { projectsHome } from '../projects/layout.js'
 import type { Recommendation, TaskFileInput, TaskOutcome } from './types.js'
 
 export function buildOneShotPrompt(context: string, prompt: string): string {
@@ -166,6 +168,8 @@ export async function runGovernedLoop(opts: {
   cwd?: string
   /** Journal of a paused run to continue from (TaskFileInput.resumeSessionId). */
   resumeSessionId?: string
+  /** Told the run's messages and outcome when it ended well (a failed run tells nobody). */
+  onFinished?: (messages: Message[], outcome: TaskOutcome) => void
 }): Promise<TaskOutcome> {
   // Same S5 selection as interactive startup (main.ts): LoRA-trained
   // decision model when configured, rule-based otherwise.
@@ -224,7 +228,9 @@ export async function runGovernedLoop(opts: {
   if (failure) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: failure, ...meta }
   }
-  return { ...extractOutcome(collectedText), ...meta }
+  const outcome = { ...extractOutcome(collectedText), ...meta }
+  opts.onFinished?.(messages, outcome)
+  return outcome
 }
 
 export async function runOneShotTask(
@@ -257,6 +263,13 @@ export async function runOneShotTask(
         // explicit override (tests) > the mission's workspace from the task file > engine cwd
         cwd: cwd ?? task.cwd,
         ...(task.resumeSessionId ? { resumeSessionId: task.resumeSessionId } : {}),
+        // Work done for a project while nobody was in the chat lands in that
+        // project's inbox as a draft (engine/projects/inbox.ts): a run whose
+        // working folder is a project folder files its answer there. Any
+        // other run files nothing; filing never throws.
+        onFinished: (messages, done) => {
+          fileRunDraft({ home: projectsHome(), cwd: cwd ?? task.cwd, missionId: task.missionId, triggerId: task.triggerId, sessionId: done.sessionId, messages, summary: done.summary })
+        },
       })
     }
 

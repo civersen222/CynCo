@@ -63,7 +63,7 @@ let unavailableWarned = false
 export type EmbedOutage = { baseUrl: string; detail?: string; since: number }
 
 /**
- * The outage as a state, for the chat (F214). The log line below is said once
+ * The outage as a state, for the chat (F215). The log line below is said once
  * per process and only in the log: on 2026-11-11 the embedding service was down
  * for hours, the engine wrote the line at every project open, and nothing told
  * the owner. `ConversationLoop` reads this after each turn's retrieval and says

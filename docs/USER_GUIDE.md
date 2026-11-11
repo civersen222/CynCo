@@ -256,7 +256,12 @@ ends the running turn (a tool that is already running finishes first). If the sc
 locks mid-turn the page reconnects on wake, fills in what the turn produced while it
 was away (text, tool rows, pictures, in order), and redraws any approval card still
 waiting. If the engine was restarted meanwhile, a project chat is redrawn from its
-stored messages and the page says a turn ended unseen. Configuration changes stay on the computer.
+stored messages and the page says a turn ended unseen.
+
+**Inbox.** Work a scheduled run did for a project while you were away waits in that project's
+**Inbox** tab as a draft: read it, then **Accept** (it becomes an artifact of the project) or
+**Discard**. The Away tab's first line says which projects have drafts waiting. How to aim a
+scheduled run at a project: `docs/liveness-setup.md` → "A trigger aimed at a project". Configuration changes stay on the computer.
 The security boundary and troubleshooting: README → Local tokens → Phone access.
 
 ---
