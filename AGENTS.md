@@ -31,7 +31,7 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 | Profiles | [`engine/profiles/CLAUDE.md`](engine/profiles/CLAUDE.md) | `~/.cynco/profiles/*.yaml` schema and the runtime knobs that reach llama-server |
 | Dashboard | [`engine/dashboard/CLAUDE.md`](engine/dashboard/CLAUDE.md) (`server.ts`, `index.html`, `access.ts`, `missionsApi.ts`) | Governance dashboard on the bridge port + 1 (token-gated `/ws` and `/api/*`, except `POST /api/pair`, which the single-use pairing code gates for remote clients); the page is read once at engine start; `access.ts` is the phone-access boundary (local vs remote, pairing, device tokens) — `docs/decisions/2026-10-22-phone-access.md` |
 | Security | `engine/security/` | Local tokens (`tokens.json`), Job Object child cleanup (`jobObject.ts`) |
-| Process trees | `engine/processTree.ts` | The one place a process is killed with everything it started: `ownProcessTree` (a Job Object per started process on Windows under Bun) for the Bash tool's Stop and timeout, the daemon's one-shots and the jlens sidecar; `killProcessTree` where the tree was not started here (F209) |
+| Process trees | `engine/processTree.ts` | The one place a process is killed with everything it started: `ownProcessTree` (a Job Object per started process on Windows under Bun) for the Bash tool's Stop and timeout, the daemon's one-shots and the jlens sidecar; `killProcessTree` where the tree was not started here (F210) |
 | Cybernetics core | `engine/cybernetics-core/README.md` | Beer/Ashby/Pask primitives the VSM layer is built on |
 
 ## Invariants
@@ -39,7 +39,7 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 - **Grade the commit, not the tree** (F132): every verdict runs gate + suite against a pinned sha in a clean checkout.
 - **`--ctx-size`, `--ctx-checkpoints` and `--cache-ram` are one decision** (F91): the budget comes from `engine/llama/checkpointCost.ts`, never from a hand-set number.
 - **Children die with the engine** (F131): the engine sits in a KILL_ON_JOB_CLOSE job; no kill sweep is a substitute.
-- **Stop and a timeout end what they started** (F201, F209): a tree is owned when its root is started (`engine/processTree.ts`), because a kill that finds the tree afterwards misses a child started mid-kill; a turn's abort signal reaches the model call, every tool and every sub-agent.
+- **Stop and a timeout end what they started** (F201, F210): a tree is owned when its root is started (`engine/processTree.ts`), because a kill that finds the tree afterwards misses a child started mid-kill; a turn's abort signal reaches the model call, every tool and every sub-agent.
 - **Refuse, don't crash** (F140): every llama-server spawn runs the host/GPU check first and names its refusal.
 - **The dashboard rides the engine** (F141/F143): a dispatch swaps the engine under an open tab; mission end boots an idle engine; long tool calls show `running Nm NNs`.
 - **Every operator-facing cap is tested at the layer where the work happens** (F142): `bashMaxTimeoutMs()`, not the dispatch banner.

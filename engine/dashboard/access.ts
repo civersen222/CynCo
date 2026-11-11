@@ -130,6 +130,19 @@ export function parseListenHosts(raw: string | undefined, fallback = '127.0.0.1'
   return unique.length > 0 ? unique : [fallback]
 }
 
+/**
+ * `LOCALCODE_DASHBOARD_PROXY_PORT`: the port of the listener a TLS proxy on
+ * this machine (`tailscale serve`) forwards to, or null when there is none.
+ * A whole number from 1 to 65535 and nothing else; anything malformed is no
+ * listener, never a guess.
+ */
+export function parseProxyPort(raw: string | undefined): number | null {
+  const s = (raw ?? '').trim()
+  if (!/^\d{1,5}$/.test(s)) return null
+  const n = Number(s)
+  return n >= 1 && n <= 65535 ? n : null
+}
+
 // ---------------------------------------------------------------------------
 // The pairing code
 // ---------------------------------------------------------------------------
@@ -271,6 +284,18 @@ export function phoneListenerOrigin(listeners: { host: string; port: number; bou
 /** Where a paired browser keeps its device secret. Origin-scoped (host AND port), unlike a cookie. */
 export const DEVICE_TOKEN_STORAGE_KEY = 'cynco_device_token'
 
+/**
+ * The head tags that make a page installable (installable.ts serves what they
+ * point at). The dashboard page carries the same four lines in its own head;
+ * `installable.test.ts` checks both.
+ */
+export const INSTALL_HEAD_TAGS = [
+  '<link rel="manifest" href="/manifest.webmanifest">',
+  '<meta name="theme-color" content="#1e1e1e">',
+  '<link rel="icon" type="image/png" href="/icon-192.png">',
+  '<link rel="apple-touch-icon" href="/icon-192.png">',
+].join('\n')
+
 const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
 export const escapeHtml = esc
 
@@ -292,6 +317,7 @@ export function pairingPage(opts: { locked?: boolean; retryAfterMs?: number; rev
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pair with CynCo</title>
+${INSTALL_HEAD_TAGS}
 <style>
 body{margin:0;background:#1e1e1e;color:#d4d4d4;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;min-height:100vh;min-height:100dvh;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
 main{width:100%;max-width:360px}

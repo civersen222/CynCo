@@ -44,7 +44,7 @@ export type SubAgentOptions = {
   }
   /**
    * The turn that started this agent. When it aborts (Stop), the agent is
-   * killed: its model call is cancelled and its running tool is told (F209).
+   * killed: its model call is cancelled and its running tool is told (F210).
    */
   signal?: AbortSignal
 }

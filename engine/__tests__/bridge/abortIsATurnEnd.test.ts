@@ -258,7 +258,7 @@ describe('Stop is a turn end', () => {
     // Stop is pressed once that child is running, not a fixed time after the
     // call began: 300 ms in is when the shell is starting it, and a kill that
     // finds the tree when it happens can miss a child started at that instant
-    // (F209; under vitest the Bash tool has no Job Object). The survivor then
+    // (F210; under vitest the Bash tool has no Job Object). The survivor then
     // held this test's directory and the cleanup failed with EPERM.
     const LATE_MS = 60_000
     const { loop, events, provider, cwd } = setup(() => [bash('node late.js'), done()], { allowedTools: ['Bash'] })
@@ -288,7 +288,7 @@ describe('Stop is a turn end', () => {
     expect(alive(pid), 'the process the command started outlived the Stop').toBe(false)
   }, 60000)
 
-  it('Stop while a sub-agent the turn started is on its model call ends the sub-agent and the turn (F209)', async () => {
+  it('Stop while a sub-agent the turn started is on its model call ends the sub-agent and the turn (F210)', async () => {
     globalContract.clear()
     const cwd = mkdtempSync(join(tmpdir(), 'cynco-abort-end-'))
     dirs.push(cwd)

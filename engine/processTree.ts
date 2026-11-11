@@ -8,7 +8,7 @@
  * `killProcessTree(pid)` finds the tree at the moment of the kill: `taskkill
  * /F /T` on Windows, a `pgrep -P` walk then SIGKILL elsewhere. It has to run
  * while the root is alive, and it misses a child that is started while the
- * kill is under way. Measured 2026-11-11 (F209): a shell starting children as
+ * kill is under way. Measured 2026-11-11 (F210): a shell starting children as
  * fast as it can, killed mid-burst, left 32 and 34 of about 180 started
  * children running. A Stop that lands as the shell starts its command (the
  * first few hundred ms of every Bash call) is that case.

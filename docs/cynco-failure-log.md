@@ -4152,7 +4152,19 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 
 **Rule:** a CI job takes what it needs from a pinned, verified artifact, not from a moving mirror, and every step that waits on the network has a bound that something can enforce. A `spawnSync` is its own deadline or it has none.
 
-## F209 — Stop and the Bash timeout left processes running: a tree kill that missed children started mid-kill, a timeout that killed only the shell, and a sub-agent nobody could stop (F201's open items, closed 2026-11-11; no run lost)
+## F209 — The phone-access record planned an HTTPS proxy target that the proxy cannot use, and the usable one hands a phone the desk's token (2026-11-11; caught before anything was served)
+
+**Where:** `docs/decisions/2026-10-22-phone-access.md` ("A reverse proxy on the box must therefore target a non-loopback listener of its own"; rejected alternative 1: `tailscale serve` "remains the route to HTTPS and an installable page later, targeting the Tailscale listener") and `docs/NOW.md`, Next 2 ("point `tailscale serve` at the Tailscale listener (never the loopback one)").
+
+**How:** building the HTTPS item, the plan was read against the tool before any command was written. Tailscale's documentation for `serve` says "only `http://127.0.0.1` is supported for proxies" (version 1.104.4 on this PC). The target the record named does not exist as an option. The only target that does, a port on `127.0.0.1`, is where the desk's listener lives: a request `serve` forwards arrives from a loopback peer on a loopback listener, which `classifyClient` calls `local`, and `GET /` then serves the page with the shared `inference` token in it. Following the working command with the obvious port (9161) would have made every device on the tailnet the desk. Nothing was run; `tailscale serve status` said "No serve config" throughout.
+
+**Why:** the record stated a rule about a third-party tool's capability ("target a non-loopback listener") from the shape of the problem, not from the tool. The rule it was protecting, that a proxied phone is never `local`, was right; the mechanism it assumed was never checked, and it sat in two documents for three weeks as the next step.
+
+**Fix:** `LOCALCODE_DASHBOARD_PROXY_PORT` (unset by default) opens a second listener on `127.0.0.1` whose handler is told it is the proxy's and classifies every client as `remote` without asking for the peer's address (`engine/dashboard/server.ts`, `forceRemote`; `httpsProxy.test.ts` uses real loopback peers). `scripts/phone-https.ps1` asks `/pair` on the port first: 200 is the proxy listener, 404 is a desk listener, and on 404 it stops before it sets anything (`scripts/__tests__/phone-https.test.mjs` pins the order). The engine's startup line for the listener says "never at <desk port>". The record is amended and says it was wrong.
+
+**Rule:** a plan that depends on what another program can do quotes that program's documentation or a run of it, with the version, at the time the plan is written. And when the safe target turns out not to exist, find out what the unsafe one would do before reaching for it: here the fallback that "just works" was the breach.
+
+## F210 — Stop and the Bash timeout left processes running: a tree kill that missed children started mid-kill, a timeout that killed only the shell, and a sub-agent nobody could stop (F201's open items, closed 2026-11-11; no run lost)
 
 **Where:** three process-tree kills, each its own `taskkill /F /T` (`killProcessTree` in `engine/tools/impl/bash.ts`, `killTree` in `engine/daemon/taskRunner.ts`, `stop()` and the stale sweep in `engine/brain/jlensSidecar.ts`); `exec`'s `timeout` option in the Bash tool; and `engine/agents/subAgent.ts`, whose `AbortController` was a local of `run()` and whose executor was given no signal.
 

@@ -36,13 +36,16 @@ import {
 } from '../training/datasetBuilder.js'
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
 import { ReplayBuffer, parseCursor, type ReplayCursor } from './replay.js'
+import { webManifest, appIconPng, isAppIconSize } from './installable.js'
 import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
-  classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, isWildcardHost,
+  classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, parseProxyPort, isWildcardHost,
   PairingGate, MAX_DEVICES, pairingPage, DEVICE_TOKEN_STORAGE_KEY, type ClientKind,
 } from './access.js'
 
 /** Both pages refuse to be framed: a hostile page could otherwise overlay Send or an approval card's Approve. */
+/** Where the HTTPS proxy's listener binds. Loopback, always: a proxy on this machine is its only client. */
+const PROXY_LISTEN_HOST = '127.0.0.1'
 const NO_FRAMING = { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' }
 import {
   type ProjectsDeps,
@@ -531,6 +534,18 @@ export class DashboardServer {
   private extraRetry: ReturnType<typeof setInterval> | null = null
   private extraAttempts = 0
   private serveOptions: Record<string, unknown> | null = null
+  /**
+   * The listener a TLS proxy on this machine forwards to (`tailscale serve`,
+   * which proxies only to 127.0.0.1): loopback, on its own port, and every
+   * client on it is `remote` whatever its address — a proxied phone arrives
+   * from a loopback peer, which on the desk's listener is what gets the shared
+   * token. Null port: no such listener. See the phone-access record,
+   * amendment "HTTPS and an installable page".
+   */
+  private readonly proxyPort: number | null
+  private proxyServer: Server<DashboardSocketData> | null = null
+  private proxyPortRefused = false
+  private proxyServeOptions: Record<string, unknown> | null = null
   /** The single-use code a new phone types; printed by main.ts, rotated on use. */
   private readonly pairing = new PairingGate(Date.now, undefined, (code, why) => {
     const because = why === 'used' ? 'the last one was used' : why === 'locked' ? 'pairing locked after too many wrong codes' : 'a new one was asked for'
@@ -538,8 +553,6 @@ export class DashboardServer {
   })
   /** When a request last arrived from off this machine — the cheapest "did anything get through the firewall" fact. */
   private lastRemoteRequestAt: string | null = null
-  /** Set on a paired device's socket only; read through `phoneOrigin`. */
-  private remoteOrigin: string | null = null
   private clients: Set<ServerWebSocket<DashboardSocketData>> = new Set()
   /** Last broadcast per last-value type, resent to late-joining clients.
    *  brain.tier fires once at engine startup — browsers always connect later. */
@@ -558,10 +571,16 @@ export class DashboardServer {
    */
   private tokens: TokenSet
 
-  constructor({ port = 9161, deps = {}, tokens }: { port?: number; deps?: DashboardDeps; tokens: TokenSet }) {
+  constructor({ port = 9161, deps = {}, tokens, proxyPort }: { port?: number; deps?: DashboardDeps; tokens: TokenSet; /** Overrides LOCALCODE_DASHBOARD_PROXY_PORT (tests pass 0 for an OS-assigned port, null for none). */ proxyPort?: number | null }) {
     this.deps = deps
     this.tokens = tokens
     this._port = port
+    // Opt-in: with the variable unset there is no proxy listener at all.
+    const rawProxyPort = process.env.LOCALCODE_DASHBOARD_PROXY_PORT
+    this.proxyPort = proxyPort !== undefined ? proxyPort : parseProxyPort(rawProxyPort)
+    if (proxyPort === undefined && rawProxyPort && this.proxyPort === null) {
+      console.warn(`[dashboard] LOCALCODE_DASHBOARD_PROXY_PORT=${JSON.stringify(rawProxyPort)} is not a port (1-65535): no HTTPS proxy listener.`)
+    }
     // One address, or a comma-separated list whose first entry is the primary
     // listener (the scanner behind README's inventory reads the default off
     // this expression — keep the literal where it is).
@@ -583,19 +602,10 @@ export class DashboardServer {
         '<body><h1>CynCo Governance Dashboard</h1><p>Dashboard UI not yet built. Coming soon.</p></body></html>'
     }
 
-    // The caller passes `wsServer.port + 1`, and the WS bridge itself falls
-    // back when its first choice is taken — so this number is a wish, not a
-    // free port. It has now collided twice: once with the bridge this same
-    // process had just bound, and once with the jlens sidecar on 9163 (bridge
-    // pushed to 9162 by a stale listener, +1 landed on the lens). Both times
-    // the constructor threw and the operator got no dashboard and no reason.
-    // Step to the next free port instead, and say which one we took.
-    const serveOptions = {
-      port,
-      hostname: this._hostname,
-      // Note: after Bun.serve() this.server.port reflects the actual bound port
-      // (important when port=0 is used for OS-assigned ephemeral ports in tests).
-      fetch: async (req: Request, server: Server<DashboardSocketData>) => {
+    // One handler for every listener. `forceRemote` is true on the proxy
+    // listener only: there the peer's address says nothing (it is always the
+    // proxy, on loopback), so nobody on it is the desk.
+    const handle = async (req: Request, server: Server<DashboardSocketData>, forceRemote: boolean) => {
         const url = new URL(req.url)
         const pathname = url.pathname
         const method = req.method
@@ -609,7 +619,7 @@ export class DashboardServer {
         // A listener that does not say which it is counts as "not the loopback
         // one": the fail-closed default must hold here too.
         const listenerHost = (server as { hostname?: string }).hostname ?? 'unknown-listener'
-        const kind: ClientKind = classifyClient({ peer, listenerHost })
+        const kind: ClientKind = forceRemote ? 'remote' : classifyClient({ peer, listenerHost })
         if (kind === 'remote') this.lastRemoteRequestAt = new Date().toISOString()
         // DNS rebinding: a page at evil.example whose name resolves to this
         // machine (or to the Tailscale address) is same-origin to the browser,
@@ -638,8 +648,11 @@ export class DashboardServer {
           if (!auth.ok) return auth.response
           const success = server.upgrade(req, { data: { holder: auth.holder, cursor: parseCursor(url.searchParams) } })
           if (success) {
-            // Past the Host check, the Origin check and the device token: this is the address the phone has the page on.
-            if (kind === 'remote') this.remoteOrigin = pageOrigin(req.headers.get('origin')) ?? this.remoteOrigin
+            // Past the Host check, the Origin check and the device token: this is
+            // the address the phone has the page on. Kept on the device's record,
+            // so the next engine knows it too (`phoneOrigin`).
+            const opened = kind === 'remote' ? pageOrigin(req.headers.get('origin')) : null
+            if (opened !== null) this.tokens.setDeviceOrigin(auth.holder, opened)
             return undefined
           }
           return new Response('WebSocket upgrade failed', { status: 400 })
@@ -650,6 +663,21 @@ export class DashboardServer {
         // dashboard page is same-origin and never preflights.
         if (method === 'OPTIONS') {
           return new Response(null, { status: 204 })
+        }
+
+        // The installable page's manifest and icons (installable.ts): static,
+        // nothing about the engine in them, and fetched by the browser with no
+        // Authorization header — so, like GET /, they answer without a token.
+        // Exact paths only; everything else still meets the token check below.
+        if (method === 'GET' && pathname === '/manifest.webmanifest') {
+          return new Response(JSON.stringify(webManifest()), { headers: { 'Content-Type': 'application/manifest+json', 'Cache-Control': 'public, max-age=3600' } })
+        }
+        const iconPath = method === 'GET' ? /^\/icon-(\d{2,4})\.png$/.exec(pathname) : null
+        if (iconPath) {
+          const size = Number(iconPath[1])
+          if (isAppIconSize(size)) {
+            return new Response(new Uint8Array(appIconPng(size)), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' } })
+          }
         }
 
         // GET / is the one ungated route: on the desk it is how the inference
@@ -863,7 +891,14 @@ export class DashboardServer {
         }
 
         return jsonResponse({ error: 'Method not allowed' }, 405)
-      },
+    }
+
+    const serveOptions = {
+      port,
+      hostname: this._hostname,
+      // Note: after Bun.serve() this.server.port reflects the actual bound port
+      // (important when port=0 is used for OS-assigned ephemeral ports in tests).
+      fetch: (req: Request, server: Server<DashboardSocketData>) => handle(req, server, false),
       websocket: {
         open: (ws: ServerWebSocket<DashboardSocketData>) => {
           // A device revoked between its handshake and this open would survive
@@ -933,7 +968,16 @@ export class DashboardServer {
       },
     }
     this.serveOptions = serveOptions as unknown as Record<string, unknown>
+    // The same routes and socket handlers, with every client remote.
+    this.proxyServeOptions = { ...serveOptions, fetch: (req: Request, server: Server<DashboardSocketData>) => handle(req, server, true) } as unknown as Record<string, unknown>
 
+    // The caller passes `wsServer.port + 1`, and the WS bridge itself falls
+    // back when its first choice is taken — so this number is a wish, not a
+    // free port. It has now collided twice: once with the bridge this same
+    // process had just bound, and once with the jlens sidecar on 9163 (bridge
+    // pushed to 9162 by a stale listener, +1 landed on the lens). Both times
+    // the constructor threw and the operator got no dashboard and no reason.
+    // Step to the next free port instead, and say which one we took.
     // port 0 means "OS, pick one" — never walk that, it always succeeds.
     const candidates = port === 0 ? [0] : [port, port + 1, port + 2, port + 3]
     let lastErr: unknown = null
@@ -979,6 +1023,27 @@ export class DashboardServer {
         }
       }
     }
+    // The proxy listener: loopback, never any other address, on its own port.
+    // The dashboard's own port is refused outright rather than left to fail to
+    // bind: where a platform lets two listeners share a port, a proxy listener
+    // there would answer some of the desk's requests as remote and the desk's
+    // would answer some of the proxy's as the desk.
+    // (0 is "OS, pick one" and can never be the same port.)
+    if (this.proxyPort !== null && this.proxyPort !== 0 && this.proxyPort === port) {
+      if (!this.proxyPortRefused) console.error(`[dashboard] LOCALCODE_DASHBOARD_PROXY_PORT is the dashboard's own port (${port}): no HTTPS proxy listener. Give it a port of its own.`)
+      this.proxyPortRefused = true
+    } else if (this.proxyPort !== null && this.proxyServer === null) {
+      try {
+        this.proxyServer = Bun.serve({ ...(this.proxyServeOptions ?? {}), hostname: PROXY_LISTEN_HOST, port: this.proxyPort } as Parameters<typeof Bun.serve>[0]) as Server<DashboardSocketData>
+        console.log(`[dashboard] HTTPS proxy listener bound: http://${PROXY_LISTEN_HOST}:${this.proxyServer.port} (every client on it must be a paired device; point \`tailscale serve\` here, never at ${port})`)
+      } catch (e) {
+        pending = true
+        const reason = e instanceof Error ? e.message : String(e)
+        if (this.extraAttempts === 0 || this.extraAttempts % 20 === 0) {
+          console.error(`[dashboard] cannot bind the HTTPS proxy listener ${PROXY_LISTEN_HOST}:${this.proxyPort} (${reason}) — retrying every 15 s. Is another process on that port?`)
+        }
+      }
+    }
     if (pending && this.extraRetry === null) {
       this.extraRetry = setInterval(() => { this.extraAttempts++; this.bindExtras() }, 15_000)
       // A timer must never keep an engine that is otherwise done alive.
@@ -993,6 +1058,12 @@ export class DashboardServer {
   listeners(): { host: string; port: number; bound: boolean; primary: boolean }[] {
     const port = this.getPort()
     return this.listenHosts.map((host, i) => ({ host, port, bound: i === 0 || this.extraServers.has(host), primary: i === 0 }))
+  }
+
+  /** The HTTPS proxy's listener and whether it is bound right now; null when none is configured. */
+  proxyListener(): { host: string; port: number; bound: boolean } | null {
+    if (this.proxyPort === null) return null
+    return { host: PROXY_LISTEN_HOST, port: this.proxyServer?.port ?? this.proxyPort, bound: this.proxyServer !== null }
   }
 
   /** The code a new phone must type right now (main.ts prints it at startup). */
@@ -1069,6 +1140,7 @@ export class DashboardServer {
         code: this.pairing.code,
         lockedForMs: this.pairing.lockedForMs(),
         listeners: this.listeners(),
+        proxy: this.proxyListener(),
         devices: this.tokens.devices(),
         lastRemoteRequestAt: this.lastRemoteRequestAt,
         maxDevices: MAX_DEVICES,
@@ -2282,6 +2354,10 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       try { srv.stop() } catch (e) { console.log(`[dashboard] stopping listener ${host} failed: ${e instanceof Error ? e.message : String(e)}`) }
     }
     this.extraServers.clear()
+    if (this.proxyServer !== null) {
+      try { this.proxyServer.stop() } catch (e) { console.log(`[dashboard] stopping the HTTPS proxy listener failed: ${e instanceof Error ? e.message : String(e)}`) }
+      this.proxyServer = null
+    }
     this.server.stop()
   }
 
@@ -2290,12 +2366,13 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
 
   /**
    * Where a phone opens the dashboard; the wait push links its notification here. The page address a
-   * paired device last opened a socket from when one has since this engine started: the device token
-   * lives in the browser per origin, so that address is known to open the dashboard and not the pairing
-   * screen. Until then (every restart, F203) the bound phone listener, which is the same address unless
-   * the phone paired through a name. Null with no phone listener bound.
+   * paired device last opened a socket from: the device token lives in the browser per origin, so that
+   * address is known to open the dashboard and not the pairing screen. It is kept on the device's record
+   * (`TokenSet.setDeviceOrigin`; the most recently seen device speaks), so a restarted engine knows it
+   * before any socket opens. Until a device has opened the page once, the bound phone listener (F203).
+   * Null with neither.
    */
-  get phoneOrigin(): string | null { return this.remoteOrigin ?? phoneListenerOrigin(this.listeners()) }
+  get phoneOrigin(): string | null { return this.tokens.lastDeviceOrigin() ?? phoneListenerOrigin(this.listeners()) }
 
   getPort(): number {
     // Prefer the server's actual bound port (non-zero when port=0 was requested).

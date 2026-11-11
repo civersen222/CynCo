@@ -1,5 +1,5 @@
 /**
- * Stop reaches a sub-agent (F209).
+ * Stop reaches a sub-agent (F210).
  *
  * A sub-agent had its own AbortController that nothing outside could reach:
  * `kill()` set a flag the loop read between stream events, and its executor

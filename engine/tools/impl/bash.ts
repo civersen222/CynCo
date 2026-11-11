@@ -196,7 +196,7 @@ export const bashTool: ToolImpl = {
     const runnable = shellPreamble(shellInfo) + merged.command
 
     return new Promise((resolve) => {
-      // Stop (F201) and the timeout (F209). The loop used to give up on a
+      // Stop (F201) and the timeout (F210). The loop used to give up on a
       // stopped turn and leave the command running to its own end, and the
       // timeout was exec's own, which ends the shell and nothing the shell
       // started. Both now kill the tree the command owns (`ownProcessTree`,

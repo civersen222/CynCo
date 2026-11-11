@@ -1,6 +1,6 @@
 /**
  * Stop and the timeout kill the shell command, and what the command started
- * (F201, F209).
+ * (F201, F210).
  *
  * The Bash tool had no way to be told the turn was stopped: a Stop waited for
  * the child to finish on its own, up to the command's whole timeout. And its
@@ -12,7 +12,7 @@
  * Nothing here is timed against the kill: each test waits for the grandchild
  * to be running before it stops the command, and then for it to be gone. The
  * first version stopped 400 ms after the call began, which is when PowerShell
- * is starting `node`, and failed now and then in a full run (F209: a kill that
+ * is starting `node`, and failed now and then in a full run (F210: a kill that
  * finds the tree when it happens can miss a child started at that instant;
  * vitest runs on Node, where the Bash tool has no Job Object).
  */

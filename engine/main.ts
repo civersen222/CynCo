@@ -598,8 +598,8 @@ try {
   for (const l of extras) {
     console.log(`[dashboard] phone listener http://${l.host}:${l.port} — ${l.bound ? 'bound' : 'NOT bound yet; retrying every 15 s (is Tailscale up?)'}`)
   }
-  // Any listener a phone can reach — an extra, or a primary that is not loopback.
-  if (extras.length > 0 || !isLoopbackAddress(dashboardServer.getHostname())) {
+  // Any listener a phone can reach — an extra, a primary that is not loopback, or the HTTPS proxy's.
+  if (extras.length > 0 || !isLoopbackAddress(dashboardServer.getHostname()) || dashboardServer.proxyListener() !== null) {
     console.log(`[dashboard] pairing code for a new phone: ${dashboardServer.pairingCode()} (single-use; the next one is printed when this one is used, or under Config → Phone access)`)
   }
 } catch (e) {
