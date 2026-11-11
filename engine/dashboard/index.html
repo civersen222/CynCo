@@ -374,6 +374,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .phone-k { color:#808080; min-width:130px; }
 .phone-v { color:#d4d4d4; font-family:'Cascadia Code','Fira Code',monospace; overflow-wrap:anywhere; }
 .phone-row .ap-no { margin-left:auto; }
+/* One app per row on the Missions tab: the text takes the width, the switch stays at the right end. */
+.app-row { flex-wrap:nowrap; align-items:flex-start; }
+.app-row .phone-k { color:#d4d4d4; font-weight:600; min-width:110px; }
+.app-row .phone-v { flex:1; min-width:0; }
+.app-row button { flex:none; margin-left:auto; }
+@media (max-width: 640px) { .app-row { flex-wrap:wrap; } .app-row .phone-v { flex-basis:100%; } }
 .chat-msg { margin-bottom:8px; line-height:1.6; }
 .chat-msg-user { color:#808080; }
 .chat-msg-user span { color:#4ec9b0; font-weight:600; }
@@ -4353,7 +4359,7 @@ function renderApps(data, error) {
   var remote = !!window.__CYNCO_REMOTE;
   data.apps.forEach(function(app) {
     var m = appRowModel(app, remote);
-    var row = document.createElement('div'); row.className = 'phone-row';
+    var row = document.createElement('div'); row.className = 'phone-row app-row';
     var k = document.createElement('span'); k.className = 'phone-k'; k.textContent = m.name;
     var v = document.createElement('span'); v.className = 'phone-v'; v.textContent = m.serves + ' · ' + m.gpu + ' · ' + m.managed;
     row.appendChild(k); row.appendChild(v);
