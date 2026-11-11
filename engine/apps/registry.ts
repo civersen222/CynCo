@@ -43,7 +43,14 @@ export type OllamaSettings = { url: string; manage: boolean }
 
 export const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434'
 
-export type Registry = { apps: LocalApp[]; ollamaApps: OllamaApp[]; ollama: OllamaSettings }
+/**
+ * What a search of the owner's project folders found for one Ollama model: the projects whose files name it.
+ * Remembered so the search, which reads thousands of files, runs once per model and not at every model load.
+ * It is evidence, not an app: only `ollamaApps` are managed and shown.
+ */
+export type OllamaFinding = { model: string; projects: Array<{ name: string; root: string }>; at: string }
+
+export type Registry = { apps: LocalApp[]; ollamaApps: OllamaApp[]; ollama: OllamaSettings; ollamaFindings: OllamaFinding[] }
 
 export function appsFile(): string {
   return join(cyncoHome(), 'apps.json')
@@ -56,10 +63,10 @@ function isOllamaApp(v: unknown): v is OllamaApp {
 
 /** The whole file. Missing or malformed reads as empty with the defaults, and is logged. */
 export function loadRegistry(file: string = appsFile(), log: (line: string) => void = console.log): Registry {
-  const empty: Registry = { apps: [], ollamaApps: [], ollama: { url: DEFAULT_OLLAMA_URL, manage: true } }
+  const empty: Registry = { apps: [], ollamaApps: [], ollama: { url: DEFAULT_OLLAMA_URL, manage: true }, ollamaFindings: [] }
   if (!existsSync(file)) return empty
   try {
-    const j = JSON.parse(readFileSync(file, 'utf-8')) as { apps?: unknown; ollamaApps?: unknown; ollama?: { url?: unknown; manage?: unknown } }
+    const j = JSON.parse(readFileSync(file, 'utf-8')) as { apps?: unknown; ollamaApps?: unknown; ollama?: { url?: unknown; manage?: unknown }; ollamaFindings?: unknown }
     const src = (a: { source?: unknown }) => (typeof a.source === 'string' ? a.source : 'by hand')
     return {
       apps: (Array.isArray(j.apps) ? j.apps.filter(isApp) : []).map(a => ({ ...a, manage: a.manage !== false, source: src(a) })),
@@ -69,6 +76,9 @@ export function loadRegistry(file: string = appsFile(), log: (line: string) => v
         url: typeof j.ollama?.url === 'string' && j.ollama.url ? j.ollama.url.replace(/\/+$/, '') : DEFAULT_OLLAMA_URL,
         manage: j.ollama?.manage !== false,
       },
+      ollamaFindings: (Array.isArray(j.ollamaFindings) ? j.ollamaFindings : [])
+        .filter((f): f is OllamaFinding => !!f && typeof f.model === 'string' && typeof f.at === 'string' && Array.isArray(f.projects))
+        .map(f => ({ model: f.model, at: f.at, projects: f.projects.filter(p => !!p && typeof p.name === 'string' && typeof p.root === 'string') })),
     }
   } catch (e) {
     log(`[apps] ${file} could not be read (${e instanceof Error ? e.message : String(e)}); no apps are known until it is fixed`)
@@ -77,7 +87,13 @@ export function loadRegistry(file: string = appsFile(), log: (line: string) => v
 }
 
 export function saveRegistry(r: Registry, file: string = appsFile()): void {
-  writeJsonAtomic(file, { version: 1, apps: r.apps, ollamaApps: r.ollamaApps, ollama: r.ollama })
+  writeJsonAtomic(file, { version: 1, apps: r.apps, ollamaApps: r.ollamaApps, ollama: r.ollama, ollamaFindings: r.ollamaFindings })
+}
+
+/** Remember what a search found for one model, replacing what was remembered for it. The rest of the file is kept. */
+export function saveOllamaFinding(finding: OllamaFinding, file: string = appsFile()): void {
+  const r = loadRegistry(file, () => {})
+  saveRegistry({ ...r, ollamaFindings: [...r.ollamaFindings.filter(f => f.model !== finding.model), finding] }, file)
 }
 
 function isApp(v: unknown): v is LocalApp {
