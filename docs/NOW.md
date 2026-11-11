@@ -29,11 +29,10 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
 
 ## Next (in rough order)
 
-1. **The rest of the phone channel the owner decided on 2026-10-05** (the projects-mode brainstorm,
-   recorded only in that chat: "phone = a dashboard page over Tailscale", uploads, inbox):
-   photos and files from the phone into a project (upload route hardening), and an inbox where
-   away-time work lands as drafts the owner accepts. Slice 1 is the page, the Tailscale bind and
-   pairing; these two are what make the phone useful for projects rather than only for chat.
+1. **The inbox**, the last piece of the phone channel the owner decided on 2026-10-05 ("phone = a
+   dashboard page over Tailscale", uploads, inbox): where work done while the owner was away lands
+   as drafts they accept. Uploads are hardened (2026-11-11, F212; record
+   `docs/decisions/2026-11-11-phone-uploads-and-inbox.md`, which the inbox extends).
 
 ## Backlog (worth doing, not started)
 
