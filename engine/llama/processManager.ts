@@ -272,8 +272,13 @@ export type LazyWaitDeps = {
   isPortOccupied: () => Promise<boolean>
   /** Does whatever holds the port answer /health? Default: a 2 s GET. What happens to a healthy one is `portOwner`'s answer. */
   isHealthy?: () => Promise<boolean>
-  /** Whose server holds the port (portOwner.ts). `foreign` is stopped once and the port taken; `engine` and `unknown` are waited on. */
+  /** Whose server holds the port (portOwner.ts). `foreign` and `app` are stopped once and the port taken; `engine` and `unknown` are waited on. */
   portOwner?: () => Promise<import('./portOwner.js').PortOwner>
+  /**
+   * The server `portOwner` just called an `app`'s is stopped by the app module (engine/apps/gpu.ts), which says which
+   * app through `say` and records what the app is owed afterwards. Absent: an app's server is stopped like a foreign one.
+   */
+  takeFromApp?: (say: (message: string) => void) => Promise<void>
   maxWaitMs: number
   pollMs?: number
   now?: () => number
@@ -456,13 +461,18 @@ export class ProcessManager {
             if (!ownerSettled) {
               const owner = await whoseServer()
               ownerSettled = owner.owner !== 'unknown'
-              if (owner.owner === 'foreign') {
+              if (owner.owner === 'foreign' || owner.owner === 'app') {
                 // F202: a healthy server no CynCo engine started (another project's,
                 // or one left behind by hand). Nothing will ever free the port for us.
-                const said = `port ${this.port} was held by a server that is not CynCo's: ${owner.detail}. Stopped it to load the model.`
-                console.log(`[llama-cpp] ${said}`)
-                this.onWaiting?.(said)
-                await this.killProcessOnPort(this.port)
+                if (owner.owner === 'app' && deps.takeFromApp) {
+                  // One of the owner's apps: the app module stops it, names the app, and owes it its server back.
+                  await deps.takeFromApp((message) => { console.log(`[llama-cpp] ${message}`); this.onWaiting?.(message) })
+                } else {
+                  const said = `port ${this.port} was held by a server that is not CynCo's: ${owner.detail}. Stopped it to load the model.`
+                  console.log(`[llama-cpp] ${said}`)
+                  this.onWaiting?.(said)
+                  await this.killProcessOnPort(this.port)
+                }
                 let free = false
                 for (let i = 0; i < 10 && !free; i++) {
                   await sleep(500)

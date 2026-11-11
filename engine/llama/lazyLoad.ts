@@ -47,6 +47,9 @@ export type LazyEnsureReadyOpts = {
   maxWaitMs: number
   onWaiting?: LazyWaitDeps['onWaiting']
   pollMs?: number
+  /** Whose server holds the port, when the default reader is not enough (engine/apps/gpu.ts names the owner's apps). */
+  portOwner?: LazyWaitDeps['portOwner']
+  takeFromApp?: LazyWaitDeps['takeFromApp']
 }
 
 /**
@@ -79,6 +82,8 @@ export function createLazyEnsureReady(
         signal: cancel.signal,
         ...(opts.pollMs !== undefined ? { pollMs: opts.pollMs } : {}),
         ...(opts.onWaiting ? { onWaiting: opts.onWaiting } : {}),
+        ...(opts.portOwner ? { portOwner: opts.portOwner } : {}),
+        ...(opts.takeFromApp ? { takeFromApp: opts.takeFromApp } : {}),
       }).finally(() => { if (inflight === mine) inflight = null })
       // Every caller may have left by the time it settles; each caller's own promise carries the failure.
       mine.done.catch(() => {})

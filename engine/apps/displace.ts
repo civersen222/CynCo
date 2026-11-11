@@ -1,0 +1,204 @@
+/**
+ * engine/apps/displace.ts — taking the GPU from an app, and giving it back.
+ *
+ * One rule for a chat turn and for a daemon one-shot
+ * (docs/decisions/2026-11-11-local-llm-apps.md): when CynCo needs the GPU and
+ * an app's model server holds CynCo's port, CynCo stops that server, says which
+ * app, and owes the app its server back. The debt is written to
+ * `~/.cynco/displaced-apps.json`, because the process that takes the GPU and
+ * the one that later gives it back are not always the same (a one-shot's child,
+ * an engine that died). An app that is not running is owed nothing: its server
+ * was a leftover (F202), and "if it's not being used the models should not be
+ * loaded".
+ *
+ * Giving back starts the app's own launcher, in the app's folder, outside the
+ * engine's kill-on-close job: a process the engine spawned directly would die
+ * with the engine (F131), which is right for CynCo's servers and wrong for the
+ * owner's game.
+ */
+import { execFile, spawn } from 'child_process'
+import { existsSync, readFileSync } from 'fs'
+import { basename, join } from 'path'
+import { cyncoHome } from '../paths.js'
+import { writeJsonAtomic, type AppLaunch, type LocalApp } from './registry.js'
+import { listProcesses as readProcessList, type ListedProc, type Proc } from './portTree.js'
+
+export type Displaced = { appId: string; name: string; root: string; port: number; at: string; by: string; launch: AppLaunch }
+
+/** A debt older than this is dropped: the owner has long since moved on, and a 20 GB model must not appear out of nowhere. */
+export const MAX_DISPLACED_AGE_MS = 24 * 60 * 60 * 1000
+
+export function displacedFile(): string {
+  return join(cyncoHome(), 'displaced-apps.json')
+}
+
+export function readDisplaced(file: string = displacedFile(), log: (line: string) => void = console.log): Displaced[] {
+  if (!existsSync(file)) return []
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf-8')) as unknown
+    return Array.isArray(j) ? j.filter((d): d is Displaced => !!d && typeof d.appId === 'string' && typeof d.port === 'number' && !!d.launch) : []
+  } catch (e) {
+    log(`[apps] ${file} could not be read (${e instanceof Error ? e.message : String(e)}); nothing is owed until it is fixed`)
+    return []
+  }
+}
+
+const norm = (s: string): string => s.replace(/\\/g, '/').toLowerCase()
+
+/**
+ * Is anything of the app running besides its model server? A process whose
+ * command line or executable is under the app's folder, other than the server's
+ * own tree: `launcherPid` (the script that started the server) and everything it
+ * started. Not the launcher's own ancestors: the terminal that ran the launcher
+ * very likely ran the app too, and what it started is exactly what is looked for.
+ */
+export function appInUse(app: Pick<LocalApp, 'root'>, launcherPid: number, procs: ListedProc[]): boolean {
+  const tree = new Set<number>([launcherPid])
+  for (let grew = true; grew;) {
+    grew = false
+    for (const p of procs) if (!tree.has(p.pid) && tree.has(p.ppid) && p.ppid !== 0) { tree.add(p.pid); grew = true }
+  }
+  const root = norm(app.root).replace(/\/+$/, '') + '/'
+  return procs.some(p => !tree.has(p.pid) && (norm(p.commandLine).includes(root) || norm(p.exe).startsWith(root)))
+}
+
+export type DisplaceCtx = {
+  port: number
+  /** Who is taking the GPU, for the record: `the chat engine (pid N)`, `the one-shot digest-espn`. */
+  by: string
+  kill: (pid: number) => Promise<void>
+  say: (message: string) => void
+  file?: string
+  listProcesses?: () => Promise<ListedProc[]>
+  now?: () => Date
+  log?: (line: string) => void
+}
+
+/** Stop an app's model server for CynCo's work. `displaced`: its server is owed back. `leftover`: the app was not running. */
+export async function displaceApp(holder: { app: LocalApp; listener: Proc; launcherPid?: number | null }, ctx: DisplaceCtx): Promise<'displaced' | 'leftover'> {
+  const { app, listener } = holder
+  const log = ctx.log ?? console.log
+  let inUse = true
+  try {
+    inUse = appInUse(app, holder.launcherPid ?? listener.pid, await (ctx.listProcesses ?? readProcessList)())
+  } catch (e) {
+    // Not knowing is not a reason to leave the owner's game without its server.
+    log(`[apps] could not tell whether ${app.name} is running (${e instanceof Error ? e.message : String(e)}); taking it to be`)
+  }
+  const held = `${app.name}'s model server held port ${ctx.port} (pid ${listener.pid})`
+  if (inUse) {
+    const file = ctx.file ?? displacedFile()
+    const owed: Displaced = { appId: app.id, name: app.name, root: app.root, port: ctx.port, at: (ctx.now ?? (() => new Date()))().toISOString(), by: ctx.by, launch: app.launch }
+    try {
+      writeJsonAtomic(file, [...readDisplaced(file, log).filter(d => d.appId !== app.id), owed])
+    } catch (e) {
+      log(`[apps] the debt to ${app.name} could not be written to ${file}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  await ctx.kill(listener.pid)
+  if (!inUse) {
+    ctx.say(`${held} with ${app.name} itself not running. CynCo stopped it to load its own model; it is not started again.`)
+    return 'leftover'
+  }
+  // CynCo's server takes the same port and speaks the same API as a llama-server: the app's next request is answered by it.
+  const meanwhile = /^llama-server(\.exe)?$/i.test(listener.name)
+    ? `: ${app.name} is answered by CynCo's server on the same port meanwhile, and its own server is started again when CynCo is done.`
+    : '; it is started again when CynCo is done.'
+  ctx.say(`${held}. CynCo stopped it to load its own model${meanwhile}`)
+  return 'displaced'
+}
+
+export type RestoreDeps = {
+  /** A one-shot holds the GPU (`gpu-busy.json` with a live owner). */
+  gpuBusy: () => boolean
+  isPortOccupied: (port: number) => Promise<boolean>
+  say: (message: string) => void
+  file?: string
+  listProcesses?: () => Promise<ListedProc[]>
+  launch?: (launch: AppLaunch) => Promise<number | null>
+  now?: () => Date
+  log?: (line: string) => void
+}
+
+/**
+ * CynCo is done with the GPU: start again every app server that is owed, whose
+ * app is still running and whose port is free. Never throws; what it could not
+ * do stays owed and is tried again the next time CynCo lets go of the GPU.
+ */
+export async function restoreDisplacedApps(deps: RestoreDeps): Promise<void> {
+  const log = deps.log ?? console.log
+  const file = deps.file ?? displacedFile()
+  const owed = readDisplaced(file, log)
+  if (owed.length === 0) return
+  const now = (deps.now ?? (() => new Date()))().getTime()
+  const keep: Displaced[] = []
+  let procs: ListedProc[] | null | undefined
+  try {
+    for (const d of owed) {
+      if (now - Date.parse(d.at) > MAX_DISPLACED_AGE_MS) {
+        deps.say(`${d.name}'s model server was stopped more than 24 h ago and is not started again.`)
+        continue
+      }
+      if (deps.gpuBusy() || await deps.isPortOccupied(d.port)) { keep.push(d); continue }
+      if (procs === undefined) {
+        try { procs = await (deps.listProcesses ?? readProcessList)() } catch (e) {
+          log(`[apps] could not tell which apps are running (${e instanceof Error ? e.message : String(e)}); what is owed stays owed`)
+          procs = null
+        }
+      }
+      if (procs === null) { keep.push(d); continue }
+      // The server is gone, so no pid is its tree: any process from the folder counts.
+      if (!appInUse({ root: d.root }, -1, procs)) {
+        deps.say(`${d.name} is no longer running: its model server is not started again.`)
+        continue
+      }
+      try {
+        const pid = await (deps.launch ?? launchOutsideJob)(d.launch)
+        deps.say(`CynCo is done with the GPU: ${d.name}'s model server is started again (${basename(d.launch.exe.replace(/\\/g, '/'))} ${d.launch.args.join(' ')}${pid ? `, pid ${pid}` : ''}).`)
+      } catch (e) {
+        deps.say(`${d.name}'s model server could not be started again: ${e instanceof Error ? e.message : String(e)}`)
+        keep.push(d)
+      }
+    }
+  } finally {
+    try {
+      writeJsonAtomic(file, keep)
+    } catch (e) {
+      log(`[apps] ${file} could not be written: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+}
+
+const psQuote = (s: string): string => `'${s.replace(/'/g, "''")}'`
+/** One Windows command line from an executable and its arguments. */
+export function windowsCommandLine(exe: string, args: string[]): string {
+  const q = (a: string) => (/[\s"]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)
+  return [`"${exe}"`, ...args.map(q)].join(' ')
+}
+
+/**
+ * Start a process that is not the engine's child. On Windows through
+ * `Win32_Process.Create`: the WMI service creates it, so it is in nobody's job
+ * and outlives the engine. Elsewhere a detached spawn. Resolves to its pid.
+ */
+export function launchOutsideJob(launch: AppLaunch): Promise<number | null> {
+  if (process.platform !== 'win32') {
+    return new Promise((resolve, reject) => {
+      const child = spawn(launch.exe, launch.args, { cwd: launch.cwd, detached: true, stdio: 'ignore' })
+      child.on('error', reject)
+      child.on('spawn', () => { child.unref(); resolve(child.pid ?? null) })
+    })
+  }
+  const script = [
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${psQuote(windowsCommandLine(launch.exe, launch.args))}; CurrentDirectory = ${psQuote(launch.cwd)} }`,
+    `if ($r.ReturnValue -ne 0) { Write-Error ('Win32_Process.Create returned ' + $r.ReturnValue); exit 1 }`,
+    `$r.ProcessId`,
+  ].join('; ')
+  return new Promise((resolve, reject) => {
+    execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 20_000, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) { reject(new Error(String(stderr || err.message).trim().split('\n')[0])); return }
+      const pid = Number(String(stdout).trim())
+      resolve(Number.isInteger(pid) && pid > 0 ? pid : null)
+    })
+  })
+}

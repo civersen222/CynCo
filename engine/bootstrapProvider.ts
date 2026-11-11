@@ -190,11 +190,20 @@ export async function bootstrapProvider(
       const { lazySettings, createLazyEnsureReady, IdleUnloader } = await import('./llama/lazyLoad.js')
       const lazy = lazySettings()
       let ensureReady: ((signal?: AbortSignal) => Promise<void>) | undefined
+      // The owner's local-LLM apps (docs/decisions/2026-11-11-local-llm-apps.md): a server of theirs on our port is
+      // named, taken for CynCo's work, and started again when CynCo is done.
+      const { lazyAppDeps, giveGpuBack } = await import('./apps/gpu.js')
+      const lazyApps = lazyAppDeps(config.port)
+      const sayApps = (m: string) => { console.log(`[apps] ${m}`); processManager.onWaiting?.(m) }
       if (lazy.lazy) {
         const { readGpuBusy } = await import('./daemon/gpuBusyFile.js')
+        // An engine that died owing an app its server: give it back now, if the GPU is free.
+        void giveGpuBack(sayApps)
         ensureReady = createLazyEnsureReady(processManager, {
           readBusy: () => readGpuBusy(),
           maxWaitMs: lazy.lazyWaitMs,
+          portOwner: lazyApps.portOwner,
+          takeFromApp: lazyApps.takeFromApp,
           onWaiting: (info) => {
             const mins = info.remainingMs === null ? '?' : String(Math.ceil(info.remainingMs / 60000))
             processManager.onWaiting?.(`${info.reason} — about ${mins} min left; the model loads when it ends`)
@@ -243,7 +252,7 @@ export async function bootstrapProvider(
             ownServerUp: () => processManager.isRunning(),
             isPortOccupied: () => processManager.isPortOccupied(),
             isHealthy: () => processManager.portAnswersHealth(),
-            portOwner: async () => (await import('./llama/portOwner.js')).portOwner(config.port),
+            portOwner: lazyApps.portOwner,
           }),
           fallbackHealthy: () => fallback.healthCheck(),
           notify: (m) => processManager.onWaiting?.(m),
@@ -259,7 +268,8 @@ export async function bootstrapProvider(
         new IdleUnloader({
           registry: activity,
           isRunning: () => processManager.isRunning(),
-          unload: async () => { await processManager.saveSlot(); await processManager.stop() },
+          // CynCo is done with the GPU: an app whose server was stopped for it gets that server back.
+          unload: async () => { await processManager.saveSlot(); await processManager.stop(); await giveGpuBack(sayApps) },
           idleMs: lazy.idleUnloadMs,
           log: (line) => console.log(line),
         }).start()

@@ -760,6 +760,39 @@ describe('ProcessManager.ensureRunningLazy', () => {
     expect(pm.modelState()).toBe('warm')
   })
 
+  it('a server that belongs to one of the owner\'s apps is taken from the app by the app module, which says which app; the port is not killed blind (local-llm-apps)', async () => {
+    const { pm, calls } = lazyPm()
+    const told: string[] = []
+    pm.onWaiting = (m) => told.push(m)
+    let occupiedAnswers = 0
+    let taken = 0
+    await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => occupiedAnswers++ < 2,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'app', detail: 'dndai\'s model server (pid 41364 (llama-server.exe), started by bash.exe scripts/start-llm.sh)' }),
+      takeFromApp: async (say) => { taken++; say('dndai\'s model server held port 8081 (pid 41364). CynCo stopped it to load its own model.') },
+    }))
+    expect(taken).toBe(1)
+    // The app module stopped it: the port sweep, which knows nothing about what is owed, did not run.
+    expect(calls).toEqual({ start: 1, kill: 0 })
+    expect(told).toEqual(['dndai\'s model server held port 8081 (pid 41364). CynCo stopped it to load its own model.'])
+    expect(pm.modelState()).toBe('warm')
+  })
+
+  it('an app\'s server with no app module wired is stopped as any server that is not CynCo\'s (F202)', async () => {
+    const { pm, calls } = lazyPm()
+    const told: string[] = []
+    pm.onWaiting = (m) => told.push(m)
+    let occupiedAnswers = 0
+    await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => occupiedAnswers++ < 2,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'app', detail: 'dndai\'s model server (pid 41364 (llama-server.exe))' }),
+    }))
+    expect(calls).toEqual({ start: 1, kill: 1 })
+    expect(told[0]).toContain('dndai\'s model server')
+  })
+
   it('a foreign server that will not die is not spawned over and not killed again: the wait goes on and the error names the port', async () => {
     const { pm, calls } = lazyPm()
     await expect(pm.ensureRunningLazy(deps({
