@@ -7,7 +7,7 @@ import { existsSync, readdirSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { MissionLedger } from './missionLedger.js'
 import { MissionRunner } from './missionRunner.js'
-import { NtfyChannel } from './ntfyChannel.js'
+import { NtfyChannel, ntfyOptionsFromEnv } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
 import { defaultControlPath, readControl } from './control.js'
 import { exec } from 'child_process'
@@ -39,8 +39,8 @@ function runPrecheck(command: string, cwd?: string): Promise<{ code: number | nu
     })
   })
 }
-const ntfyUrl = process.env.CYNCO_NTFY_URL
-if (!ntfyUrl) {
+const ntfyOptions = ntfyOptionsFromEnv(process.env)
+if (!ntfyOptions) {
   console.error('[daemon] CYNCO_NTFY_URL is required (e.g. http://<tailscale-ip>:8090)')
   process.exit(1)
 }
@@ -49,12 +49,7 @@ process.on('unhandledRejection', (err) => {
   console.error('[daemon] unhandled rejection (continuing):', err)
 })
 
-const ntfy = new NtfyChannel({
-  baseUrl: ntfyUrl,
-  token: process.env.CYNCO_NTFY_TOKEN,
-  alertTopic: process.env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts',
-  commandTopic: process.env.CYNCO_NTFY_COMMAND_TOPIC ?? 'cynco-commands',
-})
+const ntfy = new NtfyChannel(ntfyOptions)
 
 async function fetchMflSnapshot(leagueId: string, year: number): Promise<string> {
   const url = buildMflExportUrl({ query: 'transactions', league: leagueId, year, apiKey: loadMflApiKey() })

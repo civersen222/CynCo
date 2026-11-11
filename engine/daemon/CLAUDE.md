@@ -11,7 +11,8 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 | `main.ts` | Entry point: loads missions, wires ntfy + MissionRunner, runs the 30s tick loop, handles shutdown. |
 | `missionLedger.ts` | Per-mission on-disk state (state.json, runs.jsonl): trust ladder, pending approvals, atomic saves, corrupt-file recovery. |
 | `missionRunner.ts` | Per-mission tick logic: evaluates triggers, fires tasks, handles GPU-busy backoff, failure/halt alerts, approvals, text commands. |
-| `ntfyChannel.ts` | Self-hosted ntfy client: publish (with offline queue) and SSE subscribe for phone commands. |
+| `ntfyChannel.ts` | Self-hosted ntfy client: publish (with offline queue) and SSE subscribe for phone commands. `ntfyOptionsFromEnv` is the one reader of `CYNCO_NTFY_*`, for the daemon and for the engine's wait push. |
+| `waitPush.ts` | `WaitPush`: runs in the INTERACTIVE engine, not the daemon. One ntfy notification when an approval or a question is still open after 5 s and nobody is connected. See "Tell the phone when the engine waits" below. |
 | `oneShot.ts` | Runs INSIDE the spawned engine process: drives one prompt through `ConversationLoop`, extracts the outcome contract, writes it out. |
 | `scheduler.ts` | Pure trigger-time arithmetic (interval/daily/weekly/cron) — no I/O, no `Date.now()`. |
 | `taskRunner.ts` | Spawns the one-shot engine child with a GPU guard and hard timeout/kill; writes `gpu-busy.json` for the child's lifetime. |
@@ -81,6 +82,18 @@ A bad cadence cannot stop a tick: `validateOverride` checks fields one at a time
 Disabling changes scheduling only. A run already on the GPU is left to finish. A run parked in `state.paused` for a trigger that is now disabled is dropped on the first unpaused tick (`resumePaused`): `paused` is cleared and an ok run is recorded with the summary `dropped on disable: <triggerId>` so the journal is accounted for (the API reports it as `kind: dropped`). A cadence change leaves a parked or running run alone. The wake schedule published to the doorman lists only enabled triggers (`collectNextFires(..., allowedIds)` in `wakeSchedule.ts`), so the PC is not woken for a pass that will not run.
 
 `schedule.json` needs no restart (it is re-read and parsed every tick; the mtime is used to log a bad file once); `mission.json` still does.
+
+## Tell the phone when the engine waits (`waitPush.ts`)
+
+An approval card is refused after five minutes and an AskUser question resolves empty after five minutes (`requestApproval` in `engine/bridge/conversationLoop.ts`, `AskBroker`). A phone whose screen locked has no socket, so the frame that drew the card reached nobody. `engine/main.ts` hands every loop event to `WaitPush.onEvent`; an `approval.request` or `ask.request` frame starts a 5 s clock (`WAIT_PUSH_GRACE_MS`), and when it runs out one notification is published to the alert topic if both hold: the request is still in `ConversationLoop.pendingDecisions()`, and no client is connected (`DashboardServer.clientCount` is 0 and the bridge has no TUI or mission harness, `wsServer.connected`). The frame alone decides nothing: it is emitted before the approval is registered, and the beginner-mode warning frame has the same type and never waits.
+
+- **Switched on by** `CYNCO_NTFY_URL` in the engine's environment (`CYNCO_NTFY_TOKEN`, `CYNCO_NTFY_ALERT_TOPIC` as for the daemon). `scripts/run-headless-engine.cmd` sets it to the doorman's ntfy unless it is already set. Unset: nothing is built, the engine logs `[wait-push] off`, no request leaves the machine.
+- **What goes out:** the title (`CynCo needs your approval` / `CynCo has a question`), the tool name and its description or the question and its options, capped at 400 characters, to the same self-hosted tailnet-only ntfy the daemon uses. It is the text the phone page would have shown on the card.
+- **Never late:** it publishes with `queueOnFailure: false`, so an unreachable ntfy drops the notice instead of delivering "waiting now" after the wait is over. A failed or throwing publish is one `[wait-push] not delivered` log line and the turn is untouched.
+- **Not built on the `--run-task` path:** a daemon one-shot still has `CYNCO_NTFY_*` stripped and reports only through its outcome file (gotcha below).
+- **Does not cover:** a desk tab left open while the owner is away (a client is connected, so nothing is sent), or the last client disconnecting after the grace has passed. Both are in `docs/NOW.md`'s backlog.
+
+Pinned by `engine/__tests__/daemon/waitPush.test.ts` (the decision), `guards/waitPushWiring.test.ts` (the lines in `engine/main.ts`), `a publish that says not to queue is dropped on failure` in `ntfyChannel.test.ts` and `clientCount follows the sockets` in `dashboard/server.test.ts`. Not yet seen on the phone.
 
 ## Gotchas
 - `Stop-ScheduledTask` on the Task Scheduler job is not a pause: the job restarts the daemon within a minute and it fires whatever is due. Pause through the control file, or `Disable-ScheduledTask` first.

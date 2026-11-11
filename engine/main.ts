@@ -51,6 +51,8 @@ import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
 import { cyncoHome, missionsDir } from './paths.js'
 import { defaultControlPath } from './daemon/control.js'
+import { NtfyChannel, ntfyOptionsFromEnv } from './daemon/ntfyChannel.js'
+import { WaitPush } from './daemon/waitPush.js'
 import { embedBaseUrlFor } from './index/embedClient.js'
 import { makeProjectsDeps } from './projects/api.js'
 import { projectsHome } from './projects/layout.js'
@@ -403,6 +405,19 @@ const askVisionAboutPhoto = visionForImages ? (photo: Uint8Array, name: string, 
 const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) }, ...(unloadVisionBeforeTransform ? { beforeTransform: unloadVisionBeforeTransform } : {}), ...(askVisionAboutPhoto ? { askAboutPhoto: askVisionAboutPhoto } : {}) })
 void imageService.probe()
 
+// Tell the phone when the engine waits (engine/daemon/waitPush.ts): an approval or a question still open
+// after a short grace, with no dashboard socket and no TUI connected, is one ntfy notification. Off unless
+// CYNCO_NTFY_URL is set. A failed push is dropped, never queued: "waiting now" must not arrive an hour late.
+// Declared before the loop because the loop's emit reads it; `loop` is only read when a check fires.
+const waitNtfyOptions = ntfyOptionsFromEnv(process.env)
+const waitNtfy = waitNtfyOptions ? new NtfyChannel(waitNtfyOptions) : null
+const waitPush = waitNtfy ? new WaitPush({
+  publish: (notice) => waitNtfy.publish(notice, { queueOnFailure: false }),
+  pending: () => loop.pendingDecisions(),
+  clientCount: () => (dashboardServer?.clientCount ?? 0) + (wsServer.connected ? 1 : 0),
+}) : null
+console.log(`[wait-push] ${waitPush ? 'on: the phone is told when an approval or a question waits with nobody connected' : 'off (CYNCO_NTFY_URL is not set)'}`)
+
 const loop = new ConversationLoop({
   config,
   provider,
@@ -410,6 +425,7 @@ const loop = new ConversationLoop({
     console.log(`[localcode] Emitting: ${event.type}`)
     wsServer.emit(event)
     dashboardServer?.broadcast(event)
+    waitPush?.onEvent(event)
 
     // Tee audit-relevant events to the audit log
     const evType = (event as any).type ?? ''
