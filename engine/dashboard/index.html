@@ -1476,13 +1476,19 @@ function connectWS() {
   // The token rides in the query string here because a browser cannot set
   // headers on a WebSocket handshake. Everywhere else it is an Authorization
   // header, added by the fetch wrapper the server injects above.
+  // A page that was connected before also says how far it got, and the engine
+  // sends what it missed before any live frame (engine/dashboard/replay.ts).
   ws = new WebSocket(proto + '//' + location.hostname + ':' + location.port +
-    '/ws?token=' + encodeURIComponent(window.__CYNCO_TOKEN || ''));
+    '/ws?token=' + encodeURIComponent(window.__CYNCO_TOKEN || '') +
+    (typeof replayQuery === 'function' ? replayQuery(replayCursor) : ''));
 
   ws.onopen = function() {
     state.connected = true;
     reconnectDelay = 1000;
     document.getElementById('reconnectBanner').classList.remove('visible');
+    // The run state (/api/session, below) settles only once the missed frames
+    // have been applied: a turn that ended meanwhile ends from its own frames.
+    if (typeof replayOnOpen === 'function') replayOnOpen();
     // Which chat the engine holds is unknown until its on-connect project.opened
     // frame or /api/session says. A pane showing a project chat sends nothing
     // until then: a restarted engine holds none, and a user.message sent to it
@@ -1516,10 +1522,100 @@ function connectWS() {
   ws.onmessage = function(evt) {
     try {
       var event = JSON.parse(evt.data);
+      if (typeof replayAccept === 'function') {
+        replayTouch();
+        if (event.type === 'replay.state') { onReplayState(event); return; }
+        // A numbered frame at or before the cursor has been drawn already.
+        if (!replayAccept(replayCursor, event)) return;
+      }
       handleEvent(event);
       render();
     } catch (e) { /* ignore malformed messages */ }
   };
+}
+
+// ── What this page missed while its socket was down (engine/dashboard/replay.ts) ──
+// The engine numbers the frames that draw the Chat pane. The page keeps the
+// last number it handled; a new socket names it, and the engine answers with
+// the frames after it, then `replay.state`. Token frames of one run share a
+// number and carry `off`, how far into the run they reach.
+
+var replayCursor = { epoch: null, seq: 0, off: 0 };
+var replayWait = { settled: true, queue: [], timer: null };
+
+/** The cursor as socket-URL parameters; empty until the engine has told this page an epoch. */
+function replayQuery(c) {
+  return c && c.epoch ? '&epoch=' + encodeURIComponent(c.epoch) + '&since=' + c.seq + '&off=' + c.off : '';
+}
+
+/** Whether to handle `event`: false for a numbered frame at or before the cursor `c`; a newer one becomes the cursor. */
+function replayAccept(c, event) {
+  if (typeof event.seq !== 'number') return true;
+  var off = typeof event.off === 'number' ? event.off : 0;
+  if (event.seq < c.seq || (event.seq === c.seq && off <= c.off)) return false;
+  c.seq = event.seq;
+  c.off = off;
+  return true;
+}
+
+/** A socket opened: hold the run-state settle until the engine has said `replay.state`, or has been quiet for 1.5 s. */
+function replayOnOpen() {
+  clearTimeout(replayWait.timer);
+  replayWait.settled = false;
+  replayWait.queue = []; // a settle queued for a socket that closed first is for an answer nobody needs now
+  replayWait.timer = setTimeout(replaySettle, 1500);
+}
+
+/** A frame arrived while the settle is held: the replay is still coming, so the quiet period starts again. */
+function replayTouch() {
+  if (replayWait.settled) return;
+  clearTimeout(replayWait.timer);
+  replayWait.timer = setTimeout(replaySettle, 1500);
+}
+
+/** Run `fn` once the missed frames have been applied — at once when no replay is pending. */
+function whenReplayed(fn) {
+  if (replayWait.settled) fn(); else replayWait.queue.push(fn);
+}
+
+function replaySettle() {
+  clearTimeout(replayWait.timer);
+  if (replayWait.settled) return;
+  replayWait.settled = true;
+  var queue = replayWait.queue;
+  replayWait.queue = [];
+  for (var i = 0; i < queue.length; i++) queue[i]();
+}
+
+/**
+ * `replay.state`: where the engine's numbered stream is. On a connect it comes
+ * after the frames this page missed (`resumed`), or instead of them when the
+ * engine could not send them — another engine, another conversation, or more
+ * than it keeps (`gap`). `reason: 'reset'` arrives on an open socket when the
+ * conversation changes and only moves the cursor.
+ */
+function onReplayState(event) {
+  var wasHere = replayCursor.epoch !== null;
+  replayCursor.epoch = event.epoch;
+  replayCursor.seq = event.seq;
+  replayCursor.off = event.off || 0;
+  if (event.reason !== 'connect') return;
+  if (wasHere && !event.resumed) replayLost(event);
+  replaySettle();
+}
+
+/**
+ * This page was connected before and the engine could not send what it missed.
+ * A project chat is stored message by message, so it is redrawn from that: the
+ * engine's project.opened — next on this socket, or its answer to this page's
+ * re-open after a restart — redraws a bound chat the pane does not hold
+ * (onProjectOpened), and forgetting which chat the pane holds asks for exactly
+ * that. The coding session has no stored transcript this page can draw, so a
+ * gap is said; a turn that ended unseen is said by applyRunState.
+ */
+function replayLost(event) {
+  if (projectsState.active && projectsState.active.chat) { projectsState.renderedChat = null; return; }
+  if (event.gap) appendChatMsg('system', 'More went by while this page was away than the engine keeps for a returning page; what it missed is not shown here.');
 }
 
 // ── Event Handler ────────────────────────────────────────────
@@ -2919,9 +3015,14 @@ function fetchSessionState() {
         var notice = brainOffNotice(data.brain, data.lens);
         if (bn) { bn.hidden = notice === null; bn.textContent = notice || ''; }
       }
-      // Is a turn running, and what is it waiting on? After a reconnect this is
-      // the only source: the frames that went by were not replayed.
-      if (typeof applyRunState === 'function') applyRunState(data);
+      // Is a turn running, and what is it waiting on? Applied after the frames
+      // this page missed (whenReplayed), so a turn that ended meanwhile has
+      // ended from its own message.complete; decisions still open are never
+      // replayed and are drawn from `pending` here.
+      if (typeof applyRunState === 'function') {
+        if (typeof whenReplayed === 'function') whenReplayed(function() { applyRunState(data); });
+        else applyRunState(data);
+      }
       // What the engine holds — `project` (null: none, as after a restart) and
       // whether it is busy in the coding session — against the chat this pane shows.
       reconcileProjectBinding(seq, data || undefined);
