@@ -374,12 +374,12 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .phone-k { color:#808080; min-width:130px; }
 .phone-v { color:#d4d4d4; font-family:'Cascadia Code','Fira Code',monospace; overflow-wrap:anywhere; }
 .phone-row .ap-no { margin-left:auto; }
-/* One app per row on the Missions tab: the text takes the width, the switch stays at the right end. */
-.app-row { flex-wrap:nowrap; align-items:flex-start; }
+/* One app per row on the Missions tab: the text takes the width, the switch stays at the right end. No media
+   query: the text's 260px basis makes it drop under the name on a phone by itself. */
+.app-row { align-items:flex-start; }
 .app-row .phone-k { color:#d4d4d4; font-weight:600; min-width:110px; }
-.app-row .phone-v { flex:1; min-width:0; }
+.app-row .phone-v { flex:1 1 260px; min-width:0; }
 .app-row button { flex:none; margin-left:auto; }
-@media (max-width: 640px) { .app-row { flex-wrap:wrap; } .app-row .phone-v { flex-basis:100%; } }
 .chat-msg { margin-bottom:8px; line-height:1.6; }
 .chat-msg-user { color:#808080; }
 .chat-msg-user span { color:#4ec9b0; font-weight:600; }
