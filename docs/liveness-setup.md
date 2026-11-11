@@ -100,6 +100,38 @@ mission `goal`. `"cwd": "<folder>"` (mission or trigger) makes that folder the r
 unless its trigger sets one). All three are read by the daemon at startup — restart it after editing the
 mission file.
 
+### A trigger aimed at a project: its answer lands in the project's inbox
+
+When a trigger's `cwd` is a project's folder (the folder itself, under the projects home,
+`~/cynco-projects` unless `LOCALCODE_PROJECTS_HOME` says otherwise), the run's answer is filed as
+a draft in that project's `inbox/` when the run ends well. The owner reads it on the project's
+**Inbox** tab, on the desk or the phone, and accepts it (it becomes an artifact) or discards it;
+the phone's Away tab says which projects have drafts waiting. Nothing else changes: the summary
+still goes to the Away tab and ntfy. Design: `docs/decisions/2026-11-11-phone-uploads-and-inbox.md`.
+
+`~/.cynco/missions/yard-weekly/mission.json`, for a project whose folder is `front-yard`:
+
+```json
+{
+  "id": "yard-weekly",
+  "goal": "Keep the front-yard project moving: read its notes and plan, and draft what is due next. Draft only; the owner accepts.",
+  "trustLadder": {},
+  "triggers": [
+    {
+      "id": "planting-plan", "kind": "weekly", "day": "sun", "at": "18:00",
+      "precheck": "none", "missedPolicy": "skip",
+      "cwd": "C:/Users/<you>/cynco-projects/front-yard",
+      "allowedTools": ["Read", "Glob", "Grep"],
+      "prompt": "Read plan.md and the files under knowledge/ and artifacts/ in this folder (Glob, then Read). Write this week's planting plan as markdown: what to plant, where, and what to buy. Your final message is the plan itself."
+    }
+  ]
+}
+```
+
+The run is a one-shot like any other: read-only tools unless the trigger says otherwise, the
+coding loop with the project folder as its workspace (it reads the project's files; it is not a
+project chat and gets no project search). Restart the daemon after adding the file.
+
 ### Dynasty runbook mission
 
 The owner's MFL dynasty team is run by a scripted runbook in `C:\Users\civer\fantasyman\dynasty`

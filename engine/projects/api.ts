@@ -16,6 +16,7 @@ import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
 import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, realInside, sha256Of, slugify, writeBytesAtomic, writeFileIndex, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
 import { contentFault, landingName, safeStem } from './upload.js'
+import { draftCount, draftPath, listDrafts, readDraft, discardDraft, removeDraft } from './inbox.js'
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
@@ -58,36 +59,40 @@ function heldSha(path: string): string | null {
   }
 }
 
+type Area = 'knowledge' | 'artifacts'
+
 /**
- * Null when `knowledge/` really is a folder of this project; otherwise the
+ * Null when `<area>/` (knowledge or artifacts) really is a folder of this project; otherwise the
  * refusal. A junction planted there would carry the write, and the index
  * beside it, out of the project.
  */
-function knowledgeAreaFault(dir: string, slug: string): ApiResult | null {
-  const area = join(dir, 'knowledge')
-  mkdirSync(area, { recursive: true })
-  const real = realInside(dir, area)
-  if (real.inside && lstatSync(area).isDirectory()) return null
-  console.warn(`[projects] write refused: knowledge/ of ${slug} resolves to ${real.real}`)
-  return { status: 409, body: { error: 'knowledge/ is not a folder inside this project; the file was not kept' } }
+function areaFault(dir: string, slug: string, area: Area): ApiResult | null {
+  const path = join(dir, area)
+  mkdirSync(path, { recursive: true })
+  const real = realInside(dir, path)
+  if (real.inside && lstatSync(path).isDirectory()) return null
+  console.warn(`[projects] write refused: ${area}/ of ${slug} resolves to ${real.real}`)
+  return { status: 409, body: { error: `${area}/ is not a folder inside this project; the file was not kept` } }
 }
+const knowledgeAreaFault = (dir: string, slug: string) => areaFault(dir, slug, 'knowledge')
 
 /**
- * Put `bytes` at `knowledge/<rel>`: never through a link (the fresh file
+ * Put `bytes` at `<area>/<rel>`: never through a link (the fresh file
  * replaces whatever sat at the name), never over a folder. Null when written;
  * otherwise the refusal or the failure, said.
  */
-function landInKnowledge(dir: string, slug: string, rel: string, bytes: Uint8Array): ApiResult | null {
-  const target = join(dir, 'knowledge', rel)
+function landIn(dir: string, slug: string, area: Area, rel: string, bytes: Uint8Array): ApiResult | null {
+  const target = join(dir, area, rel)
   if (isFolder(target)) return { status: 409, body: { error: `a folder named ${rel} is in the way; the file was not kept` } }
   try {
     writeBytesAtomic(target, bytes)
     return null
   } catch (e) {
-    console.error(`[projects] ${rel} could not be written into knowledge/ of ${slug}: ${e instanceof Error ? e.message : String(e)}`)
+    console.error(`[projects] ${rel} could not be written into ${area}/ of ${slug}: ${e instanceof Error ? e.message : String(e)}`)
     return { status: 500, body: { error: `the file could not be written: ${e instanceof Error ? e.message : String(e)}` } }
   }
 }
+const landInKnowledge = (dir: string, slug: string, rel: string, bytes: Uint8Array) => landIn(dir, slug, 'knowledge', rel, bytes)
 
 function isFolder(path: string): boolean {
   try { return lstatSync(path).isDirectory() } catch { return false }
@@ -99,7 +104,9 @@ const obj = (b: unknown): Record<string, unknown> => (b && typeof b === 'object'
 
 export function listProjects(d: ProjectsDeps): ApiResult {
   const { registry, rebuilt } = readRegistry(d.home)
-  return { status: 200, body: { projects: registry.projects, rebuilt } }
+  // `drafts`: how many wait in each project's inbox, so the list and the Away tab can say where work landed.
+  const projects = registry.projects.map(p => ({ ...p, drafts: draftCount(join(d.home, p.slug)) }))
+  return { status: 200, body: { projects, rebuilt } }
 }
 
 export async function createProjectApi(d: ProjectsDeps, body: unknown): Promise<ApiResult> {
@@ -330,4 +337,58 @@ export async function rescanApi(d: ProjectsDeps, slug: string): Promise<ApiResul
   if (!readProject(d.home, slug)) return notFound('project')
   const counts = await rescanProject(d, slug, d.looks ?? null)
   return { status: 200, body: counts }
+}
+
+// ── Inbox (inbox.ts): drafts of work done while nobody was in the chat ──
+
+export function listInboxApi(d: ProjectsDeps, slug: string): ApiResult {
+  if (!readProject(d.home, slug)) return notFound('project')
+  return { status: 200, body: listDrafts(projectDir(d.home, slug)) }
+}
+
+export function getDraftApi(d: ProjectsDeps, slug: string, name: string): ApiResult {
+  if (!readProject(d.home, slug)) return notFound('project')
+  const r = readDraft(projectDir(d.home, slug), name)
+  if (!r.ok) return r.status === 404 ? notFound('draft') : { status: r.status, body: { error: r.reason } }
+  return { status: 200, body: { name, text: r.text, truncated: r.truncated } }
+}
+
+export function discardDraftApi(d: ProjectsDeps, slug: string, name: string): ApiResult {
+  if (!readProject(d.home, slug)) return notFound('project')
+  if (!discardDraft(projectDir(d.home, slug), name)) return notFound('draft')
+  return { status: 200, body: { discarded: name } }
+}
+
+/**
+ * Accept a draft: it becomes an artifact. The draft meets what an upload
+ * meets — an accepted extension, bytes that are what the name says, a write
+ * that follows nothing — and never replaces an artifact already there: a taken
+ * name gets a number. Indexed and journaled like any artifact, then the draft
+ * and its record leave the inbox. Refused, the draft stays where it is.
+ */
+export async function acceptDraftApi(d: ProjectsDeps, slug: string, name: string): Promise<ApiResult> {
+  if (!readProject(d.home, slug)) return notFound('project')
+  const dir = projectDir(d.home, slug)
+  const src = draftPath(dir, name)
+  if (src === null) return notFound('draft')
+  const ext = extname(name).toLowerCase()
+  if (!ACCEPTED_EXTS.has(ext)) return { status: 415, body: { error: `unsupported file type ${ext || '(none)'}; the draft stays in the inbox` } }
+  const bytes = new Uint8Array(readFileSync(src))
+  if (bytes.byteLength === 0) return bad('the draft is empty')
+  if (bytes.byteLength > UPLOAD_MAX_BYTES) return { status: 413, body: { error: `the draft is larger than ${UPLOAD_MAX_BYTES} bytes` } }
+  const fault = contentFault(ext, bytes)
+  if (fault) return { status: 415, body: { error: `${name}: ${fault}; the draft stays in the inbox` } }
+  const refused = areaFault(dir, slug, 'artifacts')
+  if (refused) return refused
+  const stem = safeStem(slugify(name.slice(0, name.length - extname(name).length)))
+  let rel = `${stem}${ext}`
+  for (let n = 2; existsSync(join(dir, 'artifacts', rel)) || isReservedFileName(rel); n++) rel = `${stem}-${n}${ext}`
+  const writeFault = landIn(dir, slug, 'artifacts', rel, bytes)
+  if (writeFault) return writeFault
+  const ev = await ingestFile(d, slug, 'artifact', rel, 'draft')
+  removeDraft(dir, name)
+  appendJournal(dir, 'draft.accepted', `inbox/${name} → artifacts/${rel}`)
+  await ensureHistory(dir)
+  await commitHistory(dir, [`artifacts/${rel}`, 'artifacts/index.json', 'journal.md'], `artifact: accept draft ${rel}`)
+  return { status: 200, body: { accepted: name, artifact: rel, event: ev } }
 }

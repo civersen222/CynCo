@@ -1,6 +1,5 @@
 [
   "agents/CLAUDE.md: formatVocabularyPrompt @ vocabulary.ts:296",
-  "daemon/CLAUDE.md: TaskOutcome @ types.ts:7",
   "engine/CLAUDE.md: checkBudgetAsync @ contextBudget.ts:138",
   "index/CLAUDE.md: insertRelationship @ store.ts:141",
   "memory/CLAUDE.md: UncertaintyTracker @ uncertaintyTracker.ts:11",
