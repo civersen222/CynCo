@@ -5,7 +5,7 @@ import { ServerStartError } from './errors.js'
 import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
-import { evaluateSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
+import { checkSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
 import { portOwner } from './portOwner.js'
 import { existsSync, statSync } from 'fs'
 import { cyncoHome } from '../paths.js'
@@ -344,6 +344,12 @@ export class ProcessManager {
   onFault?: (reason: string) => void
   /** Lazy path: called with a one-line reason each poll while another process owns the GPU. main.ts relays it to the dashboard. */
   onWaiting?: (reason: string) => void
+  /**
+   * Asked once by the pre-spawn check when the card is short of VRAM: free what can be freed by asking, and say how
+   * many things let go. bootstrapProvider wires it to engine/apps/ollama.ts, which asks Ollama to unload the models
+   * it holds for the owner's apps.
+   */
+  relieveGpu?: () => Promise<number>
   /** The last pre-spawn refusal, null when the last attempt was allowed to spawn. */
   lastRefusal: string | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null
@@ -637,22 +643,18 @@ export class ProcessManager {
    */
   private async preSpawnCheck(): Promise<SpawnCheck> {
     if (this.baseConfig.preSpawnCheck) return this.baseConfig.preSpawnCheck()
-    const [host, gpu0] = await Promise.all([readHostMemory(), readGpuMemory()])
     let fileBytes = 0
     try { fileBytes = statSync(this.baseConfig.modelPath).size } catch (e) {
       console.log(`[llama-cpp] model size unknown (${e instanceof Error ? e.message : String(e)}); no VRAM floor for this check`)
     }
     const req = spawnRequirementFor({ ctxSize: this.baseConfig.ctxSize ?? DEFAULT_CTX_SIZE, modelFileBytes: fileBytes, cost: this.checkpointCost })
-    let check = evaluateSpawn(host, gpu0, req)
-    if (check.ok) return check
-    if (/VRAM/.test(check.reason)) {
-      // A server that just died releases its VRAM a beat after the process ends.
-      await new Promise(r => setTimeout(r, GPU_RECHECK_DELAY_MS))
-      check = evaluateSpawn(host, await readGpuMemory(), req)
-      if (check.ok) return check
-    }
-    // Only pay for the process listing when we are about to refuse.
-    return evaluateSpawn(host, gpu0, req, await topCommitConsumers())
+    return checkSpawn(req, {
+      readHost: readHostMemory,
+      readGpu: readGpuMemory,
+      topConsumers: () => topCommitConsumers(),
+      recheckDelayMs: GPU_RECHECK_DELAY_MS,
+      ...(this.relieveGpu ? { relieve: this.relieveGpu } : {}),
+    })
   }
 
   private async startProcess(): Promise<void> {

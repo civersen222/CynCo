@@ -132,3 +132,49 @@ export function evaluateSpawn(host: HostMemory, gpu: GpuMemory, req: SpawnRequir
   }
   return { ok: true }
 }
+
+export type CheckSpawnDeps = {
+  readHost: () => Promise<HostMemory>
+  readGpu: () => Promise<GpuMemory>
+  topConsumers: () => Promise<string>
+  /**
+   * Asked once when the card is short: free what can be freed by asking (engine/apps/ollama.ts asks
+   * Ollama to unload the models it holds for the owner's apps). Resolves to how many things let go.
+   */
+  relieve?: () => Promise<number>
+  sleep?: (ms: number) => Promise<void>
+  /** VRAM is released a moment after a process dies or a model unloads; one re-read after this long. */
+  recheckDelayMs: number
+  log?: (line: string) => void
+}
+
+/**
+ * The pre-spawn check (F140) with its two second chances for VRAM: whoever can be asked to let go is
+ * asked (`relieve`), and the card is read once more after `recheckDelayMs`, because memory comes back a
+ * beat after its owner lets go. Commit charge gets neither: nobody can be asked for that.
+ */
+export async function checkSpawn(req: SpawnRequirement, deps: CheckSpawnDeps): Promise<SpawnCheck> {
+  const log = deps.log ?? console.log
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+  const [host, gpu0] = await Promise.all([deps.readHost(), deps.readGpu()])
+  let check = evaluateSpawn(host, gpu0, req)
+  if (check.ok) return check
+  if (/VRAM/.test(check.reason)) {
+    let relieved = 0
+    try {
+      relieved = (await deps.relieve?.()) ?? 0
+    } catch (e) {
+      log(`[llama-cpp] asking for GPU memory back failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (relieved > 0) {
+      check = evaluateSpawn(host, await deps.readGpu(), req)
+      if (check.ok) return check
+    }
+    // A server that just died, or a model that was just unloaded, releases its VRAM a beat later.
+    await sleep(deps.recheckDelayMs)
+    check = evaluateSpawn(host, await deps.readGpu(), req)
+    if (check.ok) return check
+  }
+  // Only pay for the process listing when we are about to refuse.
+  return evaluateSpawn(host, gpu0, req, await deps.topConsumers())
+}

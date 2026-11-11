@@ -15,6 +15,7 @@ import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome, missionsDir as resolveMissionsDir } from '../paths.js'
 import { giveGpuBack, takeGpuForOneShot } from '../apps/gpu.js'
+import { freeOllamaForCynco } from '../apps/ollama.js'
 import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
@@ -93,7 +94,9 @@ for (const entry of readdirSync(missionsDir)) {
     workDir: join(dir, 'tasks'), shouldPause: isPaused,
     // The owner's local-LLM apps (engine/apps): a one-shot takes the model port from an app's server by the rule
     // the chat engine uses, and the app gets its server back after the run.
-    takeGpu: (why) => takeGpuForOneShot({ port: modelPort, by: `the one-shot ${why}`, say: sayApps }).then(() => {}),
+    // Then Ollama: a model it holds for one of the owner's apps would read as a busy GPU and defer the run.
+    takeGpu: (why) => takeGpuForOneShot({ port: modelPort, by: `the one-shot ${why}`, say: sayApps })
+      .then(() => freeOllamaForCynco({ by: `the one-shot ${why}`, say: sayApps })).then(() => {}),
     giveGpuBack: () => giveGpuBack(sayApps),
   })
   runners.push(new MissionRunner(ledger, {

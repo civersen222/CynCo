@@ -125,6 +125,9 @@ describe('TaskRunner: a one-shot takes the GPU before it asks whether the GPU is
   it('daemon/main.ts wires both to the app module', () => {
     const src = readFileSync('engine/daemon/main.ts', 'utf-8')
     expect(src).toMatch(/takeGpu:\s*\(why\)\s*=>\s*takeGpuForOneShot\(/)
+    // Ollama is asked after the port is taken, and before the busy check (slice 4).
+    expect(src).toMatch(/takeGpuForOneShot\(.*\)\s*\.then\(\(\) => freeOllamaForCynco\(\{ by: `the one-shot \$\{why\}`/)
+    expect(readFileSync('engine/bootstrapProvider.ts', 'utf-8')).toMatch(/processManager\.relieveGpu = \(\) => freeOllamaForCynco\(/)
     expect(src).toMatch(/giveGpuBack:\s*\(\)\s*=>\s*giveGpuBack\(/)
   })
 
