@@ -51,6 +51,7 @@ import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
 import { cyncoHome, missionsDir } from './paths.js'
 import { defaultControlPath } from './daemon/control.js'
+import { liveAppsDeps } from './dashboard/appsApi.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './daemon/ntfyChannel.js'
 import { WaitPush } from './daemon/waitPush.js'
 import { embedBaseUrlFor } from './index/embedClient.js'
@@ -528,6 +529,8 @@ try {
         missionsDir: missionsDir(),
         controlPath: process.env.CYNCO_CONTROL_FILE ?? defaultControlPath(cyncoHome()),
       },
+      // The owner's local-LLM apps on the Missions tab (engine/apps, dashboard/appsApi.ts).
+      apps: liveAppsDeps(config.port ?? 8081),
       getSessionInfo: () => {
         let modelName = config.model || ''
         // For llama-cpp provider, show the actual GGUF file + spec type

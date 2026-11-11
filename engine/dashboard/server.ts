@@ -35,6 +35,7 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
+import { readAppsView, setAppManagedApi } from './appsApi.js'
 import { ReplayBuffer, parseCursor, type ReplayCursor } from './replay.js'
 import { webManifest, appIconPng, isAppIconSize } from './installable.js'
 import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
@@ -155,6 +156,8 @@ export interface DashboardDeps {
   getAwayRuns?: () => import('../daemon/awayFeed.js').AwayRun[]
   /** Mission schedule + daemon pause files (`/api/missions`, `/api/daemon/pause`); unwired = empty view, writes 503. */
   missions?: import('./missionsApi.js').MissionsPaths
+  /** The owner's local-LLM apps (`/api/apps`, appsApi.ts); unwired = empty view, the switch 503. */
+  apps?: import('./appsApi.js').AppsDeps
   /**
    * The approval cards and AskUser questions the engine is waiting on right
    * now (`ConversationLoop.pendingDecisions`). Served as `pending` on
@@ -735,6 +738,16 @@ export class DashboardServer {
           const denied = this.requireScope(req, 'inference', kind)
           if (denied) return denied
           return await this.handleMissions(req, method, pathname)
+        }
+
+        // The owner's local-LLM apps (appsApi.ts). Reading is the read scope, so a
+        // paired phone can see which app holds the GPU. Switching `manage` changes
+        // what CynCo may stop and start: configuration, so management scope, which
+        // with the remote rule in `authenticate` is desk-only.
+        if (pathname === '/api/apps' || pathname.startsWith('/api/apps/')) {
+          const denied = this.requireScope(req, method === 'GET' ? 'inference' : 'management', kind)
+          if (denied) return denied
+          return await this.handleApps(req, method, pathname)
         }
 
         // Phone administration (the Config tab's panel): the pairing code, the
@@ -1504,6 +1517,27 @@ export class DashboardServer {
       const body = (await this.jsonBody(req)) as { paused?: unknown }
       if (typeof body?.paused !== 'boolean') return jsonResponse({ error: 'paused must be a boolean' }, 400)
       return jsonResponse(setPaused(m, body.paused))
+    }
+    return jsonResponse({ error: 'Not found' }, 404)
+  }
+
+  // ── The owner's local-LLM apps (read: inference; the switch: management, desk-only) ──
+
+  private async handleApps(req: Request, method: string, pathname: string): Promise<Response> {
+    const a = this.deps.apps
+    if (pathname === '/api/apps' && method === 'GET') {
+      return jsonResponse(a ? await readAppsView(a) : { apps: [], port: 0, ollama: null })
+    }
+    const one = /^\/api\/apps\/([^/]+)$/.exec(pathname)
+    if (one && method === 'PUT') {
+      if (!a) return jsonResponse({ error: 'apps not wired' }, 503)
+      let id: string
+      try { id = decodeURIComponent(one[1]) } catch (e) {
+        console.log(`[dashboard] apps: an id that is not valid URL encoding (${e instanceof Error ? e.message : String(e)})`)
+        return jsonResponse({ error: 'invalid id' }, 400)
+      }
+      const r = await setAppManagedApi(a, id, await this.jsonBody(req))
+      return jsonResponse(r.json, r.status)
     }
     return jsonResponse({ error: 'Not found' }, 404)
   }

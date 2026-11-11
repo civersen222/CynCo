@@ -1330,6 +1330,12 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div id="missionsHeader">loading…</div>
   </div>
   <div id="missionsList" class="mt-list full-width"></div>
+  <!-- ── Local-LLM apps (docs/decisions/2026-11-11-local-llm-apps.md) ─── -->
+  <div class="panel full-width" id="appsPanel">
+    <div class="panel-title">Your local-LLM apps and the GPU</div>
+    <p class="phone-note">CynCo takes the GPU from a managed app when it needs it, says so in the chat, and gives it back when it is done. An app CynCo does not manage is left alone.</p>
+    <div id="appsBody">loading…</div>
+  </div>
 </div>
 </div>
 
@@ -4012,6 +4018,7 @@ function loadMissions() {
 function startMissionsPoll() {
   stopMissionsPoll();
   loadMissions();
+  loadApps();
   missionsState.timer = setInterval(loadMissions, 10000);
 }
 function stopMissionsPoll() {
@@ -4292,6 +4299,71 @@ function replayPendingDecisions(pending) {
     }
   }
   if (pending.length) { brainViz.setActive(false); showChatStop(true); }
+}
+
+// ── Missions → Your local-LLM apps and the GPU (docs/decisions/2026-11-11-local-llm-apps.md) ──
+// Reading is the read token's, so the phone sees it. The switch is management: at the desk the
+// fetch wrapper asks for that token on the 403; a remote page is shown no switch, and the engine
+// refuses one from off this machine whatever is sent.
+
+/** One app as the panel shows it. Pure; lifted by engine/__tests__/dashboard/appsApi.test.ts. */
+function appRowModel(app, remote) {
+  var gpu = app.holdsGpu ? 'holds the GPU now: ' + (app.holding || '')
+    : app.owed ? 'stopped for CynCo; its server is started again when CynCo is done'
+    : 'not holding the GPU';
+  return {
+    name: app.name,
+    serves: app.serves,
+    gpu: gpu,
+    managed: app.manage ? 'managed by CynCo' : 'not managed',
+    button: remote ? null : (app.manage ? 'Stop managing' : 'Manage')
+  };
+}
+
+function loadApps() {
+  fetch('/api/apps')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) { renderApps(data, null); })
+    .catch(function(err) { renderApps(null, err.message); });
+}
+
+function setAppManaged(id, manage) {
+  fetch('/api/apps/' + encodeURIComponent(id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manage: manage }) })
+    .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, status: r.status, body: j }; }); })
+    .then(function(res) {
+      if (res.ok) { renderApps(res.body, null); return; }
+      loadApps();
+      // A switch the engine refused or could not write is said, not swallowed.
+      window.alert('Apps: ' + ((res.body && res.body.error) || (res.status === 403 ? 'management token required' : 'HTTP ' + res.status)));
+    })
+    .catch(function(err) { renderApps(null, err.message); });
+}
+
+/** Everything is set with textContent: names and paths come from files on disk and are data, not markup. */
+function renderApps(data, error) {
+  var body = document.getElementById('appsBody');
+  if (!body) return;
+  while (body.firstChild) body.removeChild(body.firstChild);
+  function line(text) { var d = document.createElement('div'); d.className = 'phone-row'; d.textContent = text; return d; }
+  if (!data) { body.appendChild(line('Unavailable: ' + (error || 'no answer'))); return; }
+  if (!data.apps || data.apps.length === 0) {
+    body.appendChild(line('No apps known yet. CynCo adds one the first time it finds its model server on the model port, or its model in Ollama.'));
+    return;
+  }
+  var remote = !!window.__CYNCO_REMOTE;
+  data.apps.forEach(function(app) {
+    var m = appRowModel(app, remote);
+    var row = document.createElement('div'); row.className = 'phone-row';
+    var k = document.createElement('span'); k.className = 'phone-k'; k.textContent = m.name;
+    var v = document.createElement('span'); v.className = 'phone-v'; v.textContent = m.serves + ' · ' + m.gpu + ' · ' + m.managed;
+    row.appendChild(k); row.appendChild(v);
+    if (m.button) {
+      var b = document.createElement('button'); b.className = 'chat-send'; b.textContent = m.button;
+      b.onclick = function() { setAppManaged(app.id, !app.manage); };
+      row.appendChild(b);
+    }
+    body.appendChild(row);
+  });
 }
 
 // ── Config → Phone access: the pairing code, the phone URL, the paired devices ──
