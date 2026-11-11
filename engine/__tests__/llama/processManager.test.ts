@@ -760,6 +760,39 @@ describe('ProcessManager.ensureRunningLazy', () => {
     expect(pm.modelState()).toBe('warm')
   })
 
+  it('an eager start (a mission engine, a one-shot, the desk engine) asks the app module first: an app\'s server on the port is taken by it, not killed blind (F219)', async () => {
+    const { pm, calls } = lazyPm()
+    let occupied = true
+    ;(pm as any).isPortOccupied = async () => occupied
+    let asked = 0
+    pm.takePortFromApp = async () => { asked++; occupied = false; return true }
+    await pm.ensureRunning()
+    expect(asked).toBe(1)
+    expect(calls).toEqual({ start: 1, kill: 0 })
+  })
+
+  it('an eager start with a server on the port that is no app\'s kills it as before; and with no app module wired, or one that throws, too', async () => {
+    for (const hook of [async () => false, undefined, async () => { throw new Error('powershell is gone') }]) {
+      const { pm, calls } = lazyPm()
+      let occupied = true
+      ;(pm as any).isPortOccupied = async () => occupied
+      ;(pm as any).killProcessOnPort = async () => { calls.kill++; occupied = false }
+      if (hook) pm.takePortFromApp = hook as () => Promise<boolean>
+      await pm.ensureRunning()
+      expect(calls).toEqual({ start: 1, kill: 1 })
+    }
+  })
+
+  it('an eager start with a free port asks nobody', async () => {
+    const { pm, calls } = lazyPm()
+    ;(pm as any).isPortOccupied = async () => false
+    let asked = 0
+    pm.takePortFromApp = async () => { asked++; return true }
+    await pm.ensureRunning()
+    expect(asked).toBe(0)
+    expect(calls).toEqual({ start: 1, kill: 0 })
+  })
+
   it('a server that belongs to one of the owner\'s apps is taken from the app by the app module, which says which app; the port is not killed blind (local-llm-apps)', async () => {
     const { pm, calls } = lazyPm()
     const told: string[] = []

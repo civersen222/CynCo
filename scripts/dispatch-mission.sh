@@ -79,6 +79,13 @@ for pid in $(powershell -NoProfile -Command \
       2>/dev/null | tr -d '\r'); do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
+# The owner's local-LLM apps first (F219): a model server of theirs on our port
+# is named, stopped and owed its server back when the mission ends, by the rule
+# a chat turn and a one-shot follow (engine/apps), instead of being killed by
+# path below with nothing to bring it back. Ollama is asked to unload what it
+# holds for them. Never a reason to stop a dispatch: the sweep below is the same
+# either way.
+bun scripts/cynco-apps.mjs take --by "the mission $STAMP" || echo "[dispatch] the apps check did not run; going on with the sweep"
 # Match on PATH, not on image name. Ollama ships a binary called llama-server
 # too, at AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe, and it is
 # respawned by `ollama.exe serve` the instant anything asks it for a model. A
@@ -352,7 +359,9 @@ if [ -z "${CYNCO_SKIP_IDLE_ENGINE:-}" ]; then
     if curl -s -o /dev/null --max-time 3 http://127.0.0.1:9161/ 2>/dev/null; then
       exit 0   # something already answers (a hand-started engine, or the next dispatch)
     fi
-    LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
+    # Lazy (F219): this engine exists so the dashboard keeps answering, not to hold the GPU. The mission engine
+    # gave the GPU back to an app on its way out; an eager start here would take it straight back.
+    LOCALCODE_LLAMA_LAZY=true LOCALCODE_LLAMA_IDLE_UNLOAD_MS="${LOCALCODE_LLAMA_IDLE_UNLOAD_MS:-900000}" LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
     echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
   ) > /dev/null 2>&1 &
   disown 2>/dev/null || true

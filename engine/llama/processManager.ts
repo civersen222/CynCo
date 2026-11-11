@@ -350,6 +350,12 @@ export class ProcessManager {
    * it holds for the owner's apps.
    */
   relieveGpu?: () => Promise<number>
+  /**
+   * Asked by the eager start when something is on the port: if it is one of the owner's apps' servers, the app
+   * module stops it, says which app and records what the app is owed, and answers true (engine/apps/gpu.ts, F219).
+   * False, absent or throwing: the port is cleared as before.
+   */
+  takePortFromApp?: () => Promise<boolean>
   /** The last pre-spawn refusal, null when the last attempt was allowed to spawn. */
   lastRefusal: string | null = null
   private restartTimer: ReturnType<typeof setTimeout> | null = null
@@ -522,8 +528,16 @@ export class ProcessManager {
     // Kill any stale llama-server on our port — on Windows, child processes
     // survive when Bun exits, leaving zombies with wrong settings.
     if (await this.isPortOccupied()) {
-      console.log(`[llama-cpp] Killing stale server on port ${this.port}`)
-      await this.killProcessOnPort(this.port)
+      let taken = false
+      try {
+        taken = (await this.takePortFromApp?.()) ?? false
+      } catch (e) {
+        console.log(`[llama-cpp] could not ask whose server holds port ${this.port} (${e instanceof Error ? e.message : String(e)}); clearing it as before`)
+      }
+      if (!taken) {
+        console.log(`[llama-cpp] Killing stale server on port ${this.port}`)
+        await this.killProcessOnPort(this.port)
+      }
       // Wait for port to free
       for (let i = 0; i < 10; i++) {
         if (!(await this.isPortOccupied())) break
