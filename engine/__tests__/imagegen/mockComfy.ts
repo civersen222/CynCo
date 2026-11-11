@@ -53,6 +53,10 @@ export type MockMode = {
   uploadFail: boolean
   /** POST /free answers 500. */
   freeFail: boolean
+  /** GET /queue: prompts somebody else has running and pending on the server (F211). */
+  foreignQueue: { running: number; pending: number }
+  /** GET /queue answers 500. */
+  queueFail: boolean
 }
 
 export type MockCall = { method: string; path: string; query: Record<string, string>; body: unknown }
@@ -184,6 +188,15 @@ export async function startMockComfy(overrides: Partial<MockMode> = {}): Promise
       const id = (body as { prompt_id?: string } | null)?.prompt_id
       if (id) { pending.delete(id) }
       return json(res, 200, {})
+    }
+    if (u.pathname === '/queue' && req.method === 'GET') {
+      if (mode.queueFail) return json(res, 500, { error: 'no' })
+      const entry = (i: number) => [i, `foreign-${i}`, {}, {}, []]
+      const q = mode.foreignQueue ?? { running: 0, pending: 0 }
+      return json(res, 200, {
+        queue_running: Array.from({ length: q.running }, (_, i) => entry(i)),
+        queue_pending: Array.from({ length: q.pending }, (_, i) => entry(100 + i)),
+      })
     }
     if (u.pathname === '/queue' && req.method === 'POST') {
       for (const id of ((body as { delete?: string[] } | null)?.delete ?? [])) pending.delete(id)

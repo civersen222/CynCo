@@ -291,6 +291,38 @@ export class ImageService implements ImageAnnotator {
   }
 
   /**
+   * Engine start (`void imageService.freeAtStart()`): unload whatever ComfyUI holds when its queue is empty (F211).
+   * F198 frees after the engine's own pictures; this covers what the engine cannot see: an engine killed outright
+   * while a prompt ran, the ComfyUI page, a hand-run script. A queue that is not empty is somebody's work and is left
+   * alone, and a server that does not answer the question is not freed blind. One attempt; logs what it did; never
+   * throws. The owner decided this on 2026-11-11 knowing it also unloads a model somebody loaded on purpose and left idle.
+   */
+  async freeAtStart(): Promise<'freed' | 'busy' | 'unreachable' | 'off'> {
+    if (!this.client || this.stopped) return 'off'
+    let depth: { running: number; pending: number }
+    try {
+      depth = await this.client.queueDepth()
+    } catch (e) {
+      this.log(`[imagegen] image box not freed at engine start: ${reasonOf(e)}`)
+      return 'unreachable'
+    }
+    if (depth.running > 0 || depth.pending > 0) {
+      this.log(`[imagegen] image box not freed at engine start: ComfyUI has ${depth.running} running and ${depth.pending} pending`)
+      return 'busy'
+    }
+    // A job of ours accepted while the question was in the air owns the box now; its own free follows it.
+    if (this.running || this.queue.length > 0) return 'busy'
+    try {
+      await this.client.free()
+    } catch (e) {
+      this.log(`[imagegen] /free at engine start failed: ${reasonOf(e)}`)
+      return 'unreachable'
+    }
+    this.log(`[imagegen] image box freed at engine start (ComfyUI's queue was empty)`)
+    return 'freed'
+  }
+
+  /**
    * Refresh the pick in the background (F179): the loop calls this at the start of every project-chat turn, and the
    * turn's RenderUI is annotated tens of seconds later, so a key names the checkpoint the server has now — one added or
    * removed since is seen at the next turn that starts 30 s or more after the last probe, not after the 10-minute reuse.

@@ -236,3 +236,18 @@ describe('NODE_PACKS (what a missing transform node tells the operator to instal
     expect(NODE_PACKS.UnetLoaderGGUF).toBe('ComfyUI-GGUF')
   })
 })
+
+describe('queueDepth (F211: is anybody using the image box?)', () => {
+  it('counts what ComfyUI has running and pending', async () => {
+    mock = await startMockComfy({ foreignQueue: { running: 1, pending: 2 } })
+    expect(await new ComfyClient(mock.url).queueDepth()).toEqual({ running: 1, pending: 2 })
+  })
+  it('an empty queue is zero and zero', async () => {
+    mock = await startMockComfy()
+    expect(await new ComfyClient(mock.url).queueDepth()).toEqual({ running: 0, pending: 0 })
+  })
+  it('an answer that is not a queue is a ComfyError that names the route', async () => {
+    mock = await startMockComfy({ queueFail: true })
+    await expect(new ComfyClient(mock.url).queueDepth()).rejects.toThrow(/\/queue with HTTP 500/)
+  })
+})

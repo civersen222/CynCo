@@ -43,6 +43,18 @@ export const UNLOAD_TIMEOUT_MS = 10_000
  * answer; the dashboard also shrinks uploads to 3 MP (~2900 tokens) before they arrive.
  */
 export const LOOK_NUM_CTX = 8192
+/**
+ * How long Ollama keeps the vision model on the image box after a look: seconds,
+ * not the ten minutes it used to be. The owner, 2026-11-11: "if it's not being used
+ * the models should not be loaded". Not 0, because a zoomed look is two to four
+ * requests back to back (F192) and each would reload the model. Measured that day on
+ * the box (`qwen3-vl:8b-instruct`, 6.6 GB): a look on the resident model 0.6-1.1 s; a
+ * look that reloads it 3.7 s, of which 2.35 s is the load (7.3 s for the first load of
+ * the day); with `'5s'` the box was empty 5.1 s after the last look, with `0` at once.
+ * So the next look after a pause costs about 2.4 s more than it did, and the box holds
+ * nothing between looks. Ollama does the unloading: it happens even if the engine dies.
+ */
+export const LOOK_KEEP_ALIVE = '5s'
 const LABELS = ['TEXT', 'STATE', 'DESCRIPTION'] as const
 
 /** Split the reply by its three labels; a label that is missing yields ''. */
@@ -119,7 +131,7 @@ export class LookClient {
         body: JSON.stringify({
           model: this.model,
           stream: false,
-          keep_alive: '10m',
+          keep_alive: LOOK_KEEP_ALIVE,
           options: { num_ctx: LOOK_NUM_CTX },
           messages: [{ role: 'user', content, images: [Buffer.from(image).toString('base64')] }],
         }),
