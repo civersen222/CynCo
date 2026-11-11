@@ -101,6 +101,13 @@ export interface TaskRunnerOptions {
   gpuBusyPath?: string
   /** Where the one-shot registers as an open activity (hold-awake). Default: the process-wide registry. */
   activity?: ActivityRegistry
+  /**
+   * Before the busy check: take the model port from an app's server, or from one that is nobody's, by the rule the chat
+   * engine uses (engine/apps/gpu.ts). `why` is the trigger. Another engine's server is left, and the busy check defers.
+   */
+  takeGpu?: (why: string) => Promise<void>
+  /** After the run, however it ended, and after a deferral: start again what was stopped for it. */
+  giveGpuBack?: () => Promise<void>
 }
 
 /** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
@@ -119,8 +126,17 @@ export class TaskRunner {
       console.log(`[task:${input.triggerId}] paused before start — not spawned`)
       return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { elapsedMs: 0 } }
     }
+    // A hook that fails must not stop a run or hide a deferral: say so and go on.
+    const hook = async (name: string, fn?: () => Promise<void>) => {
+      try { await fn?.() } catch (e) { console.log(`[task:${input.triggerId}] ${name} failed: ${e instanceof Error ? e.message : String(e)}`) }
+    }
+    await hook('taking the GPU', this.opts.takeGpu ? () => this.opts.takeGpu!(input.triggerId) : undefined)
     const busy = await (this.opts.isGpuBusyImpl ?? isGpuBusy)()
-    if (busy) throw new GpuBusyError()
+    if (busy) {
+      // What was taken for a run that will not start is given back at once.
+      await hook('giving the GPU back', this.opts.giveGpuBack)
+      throw new GpuBusyError()
+    }
 
     const repoRoot = this.opts.repoRoot ?? process.cwd()
     const stamp = Date.now()
@@ -218,6 +234,8 @@ export class TaskRunner {
       } catch (e) {
         console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${e instanceof Error ? e.message : String(e)}`)
       }
+      // After the claim is cleared: giving back reads it, and must find the GPU free.
+      await hook('giving the GPU back', this.opts.giveGpuBack)
     }
   }
 

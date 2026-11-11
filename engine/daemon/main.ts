@@ -14,6 +14,7 @@ import { exec } from 'child_process'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome, missionsDir as resolveMissionsDir } from '../paths.js'
+import { giveGpuBack, takeGpuForOneShot } from '../apps/gpu.js'
 import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
@@ -51,6 +52,16 @@ process.on('unhandledRejection', (err) => {
 
 const ntfy = new NtfyChannel(ntfyOptions)
 
+// The owner's local-LLM apps (engine/apps): what the daemon did with an app's model server is said in the log and
+// on the phone, the same notification channel as a mission's results. A failed push is dropped, not queued.
+const modelPort = parseInt(process.env.LOCALCODE_PORT ?? '8081', 10)
+const sayApps = (message: string): void => {
+  console.log(`[apps] ${message}`)
+  void ntfy.publish({ title: 'CynCo and the GPU', message }, { queueOnFailure: false }).catch((e) => console.log(`[apps] not sent to the phone: ${e instanceof Error ? e.message : String(e)}`))
+}
+// A daemon that died owing an app its server: give it back now, if the GPU is free.
+void giveGpuBack(sayApps)
+
 async function fetchMflSnapshot(leagueId: string, year: number): Promise<string> {
   const url = buildMflExportUrl({ query: 'transactions', league: leagueId, year, apiKey: loadMflApiKey() })
   const resp = await fetch(url, { headers: { 'User-Agent': 'CynCoMFL/1.0' }, signal: AbortSignal.timeout(30000) })
@@ -78,7 +89,13 @@ for (const entry of readdirSync(missionsDir)) {
   const dir = join(missionsDir, entry)
   if (!existsSync(join(dir, 'mission.json'))) continue
   const ledger = MissionLedger.load(dir)
-  const taskRunner = new TaskRunner({ workDir: join(dir, 'tasks'), shouldPause: isPaused })
+  const taskRunner = new TaskRunner({
+    workDir: join(dir, 'tasks'), shouldPause: isPaused,
+    // The owner's local-LLM apps (engine/apps): a one-shot takes the model port from an app's server by the rule
+    // the chat engine uses, and the app gets its server back after the run.
+    takeGpu: (why) => takeGpuForOneShot({ port: modelPort, by: `the one-shot ${why}`, say: sayApps }).then(() => {}),
+    giveGpuBack: () => giveGpuBack(sayApps),
+  })
   runners.push(new MissionRunner(ledger, {
     runTask: (input) => taskRunner.run(input),
     publish: (p) => ntfy.publish(p),

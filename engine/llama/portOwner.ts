@@ -25,7 +25,11 @@ export type PortListener = {
   parentIsOlder: boolean
 }
 
-export type PortOwner = { owner: 'engine' | 'foreign' | 'unknown'; detail: string }
+/**
+ * `app`: a server that belongs to one of the owner's local-LLM apps. This file never answers it; `engine/apps/identify.ts`
+ * does, through the `portOwner` the lazy wait is given (docs/decisions/2026-11-11-local-llm-apps.md).
+ */
+export type PortOwner = { owner: 'engine' | 'app' | 'foreign' | 'unknown'; detail: string }
 
 const isBun = (name: string | null): boolean => !!name && /^bun(\.exe)?$/i.test(name)
 

@@ -702,6 +702,13 @@ async function cleanShutdown(signal: string) {
   if (config.provider === 'llama-cpp' && provider && 'processManager' in provider) {
     const pm = (provider as any).processManager
     if (pm?.stop) await pm.stop()
+    // An app whose model server this engine stopped gets it back (engine/apps): started outside our job, it outlives us.
+    try {
+      const { giveGpuBack } = await import('./apps/gpu.js')
+      await giveGpuBack((m) => console.log(`[apps] ${m}`))
+    } catch (e) {
+      console.log(`[apps] giving the GPU back at shutdown failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
   // Give the GPU back to the phone engine (after our llama-server is gone, so its lazy load finds a free port).
   if (siblingRelease) await siblingRelease()
