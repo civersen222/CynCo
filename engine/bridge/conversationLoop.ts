@@ -597,6 +597,8 @@ export class ConversationLoop {
   private sessionId: string = ''
   // Index-degradation state surfaced on context.status (Task 13).
   private indexDegraded?: boolean
+  /** This chat has been told that semantic search is off (F215); cleared when it is told the search is back. */
+  private saidEmbedOutage = false
   private lastQueryMode?: 'hybrid' | 'vector' | 'keyword'
   private snapshot?: WorkspaceSnapshot
   private snapshotCwd?: string
@@ -1266,6 +1268,28 @@ export class ConversationLoop {
   private warmImages(): void {
     if (!this.project) return
     try { this.images?.warm?.() } catch (e) { console.log(`[imagegen] warm failed: ${e instanceof Error ? e.message : String(e)}`) }
+  }
+
+  /**
+   * Semantic search being off, said in the chat (F215): once when this turn's retrieval found no embedding
+   * server, and once when one answers again. On the busy-notice channel (governance.alert, source `llama-cpp`,
+   * severity `info`), which the dashboard page already turns into a `model:` chat line, so the phone sees it.
+   * The state is `embedOutage()` (engine/index/embedClient.ts); a chat opened during an outage hears it on
+   * its first turn.
+   */
+  private async noteEmbedOutage(): Promise<void> {
+    try {
+      const { embedOutage, embedOutageNotice, EMBED_BACK_NOTICE } = await import('../index/embedClient.js')
+      const o = embedOutage()
+      let message: string | null = null
+      if (o && !this.saidEmbedOutage) { this.saidEmbedOutage = true; message = embedOutageNotice(o) }
+      else if (!o && this.saidEmbedOutage) { this.saidEmbedOutage = false; message = EMBED_BACK_NOTICE }
+      if (message === null) return
+      console.log(`[embed] chat told: ${message}`)
+      this.dashboardBroadcast?.({ type: 'governance.alert', severity: 'info', source: 'llama-cpp', message })
+    } catch (e) {
+      console.log(`[embed] outage notice not delivered: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   /** The look's one-line record for the chat, on the busy-notice channel (governance.alert info → alertChatLine). */
@@ -2051,6 +2075,7 @@ export class ConversationLoop {
     if (this.project) {
       this.warmImages()
       await this.injectProjectRetrieval(text)
+      await this.noteEmbedOutage()
     } else
     // Auto-inject CodeIndex results as system context — don't modify user message
     // (modifying user message leaks into memory recall display as "Prior: [Relevant code...]")
@@ -2119,6 +2144,7 @@ export class ConversationLoop {
     } catch {
       // Index not available — proceed without it
     }
+    if (!this.project) await this.noteEmbedOutage()
 
     // GSD: Inject project state as system context — don't modify user message
     try {

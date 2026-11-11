@@ -83,15 +83,21 @@ done
 # too, at AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe, and it is
 # respawned by `ollama.exe serve` the instant anything asks it for a model. A
 # name-only sweep kills that one, ollama puts it straight back, and the guard
-# below then refuses forever on a process that never held our port. Ours lives
-# under ~/.cynco (bin/ for the loop, bin-brain/ for the activations tier);
-# nothing else does.
-LC_LLAMA_Q="Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { \$_.ExecutablePath -like '*\\.cynco\\*' } | Select-Object -ExpandProperty ProcessId"
-for pid in $(powershell -NoProfile -Command "$LC_LLAMA_Q" 2>/dev/null | tr -d '\r'); do
+# below then refuses forever on a process that never held our port. The chat
+# model's server lives under ~/.cynco (bin/ for the loop, bin-brain/ for the
+# activations tier). So does the embedding service since 2026-11-08, the same
+# binary with --embeddings, and it must survive a dispatch (F215): the selector
+# is scripts/cynco-llama-sweep.mjs, shared with the driver's teardown.
+lc_llama_pids() { bun scripts/cynco-llama-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+if ! LC_LLAMA_PIDS=$(lc_llama_pids); then
+  echo "[dispatch] could not list CynCo's llama-servers — refusing to dispatch blind" >&2
+  exit 1
+fi
+for pid in $LC_LLAMA_PIDS; do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
 sleep 3
-if [ -n "$(powershell -NoProfile -Command "$LC_LLAMA_Q" 2>/dev/null | tr -d '\r')" ]; then
+if ! LC_LLAMA_LEFT=$(lc_llama_pids) || [ -n "$LC_LLAMA_LEFT" ]; then
   echo "[dispatch] our llama-server survived the kill — refusing to dispatch onto it" >&2
   exit 1
 fi
