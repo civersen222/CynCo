@@ -57,12 +57,16 @@ export function splitCommandLine(line: string): string[] {
   return out
 }
 
-const isAbsolute = (p: string): boolean => /^[A-Za-z]:\//.test(p)
+/** A drive path (`C:/…`) anywhere, or a rooted path (`/…`), which is what an absolute path is off Windows. */
+const isAbsolute = (p: string): boolean => /^[A-Za-z]:\//.test(p) || p.startsWith('/')
 
-/** Forward slashes; Git Bash's `/c/Users/…` as `C:/Users/…`; leading `./` and `../` dropped from a relative path. */
-export function normalizeScript(raw: string): string {
+/**
+ * Forward slashes; leading `./` and `../` dropped from a relative path. On Windows, Git Bash's `/c/Users/…`
+ * becomes `C:/Users/…`; elsewhere `/c/Users/…` is simply a path.
+ */
+export function normalizeScript(raw: string, platform: string = process.platform): string {
   let p = raw.replace(/\\/g, '/')
-  const posix = /^\/([A-Za-z])\/(.*)$/.exec(p)
+  const posix = platform === 'win32' ? /^\/([A-Za-z])\/(.*)$/.exec(p) : null
   if (posix) p = `${posix[1].toUpperCase()}:/${posix[2]}`
   if (isAbsolute(p)) return p
   while (p.startsWith('./') || p.startsWith('../')) p = p.slice(p.indexOf('/') + 1)
@@ -70,12 +74,12 @@ export function normalizeScript(raw: string): string {
 }
 
 /** The nearest ancestor that is a shell or interpreter running a script file, with that script. */
-export function launcherOf(tree: PortTree): Launcher | null {
+export function launcherOf(tree: PortTree, platform: string = process.platform): Launcher | null {
   for (const proc of tree.ancestors) {
     const interp = INTERPRETERS.find(i => i.name.test(proc.name))
     if (!interp || !proc.commandLine) continue
     const script = splitCommandLine(proc.commandLine).slice(1).find(a => interp.script.test(a))
-    if (script) return { proc, kind: interp.kind, script: normalizeScript(script) }
+    if (script) return { proc, kind: interp.kind, script: normalizeScript(script, platform) }
   }
   return null
 }

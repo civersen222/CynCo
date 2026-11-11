@@ -47,9 +47,13 @@ describe('launcherOf: the script that started the server', () => {
     expect(launcherOf(t(proc(1, 'node.exe', 'node server/start.mjs')))).toMatchObject({ script: 'server/start.mjs', kind: 'node' })
   })
 
-  it('a POSIX-style absolute path from Git Bash becomes a Windows one', () => {
+  it('on Windows a POSIX-style absolute path from Git Bash becomes a Windows one; elsewhere it is simply an absolute path', () => {
     const t: PortTree = { listener: server, ancestors: [proc(1, 'bash.exe', 'bash /c/Users/o/game/scripts/start-llm.sh')] }
-    expect(launcherOf(t)?.script).toBe('C:/Users/o/game/scripts/start-llm.sh')
+    expect(launcherOf(t, 'win32')?.script).toBe('C:/Users/o/game/scripts/start-llm.sh')
+    expect(launcherOf(t, 'linux')?.script).toBe('/c/Users/o/game/scripts/start-llm.sh')
+    // Found on the Linux CI run: a rooted path was read as a relative one and no folder had it.
+    const rooted: PortTree = { listener: server, ancestors: [proc(1, 'bash', 'bash /home/o/game/scripts/start-llm.sh')] }
+    expect(launcherOf(rooted, 'linux')?.script).toBe('/home/o/game/scripts/start-llm.sh')
   })
 
   it('no ancestor, or ancestors that run no script, is no launcher', () => {
