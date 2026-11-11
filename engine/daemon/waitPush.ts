@@ -3,7 +3,8 @@
 // minutes and an AskUser question resolves empty after five minutes; a phone
 // whose screen locked has no socket, so the frame that drew the card reached
 // nobody. One ntfy notification goes out when a wait is still open after a
-// short grace and no client is connected.
+// short grace and no client is connected, or still open after a minute whoever
+// is connected: an open tab is not a person looking.
 //
 // The frame only starts the clock. What decides is the engine's own state: the
 // `approval.request` frame is emitted before the approval is registered, and
@@ -11,6 +12,13 @@
 
 /** How long a wait must stay open, unanswered and unwatched, before the phone hears of it. */
 export const WAIT_PUSH_GRACE_MS = 5000
+
+/**
+ * How long a wait may stay unanswered before the phone hears of it even though a client is connected.
+ * A connected client is not a person looking: the desk tab stays open while its owner is out, and a
+ * phone can drop its socket after the grace has passed. One minute leaves four of the five to answer.
+ */
+export const WAIT_PUSH_UNANSWERED_MS = 60000
 
 const MAX_MESSAGE = 400
 
@@ -40,6 +48,7 @@ export interface WaitPushDeps {
    */
   openAt?: () => string | null
   graceMs?: number
+  unansweredMs?: number
   log?: (line: string) => void
 }
 
@@ -58,27 +67,48 @@ export function waitNotice(d: WaitingOn, link?: string | null): WaitNotice {
 }
 
 export class WaitPush {
+  /** The waits being timed, each with whether the phone was told; an entry lives from the frame to the second check, so one wait is one notice. */
+  private readonly waits = new Map<string, boolean>()
+
   constructor(private readonly deps: WaitPushDeps) {}
 
-  /** Every loop event passes through here; only a frame that opens a wait starts a check. */
+  /** Every loop event passes through here; only a frame that opens a wait starts its two checks. */
   onEvent(event: { type: string; requestId?: unknown }): void {
     if (event.type !== 'approval.request' && event.type !== 'ask.request') return
     const requestId = event.requestId
-    if (typeof requestId !== 'string' || !requestId) return
-    const timer = setTimeout(() => { void this.check(requestId) }, this.deps.graceMs ?? WAIT_PUSH_GRACE_MS)
+    if (typeof requestId !== 'string' || !requestId || this.waits.has(requestId)) return
+    this.waits.set(requestId, false)
+    this.after(this.deps.graceMs ?? WAIT_PUSH_GRACE_MS, () => this.check(requestId, 'unwatched'))
+    this.after(this.deps.unansweredMs ?? WAIT_PUSH_UNANSWERED_MS, () => this.check(requestId, 'unanswered').finally(() => { this.waits.delete(requestId) }))
+  }
+
+  private after(ms: number, run: () => Promise<void>): void {
+    const timer = setTimeout(() => { void run() }, ms)
     // A pending check must not keep a finished engine alive.
     if (typeof timer === 'object' && timer && 'unref' in timer) timer.unref()
   }
 
-  private async check(requestId: string): Promise<void> {
+  /**
+   * `unwatched`, after the grace: tell the phone when nobody is connected. `unanswered`, after the
+   * minute: tell it whoever is connected, unless the first check already did. A notice ntfy did not
+   * take does not count as told, so the second check is also the one retry.
+   */
+  private async check(requestId: string, why: 'unwatched' | 'unanswered'): Promise<void> {
     const log = this.deps.log ?? ((line: string) => console.log(line))
+    if (this.waits.get(requestId) !== false) return
     try {
       const waiting = this.deps.pending().find(d => d.requestId === requestId)
-      if (!waiting || this.deps.clientCount() > 0) return
+      if (!waiting) return
+      const clients = this.deps.clientCount()
+      if (why === 'unwatched' && clients > 0) return
+      this.waits.set(requestId, true)
       const ok = await this.deps.publish(waitNotice(waiting, this.deps.openAt?.()))
+      if (!ok && this.waits.has(requestId)) this.waits.set(requestId, false)
+      const reason = why === 'unwatched' ? 'nobody connected' : `unanswered for ${Math.round((this.deps.unansweredMs ?? WAIT_PUSH_UNANSWERED_MS) / 1000)} s, ${clients} client${clients === 1 ? '' : 's'} connected`
       // The request's own text stays out of the log: it is already in the transcript.
-      log(ok ? `[wait-push] told the phone: ${waiting.kind} waiting` : `[wait-push] not delivered: ntfy did not take the ${waiting.kind} notice`)
+      log(ok ? `[wait-push] told the phone: ${waiting.kind} waiting (${reason})` : `[wait-push] not delivered: ntfy did not take the ${waiting.kind} notice`)
     } catch (err) {
+      if (this.waits.has(requestId)) this.waits.set(requestId, false)
       log(`[wait-push] not delivered: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
