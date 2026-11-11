@@ -199,6 +199,13 @@ export async function bootstrapProvider(
       // unload it, through its API, before the spawn is refused. Every engine, lazy or not, a one-shot's included.
       const { freeOllamaForCynco } = await import('./apps/ollama.js')
       processManager.relieveGpu = () => freeOllamaForCynco({ by: 'its own model', say: sayApps })
+      // The eager start (a mission engine, a one-shot, the engine booted after a mission) clears its port; an app's
+      // server there is taken by the same rule as on the lazy path, not killed blind (F219).
+      processManager.takePortFromApp = async () => {
+        if ((await lazyApps.portOwner()).owner !== 'app') return false
+        await lazyApps.takeFromApp(sayApps)
+        return true
+      }
       if (lazy.lazy) {
         const { readGpuBusy } = await import('./daemon/gpuBusyFile.js')
         // An engine that died owing an app its server: give it back now, if the GPU is free.

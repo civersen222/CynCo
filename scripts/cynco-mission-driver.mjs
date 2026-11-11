@@ -1175,6 +1175,10 @@ function killEngineTree(reason) {
   }
   for (const pid of doomed) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf-8' })
   console.log(`[driver] F131 escalation (${reason}): tree-killed PID(s) ${[...doomed].join(', ')} (${roots.length} root(s), ${doomed.size - roots.length} descendant(s))`)
+  // An engine that exits by /quit gives the GPU back to an app on its way out; one killed by hand could not (F219).
+  const back = spawnSync('bun', ['scripts/cynco-apps.mjs', 'give-back'], { encoding: 'utf-8', timeout: 60_000 })
+  if (back.stdout?.trim()) console.log(back.stdout.trim())
+  if (back.status !== 0) console.log(`[driver] giving the GPU back to the owner's apps did not run (exit ${back.status}${back.error ? `, ${back.error.message}` : ''})`)
 }
 if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
   await new Promise((done) => {
