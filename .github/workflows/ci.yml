@@ -64,8 +64,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # The Grep tool shells out to ripgrep; the runner image does not ship it.
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      # The Grep tool shells out to ripgrep; the runner image does not ship it. Retried: the runner
+      # has failed to resolve the Ubuntu mirror for minutes at a time (2026-11-11, PR #222), and a
+      # failure here skips the engine suite.
+      - name: install ripgrep
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; then exit 0; fi
+            if [ "$attempt" -lt 5 ]; then
+              echo "apt attempt $attempt failed; trying again in $((attempt * 20)) s"
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "ripgrep could not be installed after 5 attempts"
+          exit 1
       - run: npm ci
       # scripts/__tests__ run scripts/cynco-outcome-model.py, which imports numpy and sklearn.
       - run: python -m pip install -q -e "./tui[dev]" numpy scikit-learn
