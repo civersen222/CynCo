@@ -59,6 +59,41 @@ class EmbedHttpError extends Error {
 
 let unavailableWarned = false
 
+/** No embedding endpoint answers, since `since`; `detail` is the last reason. */
+export type EmbedOutage = { baseUrl: string; detail?: string; since: number }
+
+/**
+ * The outage as a state, for the chat (F214). The log line below is said once
+ * per process and only in the log: on 2026-11-11 the embedding service was down
+ * for hours, the engine wrote the line at every project open, and nothing told
+ * the owner. `ConversationLoop` reads this after each turn's retrieval and says
+ * it in the chat once, and once more when the server answers again.
+ */
+let outage: EmbedOutage | null = null
+
+export function embedOutage(): EmbedOutage | null {
+  return outage
+}
+
+const LOCAL_HOST = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i
+
+/** One sentence for the chat: what is off, where, what still works, and on this PC how to start it. */
+export function embedOutageNotice(o: EmbedOutage): string {
+  const why = o.detail ? ` (${o.detail})` : ''
+  const start = LOCAL_HOST.test(o.baseUrl) ? ' To start it on this PC: scripts\\cynco-services.ps1 start embed' : ''
+  return `Semantic search is off: the embedding server at ${o.baseUrl} does not answer${why}. Search uses keywords until it is back.${start}`
+}
+
+export const EMBED_BACK_NOTICE = 'Semantic search is back: the embedding server answers again.'
+
+/** An embedding came back: any outage is over, and the next one is logged again. */
+function noteEmbedAnswered(baseUrl: string): void {
+  if (!outage) return
+  outage = null
+  unavailableWarned = false
+  console.log(`[embed] the embedding endpoint at ${baseUrl} answers again — semantic search is back on`)
+}
+
 /**
  * Say once, out loud, that the semantic index is not available.
  *
@@ -68,6 +103,7 @@ let unavailableWarned = false
  * them so.
  */
 export function warnEmbedUnavailable(baseUrl: string, detail?: string): void {
+  if (!outage) outage = { baseUrl, ...(detail ? { detail } : {}), since: Date.now() }
   if (unavailableWarned) return
   unavailableWarned = true
   console.log(
@@ -82,9 +118,10 @@ export function warnEmbedUnavailable(baseUrl: string, detail?: string): void {
   )
 }
 
-/** Test seam: forget that the warning has been issued. */
+/** Test seam: forget that the warning has been issued, and any outage. */
 export function resetEmbedWarning(): void {
   unavailableWarned = false
+  outage = null
 }
 
 export class EmbedClient {
@@ -227,6 +264,7 @@ export class EmbedClient {
       try {
         const out = await this.post(dialect, model, texts, signal)
         this.dialect = dialect
+        noteEmbedAnswered(this.baseUrl)
         return out
       } catch (err) {
         // The single place cancellation is honoured above the wire, and so the

@@ -72,6 +72,7 @@ import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from './cynco-ledger.mjs'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
+import { chatModelServerPids } from './cynco-llama-sweep.mjs'
 import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal } from './cynco-verify.mjs'
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
@@ -1127,14 +1128,20 @@ try {
 // with the command parked behind the busy loop, and the polite 20s wait loses.
 // When any teardown path ends in "kill the tree by hand", the driver now IS
 // the hand: same match rules as dispatch-mission.sh (engines by command line,
-// llama-server by ExecutablePath under ~/.cynco so Ollama's copy is never
-// touched).
+// the chat model's llama-server by cynco-llama-sweep.mjs, so Ollama's copy and
+// the embedding service are never touched, F214).
 function killEngineTree(reason) {
   const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-Command', q], { encoding: 'utf-8' }).stdout ?? '')
     .split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  let llamaRoots = []
+  try {
+    llamaRoots = chatModelServerPids().map(String)
+  } catch (e) {
+    console.log(`[driver] F131 escalation (${reason}): could not list llama-servers (${e instanceof Error ? e.message : String(e)}); killing the engine tree only`)
+  }
   const roots = [
     ...ps("Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Where-Object { $_.CommandLine -like '*engine/main.ts*' } | Select-Object -ExpandProperty ProcessId"),
-    ...ps("Get-CimInstance Win32_Process -Filter \"Name='llama-server.exe'\" | Where-Object { $_.ExecutablePath -like '*\\.cynco\\*' } | Select-Object -ExpandProperty ProcessId"),
+    ...llamaRoots,
   ]
   if (roots.length === 0) {
     console.log(`[driver] F131 escalation (${reason}): no engine tree found — already gone`)
