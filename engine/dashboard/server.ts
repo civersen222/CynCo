@@ -37,7 +37,7 @@ import {
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
 import { DEVICE_PREFIX, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
-  classifyClient, hostRefusal, originMismatch, pageOrigin, parseListenHosts, isWildcardHost,
+  classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, isWildcardHost,
   PairingGate, MAX_DEVICES, pairingPage, DEVICE_TOKEN_STORAGE_KEY, type ClientKind,
 } from './access.js'
 
@@ -537,7 +537,7 @@ export class DashboardServer {
   })
   /** When a request last arrived from off this machine — the cheapest "did anything get through the firewall" fact. */
   private lastRemoteRequestAt: string | null = null
-  /** Set on a paired device's socket only; read through `lastRemoteOrigin`. */
+  /** Set on a paired device's socket only; read through `phoneOrigin`. */
   private remoteOrigin: string | null = null
   private clients: Set<ServerWebSocket<DashboardSocketData>> = new Set()
   /** Last broadcast per replayable type, resent to late-joining clients.
@@ -2214,11 +2214,13 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
   get clientCount(): number { return this.clients.size }
 
   /**
-   * The page address a paired device last opened a socket from, or null until one has since this engine
-   * started. The wait push links its notification here: the device token lives in the browser per origin,
-   * so this is the one address known to open the dashboard on that phone instead of the pairing screen.
+   * Where a phone opens the dashboard; the wait push links its notification here. The page address a
+   * paired device last opened a socket from when one has since this engine started: the device token
+   * lives in the browser per origin, so that address is known to open the dashboard and not the pairing
+   * screen. Until then (every restart, F203) the bound phone listener, which is the same address unless
+   * the phone paired through a name. Null with no phone listener bound.
    */
-  get lastRemoteOrigin(): string | null { return this.remoteOrigin }
+  get phoneOrigin(): string | null { return this.remoteOrigin ?? phoneListenerOrigin(this.listeners()) }
 
   getPort(): number {
     // Prefer the server's actual bound port (non-zero when port=0 was requested).

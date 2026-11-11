@@ -12,7 +12,7 @@
  *
  * `deps.remoteAddress` plays the peer: every test client here is loopback.
  */
-import { describe, it, expect, afterEach, afterAll } from 'vitest'
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -353,26 +353,26 @@ describe('listeners', () => {
   })
 })
 
-describe('the address a paired device last opened the page on (the wait push links to it)', () => {
+describe('the address the wait push links to: where a paired device last opened the page, else the phone listener', () => {
   it('is the Origin of the socket a paired device opened', async () => {
     const t = await start()
-    expect(t.server.lastRemoteOrigin).toBeNull()
+    expect(t.server.phoneOrigin).toBeNull()
     const { token } = await t.pair()
     t.asPhone()
     expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
-    expect(t.server.lastRemoteOrigin).toBe(`http://127.0.0.1:${t.port}`)
+    expect(t.server.phoneOrigin).toBe(`http://127.0.0.1:${t.port}`)
   })
 
   it('is not the page on the desk: a loopback address means nothing to the phone', async () => {
     const t = await start()
     expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${t.tokens.tokenFor('inference')}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
-    expect(t.server.lastRemoteOrigin).toBeNull()
+    expect(t.server.phoneOrigin).toBeNull()
   })
 
   it('is not set by a remote socket that was refused: only a paired device steers the link', async () => {
     const t = await start(); t.asPhone()
     expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=not-a-device`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(401)
-    expect(t.server.lastRemoteOrigin).toBeNull()
+    expect(t.server.phoneOrigin).toBeNull()
   })
 
   it('is not set by a client that sends no Origin: there is no page to go back to', async () => {
@@ -380,6 +380,29 @@ describe('the address a paired device last opened the page on (the wait push lin
     const { token } = await t.pair()
     t.asPhone()
     expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`)).toBe(101)
-    expect(t.server.lastRemoteOrigin).toBeNull()
+    expect(t.server.phoneOrigin).toBeNull()
+  })
+
+  // F203: the address was only ever learned from a socket, so the first notice after every engine
+  // restart went out with no link. `listeners()` is stubbed because a test cannot bind a tailnet address.
+  it('is the bound phone listener before any device has opened a socket (a fresh engine)', async () => {
+    const t = await start()
+    vi.spyOn(t.server, 'listeners').mockReturnValue([
+      { host: '127.0.0.1', port: t.port, bound: true, primary: true },
+      { host: '100.101.192.101', port: t.port, bound: true, primary: false },
+    ])
+    expect(t.server.phoneOrigin).toBe(`http://100.101.192.101:${t.port}`)
+  })
+
+  it('is the address a device opened once one has: the token lives on that origin, not on the listener address', async () => {
+    const t = await start()
+    vi.spyOn(t.server, 'listeners').mockReturnValue([
+      { host: '127.0.0.1', port: t.port, bound: true, primary: true },
+      { host: '100.101.192.101', port: t.port, bound: true, primary: false },
+    ])
+    const { token } = await t.pair()
+    t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
+    expect(t.server.phoneOrigin).toBe(`http://127.0.0.1:${t.port}`)
   })
 })

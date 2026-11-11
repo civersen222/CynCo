@@ -34,7 +34,7 @@ export interface WaitPushDeps {
   clientCount: () => number
   /**
    * The dashboard address to open from the notification, or null when none is known: the origin a
-   * paired device last opened the page on (`DashboardServer.lastRemoteOrigin`). The page itself, not a
+   * paired device last opened the page on, else the bound phone listener (`DashboardServer.phoneOrigin`). The page itself, not a
    * chat inside it: the engine holds one conversation and puts a connecting page in it, with the card,
    * whereas asking for a chat by name is `project.open`, which ends the turn that is waiting.
    */

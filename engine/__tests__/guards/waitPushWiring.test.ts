@@ -51,8 +51,8 @@ describe('main.ts wait-push wiring', () => {
     expect(built).toContain('wsServer.connected')
   })
 
-  it('links the notice to the address a paired device last used', () => {
-    expect(built).toContain('dashboardServer?.lastRemoteOrigin')
+  it('links the notice to the address a phone opens the dashboard on', () => {
+    expect(built).toContain('dashboardServer?.phoneOrigin')
   })
 
   it('hands every loop event to it', () => {
