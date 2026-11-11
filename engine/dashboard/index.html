@@ -629,6 +629,16 @@ body.remote #panelConnection, body.remote #panelContext { display: none; }
 .away-list .away-meta { color: #9a9aa6; font-size: 12px; }
 .away-list .away-ok { color: #3fb950; } .away-list .away-fail { color: #f85149; }
 .away-list .away-summary { margin-top: 4px; white-space: pre-wrap; }
+/* Inbox: drafts of work done while nobody was in the chat (engine/projects/inbox.ts) */
+.away-drafts { padding: 8px 0 10px; border-bottom: 1px solid #333; margin-bottom: 4px; }
+.proj-draft { background: #3a3320; color: #dcdcaa; }
+.inbox-row { padding: 8px 0; border-bottom: 1px solid #333; }
+.inbox-row .inbox-name { color: #d4d4d4; overflow-wrap: anywhere; }
+.inbox-row .inbox-meta { color: #9a9aa6; font-size: 12px; }
+.inbox-row .inbox-summary { margin: 4px 0; white-space: pre-wrap; }
+.inbox-row .inbox-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+#inboxReader { margin-top: 10px; }
+#inboxReader pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #252525; border: 1px solid #3a3a3a; border-radius: 4px; padding: 10px; max-height: 60vh; overflow: auto; font: inherit; }
 /* Missions tab: every pass of every mission (docs/superpowers/specs/2026-11-08-mission-schedule-control-design.md §4.5) */
 .mt-head-line { display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px; }
 .mt-state.paused { color:#d29922; }
@@ -1307,6 +1317,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 <div class="grid">
   <div class="panel full-width">
     <div class="panel-title">While you were away</div>
+    <div id="awayDrafts"></div>
     <div id="awayList" class="away-list">loading…</div>
   </div>
 </div>
@@ -1378,6 +1389,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     </div>
     <div id="projectTabs">
       <button class="adv-tab-btn active" data-ptab="chats" onclick="switchProjectTab('chats')">Chats</button>
+      <button class="adv-tab-btn" data-ptab="inbox" id="projectInboxTab" onclick="switchProjectTab('inbox')">Inbox</button>
       <button class="adv-tab-btn" data-ptab="knowledge" onclick="switchProjectTab('knowledge')">Knowledge</button>
       <button class="adv-tab-btn" data-ptab="artifacts" onclick="switchProjectTab('artifacts')">Artifacts</button>
       <button class="adv-tab-btn" data-ptab="plan" onclick="switchProjectTab('plan')">Plan</button>
@@ -1386,6 +1398,11 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     <div class="panel proj-panel active" id="projectChatsPanel" data-ppanel="chats">
       <div style="margin-bottom:6px"><button class="btn btn-teal" id="projectChatOpen" onclick="openProjectChat(projectsState.slug, null)">New chat</button></div>
       <div id="projectChats"></div>
+    </div>
+    <div class="panel proj-panel" id="inboxPanel" data-ppanel="inbox">
+      <div class="proj-status" id="inboxStatus"></div>
+      <div id="inboxList"></div>
+      <div id="inboxReader"></div>
     </div>
     <div class="panel proj-panel" id="knowledgePanel" data-ppanel="knowledge">
       <label for="knowledgePasteName">Name</label>
@@ -3748,9 +3765,25 @@ function applyRemoteLayout() {
   if (want.indexOf('#projects') === 0) switchTab('projects');
   else if (want === '#missions') switchTab('missions');
 }
+/** The Away tab's first line: which projects have drafts waiting in their inbox, each linked; empty when none do. */
+function awayDraftsHtml(projects) {
+  var waiting = (projects || []).filter(function(p) { return p && p.drafts > 0; });
+  if (!waiting.length) return '';
+  return '<div class="away-drafts">Drafts waiting: ' + waiting.map(function(p) {
+    return '<a class="proj-link" href="#projects/' + encodeURIComponent(p.slug) + '">' + escHtml(p.name || p.slug) + '</a> (' + p.drafts + ')';
+  }).join(' &middot; ') + '</div>';
+}
 function loadAway() {
   var el = document.getElementById('awayList');
   if (!el) return;
+  // Work a scheduled run did for a project is a draft in that project's inbox; say where to find it.
+  var drafts = document.getElementById('awayDrafts');
+  if (drafts) {
+    fetch('/api/projects')
+      .then(function(r) { return r.json(); })
+      .then(function(data) { drafts.innerHTML = awayDraftsHtml(data && data.projects); })
+      .catch(function(err) { console.warn('[away] drafts: ' + err.message); drafts.innerHTML = ''; });
+  }
   fetch('/api/away')
     .then(function(r) { return r.json(); })
     .then(function(data) { el.innerHTML = renderAwayRows(data && data.runs); })
@@ -6762,6 +6795,7 @@ function loadProjectsList() {
         '<a class="proj-link" href="#projects/' + encodeURIComponent(p.slug) + '">' + escHtml(p.name) + '</a>' +
         (p.description ? ' <span class="muted">' + escHtml(p.description) + '</span>' : '') +
         (p.tags && p.tags.length ? ' ' + p.tags.map(function(t) { return '<span class="proj-tag">' + escHtml(t) + '</span>'; }).join(' ') : '') +
+        draftBadgeHtml(p.drafts) +
         '</div><span class="muted">' + escHtml(p.lastOpenedAt ? 'opened ' + p.lastOpenedAt.slice(0, 10) : 'created ' + String(p.createdAt || '').slice(0, 10)) + '</span></div>';
     }).join('') + (data.rebuilt ? '<div class="proj-muted">(project list rebuilt from the folders on disk)</div>' : '');
   }).catch(function(err) {
@@ -6825,7 +6859,7 @@ function showProject(slug) {
   projectsState.slug = slug;
   document.getElementById('projectsHome').style.display = 'none';
   document.getElementById('projectView').style.display = '';
-  ['projectInstructionsStatus', 'knowledgeStatus', 'artifactsStatus', 'historyStatus'].forEach(function(id) { projStatus(id, '', ''); });
+  ['projectInstructionsStatus', 'knowledgeStatus', 'artifactsStatus', 'historyStatus', 'inboxStatus'].forEach(function(id) { projStatus(id, '', ''); });
   document.getElementById('projectSearchResults').innerHTML = '';
   document.getElementById('projectName').textContent = projectsState.names[slug] || slug;
   document.getElementById('projectDesc').textContent = 'loading…';
@@ -6833,6 +6867,7 @@ function showProject(slug) {
   loadProjectChats(slug);
   loadKnowledge(slug);
   loadArtifacts(slug);
+  loadInbox(slug);
 }
 
 function loadProjectMeta(slug) {
@@ -7551,6 +7586,109 @@ function removeKnowledge(name) {
 }
 
 // ── Artifacts ─────────────────────────────────────────────
+
+// ── Inbox: drafts of work done while nobody was in the chat ──────────
+// A scheduled run whose working folder is this project files its answer in
+// inbox/ (engine/projects/inbox.ts). A draft is not knowledge and not an
+// artifact until it is accepted here. The three builders below are pure and
+// pinned by engine/__tests__/dashboard/inboxView.test.ts.
+
+function inboxTabLabel(n) {
+  return n > 0 ? 'Inbox (' + n + ')' : 'Inbox';
+}
+
+/** A count for the project list; nothing when no draft waits. */
+function draftBadgeHtml(n) {
+  return n > 0 ? ' <span class="proj-tag proj-draft">' + n + ' draft' + (n === 1 ? '' : 's') + '</span>' : '';
+}
+
+/** The Inbox tab's rows. Names, sources and summaries are a run's or a hand's words: escaped, every one. */
+function inboxListHtml(data) {
+  var drafts = (data && data.drafts) || [];
+  if (!drafts.length) {
+    return '<span class="proj-muted">No drafts. Work a scheduled run does for this project while you were away lands here for you to accept or discard.</span>';
+  }
+  var out = data.full ? '<div class="proj-warn">The inbox is full: accept or discard drafts to let new work in.</div>' : '';
+  for (var i = 0; i < drafts.length; i++) {
+    var d = drafts[i];
+    var name = escHtml(d.name);
+    var when = d.addedAt ? new Date(d.addedAt).toLocaleString() : '';
+    var button = function(cls, fn, label) {
+      return '<button class="btn ' + cls + '" data-name="' + name + '" onclick="' + fn + '(this.getAttribute(\'data-name\'))">' + label + '</button>';
+    };
+    out += '<div class="inbox-row" data-dname="' + name + '">' +
+      '<div class="inbox-name">' + name + '</div>' +
+      '<div class="inbox-meta">' + escHtml(when) + ' &middot; ' + escHtml(d.from || '') + ' &middot; ' + Math.max(1, Math.round((d.bytes || 0) / 1024)) + ' KB</div>' +
+      (d.summary ? '<div class="inbox-summary">' + escHtml(d.summary) + '</div>' : '') +
+      '<div class="inbox-actions">' +
+        (d.readable ? button('btn-grey', 'readDraft', 'Read') : '') +
+        button('btn-teal', 'acceptDraft', 'Accept') +
+        button('btn-grey', 'discardDraft', 'Discard') +
+      '</div></div>';
+  }
+  return out;
+}
+
+function loadInbox(slug) {
+  return projFetch(projUrl(slug) + '/inbox').then(function(data) {
+    if (projectsState.slug !== slug) return;
+    document.getElementById('inboxList').innerHTML = inboxListHtml(data);
+    document.getElementById('projectInboxTab').textContent = inboxTabLabel((data.drafts || []).length);
+  }).catch(function(err) {
+    console.warn('[projects] inbox: ' + err.message);
+    document.getElementById('inboxList').innerHTML = '<span class="proj-err">Could not list the inbox: ' + escHtml(err.message) + '</span>';
+  });
+}
+
+/** Show a text draft under the list. Its words are set as text, never as markup: a run wrote them. */
+function readDraft(name) {
+  var slug = projectsState.slug;
+  var reader = document.getElementById('inboxReader');
+  projStatus('inboxStatus', 'busy', 'opening ' + name + '…');
+  projFetch(projUrl(slug) + '/inbox/' + encodeURIComponent(name)).then(function(r) {
+    while (reader.firstChild) reader.removeChild(reader.firstChild);
+    var head = document.createElement('div');
+    head.className = 'proj-muted';
+    head.textContent = name + (r.truncated ? ' (the first part; the whole draft is in the project folder)' : '');
+    var pre = document.createElement('pre');
+    pre.textContent = r.text || '';
+    reader.appendChild(head);
+    reader.appendChild(pre);
+    projStatus('inboxStatus', '', '');
+  }).catch(function(err) {
+    console.warn('[projects] read draft: ' + err.message);
+    projStatus('inboxStatus', 'err', 'Could not open ' + name + ': ' + err.message);
+  });
+}
+
+function acceptDraft(name) {
+  var slug = projectsState.slug;
+  projStatus('inboxStatus', 'busy', 'accepting ' + name + '…');
+  projFetch(projUrl(slug) + '/inbox/' + encodeURIComponent(name) + '/accept', { method: 'POST' }).then(function(r) {
+    var rec = r.event || {};
+    projStatus('inboxStatus', rec.indexed ? 'ok' : 'warn', 'Accepted: now artifacts/' + r.artifact + ' — ' + indexedLabel(rec));
+    document.getElementById('inboxReader').innerHTML = '';
+    loadInbox(slug);
+    loadArtifacts(slug);
+    loadProjectMeta(slug);
+  }).catch(function(err) {
+    console.warn('[projects] accept draft: ' + err.message);
+    projStatus('inboxStatus', 'err', 'Not accepted: ' + err.message);
+  });
+}
+
+function discardDraft(name) {
+  var slug = projectsState.slug;
+  if (!window.confirm('Discard ' + name + '? The draft is deleted.')) return;
+  projFetch(projUrl(slug) + '/inbox/' + encodeURIComponent(name), { method: 'DELETE' }).then(function() {
+    projStatus('inboxStatus', 'ok', 'Discarded ' + name);
+    document.getElementById('inboxReader').innerHTML = '';
+    loadInbox(slug);
+  }).catch(function(err) {
+    console.warn('[projects] discard draft: ' + err.message);
+    projStatus('inboxStatus', 'err', 'Not discarded: ' + err.message);
+  });
+}
 
 function loadArtifacts(slug) {
   return projFetch(projUrl(slug) + '/artifacts').then(function(data) {

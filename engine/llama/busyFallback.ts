@@ -11,26 +11,19 @@
  *                              9.3 GB Q4_K_M, native tools, fits 16 GB).
  *
  * Routing, decided per request: GPU free, or our own server already warm → the
- * primary (today's path). Our server is cold and something holds the GPU that
- * the lazy wait would wait on → if the fallback answers a bounded health check,
- * the request goes there with `model` rewritten and the chat is told once per
- * holder through the same `onWaiting` channel as the busy notice; if the
- * fallback is down, the primary waits exactly as before. "Something the lazy
- * wait would wait on" is a one-shot named by `gpu-busy.json`, or (F213) a
- * healthy server on the model port that is another engine's or whose owner
- * cannot be read: a dispatched mission's engine holds the port for hours with
- * no busy file, and a chat turn waited up to 30 minutes behind it with no
- * answer at all. A server that is not CynCo's is not such a holder: the lazy
- * path takes the port from it (F202). `countTokens` follows the route because
- * the primary tokenizer would itself wait on the busy GPU. Everything else
- * (adapters, capability probe, listModels, `processManager` for main.ts) is the
- * primary's. Design: docs/decisions/2026-11-08-wakefulness-design.md (slice 2b).
+ * primary (today's path). A one-shot holds `gpu-busy.json` and our server is
+ * cold → if the fallback answers a bounded health check, the request goes there
+ * with `model` rewritten and the chat is told once per one-shot through the same
+ * `onWaiting` channel as the busy notice; if the fallback is down, the primary
+ * waits exactly as before. `countTokens` follows the route because the primary
+ * tokenizer would itself wait on the busy GPU. Everything else (adapters,
+ * capability probe, listModels, `processManager` for main.ts) is the primary's.
+ * Design: docs/decisions/2026-11-08-wakefulness-design.md (slice 2b).
  */
 import type { CompletionRequest, ModelCapabilities, ModelInfo, Provider } from '../provider.js'
 import type { CompletionResponse, StreamEvent } from '../types.js'
 import type { GpuBusy } from '../daemon/gpuBusyFile.js'
 import { abortError } from './processManager.js'
-import type { PortOwner } from './portOwner.js'
 
 export type FallbackSettings = { url: string | null; model: string }
 
@@ -41,47 +34,6 @@ export function fallbackSettings(env: NodeJS.ProcessEnv = process.env): Fallback
   const raw = (env.LOCALCODE_FALLBACK_URL ?? '').trim()
   const model = (env.LOCALCODE_FALLBACK_MODEL ?? '').trim() || DEFAULT_FALLBACK_MODEL
   return { url: raw ? raw.replace(/\/+$/, '') : null, model }
-}
-
-/** A server on the model port that the lazy wait will wait on: `key` tells one holder from the next, `says` names it to the owner. */
-export type PortHolder = { key: string; says: string }
-
-/** How long one reading of the port's owner is trusted. A turn asks once per message it counts; the owner is a PowerShell call. */
-const PORT_HOLDER_TTL_MS = 5_000
-
-/**
- * "Does something hold the model port that the lazy wait would wait on?", asked per request.
- * The same three questions as `ProcessManager.ensureRunningLazy`, in the same order, so the two
- * cannot disagree: bound, healthy, whose. Cheap when the port is free (one connect) and when our
- * own server is up (nothing asked); the owner is read at most once per `ttlMs`, and a port found
- * free forgets it at once.
- */
-export function portHolderReader(deps: {
-  port: number
-  /** Our own llama-server exists, loading or warm: whatever is on the port is ours. */
-  ownServerUp: () => boolean
-  isPortOccupied: () => Promise<boolean>
-  isHealthy: () => Promise<boolean>
-  portOwner: () => Promise<PortOwner>
-  now?: () => number
-  ttlMs?: number
-}): () => Promise<PortHolder | null> {
-  const now = deps.now ?? (() => Date.now())
-  const ttlMs = deps.ttlMs ?? PORT_HOLDER_TTL_MS
-  let remembered: { at: number; holder: PortHolder | null } | null = null
-  return async () => {
-    if (deps.ownServerUp()) { remembered = null; return null }
-    if (!(await deps.isPortOccupied())) { remembered = null; return null }
-    if (remembered && now() - remembered.at < ttlMs) return remembered.holder
-    let holder: PortHolder | null = null
-    if (await deps.isHealthy()) {
-      const owner = await deps.portOwner()
-      if (owner.owner === 'engine') holder = { key: owner.detail, says: `another CynCo engine's model server (${owner.detail})` }
-      else if (owner.owner === 'unknown') holder = { key: `unknown:${deps.port}`, says: `a model server on port ${deps.port} whose owner could not be read` }
-    }
-    remembered = { at: now(), holder }
-    return holder
-  }
 }
 
 export type BusyFallbackDeps = {
@@ -95,8 +47,6 @@ export type BusyFallbackDeps = {
   remainingMs: (busy: GpuBusy) => number | null
   /** Our own llama-server is up: never leave it for the fallback. */
   primaryWarm: () => boolean
-  /** A server on the model port the lazy wait would wait on, with no one-shot (`portHolderReader`, F213). Absent: only a one-shot routes away. */
-  readPortHolder?: () => Promise<PortHolder | null>
   fallbackHealthy: () => Promise<boolean>
   /** The busy-notice channel (ProcessManager.onWaiting → governance.alert → the chat). */
   notify: (message: string) => void
@@ -117,12 +67,8 @@ export class BusyFallbackProvider implements Provider {
   }
 
   private async route(): Promise<Provider> {
-    if (this.deps.primaryWarm()) return this.deps.primary
     const busy = this.deps.readBusy()
-    // The busy file is the answer when there is one; the port is asked about only without it.
-    const holder = busy ? null : await this.readPortHolder()
-    if (!busy && !holder) return this.deps.primary
-    const who = busy ? `GPU busy with ${busy.triggerId}` : `the model port is held by ${holder!.says}`
+    if (!busy || this.deps.primaryWarm()) return this.deps.primary
     let healthy = false
     try {
       healthy = await Promise.race([
@@ -133,33 +79,16 @@ export class BusyFallbackProvider implements Provider {
       this.deps.log(`[fallback] health check threw (${e instanceof Error ? e.message : String(e)})`)
     }
     if (!healthy) {
-      this.deps.log(`[fallback] ${who} and the fallback at ${this.deps.fallbackLabel} is not answering — waiting on the GPU as usual`)
+      this.deps.log(`[fallback] GPU busy with ${busy.triggerId} and the fallback at ${this.deps.fallbackLabel} is not answering — waiting on the GPU as usual`)
       return this.deps.primary
     }
-    const key = busy ? busy.triggerId : `port:${holder!.key}`
-    if (this.noticedTrigger !== key) {
-      this.noticedTrigger = key
-      if (busy) {
-        const rem = this.deps.remainingMs(busy)
-        const mins = rem === null ? '?' : String(Math.max(1, Math.ceil(rem / 60000)))
-        this.deps.notify(`GPU busy with ${busy.task} (${busy.triggerId}) — about ${mins} min left; answering on ${this.deps.fallbackModel} at ${this.deps.fallbackLabel} meanwhile`)
-      } else {
-        // Nobody knows when a mission or a second engine lets go of the port: no minutes are promised.
-        this.deps.notify(`The model port is held by ${holder!.says}; answering on ${this.deps.fallbackModel} at ${this.deps.fallbackLabel} until it is free`)
-      }
+    if (this.noticedTrigger !== busy.triggerId) {
+      this.noticedTrigger = busy.triggerId
+      const rem = this.deps.remainingMs(busy)
+      const mins = rem === null ? '?' : String(Math.max(1, Math.ceil(rem / 60000)))
+      this.deps.notify(`GPU busy with ${busy.task} (${busy.triggerId}) — about ${mins} min left; answering on ${this.deps.fallbackModel} at ${this.deps.fallbackLabel} meanwhile`)
     }
     return this.deps.fallback
-  }
-
-  /** A reader that throws is a port nobody could be asked about: the primary's own wait decides, as before. */
-  private async readPortHolder(): Promise<PortHolder | null> {
-    if (!this.deps.readPortHolder) return null
-    try {
-      return await this.deps.readPortHolder()
-    } catch (e) {
-      this.deps.log(`[fallback] could not ask who holds the model port (${e instanceof Error ? e.message : String(e)})`)
-      return null
-    }
   }
 
   private forFallback(request: CompletionRequest): CompletionRequest {

@@ -223,7 +223,7 @@ export async function bootstrapProvider(
       // Wakefulness (slice 2b): while a one-shot owns the GPU, a lazy engine
       // answers on the secondary box's Ollama instead of waiting
       // (LOCALCODE_FALLBACK_URL / _MODEL, engine/llama/busyFallback.ts).
-      const { fallbackSettings, BusyFallbackProvider, portHolderReader } = await import('./llama/busyFallback.js')
+      const { fallbackSettings, BusyFallbackProvider } = await import('./llama/busyFallback.js')
       const fb = fallbackSettings()
       if (lazy.lazy && fb.url) {
         const { createProvider } = await import('./providers/factory.js')
@@ -237,19 +237,11 @@ export async function bootstrapProvider(
           readBusy: () => readGpuBusy(),
           remainingMs: (b) => estimateRemainingMs(b),
           primaryWarm: () => processManager.modelState() === 'warm',
-          // Behind another engine's server (a dispatched mission, a second engine) there is no busy file (F213).
-          readPortHolder: portHolderReader({
-            port: config.port,
-            ownServerUp: () => processManager.isRunning(),
-            isPortOccupied: () => processManager.isPortOccupied(),
-            isHealthy: () => processManager.portAnswersHealth(),
-            portOwner: async () => (await import('./llama/portOwner.js')).portOwner(config.port),
-          }),
           fallbackHealthy: () => fallback.healthCheck(),
           notify: (m) => processManager.onWaiting?.(m),
           log: (line) => console.log(line),
         })
-        console.log(`[llama-cpp] busy fallback: ${fb.model} at ${fb.url} answers while a one-shot or another engine's server owns the GPU (LOCALCODE_FALLBACK_URL)`)
+        console.log(`[llama-cpp] busy fallback: ${fb.model} at ${fb.url} answers while a one-shot owns the GPU (LOCALCODE_FALLBACK_URL)`)
       } else if (fb.url) {
         console.log('[llama-cpp] LOCALCODE_FALLBACK_URL is set but the engine is not lazy — the fallback only serves a lazy engine; ignored')
       }

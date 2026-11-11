@@ -61,6 +61,10 @@ import {
   removeKnowledgeApi,
   listArtifactsApi,
   promoteArtifactApi,
+  listInboxApi,
+  getDraftApi,
+  acceptDraftApi,
+  discardDraftApi,
   listChatsApi,
   getChatApi,
   renameChatApi,
@@ -1407,6 +1411,27 @@ export class DashboardServer {
       }
       if (parts.length === 6 && verb === 'promote') {
         if (method === 'POST') return send(await promoteArtifactApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      return jsonResponse({ error: 'Not found' }, 404)
+    }
+
+    // The inbox (engine/projects/inbox.ts): drafts of work done while nobody
+    // was in the chat. List, read one, accept it into artifacts, discard it.
+    // The name is checked by the handlers (`draftName`: one segment, not
+    // hidden, not index.json) before any path is joined.
+    if (area === 'inbox') {
+      if (parts.length === 4) {
+        if (method === 'GET') return send(listInboxApi(d, slug))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 5) {
+        if (method === 'GET') return send(getDraftApi(d, slug, name!))
+        if (method === 'DELETE') return send(discardDraftApi(d, slug, name!))
+        return jsonResponse({ error: 'Method not allowed' }, 405)
+      }
+      if (parts.length === 6 && verb === 'accept') {
+        if (method === 'POST') return send(await acceptDraftApi(d, slug, name!))
         return jsonResponse({ error: 'Method not allowed' }, 405)
       }
       return jsonResponse({ error: 'Not found' }, 404)
