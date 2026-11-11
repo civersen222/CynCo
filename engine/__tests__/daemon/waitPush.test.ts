@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { WaitPush, waitNotice, WAIT_PUSH_GRACE_MS, type WaitingOn } from '../../daemon/waitPush.js'
+import { WaitPush, waitNotice, WAIT_PUSH_GRACE_MS, WAIT_PUSH_UNANSWERED_MS, type WaitingOn } from '../../daemon/waitPush.js'
 import { ntfyOptionsFromEnv } from '../../daemon/ntfyChannel.js'
 
 const tick = (ms = 15) => new Promise(r => setTimeout(r, ms))
@@ -32,6 +32,7 @@ function rig(opts: { pending?: WaitingOn[]; clients?: number; publish?: (p: any)
     pending: () => state.pending,
     clientCount: () => state.clients,
     graceMs: 0,
+    unansweredMs: 40,
     openAt: opts.openAt,
     log: (l: string) => logs.push(l),
   })
@@ -110,6 +111,72 @@ describe('WaitPush', () => {
 
   it('waits five seconds by default', () => {
     expect(WAIT_PUSH_GRACE_MS).toBe(5000)
+  })
+})
+
+// A connected client is not a person looking: the desk tab stays open at 127.0.0.1:9161 while its owner
+// is out with the phone, and a phone can drop its socket after the grace has passed. Either way the
+// approval was refused at five minutes with nobody told.
+describe('WaitPush: a wait still unanswered after a minute', () => {
+  it('tells the phone even though a client is connected', async () => {
+    const { push, sent, logs } = rig({ pending: [approval], clients: 1 })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick()
+    expect(sent).toEqual([])
+    await tick(60)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].title).toBe('CynCo needs your approval')
+    expect(logs.join(' ')).toContain('unanswered')
+  })
+
+  it('covers a client that left after the grace had passed', async () => {
+    const { push, sent, state } = rig({ pending: [ask], clients: 1 })
+    push.onEvent({ type: 'ask.request', requestId: 'q1' })
+    await tick()
+    state.clients = 0
+    await tick(60)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('says nothing when the wait was answered in the meantime', async () => {
+    const { push, sent, state } = rig({ pending: [approval], clients: 1 })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick()
+    state.pending = []
+    await tick(60)
+    expect(sent).toEqual([])
+  })
+
+  it('does not tell the phone twice about one wait', async () => {
+    const { push, sent } = rig({ pending: [approval] })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick()
+    expect(sent).toHaveLength(1)
+    await tick(60)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('a frame emitted twice for one wait is still one notice', async () => {
+    const { push, sent } = rig({ pending: [approval] })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick(80)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('tries again when ntfy did not take the first notice', async () => {
+    let calls = 0
+    const { push, logs } = rig({ pending: [approval], publish: async () => ++calls > 1 })
+    push.onEvent({ type: 'approval.request', requestId: 'r1' })
+    await tick()
+    expect(calls).toBe(1)
+    await tick(60)
+    expect(calls).toBe(2)
+    expect(logs.join(' ')).toContain('told the phone')
+  })
+
+  it('waits one minute by default, which leaves four of the five to answer', () => {
+    expect(WAIT_PUSH_UNANSWERED_MS).toBe(60000)
   })
 })
 

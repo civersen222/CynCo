@@ -417,7 +417,7 @@ const waitPush = waitNtfy ? new WaitPush({
   clientCount: () => (dashboardServer?.clientCount ?? 0) + (wsServer.connected ? 1 : 0),
   openAt: () => dashboardServer?.phoneOrigin ?? null,
 }) : null
-console.log(`[wait-push] ${waitPush ? 'on: the phone is told when an approval or a question waits with nobody connected' : 'off (CYNCO_NTFY_URL is not set)'}`)
+console.log(`[wait-push] ${waitPush ? 'on: the phone is told when an approval or a question waits with nobody connected, or unanswered for a minute' : 'off (CYNCO_NTFY_URL is not set)'}`)
 
 const loop = new ConversationLoop({
   config,
