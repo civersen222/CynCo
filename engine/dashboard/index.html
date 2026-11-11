@@ -4212,12 +4212,55 @@ function renderPhoneAccess(data, error) {
   if (!devs.length) row('Paired devices', 'none');
   for (var j = 0; j < devs.length; j++) {
     (function(d) {
-      var r = row(d.label || d.name, d.name + (d.createdAt ? '   paired ' + new Date(d.createdAt).toLocaleDateString() : ''));
+      var r = row(d.label || d.name, phoneDeviceLine(d, Date.now()));
       var b = document.createElement('button'); b.className = 'ap-no'; b.textContent = 'Revoke';
       b.onclick = function() { revokePhone(d.name); };
       r.appendChild(b);
     })(devs[j]);
   }
+  if (devs.length) {
+    var all = row('All devices', 'A device unseen for ' + (data.idleExpiryDays || 30) + ' days is forgotten on its own.');
+    var ba = document.createElement('button'); ba.className = 'ap-no'; ba.textContent = 'Revoke all';
+    ba.onclick = function() { revokeAllPhones(devs.length); };
+    all.appendChild(ba);
+  }
+}
+
+/**
+ * One paired device in words: its record name, when it paired, when a request
+ * last came from it, and how long it has before it is forgotten if nothing
+ * does. `now` is passed in so the wording can be pinned by a test.
+ */
+function phoneDeviceLine(d, now) {
+  var parts = [d.name];
+  if (d.createdAt) parts.push('paired ' + new Date(d.createdAt).toLocaleDateString());
+  var seen = d.lastSeenAt ? Date.parse(d.lastSeenAt) : NaN;
+  if (isNaN(seen)) {
+    parts.push('not seen since last-seen was recorded');
+  } else {
+    var min = Math.floor((now - seen) / 60000);
+    parts.push('seen ' + (min < 5 ? 'just now'
+      : min < 60 ? min + ' min ago'
+      : min < 1440 ? Math.floor(min / 60) + ' h ago'
+      : Math.floor(min / 1440) + ' day' + (min < 2880 ? '' : 's') + ' ago'));
+  }
+  var exp = d.expiresAt ? Date.parse(d.expiresAt) : NaN;
+  if (!isNaN(exp)) {
+    var days = Math.floor((exp - now) / 86400000);
+    parts.push('expires ' + (days < 1 ? 'today' : 'in ' + days + ' day' + (days === 1 ? '' : 's')) + ' if unused');
+  }
+  return parts.join('   ');
+}
+
+function revokeAllPhones(count) {
+  if (!window.confirm('Revoke all ' + count + ' paired device' + (count === 1 ? '' : 's') + '? Every phone page stops working at once and must pair again with a new code.')) return;
+  fetch('/api/phone/revoke-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+    .then(function(res) {
+      loadPhoneAccess();
+      if (!res.ok && res.body && res.body.error) window.alert('Revoke all: ' + res.body.error);
+    })
+    .catch(function(err) { renderPhoneAccess(null, err.message); });
 }
 
 /**

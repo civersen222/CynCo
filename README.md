@@ -404,6 +404,47 @@ management token. A paired phone is therefore equivalent to a terminal on this m
 approvals included: revoke a lost phone under Config → Phone access, and its page returns to
 pairing at once.
 
+**Device hygiene.** The same panel shows, per device, when a request last came from it and when
+it will be forgotten: a device nothing has arrived from for 30 days is removed on its own (the
+phone in daily use never meets this; an old tablet or a browser profile nobody opens does) and
+pairs again with a fresh code. **Revoke all** forgets every device at once, closes their pages
+and mints a new pairing code — the button for "I am not sure what got out".
+
+**Limit the port on the tailnet (optional, in the Tailscale admin console).** Pairing is what
+authenticates a device; a tailnet policy can also stop every other machine on the tailnet from
+reaching the dashboard port at all. Tailscale's policy is allow-only, so the default "everything
+may reach everything" rule has to be replaced by rules that say the same thing *except* for that
+one port. A sketch with this repository's addresses — substitute the phone's and any laptop's
+tailnet IPs (`tailscale status`), and keep the doorman in `src`: it probes the dashboard to know
+the PC is awake (`scripts/doorman/`):
+
+```jsonc
+{
+  "hosts": {
+    "cynco-pc": "100.101.192.101",
+    "doorman":  "100.110.117.10",
+    "pixel":    "100.x.y.z"
+  },
+  "acls": [
+    // the dashboard port: the owner's phone, and the doorman's wake probe — nobody else
+    { "action": "accept", "src": ["pixel", "doorman"], "dst": ["cynco-pc:9161"] },
+    // every other port on the CynCo box stays as open as it was
+    { "action": "accept", "src": ["*"], "dst": ["cynco-pc:1-9160", "cynco-pc:9162-65535"] },
+    // every other machine stays as open as it was: one entry per machine, or a tag
+    { "action": "accept", "src": ["*"], "dst": ["doorman:*"] }
+  ],
+  "tests": [
+    { "src": "pixel",   "accept": ["cynco-pc:9161"] },
+    { "src": "doorman", "accept": ["cynco-pc:9161"] }
+  ]
+}
+```
+
+A machine left out of the last rule becomes unreachable over the tailnet (the NAS, the image
+box, ntfy on the doorman are all tailnet services here), so list every one before saving; the
+admin console's preview and the `tests` block say what a change would cut off. A bridge port
+that walked moves the dashboard port, and this rule would then need the new number.
+
 If the phone cannot connect: the Config panel (or the `[dashboard] phone listener` line in the
 engine's log) says whether the address bound (Tailscale down at start is retried every 15 s); a
 bridge port that walked to `+1` moves the dashboard port, and the phone URL, with it; and Windows Firewall must allow `bun.exe` inbound on

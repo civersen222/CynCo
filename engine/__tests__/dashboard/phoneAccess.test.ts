@@ -13,9 +13,10 @@
  * `deps.remoteAddress` plays the peer: every test client here is loopback.
  */
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import * as http from 'http'
 import WebSocket from 'ws'
 import { DashboardServer } from '../../dashboard/server.js'
@@ -185,7 +186,7 @@ describe('pairing', () => {
     expect(paired.ok).toBe(true)
     expect(paired.name).toMatch(/^device-[0-9a-f]{8}$/)
     expect(paired.token).toMatch(/^[0-9a-f]{64}$/)
-    expect(t.tokens.devices()).toEqual([{ name: paired.name, label: 'My Pixel', createdAt: expect.any(String) }])
+    expect(t.tokens.devices()).toEqual([expect.objectContaining({ name: paired.name, label: 'My Pixel', createdAt: expect.any(String) })])
     expect(loadOrCreateTokens(t.dir).verify(paired.token!, 'inference')).toBe(true)
     expect(loadOrCreateTokens(t.dir).verify(paired.token!, 'management')).toBe(false)
     // The three original secrets are exactly what they were, and the desk's page still gets the dashboard one.
@@ -288,7 +289,8 @@ describe('the phone panel and revocation (management, on the desk)', () => {
     const { name } = await t.pair('Pixel')
     t.asDesk()
     const after = await (await t.get('/api/phone', t.tokens.tokenFor('management'))).json()
-    expect(after.devices).toEqual([{ name, label: 'Pixel', createdAt: expect.any(String) }])
+    expect(after.devices).toEqual([{ name, label: 'Pixel', createdAt: expect.any(String), lastSeenAt: expect.any(String), expiresAt: expect.any(String) }])
+    expect(after.idleExpiryDays).toBe(30)
     expect(typeof after.lastRemoteRequestAt).toBe('string')
     expect(after.code).not.toBe(before.code)
     const rotated = await (await t.post('/api/phone/rotate', {}, t.tokens.tokenFor('management'))).json()
@@ -329,6 +331,127 @@ describe('the phone panel and revocation (management, on the desk)', () => {
     // The desk's own secrets were never touched.
     expect(t.tokens.tokenFor('management')).toBeTruthy()
     expect(t.tokens.tokenFor('bridge')).toBeTruthy()
+  })
+})
+
+describe('device hygiene: last seen, idle expiry, revoke all', () => {
+  const DAY = 24 * 60 * 60_000
+  /** Rewind what the engine remembers of when `name` was last seen. */
+  const lastSeen = (t: { tokens: unknown }, name: string, at: Date) => {
+    ((t.tokens as any).file.tokens as any[]).find(x => x.name === name).lastSeenAt = at.toISOString()
+  }
+  const panel = async (t: Awaited<ReturnType<typeof start>>) => {
+    t.asDesk()
+    return await (await t.get('/api/phone', t.tokens.tokenFor('management'))).json()
+  }
+
+  it('a request with the device token is what moves "last seen"', async () => {
+    const t = await start()
+    const { name, token } = await t.pair()
+    lastSeen(t, name!, new Date(Date.now() - 3 * DAY))
+    const before = (await panel(t)).devices[0].lastSeenAt
+    t.asPhone()
+    expect((await t.get('/api/session', token)).status).toBe(200)
+    const after = (await panel(t)).devices[0]
+    expect(Date.parse(after.lastSeenAt)).toBeGreaterThan(Date.parse(before) + 2 * DAY)
+    expect(Date.parse(after.expiresAt) - Date.parse(after.lastSeenAt)).toBe(30 * DAY)
+    // The panel itself is the desk reading; it does not count as the phone being seen.
+    expect((await panel(t)).devices[0].lastSeenAt).toBe(after.lastSeenAt)
+  })
+
+  it('a device unseen for thirty days is unknown from then on: 401, gone from the list and from the file', async () => {
+    const t = await start()
+    const { name, token } = await t.pair('old tablet')
+    lastSeen(t, name!, new Date(Date.now() - 30 * DAY - 60_000))
+    t.asPhone()
+    expect((await t.get('/api/session', token)).status).toBe(401)
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`)).toBe(401)
+    expect(t.tokens.devices()).toEqual([])
+    expect(loadOrCreateTokens(t.dir).devices()).toEqual([])
+    expect((await panel(t)).devices).toEqual([])
+  })
+
+  it('the desk opening the panel is enough to expire it: an idle device does not wait for its own return', async () => {
+    const t = await start()
+    const { name } = await t.pair('old tablet')
+    lastSeen(t, name!, new Date(Date.now() - 31 * DAY))
+    expect((await panel(t)).devices).toEqual([])
+    expect(loadOrCreateTokens(t.dir).devices()).toEqual([])
+  })
+
+  it('a device seen twenty-nine days ago still works, and is then fresh', async () => {
+    const t = await start()
+    const { name, token } = await t.pair()
+    lastSeen(t, name!, new Date(Date.now() - 29 * DAY))
+    t.asPhone()
+    expect((await t.get('/api/session', token)).status).toBe(200)
+    expect(Date.now() - Date.parse(t.tokens.devices()[0]!.lastSeenAt!)).toBeLessThan(60_000)
+  })
+
+  it('revoke all: every device forgotten, every device socket closed with 4001, a fresh pairing code, the desk untouched', async () => {
+    const t = await start()
+    const a = await t.pair('Pixel')
+    const b = await t.pair('Tablet')
+    t.asPhone()
+    const open = async (token: string) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${t.port}/ws?token=${token}`)
+      await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error('no open')) })
+      // Wrapped: an async function that returns a promise is awaited through to it.
+      return { closed: new Promise<number>(res => { ws.on('close', (code: number) => res(code)) }) }
+    }
+    const closedA = (await open(a.token!)).closed
+    const closedB = (await open(b.token!)).closed
+    // Refused to the phone itself and to the desk page's read token.
+    expect((await t.post('/api/phone/revoke-all', {}, a.token)).status).toBe(403)
+    t.asDesk()
+    const deskWs = new WebSocket(`ws://127.0.0.1:${t.port}/ws?token=${t.tokens.tokenFor('inference')}`)
+    await new Promise<void>((res, rej) => { deskWs.onopen = () => res(); deskWs.onerror = () => rej(new Error('no open')) })
+    expect((await t.post('/api/phone/revoke-all', {}, t.tokens.tokenFor('inference'))).status).toBe(403)
+    const code = t.server.pairingCode()
+    const res = await t.post('/api/phone/revoke-all', {}, t.tokens.tokenFor('management'))
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, revoked: 2, closed: 2 })
+    expect(await closedA).toBe(4001)
+    expect(await closedB).toBe(4001)
+    expect(deskWs.readyState).toBe(WebSocket.OPEN)
+    deskWs.close()
+    expect(t.server.pairingCode()).not.toBe(code)
+    expect(loadOrCreateTokens(t.dir).devices()).toEqual([])
+    t.asPhone()
+    expect((await t.get('/api/session', a.token)).status).toBe(401)
+    expect((await t.get('/api/session', b.token)).status).toBe(401)
+    t.asDesk()
+    expect((await t.get('/api/session', t.tokens.tokenFor('inference'))).status).toBe(200)
+    // Nothing paired: said, not an error.
+    const none = await t.post('/api/phone/revoke-all', {}, t.tokens.tokenFor('management'))
+    expect(await none.json()).toEqual({ ok: true, revoked: 0, closed: 0 })
+  })
+})
+
+describe('the Config panel line for a paired device (page function, lifted by text)', () => {
+  const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../dashboard/index.html'), 'utf-8')
+  const start = html.indexOf('function phoneDeviceLine(')
+  const end = /\r?\n\}\r?\n/.exec(html.slice(start))!
+  const phoneDeviceLine = new Function(`${html.slice(start, start + end.index + end[0].length)}; return phoneDeviceLine;`)() as (d: any, now: number) => string
+  const NOW = Date.parse('2026-11-11T12:00:00Z')
+
+  it('says when it was last seen and how long it has left if unused', () => {
+    const line = phoneDeviceLine({ name: 'device-0a1b2c3d', createdAt: '2026-10-27T15:23:41Z', lastSeenAt: '2026-11-11T09:00:00Z', expiresAt: '2026-12-11T09:00:00Z' }, NOW)
+    expect(line).toContain('device-0a1b2c3d')
+    expect(line).toContain('seen 3 h ago')
+    expect(line).toContain('expires in 29 days if unused') // whole days left, rounded down
+  })
+  it('counts minutes and days, and names the last day', () => {
+    expect(phoneDeviceLine({ name: 'device-0a1b2c3d', lastSeenAt: '2026-11-11T11:58:00Z', expiresAt: '2026-12-11T11:58:00Z' }, NOW)).toContain('seen just now')
+    expect(phoneDeviceLine({ name: 'device-0a1b2c3d', lastSeenAt: '2026-11-11T11:40:00Z', expiresAt: '2026-12-11T11:40:00Z' }, NOW)).toContain('seen 20 min ago')
+    const old = phoneDeviceLine({ name: 'device-0a1b2c3d', lastSeenAt: '2026-10-13T00:00:00Z', expiresAt: '2026-11-12T00:00:00Z' }, NOW)
+    expect(old).toContain('seen 29 days ago')
+    expect(old).toContain('expires today if unused')
+  })
+  it('a device paired before last-seen was recorded says so instead of inventing a time', () => {
+    const line = phoneDeviceLine({ name: 'device-0a1b2c3d', createdAt: '2026-10-27T15:23:41Z', lastSeenAt: null, expiresAt: '2026-11-26T15:23:41Z' }, NOW)
+    expect(line).toContain('not seen since last-seen was recorded')
+    expect(line).toContain('expires in 15 days if unused')
   })
 })
 

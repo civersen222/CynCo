@@ -11,7 +11,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { loadOrCreateTokens, TokenSet, TOKEN_FILENAME, DEVICE_PREFIX, DEVICE_LABEL_MAX } from '../../security/localToken.js'
+import { loadOrCreateTokens, TokenSet, TOKEN_FILENAME, DEVICE_PREFIX, DEVICE_LABEL_MAX, DEVICE_IDLE_EXPIRY_MS, LAST_SEEN_PERSIST_MS } from '../../security/localToken.js'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cynco-devices-')) })
@@ -49,7 +49,7 @@ describe('addDevice', () => {
     const rec = loadOrCreateTokens(dir).addDevice('phone')
     const again = loadOrCreateTokens(dir)
     expect(again.verify(rec.secret, 'inference')).toBe(true)
-    expect(again.devices()).toEqual([{ name: rec.name, label: 'phone', createdAt: rec.createdAt }])
+    expect(again.devices()).toEqual([expect.objectContaining({ name: rec.name, label: 'phone', createdAt: rec.createdAt })])
     // Reloading did not re-mint: the dashboard secret is the same one.
     expect(again.tokenFor('inference')).toBe(loadOrCreateTokens(dir).tokenFor('inference'))
   })
@@ -89,6 +89,114 @@ describe('revokeDevice', () => {
     expect(set.revokeDevice(DEVICE_PREFIX + 'deadbeef')).toBe(false)
     expect(set.tokenFor('management')).toBeTruthy()
     expect(set.tokenFor('bridge')).toBeTruthy()
+  })
+})
+
+describe('when a device was last seen, and the idle expiry', () => {
+  const DAY = 24 * 60 * 60_000
+  const T0 = new Date('2026-11-11T12:00:00Z')
+
+  it('a device is seen the moment it pairs, and expires that long after it was last seen', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    expect(set.devices()).toEqual([{
+      name: rec.name, label: 'Pixel', createdAt: T0.toISOString(),
+      lastSeenAt: T0.toISOString(),
+      expiresAt: new Date(T0.getTime() + DEVICE_IDLE_EXPIRY_MS).toISOString(),
+    }])
+    expect(DEVICE_IDLE_EXPIRY_MS).toBe(30 * DAY)
+  })
+
+  it('touchDevice moves lastSeenAt in memory at once and writes it at most once an hour', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    const onDisk = () => JSON.parse(readFileSync(join(dir, TOKEN_FILENAME), 'utf-8')).tokens.find((t: any) => t.name === rec.name).lastSeenAt
+    const soon = new Date(T0.getTime() + 5 * 60_000)
+    set.touchDevice(rec.name, soon)
+    expect(set.devices()[0]!.lastSeenAt).toBe(soon.toISOString())
+    expect(onDisk()).toBe(T0.toISOString()) // not yet: the last write is five minutes old
+    const later = new Date(T0.getTime() + LAST_SEEN_PERSIST_MS + 1)
+    set.touchDevice(rec.name, later)
+    expect(onDisk()).toBe(later.toISOString())
+    expect(readdirSync(dir)).toEqual([TOKEN_FILENAME])
+    // Not a device, or not a known one: nothing happens and nothing throws.
+    set.touchDevice('admin', later); set.touchDevice(DEVICE_PREFIX + 'deadbeef', later)
+    expect(set.devices()).toHaveLength(1)
+  })
+
+  it('the hourly write changes lastSeenAt only: a device another process paired meanwhile stays on disk', () => {
+    const mine = loadOrCreateTokens(dir)
+    const rec = mine.addDevice('Pixel', T0)
+    // A second engine on the same home pairs a tablet; `mine` still holds the older list.
+    const other = loadOrCreateTokens(dir)
+    const tablet = other.addDevice('Tablet', T0)
+    mine.touchDevice(rec.name, new Date(T0.getTime() + LAST_SEEN_PERSIST_MS + 1))
+    const names = loadOrCreateTokens(dir).devices().map(d => d.name)
+    expect(names).toEqual([rec.name, tablet.name])
+  })
+
+  it('a touch whose write fails is said once and does not throw: the request it rode on is not a write', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    const broken = new TokenSet((set as any).file, join(dir, 'no-such-dir', TOKEN_FILENAME))
+    const errors: string[] = []
+    const orig = console.warn
+    console.warn = (m: unknown) => { errors.push(String(m)) }
+    try {
+      expect(() => broken.touchDevice(rec.name, new Date(T0.getTime() + LAST_SEEN_PERSIST_MS + 1))).not.toThrow()
+    } finally { console.warn = orig }
+    expect(errors.some(e => e.includes('last-seen'))).toBe(true)
+  })
+
+  it('expireIdleDevices removes a device unseen for the whole period, keeps one seen inside it, and persists', () => {
+    const set = loadOrCreateTokens(dir)
+    const idle = set.addDevice('old tablet', T0)
+    const used = set.addDevice('Pixel', T0)
+    set.touchDevice(used.name, new Date(T0.getTime() + 10 * DAY))
+    expect(set.expireIdleDevices(new Date(T0.getTime() + 30 * DAY - 1))).toEqual([])
+    expect(set.expireIdleDevices(new Date(T0.getTime() + 30 * DAY))).toEqual([idle.name])
+    expect(set.verify(idle.secret, 'inference')).toBe(false)
+    expect(set.verify(used.secret, 'inference')).toBe(true)
+    expect(loadOrCreateTokens(dir).devices().map(d => d.name)).toEqual([used.name])
+    // The three minted records have no expiry at all.
+    expect(set.expireIdleDevices(new Date(T0.getTime() + 3650 * DAY))).toEqual([used.name])
+    expect(set.tokenFor('management')).toBeTruthy()
+    expect(set.tokenFor('bridge')).toBeTruthy()
+    expect(set.tokenFor('inference')).toBeTruthy()
+  })
+
+  it('a device paired before last-seen was recorded counts from the day it paired', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('pixel7pro', T0)
+    delete (set as any).file.tokens.find((t: any) => t.name === rec.name).lastSeenAt
+    expect(set.devices()[0]).toMatchObject({ lastSeenAt: null, expiresAt: new Date(T0.getTime() + 30 * DAY).toISOString() })
+    expect(set.expireIdleDevices(new Date(T0.getTime() + 29 * DAY))).toEqual([])
+    expect(set.expireIdleDevices(new Date(T0.getTime() + 31 * DAY))).toEqual([rec.name])
+  })
+})
+
+describe('revokeAllDevices', () => {
+  it('forgets every device, persists, and leaves the three minted records alone', () => {
+    const set = loadOrCreateTokens(dir)
+    const a = set.addDevice('a'); const b = set.addDevice('b')
+    expect(set.revokeAllDevices().sort()).toEqual([a.name, b.name].sort())
+    expect(set.devices()).toEqual([])
+    expect(set.isKnown(a.secret)).toBe(false)
+    expect(set.isKnown(b.secret)).toBe(false)
+    const again = loadOrCreateTokens(dir)
+    expect(again.devices()).toEqual([])
+    expect(again.tokenFor('inference')).toBe(set.tokenFor('inference'))
+    expect(again.tokenFor('management')).toBe(set.tokenFor('management'))
+    expect(again.tokenFor('bridge')).toBe(set.tokenFor('bridge'))
+    expect(set.revokeAllDevices()).toEqual([]) // nothing left: no write, no throw
+  })
+
+  it('a write that fails still forgets them in memory, then throws so the caller can say it', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('phone')
+    const broken = new TokenSet((set as any).file, join(dir, 'no-such-dir', TOKEN_FILENAME))
+    expect(() => broken.revokeAllDevices()).toThrow()
+    expect(broken.verify(rec.secret, 'inference')).toBe(false)
   })
 })
 

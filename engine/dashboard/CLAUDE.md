@@ -16,7 +16,9 @@ The governance dashboard: one Bun server on the bridge port + 1 (`server.ts`) th
 - **`readMissionsView`** (`missionsApi.ts:158`) — `GET /api/missions`: per mission its triggers with effective cadence in words, `enabled`, `overridden`, `nextFire` (a computed preview with `nextFirePreview: true` until the daemon has seen the new cadence), `lastRun` (newest `runs.jsonl` record per trigger, `kind` from `runKind`), the GPU claim from `gpu-busy.json`, and `scheduleStatus` (`ok`/`absent`/`bad` from `readSchedule`; on `bad` the page shows a warning and locks that card).
 - **`patchTrigger`** (`missionsApi.ts:179`) — `PUT /api/missions/<id>/triggers/<tid>`: validates the body (cron must parse and fire within four years, `at` is `HH:MM`, `timeoutMs` 60 000 to 7 200 000), merges it into `schedule.json` atomically (a body naming any cadence field first drops the old override's cadence fields, keeping `enabled` and `timeoutMs`); `{ "reset": true }` removes the override; 409 and no write while `schedule.json` is unreadable.
 - **`setPaused`** (`missionsApi.ts:216`) — `POST /api/daemon/pause`: `writeControl` with `by: 'dashboard'`.
-- **`DashboardServer.handleMissions`** (`server.ts:1316`) — the three routes' handler.
+- **`DashboardServer.handleMissions`** (`server.ts:1360`) — the three routes' handler.
+- **`DashboardServer.handlePhoneAdmin`** (`server.ts:1051`) — `/api/phone*`, management scope and so desk-only: the pairing code, the listeners, each device with `lastSeenAt` and `expiresAt`, `revoke`, `revoke-all` (also rotates the code) and `rotate`. The device records and their idle expiry live in `engine/security/localToken.ts` (`touchDevice`, `expireIdleDevices`, `revokeAllDevices`).
+- **`DashboardServer.authenticate`** (`server.ts:1169`) — who presented the token. Off this machine only a `device-*` record authenticates; it first forgets devices idle past `DEVICE_IDLE_EXPIRY_MS` and then marks the holder seen.
 
 ## Data flow
 1. The Missions tab polls `GET /api/missions` every 10 s while visible. A save sends `PUT`, which returns the trigger as `GET` would show it.

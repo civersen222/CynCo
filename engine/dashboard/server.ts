@@ -35,7 +35,7 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
-import { DEVICE_PREFIX, type TokenSet, type TokenScope } from '../security/localToken.js'
+import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
   classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, isWildcardHost,
   PairingGate, MAX_DEVICES, pairingPage, DEVICE_TOKEN_STORAGE_KEY, type ClientKind,
@@ -692,7 +692,7 @@ export class DashboardServer {
         // listeners, the paired devices, and revocation. Management scope for
         // the read as well as the write — the code mints credentials — which
         // with the remote rule in `authenticate` makes it desk-only.
-        if (pathname === '/api/phone' || pathname === '/api/phone/revoke' || pathname === '/api/phone/rotate') {
+        if (pathname === '/api/phone' || pathname.startsWith('/api/phone/')) {
           const denied = this.requireScope(req, 'management', kind)
           if (denied) return denied
           return await this.handlePhoneAdmin(req, method, pathname)
@@ -883,6 +883,8 @@ export class DashboardServer {
           // A socket already closed by a revoke (or refused at open) may still
           // have frames buffered: none of them is forwarded.
           if (!this.clients.has(ws)) return
+          // A phone chatting over one long-lived socket makes no other request: its frames count as it being seen.
+          if (ws.data?.holder) this.tokens.touchDevice(ws.data.holder)
           // Forward commands from dashboard chat to engine — but only the ones
           // a read-scoped browser is allowed to send. See
           // DASHBOARD_ALLOWED_SLASH above for why this list exists.
@@ -1048,6 +1050,8 @@ export class DashboardServer {
 
   private async handlePhoneAdmin(req: Request, method: string, pathname: string): Promise<Response> {
     if (method === 'GET' && pathname === '/api/phone') {
+      // An idle device does not wait for its own return to be forgotten: the desk looking is enough.
+      this.expireIdleDevices()
       return jsonResponse({
         code: this.pairing.code,
         lockedForMs: this.pairing.lockedForMs(),
@@ -1055,7 +1059,28 @@ export class DashboardServer {
         devices: this.tokens.devices(),
         lastRemoteRequestAt: this.lastRemoteRequestAt,
         maxDevices: MAX_DEVICES,
+        idleExpiryDays: DEVICE_IDLE_EXPIRY_MS / 86_400_000,
       }, 200, { 'Cache-Control': 'no-store' })
+    }
+    if (method === 'POST' && pathname === '/api/phone/revoke-all') {
+      // Same order as a single revoke: memory, then the file, and the sockets
+      // close whatever the file did. The pairing code goes too — "revoke all"
+      // is what the owner presses when they do not know what got out.
+      const names = this.tokens.devices().map(d => d.name)
+      let persistError: string | null = null
+      try {
+        this.tokens.revokeAllDevices()
+      } catch (e) {
+        persistError = e instanceof Error ? e.message : String(e)
+      }
+      const closed = this.closeDeviceSockets(names)
+      if (names.length > 0) this.pairing.rotate('asked')
+      if (persistError !== null) {
+        console.error(`[dashboard] ${names.length} device(s) revoked in memory, ${closed} socket(s) closed, but tokens.json could not be rewritten: ${persistError}`)
+        return jsonResponse({ ok: false, revoked: names.length, closed, error: `revoked for now, but tokens.json could not be rewritten (${persistError}) — retry; until a write succeeds the devices return at the next engine start` }, 503)
+      }
+      console.log(`[dashboard] all devices revoked: ${names.length} record(s), ${closed} socket(s) closed`)
+      return jsonResponse({ ok: true, revoked: names.length, closed })
     }
     if (method === 'POST' && pathname === '/api/phone/rotate') {
       return jsonResponse({ ok: true, code: this.pairing.rotate('asked') }, 200, { 'Cache-Control': 'no-store' })
@@ -1076,12 +1101,7 @@ export class DashboardServer {
         removed = true
         persistError = e instanceof Error ? e.message : String(e)
       }
-      let closed = 0
-      for (const ws of [...this.clients]) {
-        if (ws.data?.holder !== name) continue
-        this.clients.delete(ws)
-        try { ws.close(4001, 'revoked'); closed++ } catch (err) { console.log('[dashboard] close of a revoked socket failed:', err) }
-      }
+      const closed = this.closeDeviceSockets([name])
       if (persistError !== null) {
         console.error(`[dashboard] device ${name} revoked in memory, ${closed} socket(s) closed, but tokens.json could not be rewritten: ${persistError}`)
         return jsonResponse({ ok: false, closed, error: `revoked for now, but tokens.json could not be rewritten (${persistError}) — retry; until a write succeeds the device returns at the next engine start` }, 503)
@@ -1090,6 +1110,26 @@ export class DashboardServer {
       return jsonResponse({ ok: removed, closed }, removed ? 200 : 404)
     }
     return jsonResponse({ error: 'Not found' }, 404)
+  }
+
+  /** Close every open socket held by one of `names` with 4001 (the page then drops its token and goes to /pair); how many closed. */
+  private closeDeviceSockets(names: string[]): number {
+    let closed = 0
+    for (const ws of [...this.clients]) {
+      const holder = ws.data?.holder
+      if (!holder || !names.includes(holder)) continue
+      this.clients.delete(ws)
+      try { ws.close(4001, 'revoked'); closed++ } catch (err) { console.log('[dashboard] close of a revoked socket failed:', err) }
+    }
+    return closed
+  }
+
+  /** Forget the devices idle past `DEVICE_IDLE_EXPIRY_MS` (`TokenSet.expireIdleDevices`) and close what they still hold open. */
+  private expireIdleDevices(): void {
+    const gone = this.tokens.expireIdleDevices()
+    if (gone.length === 0) return
+    const closed = this.closeDeviceSockets(gone)
+    console.log(`[dashboard] ${gone.join(', ')} expired after ${DEVICE_IDLE_EXPIRY_MS / 86_400_000} days unseen; ${closed} socket(s) closed`)
   }
 
   // ── Authorization ───────────────────────────────────────────────
@@ -1139,11 +1179,15 @@ export class DashboardServer {
     }
 
     if (presented === null) return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
+    // Before the lookup, so a device idle past its expiry is unknown to this very request.
+    this.expireIdleDevices()
     const holder = this.tokens.holderOf(presented)
     if (holder === null) return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
     if (kind === 'remote' && !DEVICE_NAME_RE.test(holder.name)) {
       return { ok: false, response: jsonResponse({ error: 'token required' }, 401) }
     }
+    // Seen, whatever it asked for: a 403 below is still the device being in use.
+    this.tokens.touchDevice(holder.name)
     if (holder.scopes.includes(scope)) return { ok: true, holder: holder.name }
     // A real token lacking the scope is told so; anything else is not
     // acknowledged as a token at all.
