@@ -16,7 +16,7 @@
  * the request goes there with `model` rewritten and the chat is told once per
  * holder through the same `onWaiting` channel as the busy notice; if the
  * fallback is down, the primary waits exactly as before. "Something the lazy
- * wait would wait on" is a one-shot named by `gpu-busy.json`, or (F212) a
+ * wait would wait on" is a one-shot named by `gpu-busy.json`, or (F213) a
  * healthy server on the model port that is another engine's or whose owner
  * cannot be read: a dispatched mission's engine holds the port for hours with
  * no busy file, and a chat turn waited up to 30 minutes behind it with no
@@ -95,7 +95,7 @@ export type BusyFallbackDeps = {
   remainingMs: (busy: GpuBusy) => number | null
   /** Our own llama-server is up: never leave it for the fallback. */
   primaryWarm: () => boolean
-  /** A server on the model port the lazy wait would wait on, with no one-shot (`portHolderReader`, F212). Absent: only a one-shot routes away. */
+  /** A server on the model port the lazy wait would wait on, with no one-shot (`portHolderReader`, F213). Absent: only a one-shot routes away. */
   readPortHolder?: () => Promise<PortHolder | null>
   fallbackHealthy: () => Promise<boolean>
   /** The busy-notice channel (ProcessManager.onWaiting → governance.alert → the chat). */

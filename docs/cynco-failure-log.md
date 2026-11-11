@@ -4188,7 +4188,19 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 
 **Rule:** "it would cost a reload" is not a reason until the reload has a number. And a default that holds a shared resource "just in case" needs an owner's yes as much as one that releases it.
 
-## F212 — A chat turn behind another engine's model server got no answer for up to 30 minutes although the small-model fallback was up (left by F204, closed 2026-11-11; no run lost)
+## F212 — The upload route a paired phone reaches trusted the name, the path and the framing (2026-11-11; found by reading, nothing lost)
+
+**Where:** `addKnowledgeApi` and `promoteArtifactApi` (`engine/projects/api.ts`), `POST /api/projects/<slug>/knowledge` and `…/artifacts/<name>/promote` in `engine/dashboard/server.ts`.
+
+**How:** traced while hardening uploads for the phone (NOW.md Next 1). Four findings, none seen in use. (1) `writeFileSync(knowledge/<name>)` follows a link at that name and follows `knowledge/` when it is a junction, so an upload could be written outside the project. (2) `promoteArtifactApi` checked its source with `statSync`, which follows links: promoting an artifact that is a link copied whatever it pointed to, anywhere on this machine, into `knowledge/`, where the chat's search reads it. The model can plant such links (`gradeProjectCall` grades `ln -s` inside the folder as safe). (3) A file was kept under whatever extension its name carried: HTML named `holiday.jpg` was recorded, journaled and handed to the image box as a picture. (4) The 50 MB cap was checked against `Content-Length` and again after the body was read; a chunked body declares no length, and `req.formData()` buffered all of it. Measured under Bun 1.3.13: `maxRequestBodySize` (default 128 MB) refuses a declared oversize body and does not cover a chunked one; 60 MB chunked reached the handler.
+
+**Why:** the route was written for the desk's Projects tab and became phone-reachable when phone files (2026-11-08) pointed the chat's Attach at it. The package already had the rule (`engine/projects/CLAUDE.md`: the engine's own files in a project are untrusted to its reads and its writes, after the F174 image store review) and the helpers (`realInside`, `writeJsonAtomic`); the upload and promote paths predate the rule and were never brought under it. The size check read a header a client may omit.
+
+**Fix:** `engine/projects/upload.ts` (`contentFault`, `safeStem`, `landingName`) and `writeBytesAtomic` in `layout.ts`; `addKnowledgeApi` checks content, that `knowledge/` is really a folder of the project, and the name, then writes a fresh file renamed into place; `promoteArtifactApi` requires a regular file whose real path is inside the project and lands the same way; a photo under a taken name is kept beside it and the same photo twice is one file. `maxRequestBodySize: MAX_REQUEST_BODY_BYTES` on every listener, and a `Transfer-Encoding` body is refused with 411 before the token check. `uploadHardening.test.ts`, `requestBodyBound.test.ts`. Record: `docs/decisions/2026-11-11-phone-uploads-and-inbox.md`.
+
+**Rule:** when a route gains a new kind of caller, re-read it as that caller's route: what it trusts was chosen for the old one. And a size limit is checked where the bytes are counted, not where a header says how many there will be.
+
+## F213 — A chat turn behind another engine's model server got no answer for up to 30 minutes although the small-model fallback was up (left by F204, closed 2026-11-11; no run lost)
 
 **Where:** `BusyFallbackProvider.route` in `engine/llama/busyFallback.ts`: `if (!busy || primaryWarm) return primary`, where `busy` is `gpu-busy.json`.
 

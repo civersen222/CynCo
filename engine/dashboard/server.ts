@@ -44,6 +44,8 @@ import {
 } from './access.js'
 
 /** Both pages refuse to be framed: a hostile page could otherwise overlay Send or an approval card's Approve. */
+/** The largest request body any listener reads: one upload (`UPLOAD_MAX_BYTES`) plus room for its multipart framing. */
+export const MAX_REQUEST_BODY_BYTES = UPLOAD_MAX_BYTES + 1024 * 1024
 /** Where the HTTPS proxy's listener binds. Loopback, always: a proxy on this machine is its only client. */
 const PROXY_LISTEN_HOST = '127.0.0.1'
 const NO_FRAMING = { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' }
@@ -631,6 +633,18 @@ export class DashboardServer {
           return new Response('unknown host', { status: 421 })
         }
 
+        // No request body is read before it is known to be bounded. Bun
+        // refuses a declared length over `maxRequestBodySize` itself, before
+        // this handler runs. A body with no declared length — chunked — cannot
+        // be bounded before it is read, and Bun's cap does not cover it
+        // (measured: 60 MB chunked reached the handler), so it is refused
+        // outright. Browsers and fetch declare a length for strings, forms and
+        // files. Before the token check on purpose: /api/pair reads a body from
+        // a client that holds none.
+        if (req.headers.has('transfer-encoding')) {
+          return jsonResponse({ error: 'a request body must declare its length (Content-Length)' }, 411)
+        }
+
         // WebSocket upgrade at /ws. The stream carries the same conversation
         // content as the transcript route, so it takes the same scope — but a
         // browser cannot set headers on a WebSocket handshake, which is why this
@@ -896,6 +910,11 @@ export class DashboardServer {
     const serveOptions = {
       port,
       hostname: this._hostname,
+      // No request to this server is larger than one upload. Bun answers 413
+      // itself past this, whatever the route and however the body is framed
+      // (a chunked body declares no length for a handler to check), so nothing
+      // larger is ever buffered. Its own default is 128 MB.
+      maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
       // Note: after Bun.serve() this.server.port reflects the actual bound port
       // (important when port=0 is used for OS-assigned ephemeral ports in tests).
       fetch: (req: Request, server: Server<DashboardSocketData>) => handle(req, server, false),

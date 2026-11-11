@@ -237,7 +237,7 @@ export async function bootstrapProvider(
           readBusy: () => readGpuBusy(),
           remainingMs: (b) => estimateRemainingMs(b),
           primaryWarm: () => processManager.modelState() === 'warm',
-          // Behind another engine's server (a dispatched mission, a second engine) there is no busy file (F212).
+          // Behind another engine's server (a dispatched mission, a second engine) there is no busy file (F213).
           readPortHolder: portHolderReader({
             port: config.port,
             ownServerUp: () => processManager.isRunning(),

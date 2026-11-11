@@ -460,7 +460,7 @@ describe('addKnowledgeApi with an image', () => {
   })
   it('without a runner the upload is today\'s synchronous path and says no vision model is configured', async () => {
     const d = deps(); const { slug } = createProject(home, { name: 'Pics' })
-    const r = await addKnowledgeApi(d, slug, { name: 'a.png', bytes: jpg })
+    const r = await addKnowledgeApi(d, slug, { name: 'a.jpg', bytes: jpg })
     expect(r.status).toBe(201)
     expect(r.body).toMatchObject({ indexed: false, reason: 'no vision model configured' })
   })

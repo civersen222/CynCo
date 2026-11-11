@@ -5,7 +5,7 @@
  * mistake: unknown project 404, bad input 400, unsupported type 415, too
  * large 413. The server (Task 8) only parses the request and mounts these.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { validateSpec, isSurfaceId } from '../genui/spec.js'
 import { basename, extname, join } from 'node:path'
 import { EmbedClient } from '../index/embedClient.js'
@@ -14,7 +14,8 @@ import { LookRunner, PENDING_REASON, imageMime } from '../vision/lookRunner.js'
 import { makeLookClient } from '../vision/lookClient.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, makeProseEmbedClient, proseEmbedModel, removeFromIndex, rescanProject, type IngestEvent } from './ingest.js'
-import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, sha256Of, slugify, writeFileIndex, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
+import { appendJournal, createProject, isReservedFileName, projectDir, readFileIndex, readInstructions, readJournal, readProject, realInside, sha256Of, slugify, writeBytesAtomic, writeFileIndex, writeInstructions, writeProject, RESERVED_FILE_NAME, SLUG_RE } from './layout.js'
+import { contentFault, landingName, safeStem } from './upload.js'
 import { readRegistry, upsertRegistry } from './registry.js'
 import { listChats, readTranscript, renameChat } from './chat.js'
 import { searchProjects, type SearchKind } from './search.js'
@@ -42,6 +43,54 @@ export function makeProjectsDeps(args: { home: string; embedBaseUrl: string; emi
     })
   }
   return d
+}
+
+/** The content hash of the regular file at `path`; null when nothing readable as a file is there (free, a folder, a dangling link). */
+function heldSha(path: string): string | null {
+  try {
+    const st = lstatSync(path)
+    // A link is not this project's file, whatever it points at: the name counts as free and the write replaces the link.
+    if (!st.isFile()) return null
+    return sha256Of(readFileSync(path))
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') console.log(`[projects] could not read ${path}: ${e instanceof Error ? e.message : String(e)}`)
+    return null
+  }
+}
+
+/**
+ * Null when `knowledge/` really is a folder of this project; otherwise the
+ * refusal. A junction planted there would carry the write, and the index
+ * beside it, out of the project.
+ */
+function knowledgeAreaFault(dir: string, slug: string): ApiResult | null {
+  const area = join(dir, 'knowledge')
+  mkdirSync(area, { recursive: true })
+  const real = realInside(dir, area)
+  if (real.inside && lstatSync(area).isDirectory()) return null
+  console.warn(`[projects] write refused: knowledge/ of ${slug} resolves to ${real.real}`)
+  return { status: 409, body: { error: 'knowledge/ is not a folder inside this project; the file was not kept' } }
+}
+
+/**
+ * Put `bytes` at `knowledge/<rel>`: never through a link (the fresh file
+ * replaces whatever sat at the name), never over a folder. Null when written;
+ * otherwise the refusal or the failure, said.
+ */
+function landInKnowledge(dir: string, slug: string, rel: string, bytes: Uint8Array): ApiResult | null {
+  const target = join(dir, 'knowledge', rel)
+  if (isFolder(target)) return { status: 409, body: { error: `a folder named ${rel} is in the way; the file was not kept` } }
+  try {
+    writeBytesAtomic(target, bytes)
+    return null
+  } catch (e) {
+    console.error(`[projects] ${rel} could not be written into knowledge/ of ${slug}: ${e instanceof Error ? e.message : String(e)}`)
+    return { status: 500, body: { error: `the file could not be written: ${e instanceof Error ? e.message : String(e)}` } }
+  }
+}
+
+function isFolder(path: string): boolean {
+  try { return lstatSync(path).isDirectory() } catch { return false }
 }
 
 const notFound = (what: string): ApiResult => ({ status: 404, body: { error: `no such ${what}` } })
@@ -112,14 +161,32 @@ export async function addKnowledgeApi(d: ProjectsDeps, slug: string, item: { nam
   const bytes = item.bytes ?? new TextEncoder().encode(item.text ?? '')
   if (bytes.byteLength > UPLOAD_MAX_BYTES) return { status: 413, body: { error: `file is larger than ${UPLOAD_MAX_BYTES} bytes` } }
   if (bytes.byteLength === 0) return bad('empty file')
-  const rel = `${slugify(rawName.slice(0, rawName.length - extname(rawName).length))}${ext}`
+  // The bytes are what the name says (upload.ts): a `.jpg` that is HTML is not kept, looked at or listed as a picture.
+  const fault = contentFault(ext, bytes)
+  if (fault) return { status: 415, body: { error: `${rawName}: ${fault}` } }
   const dir = projectDir(d.home, slug)
-  mkdirSync(join(dir, 'knowledge'), { recursive: true })
-  writeFileSync(join(dir, 'knowledge', rel), bytes)
+  const area = join(dir, 'knowledge')
+  const areaFault = knowledgeAreaFault(dir, slug)
+  if (areaFault) return areaFault
+  const sha = sha256Of(bytes)
+  const stem = safeStem(slugify(rawName.slice(0, rawName.length - extname(rawName).length)))
+  // A photo's name is the camera's: a different picture under a taken name
+  // goes beside it, and the same picture sent twice is one file. A document
+  // sent again under its name is its new version, as before.
+  const landing = landingName(stem, ext, sha, (name) => heldSha(join(area, name)))
+  const rel = landing.name
+  if (landing.kind === 'duplicate') {
+    const held = readFileIndex(dir, 'knowledge').files[rel]
+    if (held) return { status: 200, body: { name: rel, ...held, duplicate: true, event: null } }
+    // The bytes are there but were never recorded (a write that died before its index): record them now, below.
+  } else {
+    const writeFault = landInKnowledge(dir, slug, rel, bytes)
+    if (writeFault) return writeFault
+  }
   if (IMAGE_EXTS.has(ext) && d.looks) {
     // The look runs behind the answer: the phone's Attach must not wait a minute on a cold box.
     const index = readFileIndex(dir, 'knowledge')
-    index.files[rel] = { sha256: sha256Of(bytes), addedAt: index.files[rel]?.addedAt ?? new Date().toISOString(), origin: 'uploaded', indexed: false, reason: PENDING_REASON }
+    index.files[rel] = { sha256: sha, addedAt: index.files[rel]?.addedAt ?? new Date().toISOString(), origin: 'uploaded', indexed: false, reason: PENDING_REASON }
     writeFileIndex(dir, 'knowledge', index)
     // The loop hears of the picture now (IngestNotes), so the next turn can wait on the look (design §2); the look's own event follows.
     d.emit({ slug, filePath: `knowledge/${rel}`, kind: 'knowledge', indexed: false, reason: PENDING_REASON })
@@ -157,8 +224,20 @@ export async function promoteArtifactApi(d: ProjectsDeps, slug: string, name: st
   const dir = projectDir(d.home, slug)
   const src = join(dir, 'artifacts', rel)
   if (!existsSync(src)) return notFound('artifact')
-  if (!statSync(src).isFile()) return bad(`not a file: artifacts/${rel}`)
-  copyFileSync(join(dir, 'artifacts', rel), join(dir, 'knowledge', rel))
+  // The artifact itself, not what a link at its name points to: promoting a
+  // link would copy a file from anywhere on this machine into knowledge, where
+  // the chat can search it. `lstat`, and the real path inside the project.
+  const srcReal = realInside(dir, src)
+  const srcStat = lstatSync(src)
+  if (srcStat.isSymbolicLink() || !srcReal.inside) {
+    console.warn(`[projects] promote refused: artifacts/${rel} of ${slug} resolves to ${srcReal.real}`)
+    return bad(`not a file of this project: artifacts/${rel}`)
+  }
+  if (!srcStat.isFile()) return bad(`not a file: artifacts/${rel}`)
+  const areaFault = knowledgeAreaFault(dir, slug)
+  if (areaFault) return areaFault
+  const writeFault = landInKnowledge(dir, slug, rel, readFileSync(src))
+  if (writeFault) return writeFault
   const ev = await ingestFile(d, slug, 'knowledge', rel, 'artifact')
   appendJournal(dir, 'artifact.promoted', `${rel} → knowledge/${rel}`)
   await commitHistory(dir, [`knowledge/${rel}`, 'knowledge/index.json', 'journal.md'], `knowledge: promote ${rel}`)
