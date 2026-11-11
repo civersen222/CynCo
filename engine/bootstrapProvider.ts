@@ -195,6 +195,10 @@ export async function bootstrapProvider(
       const { lazyAppDeps, giveGpuBack } = await import('./apps/gpu.js')
       const lazyApps = lazyAppDeps(config.port)
       const sayApps = (m: string) => { console.log(`[apps] ${m}`); processManager.onWaiting?.(m) }
+      // A card too full for our model because Ollama holds one of the owner's apps' models: Ollama is asked to
+      // unload it, through its API, before the spawn is refused. Every engine, lazy or not, a one-shot's included.
+      const { freeOllamaForCynco } = await import('./apps/ollama.js')
+      processManager.relieveGpu = () => freeOllamaForCynco({ by: 'its own model', say: sayApps })
       if (lazy.lazy) {
         const { readGpuBusy } = await import('./daemon/gpuBusyFile.js')
         // An engine that died owing an app its server: give it back now, if the GPU is free.

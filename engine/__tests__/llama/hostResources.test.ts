@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateSpawn, parseNvidiaSmiGpuLine, readHostMemory, spawnRequirementFor, type HostMemory, type GpuMemory } from '../../llama/hostResources.js'
+import { checkSpawn, evaluateSpawn, parseNvidiaSmiGpuLine, readHostMemory, spawnRequirementFor, type HostMemory, type GpuMemory } from '../../llama/hostResources.js'
 import { MEASURED_DEFAULT_COST } from '../../llama/checkpointCost.js'
 
 const host = (commitFreeMib: number): HostMemory => ({ totalPhysMib: 65126, availPhysMib: 15872, commitLimitMib: 154829, commitFreeMib, source: 'win32-ffi' })
@@ -62,5 +62,66 @@ describe('readHostMemory', () => {
   it.skipIf(underBun)('reports unavailable off the Bun runtime rather than guessing', async () => {
     const m = await readHostMemory()
     expect(['unavailable', 'proc-meminfo']).toContain(m.source)
+  })
+})
+
+// Local-LLM apps, slice 4: a card that is short because Ollama holds one of the owner's apps' models is
+// first asked to let go (engine/apps/ollama.ts), then measured again; only then is the spawn refused.
+describe('checkSpawn: relief before a VRAM refusal', () => {
+  const req = { commitFreeMibNeeded: 5000, vramFreeMibNeeded: 20000 }
+  const rig = (gpus: number[], relieved: number, hostFree = 90000) => {
+    const calls = { relieve: 0, sleeps: [] as number[], gpuReads: 0, top: 0 }
+    const deps = {
+      readHost: async () => host(hostFree),
+      readGpu: async () => gpu(gpus[Math.min(calls.gpuReads++, gpus.length - 1)]),
+      relieve: async () => { calls.relieve++; return relieved },
+      sleep: async (ms: number) => { calls.sleeps.push(ms) },
+      topConsumers: async () => { calls.top++; return 'ollama.exe 17.0 GB' },
+      recheckDelayMs: 3000,
+    }
+    return { deps, calls }
+  }
+
+  it('enough VRAM: nobody is asked for anything', async () => {
+    const r = rig([30000], 1)
+    expect(await checkSpawn(req, r.deps)).toEqual({ ok: true })
+    expect(r.calls).toMatchObject({ relieve: 0, top: 0, sleeps: [] })
+  })
+
+  it('short of VRAM, relief unloads something, the card is measured again and the spawn goes ahead', async () => {
+    const r = rig([12000, 30000], 1)
+    expect(await checkSpawn(req, r.deps)).toEqual({ ok: true })
+    expect(r.calls.relieve).toBe(1)
+    expect(r.calls.gpuReads).toBe(2)
+  })
+
+  it('short of VRAM and nothing to relieve: the one re-read after the usual delay, then the refusal', async () => {
+    const r = rig([12000, 12000], 0)
+    const c = await checkSpawn(req, r.deps)
+    expect(c.ok).toBe(false)
+    expect(r.calls.relieve).toBe(1)
+    expect(r.calls.sleeps).toEqual([3000])
+    if (!c.ok) expect(c.reason).toMatch(/VRAM held by other processes: 12000 MiB free/)
+  })
+
+  it('a relief that throws is not a reason to crash a model load: the refusal stands', async () => {
+    const r = rig([12000, 12000], 0)
+    const c = await checkSpawn(req, { ...r.deps, relieve: async () => { throw new Error('ollama exploded') } })
+    expect(c.ok).toBe(false)
+  })
+
+  it('short of commit charge, not VRAM: relief is not asked (Ollama cannot help with that)', async () => {
+    const r = rig([30000], 1, 1200)
+    const c = await checkSpawn(req, r.deps)
+    expect(c.ok).toBe(false)
+    expect(r.calls.relieve).toBe(0)
+    if (!c.ok) expect(c.reason).toMatch(/top consumers: ollama\.exe/)
+  })
+
+  it('no relief wired: exactly the old behaviour', async () => {
+    const r = rig([12000, 30000], 0)
+    const { relieve: _unused, ...withoutRelief } = r.deps
+    expect(await checkSpawn(req, withoutRelief)).toEqual({ ok: true })
+    expect(r.calls.sleeps).toEqual([3000])
   })
 })

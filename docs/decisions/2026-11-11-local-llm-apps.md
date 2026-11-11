@@ -1,6 +1,6 @@
 # CynCo knows and manages the owner's local-LLM apps
 
-Date: 2026-11-11. Status: built (slices 1 to 3 below); live proof against the real apps is a step for the owner's sitting.
+Date: 2026-11-11. Status: built (slices 1 to 6 below); live proof against the real apps is a step for the owner's sitting.
 
 ## What was asked
 
@@ -63,7 +63,8 @@ One rule, used by a chat turn and by a one-shot: **when CynCo needs the GPU and 
 2. **An app whose own processes are gone is a leftover**: its server is stopped and not started again ("if it's not being used the models should not be loaded"). If wrong: the owner starts the app's server by hand, as today.
 3. **"In use" means a process running from the app's folder.** An editor or a Claude session open in that folder counts as in use. If wrong: a server is restarted that nobody is playing with, and it stays until the next time CynCo needs the GPU.
 4. **Discovery writes the registry without asking**, with the evidence, because the owner asked CynCo to figure out what these servers are. If wrong: an entry names the wrong folder; it is visible in the notice and editable in the file.
-5. **Ollama-based apps are named in the survey but not managed in this slice.** They never hold CynCo's port. What they do is hold VRAM, which CynCo's pre-spawn check (F140) refuses on; asking Ollama to unload (`keep_alive: 0`, which Ollama undoes by itself on the app's next request) is the matching mechanism and is the next slice (`docs/NOW.md`).
+5. **Apps on Ollama: CynCo asks Ollama to unload, and gives nothing back** (slice 4, F218). When CynCo's pre-spawn check finds the card short of VRAM, and before every one-shot, it reads Ollama's `/api/ps` and sends each loaded model one `POST /api/generate` with `keep_alive: 0`, the request Ollama documents for unloading. Ollama's HTTP API is the whole interface: its installation, files, service and settings are never touched. **Giving back is nothing CynCo does**: Ollama loads the model again by itself on the app's next request, so no debt is recorded. What that costs: the app's next request pays a model load, and if it arrives while CynCo's model is still on the card the two share it (Ollama then fits what it can and spills the rest to system memory, slowly). CynCo does not stop that request; it only says, each time, what it unloaded and for whom. A chat turn asks only when its own model would not fit; a one-shot asks always, because the daemon's busy check reads any large GPU user as busy. If wrong: `"ollama": { "manage": false }` in `~/.cynco/apps.json` turns it off as a whole, and `"manage": false` on an app keeps that app's models loaded.
+   - *Which app a model belongs to* is figured out as a server's is: the registry (`ollamaApps`), else the owner's project folders are searched for a source or config file that names the model beside `ollama` or `11434` (four folders deep, 1,500 files a project, no dependencies), and what is found is registered with the evidence. Two apps that use one model are both named. A model no project names is still unloaded and said by its own name. The "in use" rule (a process running from the app's folder) is not used here: screenplayer runs on the NAS and has no process on this PC, and Ollama does not say who asked.
 6. **A mission dispatch still kills an app's server by path and does not restore it** (`scripts/cynco-llama-sweep.mjs`). Missions are started by the owner at the desk; bringing them under the same rule is in the backlog.
 
 ## Slices
@@ -71,6 +72,7 @@ One rule, used by a chat turn and by a one-shot: **when CynCo needs the GPU and 
 1. Identify and say: registry, discovery, the notice on the lazy path names the app.
 2. Take and give back for the lazy chat engine: displacement record, in-use check, restore on unload, on shutdown and at start.
 3. The same rule for daemon one-shots: the one-shot no longer defers behind an app's server; it takes the port and the daemon gives it back after the run.
+4. Apps on Ollama: `engine/apps/ollama.ts` (decision 5).
 
 Each is tested with stand-in servers; `standIn.test.ts` runs the whole path with real processes on a spare port (a launcher script, a server it starts, a client process in the app's folder, the real process reader, the real kill and the real out-of-job start).
 
