@@ -12,5 +12,8 @@ if "%LOCALCODE_LLAMA_IDLE_UNLOAD_MS%"=="" set LOCALCODE_LLAMA_IDLE_UNLOAD_MS=900
 rem While a daemon one-shot owns the 5090, answer on the 4070 Ti Super box's Ollama (slice 2b).
 if "%LOCALCODE_FALLBACK_URL%"=="" set LOCALCODE_FALLBACK_URL=http://192.168.0.47:11434
 if "%LOCALCODE_FALLBACK_MODEL%"=="" set LOCALCODE_FALLBACK_MODEL=qwen3:14b
+rem Tell the phone when an approval or a question waits with nobody connected (engine\daemon\waitPush.ts).
+rem Same ntfy the daemon uses, on the doorman; set CYNCO_NTFY_URL to another address to move it.
+if "%CYNCO_NTFY_URL%"=="" set CYNCO_NTFY_URL=http://100.110.117.10:8090
 cd /d C:\Users\civer\localcode
 bun engine\main.ts >> "%USERPROFILE%\.cynco\engine-headless.log" 2>&1

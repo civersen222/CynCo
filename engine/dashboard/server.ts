@@ -2204,6 +2204,9 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
     this.server.stop()
   }
 
+  /** Connected dashboard sockets — what the wait push asks before it tells the phone (engine/daemon/waitPush.ts). */
+  get clientCount(): number { return this.clients.size }
+
   getPort(): number {
     // Prefer the server's actual bound port (non-zero when port=0 was requested).
     return this.server.port ?? this._port

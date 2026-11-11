@@ -211,6 +211,17 @@ describe('WebSocket broadcast', () => {
     await new Promise(r => setTimeout(r, 50))
   })
 
+  it('clientCount follows the sockets: what the wait push asks before it tells the phone', async () => {
+    expect(server.clientCount).toBe(0)
+    const ws = new WebSocket(`ws://localhost:${server.getPort()}/ws?token=${_ADMIN}`)
+    await new Promise<void>((resolve, reject) => { ws.onopen = () => resolve(); ws.onerror = (e) => reject(e) })
+    await new Promise(r => setTimeout(r, 50))
+    expect(server.clientCount).toBe(1)
+    ws.close()
+    await new Promise(r => setTimeout(r, 100))
+    expect(server.clientCount).toBe(0)
+  })
+
   it('is no-op when no clients connected', () => {
     // Should not throw
     expect(() => {

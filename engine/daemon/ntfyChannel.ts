@@ -77,16 +77,16 @@ export class NtfyChannel {
     }
   }
 
-  /** Publish a notification. On failure it is queued; queued items flush before the next publish. */
-  async publish(payload: PublishPayload): Promise<boolean> {
+  /** Publish a notification. On failure it is queued (unless `queueOnFailure: false` — a notice about now is worthless later); queued items flush before the next publish. */
+  async publish(payload: PublishPayload, opts: { queueOnFailure?: boolean } = {}): Promise<boolean> {
     // Serialize: an SSE-callback publish racing a tick publish must not both
     // flush the queue, or queued items get sent twice.
-    const run = this.publishLock.then(() => this.publishInner(payload))
+    const run = this.publishLock.then(() => this.publishInner(payload, opts.queueOnFailure !== false))
     this.publishLock = run.then(() => undefined, () => undefined)
     return run
   }
 
-  private async publishInner(payload: PublishPayload): Promise<boolean> {
+  private async publishInner(payload: PublishPayload, queueOnFailure: boolean): Promise<boolean> {
     // Flush queue first (oldest first)
     while (this.queue.length > 0) {
       const queued = this.queue[0]
@@ -94,7 +94,7 @@ export class NtfyChannel {
       else break
     }
     const ok = await this.post(payload)
-    if (!ok) {
+    if (!ok && queueOnFailure) {
       if (this.queue.length >= MAX_QUEUE) this.queue.shift()
       this.queue.push(payload)
     }
@@ -209,5 +209,21 @@ export class NtfyChannel {
     }
     void loop()
     return () => { this.subscribed = false }
+  }
+}
+
+/**
+ * Where ntfy is, from the `CYNCO_NTFY_*` variables — or null when `CYNCO_NTFY_URL` is unset.
+ * One reader for the two processes that publish: the daemon (which refuses to start without it)
+ * and the interactive engine's wait push (which is simply off without it).
+ */
+export function ntfyOptionsFromEnv(env: Record<string, string | undefined>): NtfyOptions | null {
+  const baseUrl = env.CYNCO_NTFY_URL
+  if (!baseUrl) return null
+  return {
+    baseUrl,
+    token: env.CYNCO_NTFY_TOKEN,
+    alertTopic: env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts',
+    commandTopic: env.CYNCO_NTFY_COMMAND_TOPIC ?? 'cynco-commands',
   }
 }

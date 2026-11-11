@@ -39,13 +39,13 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
    record), then a web manifest so the phone installs the page. Prerequisite for push.
 3. **Rebuild what streamed while the phone was away.** Put the loop's session id on
    `/api/session` so a reconnecting page can fetch the transcript tail instead of showing a gap.
-4. **Tell the phone when the engine waits.** When an approval card or AskUser question opens and
-   no client is connected, push through the existing ntfy channel (`engine/daemon/ntfyChannel.ts`).
-5. **Device hygiene.** `lastSeen` per device, an expiry, "revoke all", and a tailnet ACL note
+4. **Device hygiene.** `lastSeen` per device, an expiry, "revoke all", and a tailnet ACL note
    limiting the dashboard port to the owner's devices.
 
 ## Backlog (worth doing, not started)
 
+- `engine/__tests__/bridge/abortIsATurnEnd.test.ts` failed once as a file in a full Windows suite run (2026-11-10) with all 8 tests green: its `afterAll` `rmSync` of the temp project got `EPERM` after its five retries, most likely a just-killed Bash child still holding the directory. Passes alone. Wait for the child's exit before the cleanup, or let the cleanup fail quietly.
+- Left by the wait push (`engine/daemon/waitPush.ts`, built 2026-11-10; not yet seen on the phone): (a) the notification has no tap-to-open link. The page's device token is stored per origin, so a link to an address the phone was not paired on opens the pairing screen; do it with the HTTPS/installable-page item, when there is one address. (b) Nothing is sent when a client is connected but nobody is looking: a desk tab left open at 127.0.0.1:9161 counts as a client. Telling a watched tab from an abandoned one needs a visibility signal from the page. (c) A client that disconnects after the 5 s grace, with the wait still open, is not noticed; a check on the last socket closing would cover it.
 - Left by real cancellation (F201), each small (the live Stop check is done, see F201): (a) Bash's own timeout kill (`exec`'s `timeout`) reaches only the shell, so a timed-out command's children may run on — unverified; `killProcessTree` is there to reuse; (b) a sub-agent's executor passes no abort signal, so stopping a turn does not kill a sub-agent's running Bash command; (c) `ensureReady` (the lazy model load) is not cancelled by Stop; (d) three process-tree kills now exist (`engine/daemon/taskRunner.ts`, `engine/brain/jlensSidecar.ts`, `engine/tools/impl/bash.ts`) with no shared helper.
 - The CI suite job builds the `polyglot-bench` Docker image from the network on every run (`benchmark/true/polyglot/container.test.ts`: the runner has docker, so `skipIf(!dockerPresent)` does not skip it) and nothing bounds the build: `ensureImage` is a `spawnSync` with no timeout, which the test's 900 s deadline cannot interrupt. Seen 2026-11-10 on PR #213 (run 42741117068): `apt` stalled 1,902 s fetching `openjdk-21-jdk-headless` from archive.ubuntu.com, the build took 2,469 s, the suite job went red at 43m54s with that one test failed (588 files green); the six runs before it that day were green in 4–7 minutes. Options: a timeout on the build, a CI-only skip, or caching the image; which one is the owner's call, since a skip also hides a broken Dockerfile.
 - The image box can still be left with a model loaded by something the engine cannot see (F198): an engine killed outright while a prompt runs, the ComfyUI page, a hand-run script. A `/free` at engine start when ComfyUI's queue is empty, or an idle sweep, would cover it; either unloads a model somebody else may have loaded on purpose, so it is the owner's call.
@@ -104,8 +104,8 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
   tri-state tier outcome, DDG bot-check = Failed, shared deadline, `[Tried: …]` line; (6)
   resolve-then-pin SSRF in `WebFetch` (a boundary change, owner's yes first); (7) per-repo rules
   file (`AGENTS.md`/`CLAUDE.md` of the target repo) into the system prompt; (8) sub-agent wake via
-  `SteeringQueue`; (9) cursor-based event buffer for phone reconnect (= Next 4); (10) abort
-  threading + Bash child kill with a cancel tombstone (= Next 2); (11) compaction merge +
+  `SteeringQueue`; (9) cursor-based event buffer for phone reconnect (= Next 3); (10) abort
+  threading + Bash child kill with a cancel tombstone (= F201, merged); (11) compaction merge +
   verbatim-loss check; (12) age-based tool-result decay; (13) stderr failure classifier + GGUF
   precheck + health timeout by file size; (14) `mmproj` sibling pairing in `resolveModel`; (15)
   per-turn memory recall as a turn note with ADD/UPDATE/NOOP; (16) device hygiene (= Next 6);

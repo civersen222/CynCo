@@ -108,6 +108,15 @@ describe('NtfyChannel', () => {
     expect(ch.queuedCount).toBe(0)
   })
 
+  it('a publish that says not to queue is dropped on failure: a notice about now must not arrive later', async () => {
+    const ch = new NtfyChannel({
+      baseUrl: 'http://127.0.0.1:1', alertTopic: 'a', commandTopic: 'c', // nothing listening
+    })
+    const ok = await ch.publish({ title: 'waiting now', message: 'm' }, { queueOnFailure: false })
+    expect(ok).toBe(false)
+    expect(ch.queuedCount).toBe(0)
+  })
+
   it('receives commands over SSE', async () => {
     const mock = await startMockNtfy()
     cleanup = mock.close
