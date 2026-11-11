@@ -4176,7 +4176,19 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 
 **Rule:** to be able to kill everything a process starts, take hold of it when it starts; a list made at kill time is already out of date. When the same operation exists three times, the bug is in all three: make it one before fixing it. And a test that stops something a fixed time after starting it is testing the clock; wait for the state, then act.
 
-## F211 — The upload route a paired phone reaches trusted the name, the path and the framing (2026-11-11; found by reading, nothing lost)
+## F211 — The image box held models nobody was using: the vision model for ten minutes after every look, and whatever was on it when the engine started (the owner's decision, 2026-11-11; no run lost)
+
+**Where:** `keep_alive: '10m'` in `LookClient.chat` (`engine/vision/lookClient.ts`); and nothing at engine start in `engine/imagegen/service.ts`, where F198 frees the box only after the engine's own pictures.
+
+**How:** both were written down as the owner's call (F194's and F198's leftovers in `docs/NOW.md`): after a look the 6.6 GB vision model sat on the 16 GB card for ten minutes unless a transform unloaded it first, and a model left by something the engine cannot see (an engine killed outright while a prompt ran, the ComfyUI page, a hand-run script) stayed until somebody noticed. The owner, 2026-11-11: "if it's not being used the models should not be loaded".
+
+**Why:** ten minutes was chosen when the cost of reloading was unmeasured and feared; it was never measured. The free at start was held back because it also unloads a model somebody loaded on purpose, which is the owner's to accept, and now is accepted.
+
+**Fix:** `LOOK_KEEP_ALIVE = '5s'`: Ollama unloads the vision model five seconds after the last look, engine alive or not. Not `0`, because a zoomed look (F192) is two to four requests back to back and each would reload. Measured on the box that day (`qwen3-vl:8b-instruct`, same request shape as the client): a look on the resident model 0.6-1.1 s; a look that reloads it 3.7 s, of which 2.35 s is the load; the first load of the day 9.0 s (7.3 s load); with `'5s'` `/api/ps` was empty 5.1 s after the last look, with `0` after 6 ms. So a look after a pause now costs about 2.4 s more, and the box holds nothing between looks. `ImageService.freeAtStart`, called from `main.ts` beside the probe: `GET /queue` (`ComfyClient.queueDepth`), and one `/free` when nothing is running or pending; a queue that is not empty is left alone, a server that does not answer is not freed blind, and either way one log line says which. The measurement ended as F198 asks: an unload, a `/free`, `/api/ps` `[]` and 15.8 of 17.2 GB free on the card. Pinned by `vision/lookClient.test` (the constant reaches both request shapes), seven tests in `imagegen/service.test` and three in `imagegen/client.test`, all seen red first. Not run live: an engine start against the box with a checkpoint left in ComfyUI.
+
+**Rule:** "it would cost a reload" is not a reason until the reload has a number. And a default that holds a shared resource "just in case" needs an owner's yes as much as one that releases it.
+
+## F212 — The upload route a paired phone reaches trusted the name, the path and the framing (2026-11-11; found by reading, nothing lost)
 
 **Where:** `addKnowledgeApi` and `promoteArtifactApi` (`engine/projects/api.ts`), `POST /api/projects/<slug>/knowledge` and `…/artifacts/<name>/promote` in `engine/dashboard/server.ts`.
 

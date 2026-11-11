@@ -229,6 +229,15 @@ export class ComfyClient {
     if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /free with HTTP ${res.status}`)
   }
 
+  /** What ComfyUI has running and pending, whoever submitted it (F211): the question "is anybody using the box?". */
+  async queueDepth(): Promise<{ running: number; pending: number }> {
+    const res = await this.call('/queue', this.timeouts.control)
+    if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /queue with HTTP ${res.status}`)
+    const body = await this.json(res, '/queue')
+    const len = (v: unknown) => (Array.isArray(v) ? v.length : 0)
+    return isObj(body) ? { running: len(body.queue_running), pending: len(body.queue_pending) } : { running: 0, pending: 0 }
+  }
+
   async interrupt(id: string): Promise<void> {
     const res = await this.post('/interrupt', { prompt_id: id }, this.timeouts.control)
     if (!res.ok) throw new ComfyError(`ComfyUI at ${this.host} answered /interrupt with HTTP ${res.status}`)
