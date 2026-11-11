@@ -20,7 +20,7 @@
  * sessionFidelityEveryExit does.
  */
 import { describe, expect, it, afterAll, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
@@ -124,7 +124,7 @@ function setup(
     emit: (e: any) => { events.push(e) },
     allowedTools: opts.allowedTools ?? ['Read'],
   })
-  return { loop, events, provider }
+  return { loop, events, provider, cwd }
 }
 
 describe('Stop is a turn end', () => {
@@ -254,18 +254,82 @@ describe('Stop is a turn end', () => {
   }
 
   it('Stop while a Bash command runs kills it and ends the turn with "aborted"', async () => {
-    const { loop, events, provider } = setup(() => [bash(`node -e "setTimeout(() => {}, 9000)"`), done()], { allowedTools: ['Bash'] })
-    let started = 0
+    // The command's child writes its pid at once and would run a minute. The
+    // Stop is pressed once that child is running, not a fixed time after the
+    // call began: 300 ms in is when the shell is starting it, and a kill that
+    // finds the tree when it happens can miss a child started at that instant
+    // (F210; under vitest the Bash tool has no Job Object). The survivor then
+    // held this test's directory and the cleanup failed with EPERM.
+    const LATE_MS = 60_000
+    const { loop, events, provider, cwd } = setup(() => [bash('node late.js'), done()], { allowedTools: ['Bash'] })
+    writeFileSync(join(cwd, 'late.js'), `require('fs').writeFileSync('pid.txt', String(process.pid)); setTimeout(() => {}, ${LATE_MS})\n`)
+    const childPid = (): number => {
+      if (!existsSync(join(cwd, 'pid.txt'))) return 0
+      const n = Number(readFileSync(join(cwd, 'pid.txt'), 'utf-8'))
+      return Number.isInteger(n) && n > 0 ? n : 0
+    }
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+    let stoppedAt = 0
+    let pid = 0
     const timer = setInterval(() => {
-      if (events.some(e => e.type === 'tool.start')) { clearInterval(timer); started = Date.now(); setTimeout(() => loop.abort(), 300) }
+      pid = childPid()
+      if (pid) { clearInterval(timer); stoppedAt = Date.now(); loop.abort() }
     }, 10)
     try {
       await loop.handleUserMessage('wait a while')
     } finally { clearInterval(timer) }
-    expect(started, 'the Bash call must have started').toBeGreaterThan(0)
-    expect(Date.now() - started, 'the turn waited for the command instead of killing it').toBeLessThan(6000)
+    expect(stoppedAt, 'the command\'s child must have started').toBeGreaterThan(0)
+    expect(Date.now() - stoppedAt, 'the turn waited for the command instead of killing it').toBeLessThan(LATE_MS / 2)
     expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
     expect(provider.calls()).toBe(1)
+    expect(loop.isProcessing).toBe(false)
+    const until = Date.now() + 10_000
+    while (alive(pid) && Date.now() < until) await new Promise(r => setTimeout(r, 25))
+    expect(alive(pid), 'the process the command started outlived the Stop').toBe(false)
+  }, 60000)
+
+  it('Stop while a sub-agent the turn started is on its model call ends the sub-agent and the turn (F210)', async () => {
+    globalContract.clear()
+    const cwd = mkdtempSync(join(tmpdir(), 'cynco-abort-end-'))
+    dirs.push(cwd)
+    const events: any[] = []
+    const signals: Array<AbortSignal | undefined> = []
+    let loop: ConversationLoop | null = null
+    const provider = {
+      ...mockProvider([]),
+      // The first call is the turn's: it starts a blocking sub-agent. Every
+      // later call is the sub-agent's and behaves as a fetch does: it ends
+      // when the signal it was given aborts; given none, it fails late.
+      async *stream(r: CompletionRequest): AsyncGenerator<StreamEvent> {
+        const signal = (r as any).signal as AbortSignal | undefined
+        signals.push(signal)
+        if (signals.length === 1) {
+          yield { type: 'message_start', message: { id: 'm1', model: 'test-model', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'ts0', name: 'SubAgent', input: {} } } as any
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ persona: 'scout', task: 'look around' }) } } as any
+          yield { type: 'content_block_stop', index: 0 } as any
+          yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+          yield { type: 'message_stop' } as any
+          return
+        }
+        setTimeout(() => loop!.abort(), 100)
+        await new Promise<never>((_, reject) => {
+          const t = setTimeout(() => reject(new Error('the sub-agent\'s model call was never told to stop')), 4000)
+          const stop = () => { clearTimeout(t); reject(Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' })) }
+          if (signal?.aborted) stop()
+          else signal?.addEventListener('abort', stop, { once: true })
+        })
+      },
+    } as Provider
+    loop = new ConversationLoop({ cwd, config: config(), provider, emit: (e: any) => { events.push(e) }, allowedTools: ['SubAgent'] })
+
+    const started = Date.now()
+    await loop.handleUserMessage('send a scout')
+
+    expect(signals.length, 'the turn\'s call, then the sub-agent\'s one call').toBe(2)
+    expect(signals[1]?.aborted, 'the sub-agent\'s model call must hold a signal that Stop aborts').toBe(true)
+    expect(Date.now() - started, 'the turn waited for the sub-agent instead of stopping it').toBeLessThan(3500)
+    expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
     expect(loop.isProcessing).toBe(false)
   }, 60000)
 

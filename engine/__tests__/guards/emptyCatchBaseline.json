@@ -8,7 +8,7 @@
   "daemon/missionLedger.ts": 2,
   "daemon/ntfyChannel.ts": 3,
   "daemon/oneShot.ts": 2,
-  "daemon/taskRunner.ts": 5,
+  "daemon/taskRunner.ts": 4,
   "daemon/tradeScan.ts": 2,
   "engine/callModel.ts": 5,
   "engine/toolCallRepair.ts": 1,

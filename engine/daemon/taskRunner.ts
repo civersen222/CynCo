@@ -5,6 +5,7 @@ import { join } from 'path'
 import { writeTaskFile, readOutcome } from './taskFile.js'
 import { clearGpuBusy, writeGpuBusy } from './gpuBusyFile.js'
 import { activity as processActivity, type ActivityRegistry } from '../power/activity.js'
+import { ownProcessTree, type OwnedTree } from '../processTree.js'
 import type { TaskFileInput, TaskOutcome } from './types.js'
 
 export class GpuBusyError extends Error {
@@ -143,10 +144,13 @@ export class TaskRunner {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       // Non-Windows: own process group so a timeout kill(-pid) reaps bun AND
-      // any llama-server it spawned. Windows uses taskkill /T instead.
+      // any llama-server it spawned. Windows owns the tree instead (below).
       detached: process.platform !== 'win32',
       env,
     })
+    // Taken now, while the child has started nothing: a kill later cannot miss
+    // the llama-server it spawns (engine/processTree.ts).
+    const tree = ownProcessTree(child.pid)
     // The claim on the GPU: readers (lazy engine, dashboard, widget) wait on
     // it instead of killing this child's llama-server (F182). Cleared in the
     // finally below on every exit path, including the timeout kill.
@@ -191,7 +195,7 @@ export class TaskRunner {
     if (poll !== null) clearInterval(poll)
 
     if (ended !== 'exit') {
-      await this.killTree(child, exited)
+      await this.killTree(child, exited, tree)
       if (ended === 'pause') {
         const elapsedMs = Date.now() - started
         console.log(`[task:${input.triggerId}] paused on request after ${Math.round(elapsedMs / 60000)} min${sessionId ? ` (journal ${sessionId})` : ' (no journal announced yet — it will restart)'}`)
@@ -207,6 +211,7 @@ export class TaskRunner {
     }
     return outcome
     } finally {
+      tree.release()
       endActivity()
       try {
         clearGpuBusy(busyPath)
@@ -216,18 +221,14 @@ export class TaskRunner {
     }
   }
 
-  /** Kill bun and the llama-server it spawned (taskkill /T on Windows, the process group elsewhere). */
-  private async killTree(child: ReturnType<typeof spawn>, exited: Promise<number | null>): Promise<void> {
+  /** Kill bun and the llama-server it spawned (the owned tree on Windows, the process group elsewhere). */
+  private async killTree(child: ReturnType<typeof spawn>, exited: Promise<number | null>, tree: OwnedTree): Promise<void> {
     {
       if (process.platform === 'win32') {
-        // taskkill /T must run while the tree is alive; skip if the child
-        // exited during the race window (avoids a noisy taskkill ERROR).
-        if (child.pid && child.exitCode === null) {
-          try {
-            const { execSync } = require('child_process')
-            execSync(`taskkill /F /T /PID ${child.pid}`, { timeout: 5000, stdio: 'ignore' })
-          } catch {}
-        }
+        // A tree found at kill time must be walked while its root is alive;
+        // skip if the child exited during the race window (avoids a noisy
+        // taskkill ERROR). A Job Object needs no such care.
+        if (tree.kind === 'job' || (child.pid && child.exitCode === null)) await tree.kill()
         try { child.kill() } catch {}
       } else {
         // Kill the whole process group (bun → llama-server); escalate to
