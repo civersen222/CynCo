@@ -16,18 +16,36 @@
 //   bun scripts/cynco-apps.mjs give-back
 //       Start again what is owed (for a teardown that ended in the hand kill,
 //       where the engine could not do it on its way out).
+//   bun scripts/cynco-apps.mjs start <id>
+//       Start one of the owner's apps from the "start" section of its entry in
+//       ~/.cynco/apps.json, open it, and stay until the window is closed
+//       (engine/apps/desk.ts). What a Desktop icon runs, through
+//       scripts/cynco-app.cmd. Exits 1, having said why, when the app could not
+//       be started.
+//   bun scripts/cynco-apps.mjs icons [--repo DIR] [--desktop DIR]
+//       Create or refresh one Desktop shortcut per app that has a "start"
+//       section. --repo is the checkout the icons run the launcher from
+//       (default: this one).
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 async function realDeps() {
-  const [{ identifyPortHolder }, { displaceApp }, gpu, { freeOllamaForCynco }] = await Promise.all([
+  const [{ identifyPortHolder }, { displaceApp }, gpu, { freeOllamaForCynco }, desk] = await Promise.all([
     import('../engine/apps/identify.js'), import('../engine/apps/displace.js'), import('../engine/apps/gpu.js'), import('../engine/apps/ollama.js'),
+    import('../engine/apps/desk.js'),
   ])
   return {
     identify: (port) => identifyPortHolder(port),
     displace: (holder, ctx) => displaceApp(holder, { ...ctx, kill: (pid) => gpu.stopProcess(pid) }),
     giveBack: (say) => gpu.giveGpuBack(say),
     freeOllama: (ctx) => freeOllamaForCynco(ctx),
+    start: async (id, print) => {
+      // Closing the window (SIGHUP), Ctrl+C and Ctrl+Break all mean the same: stop what this window started.
+      const closed = new AbortController()
+      for (const signal of ['SIGHUP', 'SIGINT', 'SIGBREAK', 'SIGTERM']) process.on(signal, () => closed.abort())
+      return (await desk.startFromDesk(id, { print, signal: closed.signal })).code
+    },
+    icons: (opts) => desk.createIcons(opts),
     print: (line) => console.log(line),
   }
 }
@@ -61,7 +79,29 @@ export async function runAppsCli(argv, deps, env = process.env) {
     await deps.giveBack(say)
     return 0
   }
-  deps.print('usage: bun scripts/cynco-apps.mjs take --by "<who>" [--port N] | give-back')
+  if (command === 'start') {
+    const id = argv[1]
+    if (!id || id.startsWith('--')) {
+      deps.print('usage: bun scripts/cynco-apps.mjs start <app id>')
+      return 2
+    }
+    try {
+      return await deps.start(id, deps.print)
+    } catch (e) {
+      deps.print(`${id} could not be started: ${e instanceof Error ? e.message : String(e)}`)
+      return 1
+    }
+  }
+  if (command === 'icons') {
+    try {
+      await deps.icons({ repo: resolve(flag(argv, '--repo') ?? resolve(import.meta.dirname, '..')), desktop: flag(argv, '--desktop'), print: deps.print })
+      return 0
+    } catch (e) {
+      deps.print(`the icons could not be created: ${e instanceof Error ? e.message : String(e)}`)
+      return 1
+    }
+  }
+  deps.print('usage: bun scripts/cynco-apps.mjs take --by "<who>" [--port N] | give-back | start <app id> | icons [--repo DIR] [--desktop DIR]')
   return 2
 }
 

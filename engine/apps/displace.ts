@@ -20,6 +20,7 @@ import { execFile, spawn } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import { basename, join } from 'path'
 import { cyncoHome } from '../paths.js'
+import { throughGitBash } from './gitBash.js'
 import { writeJsonAtomic, type AppLaunch, type LocalApp } from './registry.js'
 import { listProcesses as readProcessList, type ListedProc, type Proc } from './portTree.js'
 
@@ -41,6 +42,17 @@ export function readDisplaced(file: string = displacedFile(), log: (line: string
     log(`[apps] ${file} could not be read (${e instanceof Error ? e.message : String(e)}); nothing is owed until it is fixed`)
     return []
   }
+}
+
+/**
+ * Drop what is owed to one app, because something else has taken over starting its server again
+ * (the desk launcher's window, `desk.ts`). True when there was a debt.
+ */
+export function forgetDebt(appId: string, file: string = displacedFile(), log: (line: string) => void = console.log): boolean {
+  const owed = readDisplaced(file, log)
+  if (!owed.some(d => d.appId === appId)) return false
+  writeJsonAtomic(file, owed.filter(d => d.appId !== appId))
+  return true
 }
 
 const norm = (s: string): string => s.replace(/\\/g, '/').toLowerCase()
@@ -198,8 +210,12 @@ export function windowsCommandLine(exe: string, args: string[]): string {
  * Start a process that is not the engine's child. On Windows through
  * `Win32_Process.Create`: the WMI service creates it, so it is in nobody's job
  * and outlives the engine. Elsewhere a detached spawn. Resolves to its pid.
+ * A bash script goes through Git's wrapper bash, whatever the entry names (F222);
+ * with no Git Bash on the PC the start is refused, and the caller says so.
  */
-export function launchOutsideJob(launch: AppLaunch): Promise<number | null> {
+export function launchOutsideJob(asRecorded: AppLaunch): Promise<number | null> {
+  let launch: AppLaunch
+  try { launch = throughGitBash(asRecorded) } catch (e) { return Promise.reject(e) }
   if (process.platform !== 'win32') {
     return new Promise((resolve, reject) => {
       const child = spawn(launch.exe, launch.args, { cwd: launch.cwd, detached: true, stdio: 'ignore' })

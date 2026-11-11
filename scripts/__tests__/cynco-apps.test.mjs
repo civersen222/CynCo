@@ -90,3 +90,46 @@ describe('the mission path uses it', () => {
     expect(driver).toMatch(/cynco-apps\.mjs', 'give-back'/)
   })
 })
+
+// The Desktop icons (docs/decisions/2026-11-11-local-llm-apps.md, decision 7): one launcher, one shortcut per app.
+describe('cynco-apps start', () => {
+  it('starts the app the icon names and exits with what the launcher says', async () => {
+    const started = []
+    const out = []
+    const deps = { start: async (id, print) => { started.push(id); print('dndai is running.'); return 0 }, print: (l) => out.push(l) }
+    expect(await runAppsCli(['start', 'dndai'], deps)).toBe(0)
+    expect(started).toEqual(['dndai'])
+    expect(out).toEqual(['dndai is running.'])
+    expect(await runAppsCli(['start', 'dndai'], { ...deps, start: async () => 1 })).toBe(1)
+  })
+
+  it('a launcher that throws is a reason on the screen and exit 1, so the icon\'s window stays open', async () => {
+    const out = []
+    expect(await runAppsCli(['start', 'dndai'], { start: async () => { throw new Error('apps.json is not readable') }, print: (l) => out.push(l) })).toBe(1)
+    expect(out.join('\n')).toBe('dndai could not be started: apps.json is not readable')
+  })
+
+  it('no app named is a usage error', async () => {
+    const out = []
+    expect(await runAppsCli(['start'], { print: (l) => out.push(l) })).toBe(2)
+    expect(out.join('\n')).toContain('start <app id>')
+  })
+})
+
+describe('cynco-apps icons', () => {
+  it('makes the icons for the checkout it is told, and by default for the one it runs in', async () => {
+    const asked = []
+    const deps = { icons: async (opts) => { asked.push({ repo: opts.repo, desktop: opts.desktop }); return [] }, print: () => {} }
+    expect(await runAppsCli(['icons', '--repo', process.cwd(), '--desktop', 'D:/Desk'], deps)).toBe(0)
+    expect(await runAppsCli(['icons'], deps)).toBe(0)
+    expect(asked[0]).toEqual({ repo: process.cwd(), desktop: 'D:/Desk' })
+    // scripts/.. is the checkout, and the launcher the icons run is in it.
+    expect(readFileSync(`${asked[1].repo}/scripts/cynco-app.cmd`, 'utf-8')).toContain('call bun scripts\\cynco-apps.mjs start %*')
+  })
+
+  it('a failure is said and is exit 1', async () => {
+    const out = []
+    expect(await runAppsCli(['icons'], { icons: async () => { throw new Error('the Desktop folder could not be found') }, print: (l) => out.push(l) })).toBe(1)
+    expect(out.join('\n')).toBe('the icons could not be created: the Desktop folder could not be found')
+  })
+})
