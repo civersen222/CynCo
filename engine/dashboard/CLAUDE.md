@@ -16,7 +16,7 @@ The governance dashboard: one Bun server on the bridge port + 1 (`server.ts`) th
 - **`readMissionsView`** (`missionsApi.ts:158`) — `GET /api/missions`: per mission its triggers with effective cadence in words, `enabled`, `overridden`, `nextFire` (a computed preview with `nextFirePreview: true` until the daemon has seen the new cadence), `lastRun` (newest `runs.jsonl` record per trigger, `kind` from `runKind`), the GPU claim from `gpu-busy.json`, and `scheduleStatus` (`ok`/`absent`/`bad` from `readSchedule`; on `bad` the page shows a warning and locks that card).
 - **`patchTrigger`** (`missionsApi.ts:179`) — `PUT /api/missions/<id>/triggers/<tid>`: validates the body (cron must parse and fire within four years, `at` is `HH:MM`, `timeoutMs` 60 000 to 7 200 000), merges it into `schedule.json` atomically (a body naming any cadence field first drops the old override's cadence fields, keeping `enabled` and `timeoutMs`); `{ "reset": true }` removes the override; 409 and no write while `schedule.json` is unreadable.
 - **`setPaused`** (`missionsApi.ts:216`) — `POST /api/daemon/pause`: `writeControl` with `by: 'dashboard'`.
-- **`DashboardServer.handleMissions`** (`server.ts:1310`) — the three routes' handler.
+- **`DashboardServer.handleMissions`** (`server.ts:1316`) — the three routes' handler.
 
 ## Data flow
 1. The Missions tab polls `GET /api/missions` every 10 s while visible. A save sends `PUT`, which returns the trigger as `GET` would show it.
@@ -24,7 +24,7 @@ The governance dashboard: one Bun server on the bridge port + 1 (`server.ts`) th
 3. Pause and Resume write `daemon-control.json`; the daemon and the desk widget read the same file.
 
 ## Gotchas
-- The three mission routes gate at the `inference` scope for every method, before the generic method-based split in `server.ts` (the comment at `server.ts:676`). They are operational switches, not configuration: a paired phone and the desk page hold only the inference token. `scopes.test.ts` pins both rules.
+- The three mission routes gate at the `inference` scope for every method, before the generic method-based split in `server.ts` (the comment at `server.ts:682`). They are operational switches, not configuration: a paired phone and the desk page hold only the inference token. `scopes.test.ts` pins both rules.
 - `missionsApi.ts` never writes `mission.json` or `state.json`, and `nextFire` shown for a disabled trigger is the daemon's advancing value; the page shows "off" instead.
 - The dashboard is the long-running "CynCo headless engine" Task Scheduler job, not a per-pass process: after a change to `server.ts` or `missionsApi.ts`, restart that job (`cynco-services.ps1`) or the old code keeps serving.
 - No empty `catch` blocks (`engine/__tests__/guards/emptyCatch.test.ts` ratchet): `missionsApi.ts` returns a value or logs.

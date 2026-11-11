@@ -31,7 +31,8 @@ is disabled, not deleted; re-enable it and point `CYNCO_NTFY_URL` back at it to 
    `cynco-commands` automatically — the daemon hears them over its outbound SSE connection.
 4. The same topic carries "CynCo needs your approval" / "CynCo has a question" when the phone
    engine waits on you with nobody connected (`engine/daemon/CLAUDE.md`, "Tell the phone when the
-   engine waits"). Open the dashboard to answer; the notification itself has no buttons.
+   engine waits"). Tap it to open the dashboard and answer there (it carries the link once the phone has
+   opened the dashboard since the engine started); the notification itself has no buttons.
 
 ## 3. MFL credentials (optional but recommended)
 

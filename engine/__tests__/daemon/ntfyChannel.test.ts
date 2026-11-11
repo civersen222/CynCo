@@ -65,6 +65,14 @@ describe('NtfyChannel', () => {
     expect(mock.captured[0].auth).toBe('Bearer tk_secret')
   })
 
+  it('a click address reaches ntfy as the tap target of the notification', async () => {
+    const mock = await startMockNtfy()
+    cleanup = mock.close
+    const ch = new NtfyChannel({ baseUrl: mock.url, alertTopic: 'cynco-alerts', commandTopic: 'cynco-commands' })
+    expect(await ch.publish({ title: 'Hi', message: 'Hello', click: 'http://100.64.0.9:9161/' })).toBe(true)
+    expect(mock.captured[0].body.click).toBe('http://100.64.0.9:9161/')
+  })
+
   it('attaches approve/reject http actions that POST to the command topic', async () => {
     const mock = await startMockNtfy()
     cleanup = mock.close

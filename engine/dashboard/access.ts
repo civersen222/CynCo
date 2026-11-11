@@ -241,6 +241,17 @@ export function originMismatch(origin: string | null | undefined, host: string |
   return `origin ${o.host} does not match host ${expected}`
 }
 
+/**
+ * The page address inside a browser's Origin header (`scheme://host:port`), or null when there is
+ * none to go back to: no header (not a browser), an opaque origin, or a scheme that is not a page.
+ */
+export function pageOrigin(origin: string | null | undefined): string | null {
+  if (!origin) return null
+  let o: URL
+  try { o = new URL(origin) } catch { return null }
+  return o.protocol === 'http:' || o.protocol === 'https:' ? o.origin : null
+}
+
 // ---------------------------------------------------------------------------
 // The device token in the browser, and the pairing page
 // ---------------------------------------------------------------------------
