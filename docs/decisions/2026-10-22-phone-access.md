@@ -127,4 +127,31 @@ from the desk via the Tailscale address (pair, prompt, stream, Stop, revoke). Th
 phone, Windows Firewall for `bun.exe` on the Tailscale interface, and iOS/Android keyboard
 behaviour are manual checks that remain.
 
+**Amendment 2026-11-11: device hygiene.** Three of the items under "Not covered" are now built
+(`engine/security/localToken.ts`, `engine/dashboard/server.ts`; guards: `deviceTokens.test.ts`,
+`phoneAccess.test.ts` "device hygiene").
+
+- *Last seen.* A device record carries `lastSeenAt`: set when it pairs, moved by every request and
+  socket frame that authenticates with its secret. Memory is exact; the file's copy is refreshed
+  at most once an hour per device, because `tokens.json` is written whole, with an `icacls` spawn
+  on Windows, and a read route must not become that per request. That hourly write re-reads the
+  file and changes only the `lastSeenAt` of records already in it, so it cannot drop a device a
+  second process paired since this one loaded the file. Pairing and revoking still write the list
+  this process holds.
+- *Expiry.* Idle, 30 days, a constant (`DEVICE_IDLE_EXPIRY_MS`). A device nothing has arrived from
+  for that long is removed and is unknown from then on (401; its page returns to `/pair`). Checked
+  where a token is looked up and when the desk opens the panel, so an idle device does not wait
+  for its own return. Rejected: an absolute lifetime from pairing (it would log out the phone in
+  daily use on a calendar, for no gain over idle expiry against the case that matters, a device
+  nobody holds any more); an environment variable (re-pairing costs one code at the desk, and a
+  second way to set how long a credential lives is one more thing to get wrong). A record paired
+  before this amendment has no `lastSeenAt` and counts from the day it paired until it is next
+  seen. Cost if 30 days is wrong: an owner away for a month who never opened the page must pair
+  again at the desk.
+- *Revoke all.* `POST /api/phone/revoke-all` (management, so desk-only): every device record
+  removed, every device socket closed with 4001, and the pairing code rotated.
+- *Tailnet ACL.* A note, not code: README "Phone access" carries a policy sketch that limits the
+  dashboard port to the owner's devices and the doorman's wake probe. The owner applies it in the
+  Tailscale admin console; nothing in the engine depends on it.
+
 **Amendment 2026-11-08.** `GET /api/missions`, `PUT /api/missions/<id>/triggers/<tid>` and `POST /api/daemon/pause` are inference-scoped, so a paired phone and the desk page can read and change mission schedules and pause the daemon. They are operational switches, not engine configuration; the reasoning and the limits are in `2026-11-08-mission-schedule-control.md`. The management-scope rule for configuration above is unchanged.
