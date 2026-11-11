@@ -146,7 +146,7 @@ export function discoverApp(tree: PortTree, deps: DiscoverDeps): LocalApp | null
   }
 }
 
-const SKIP_HOME_CHILDREN = /^(\.|AppData$|Application Data$|NTUSER|ntuser|OneDrive|Documents$|Downloads$|Desktop$|Pictures$|Music$|Videos$|Links$|Favorites$|Contacts$|Searches$|Saved Games$|3D Objects$)/
+const SKIP_HOME_CHILDREN = /^(\.|_|AppData$|Application Data$|Local Settings$|My Documents$|NetHood$|PrintHood$|Recent$|SendTo$|Start Menu$|Templates$|Cookies$|NTUSER|ntuser|OneDrive|Documents$|Downloads$|Desktop$|Pictures$|Music$|Videos$|Links$|Favorites$|Contacts$|Searches$|Saved Games$|3D Objects$|Temp$|node_modules$|bin$)/
 
 /** Where the owner's projects live: the folders directly under the home folder and under `CYNCO-PROJECTS`. */
 export function projectDirs(home: string = homedir()): string[] {
