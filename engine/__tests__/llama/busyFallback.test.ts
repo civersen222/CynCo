@@ -123,3 +123,32 @@ describe('BusyFallbackProvider', () => {
     expect('processManager' in r.p).toBe(true)
   })
 })
+
+// F205: Stop pressed while a one-shot holds the GPU and the fallback box is down. Every call after it
+// still asked the box whether it was up and sat out the 2 s health timeout: 6.2 s from Stop to the
+// turn's end on the live engine, and more with a longer history.
+describe('BusyFallbackProvider and a stopped turn', () => {
+  const stopped = () => { const ac = new AbortController(); ac.abort(); return ac.signal }
+
+  it('a token count for a stopped turn is the heuristic at once: neither box is asked', async () => {
+    const r = rig({ healthy: false })
+    expect(await r.p.countTokens!('x'.repeat(40), stopped())).toBe(10)
+    expect(r.healthAsked()).toBe(0)
+  })
+
+  it('a request for a stopped turn ends with the abort error at once, for stream and for complete', async () => {
+    const r = rig({ healthy: false })
+    const signal = stopped()
+    await expect((async () => { for await (const _ of r.p.stream({ ...req, signal })) { /* drain */ } })()).rejects.toHaveProperty('name', 'AbortError')
+    await expect(r.p.complete({ ...req, signal })).rejects.toHaveProperty('name', 'AbortError')
+    expect(r.healthAsked()).toBe(0)
+    expect(r.primary.calls).toEqual([])
+    expect(r.fallback.calls).toEqual([])
+  })
+
+  it('a turn that is not stopped is routed as before', async () => {
+    const r = rig({ healthy: false })
+    expect(await r.p.countTokens!('abc', new AbortController().signal)).toBe(300)
+    expect(r.healthAsked()).toBe(1)
+  })
+})

@@ -23,6 +23,7 @@
 import type { CompletionRequest, ModelCapabilities, ModelInfo, Provider } from '../provider.js'
 import type { CompletionResponse, StreamEvent } from '../types.js'
 import type { GpuBusy } from '../daemon/gpuBusyFile.js'
+import { abortError } from './processManager.js'
 
 export type FallbackSettings = { url: string | null; model: string }
 
@@ -94,17 +95,22 @@ export class BusyFallbackProvider implements Provider {
     return { ...request, model: this.deps.fallbackModel }
   }
 
+  // A stopped turn is not routed (F205): `route` asks the fallback box for health and waits up to
+  // HEALTH_TIMEOUT_MS when it is down, once per call, and a turn makes one call per message it counts.
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
+    if (request.signal?.aborted) throw abortError(request.signal)
     const p = await this.route()
     return p === this.deps.fallback ? p.complete(this.forFallback(request)) : p.complete(request)
   }
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
+    if (request.signal?.aborted) throw abortError(request.signal)
     const p = await this.route()
     yield* p === this.deps.fallback ? p.stream(this.forFallback(request)) : p.stream(request)
   }
 
   async countTokens(text: string, signal?: AbortSignal): Promise<number> {
+    if (signal?.aborted) return Math.ceil(text.length / 4)
     const p = await this.route()
     if (p.countTokens) return p.countTokens(text, signal)
     return Math.ceil(text.length / 4)
