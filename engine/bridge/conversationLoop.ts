@@ -1472,7 +1472,7 @@ export class ConversationLoop {
    * (e.g. Ollama).
    */
   private async estimateContextTokens(): Promise<number> {
-    return estimateTokensAsync(this.messages as any, this.provider.countTokens?.bind(this.provider))
+    return estimateTokensAsync(this.messages as any, this.provider.countTokens ? (text: string) => this.provider.countTokens!(text, this.abortController?.signal) : undefined) // with the turn's signal: on a lazy engine the count waits for the model port (F204)
   }
 
   /**

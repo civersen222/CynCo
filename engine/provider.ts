@@ -84,7 +84,7 @@ export interface Provider {
   /** Return the currently loaded adapter ID, or null if none. */
   activeAdapter?(): string | null
   /** Count tokens for a text string using the backend's real tokenizer. Optional — falls back to chars/4 heuristic when absent. */
-  countTokens?(text: string): Promise<number>
+  countTokens?(text: string, signal?: AbortSignal): Promise<number>
 }
 
 // ─── Tier Derivation ─────────────────────────────────────────────

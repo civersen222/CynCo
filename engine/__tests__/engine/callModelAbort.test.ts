@@ -16,6 +16,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Provider, CompletionRequest } from '../../provider.js'
 import { localCallModel } from '../../engine/callModel.js'
+import { LlamaCppProvider } from '../../llama/provider.js'
+import { ProcessManager } from '../../llama/processManager.js'
+import { createLazyEnsureReady } from '../../llama/lazyLoad.js'
 
 const caps = { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true } as any
 const config = { baseUrl: 'http://localhost:11434', model: 'x', tier: 'auto', temperature: 0.7, maxOutputTokens: 8192, timeout: 120000 } as any
@@ -71,6 +74,41 @@ async function run(mode: 'before the first event' | 'mid-stream') {
 }
 
 describe('localCallModel and the turn abort signal', () => {
+  // F204: the call counts the context's tokens before it asks the model, and on a lazy engine that count
+  // waits for the model port too. The real provider, loader and process manager; a one-shot holds the GPU.
+  it('a Stop while the call still waits for the model port ends it: neither the token count nor the request holds the turn', async () => {
+    const pm = new ProcessManager({ binaryPath: '/bin/llama-server', modelPath: '/models/qwen.gguf', port: 8081 })
+    let starts = 0
+    ;(pm as any).startProcess = async () => { starts++ }
+    const busy = { task: 'fantasy-digest', triggerId: 'digest-espn', startedAt: new Date().toISOString(), timeoutMs: 600_000, pid: 7 }
+    const p = new LlamaCppProvider({
+      primaryUrl: 'http://127.0.0.1:8081', modelName: 'x', modelsDir: '/fake',
+      ensureReady: createLazyEnsureReady(pm, { readBusy: () => busy, maxWaitMs: 60_000, pollMs: 10_000 }),
+    })
+    const ac = new AbortController()
+    const gen = localCallModel({
+      messages: [{ type: 'message', role: 'user', content: [{ type: 'text', text: 'Hello' }] }] as any,
+      systemPrompt: ['You are a helpful assistant.'] as any,
+      thinkingConfig: { type: 'disabled' } as any,
+      tools: [] as any,
+      signal: ac.signal,
+      options: { model: 'x' } as any,
+      deps: { getProvider: () => p, loadConfig: () => config, resolveCapabilities: () => caps },
+    })
+    const yielded: any[] = []
+    let waitedOnThePort = false
+    setTimeout(() => { waitedOnThePort = pm.modelState() === 'waiting'; ac.abort() }, 60)
+    const outcome = await Promise.race([
+      (async () => { for await (const y of gen) yielded.push(y); return 'ended' })(),
+      new Promise<string>(r => setTimeout(() => r('still waiting for the model port'), 1500)),
+    ])
+    expect(outcome).toBe('ended')
+    expect(waitedOnThePort).toBe(true)
+    expect(yielded.filter(y => y.type === 'system' && y.subtype === 'api_retry')).toEqual([])
+    expect(starts).toBe(0)
+    expect(pm.modelState()).toBe('cold')
+  })
+
   for (const mode of ['before the first event', 'mid-stream'] as const) {
     it(`a Stop ${mode} ends the call: the provider holds the signal, nothing is retried, nothing is thrown`, async () => {
       const { yielded, seen, ms, signal } = await run(mode)

@@ -279,6 +279,16 @@ export type LazyWaitDeps = {
   now?: () => number
   sleep?: (ms: number) => Promise<void>
   onWaiting?: (info: { reason: string; remainingMs: number | null }) => void
+  /** Aborted when nobody is asking for the model any more (Stop): the wait ends and nothing is spawned. A load already started is not interrupted. */
+  signal?: AbortSignal
+}
+
+/**
+ * What a cancelled wait rejects with: the signal's own reason when it is an error, as `fetch` does, so a
+ * Stop looks the same to the caller whether it lands on the wait for the port or on the request (F204).
+ */
+export function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted.', 'AbortError')
 }
 
 export type ProcessManagerConfig = {
@@ -395,7 +405,19 @@ export class ProcessManager {
     if (this.isRunning()) return
     const pollMs = deps.pollMs ?? 5_000
     const now = deps.now ?? (() => Date.now())
-    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+    // The default sleep ends early when the wait is cancelled; the loop's next check then throws.
+    const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(resolve => {
+      if (deps.signal?.aborted) { resolve(); return }
+      const done = () => { clearTimeout(timer); deps.signal?.removeEventListener('abort', done); resolve() }
+      const timer = setTimeout(done, ms)
+      deps.signal?.addEventListener('abort', done, { once: true })
+    }))
+    // F204: asked before every poll and before every spawn, so a stopped turn neither waits on nor loads a model.
+    const stopIfAborted = () => {
+      if (!deps.signal?.aborted) return
+      console.log('[llama-cpp] stopped waiting for the model port: the request was stopped')
+      throw abortError(deps.signal)
+    }
     const started = now()
     const isHealthy = deps.isHealthy ?? (() => this.portAnswersHealth())
     const whoseServer = deps.portOwner ?? (() => portOwner(this.port))
@@ -410,9 +432,11 @@ export class ProcessManager {
       const key = `${reason}|${remainingMs === null ? '-' : Math.ceil(remainingMs / 60_000)}`
       if (key === lastNoticeKey) return
       lastNoticeKey = key
+      console.log(`[llama-cpp] waiting for the model port: ${reason}${remainingMs === null ? '' : `, about ${Math.ceil(remainingMs / 60_000)} min left`}`)
       deps.onWaiting?.({ reason, remainingMs })
     }
     const spawn = async () => {
+      stopIfAborted()
       this.lazyPhase = 'loading'
       // A crash may have scheduled its own restart; one spawn, not two (review #5).
       if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null }
@@ -420,6 +444,7 @@ export class ProcessManager {
     }
     try {
       for (;;) {
+        stopIfAborted()
         const busy = deps.readBusy()
         if (busy) {
           lastTrigger = busy.triggerId

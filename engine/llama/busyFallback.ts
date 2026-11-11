@@ -104,9 +104,9 @@ export class BusyFallbackProvider implements Provider {
     yield* p === this.deps.fallback ? p.stream(this.forFallback(request)) : p.stream(request)
   }
 
-  async countTokens(text: string): Promise<number> {
+  async countTokens(text: string, signal?: AbortSignal): Promise<number> {
     const p = await this.route()
-    if (p.countTokens) return p.countTokens(text)
+    if (p.countTokens) return p.countTokens(text, signal)
     return Math.ceil(text.length / 4)
   }
 

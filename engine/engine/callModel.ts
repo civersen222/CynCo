@@ -303,7 +303,7 @@ export async function* localCallModel({
 
   // 3b. Pre-turn context check
   const { checkContextBeforeTurn } = await import('../hooks/contextCheck.js')
-  const contextCheck = await checkContextBeforeTurn(messages as any, config, provider.countTokens?.bind(provider))
+  const contextCheck = await checkContextBeforeTurn(messages as any, config, provider.countTokens ? (text: string) => provider.countTokens!(text, signal) : undefined) // with the turn's signal: on a lazy engine the count waits for the model port too (F204)
 
   if (contextCheck.budget.status === 'exceeded') {
     yield {
