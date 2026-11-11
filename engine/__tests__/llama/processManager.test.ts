@@ -829,4 +829,59 @@ describe('ProcessManager.ensureRunningLazy', () => {
     expect(seen).toEqual(['waiting', 'loading'])
     expect(pm.modelState()).toBe('warm')
   })
+
+  // F204: Stop was forwarded and nothing ended, because the wait took no signal.
+  it('stops waiting when its signal aborts and never spawns: a stopped turn loads no model', async () => {
+    const { pm, calls } = lazyPm()
+    const ac = new AbortController()
+    let t = 1_000_000, polls = 0
+    const p = pm.ensureRunningLazy(deps({
+      readBusy: () => busyInfo, signal: ac.signal,
+      now: () => t, sleep: async (ms) => { t += ms; if (++polls === 2) ac.abort() },
+    }))
+    await expect(p).rejects.toHaveProperty('name', 'AbortError')
+    expect(polls).toBe(2)
+    expect(calls.start).toBe(0)
+    expect(pm.modelState()).toBe('cold')
+  })
+
+  it('ends inside the poll sleep, not after it', async () => {
+    const { pm, calls } = lazyPm()
+    const ac = new AbortController()
+    const began = Date.now()
+    const p = pm.ensureRunningLazy(deps({ readBusy: () => busyInfo, signal: ac.signal, pollMs: 30_000, now: undefined, sleep: undefined }))
+    setTimeout(() => ac.abort(), 20)
+    await expect(p).rejects.toHaveProperty('name', 'AbortError')
+    expect(Date.now() - began).toBeLessThan(2_000)
+    expect(calls.start).toBe(0)
+  })
+
+  it('does not spawn on a port that came free after the signal aborted', async () => {
+    const { pm, calls } = lazyPm()
+    const ac = new AbortController()
+    let busy = true
+    const p = pm.ensureRunningLazy(deps({
+      readBusy: () => (busy ? busyInfo : null), signal: ac.signal,
+      sleep: async () => { busy = false; ac.abort() },
+    }))
+    await expect(p).rejects.toHaveProperty('name', 'AbortError')
+    expect(calls.start).toBe(0)
+  })
+
+  it('says in the engine log what it waits for, once per state, and that it stopped waiting', async () => {
+    const { pm } = lazyPm()
+    const ac = new AbortController()
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: unknown[]) => { lines.push(a.join(' ')) }
+    try {
+      let t = 1_000_000, polls = 0
+      await pm.ensureRunningLazy(deps({
+        readBusy: () => busyInfo, signal: ac.signal,
+        now: () => t, sleep: async (ms) => { t += ms; if (++polls === 3) ac.abort() },
+      })).catch(() => {})
+    } finally { console.log = orig }
+    expect(lines.filter(l => l.includes('waiting for the model port') && l.includes('digest-espn') && !l.includes('stopped'))).toHaveLength(1)
+    expect(lines.filter(l => l.includes('stopped waiting for the model port'))).toHaveLength(1)
+  })
 })

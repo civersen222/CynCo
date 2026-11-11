@@ -189,7 +189,7 @@ export async function bootstrapProvider(
       // Default: today's eager start.
       const { lazySettings, createLazyEnsureReady, IdleUnloader } = await import('./llama/lazyLoad.js')
       const lazy = lazySettings()
-      let ensureReady: (() => Promise<void>) | undefined
+      let ensureReady: ((signal?: AbortSignal) => Promise<void>) | undefined
       if (lazy.lazy) {
         const { readGpuBusy } = await import('./daemon/gpuBusyFile.js')
         ensureReady = createLazyEnsureReady(processManager, {

@@ -23,7 +23,7 @@
  */
 import type { ActivityRegistry } from '../power/activity.js'
 import type { GpuBusy } from '../daemon/gpuBusyFile.js'
-import type { LazyWaitDeps, ProcessManager } from './processManager.js'
+import { abortError, type LazyWaitDeps, type ProcessManager } from './processManager.js'
 
 export type LazySettings = { lazy: boolean; idleUnloadMs: number; lazyWaitMs: number }
 
@@ -49,24 +49,69 @@ export type LazyEnsureReadyOpts = {
   pollMs?: number
 }
 
-/** One in-flight load at a time; callers that arrive during it share the promise. */
+/**
+ * One in-flight load at a time; callers that arrive during it share it. A caller that passes its
+ * request's signal leaves the moment that signal aborts (Stop), rejecting as an aborted fetch would.
+ * When the last caller has left, the wait itself is cancelled, so a port that frees later loads no
+ * model nobody asked for; a load that has already started runs to its end (F204). A caller with no
+ * signal never leaves, and so keeps the wait alive.
+ */
 export function createLazyEnsureReady(
   pm: Pick<ProcessManager, 'ensureRunningLazy' | 'isPortOccupied'>,
   opts: LazyEnsureReadyOpts,
-): () => Promise<void> {
-  let inflight: Promise<void> | null = null
-  return () => {
+): (signal?: AbortSignal) => Promise<void> {
+  type Load = { done: Promise<void>; cancel: AbortController; callers: number }
+  let inflight: Load | null = null
+  const ready = (signal?: AbortSignal): Promise<void> => {
+    if (signal?.aborted) return Promise.reject(abortError(signal))
+    // A load that was cancelled is on its way out (or, already spawning, on its way to done): a new
+    // request waits for it to settle and then asks afresh, never inheriting somebody else's Stop.
+    if (inflight?.cancel.signal.aborted) {
+      return untilAborted(inflight.done.then(() => {}, () => {}), signal).then(() => ready(signal))
+    }
     if (!inflight) {
-      inflight = pm.ensureRunningLazy({
+      const cancel = new AbortController()
+      const mine: Load = { cancel, callers: 0, done: Promise.resolve() }
+      mine.done = pm.ensureRunningLazy({
         readBusy: opts.readBusy,
         isPortOccupied: () => pm.isPortOccupied(),
         maxWaitMs: opts.maxWaitMs,
+        signal: cancel.signal,
         ...(opts.pollMs !== undefined ? { pollMs: opts.pollMs } : {}),
         ...(opts.onWaiting ? { onWaiting: opts.onWaiting } : {}),
-      }).finally(() => { inflight = null })
+      }).finally(() => { if (inflight === mine) inflight = null })
+      // Every caller may have left by the time it settles; each caller's own promise carries the failure.
+      mine.done.catch(() => {})
+      inflight = mine
     }
-    return inflight
+    const load = inflight
+    load.callers++
+    return untilAborted(load.done, signal, stopped => {
+      load.callers--
+      if (stopped && load.callers === 0) load.cancel.abort()
+    })
   }
+  return ready
+}
+
+/**
+ * `p`, or the caller's abort error the moment its signal aborts. `onLeave` runs once, when the caller
+ * stops waiting: `stopped` says it left on its signal, before `p` settled.
+ */
+function untilAborted(p: Promise<void>, signal: AbortSignal | undefined, onLeave: (stopped: boolean) => void = () => {}): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let left = false
+    const leave = (stopped: boolean): boolean => {
+      if (left) return false
+      left = true
+      signal?.removeEventListener('abort', onAbort)
+      onLeave(stopped)
+      return true
+    }
+    const onAbort = () => { if (leave(true)) reject(abortError(signal!)) }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    p.then(() => { if (leave(false)) resolve() }, e => { if (leave(false)) reject(e) })
+  })
 }
 
 export type IdleUnloaderDeps = {

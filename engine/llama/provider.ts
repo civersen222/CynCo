@@ -31,7 +31,7 @@ export type LlamaCppProviderConfig = {
   adaptersDir?: string
   processManager?: ProcessManager
   /** Lazy load (LOCALCODE_LLAMA_LAZY): awaited before every request; undefined = the server is up from boot. */
-  ensureReady?: () => Promise<void>
+  ensureReady?: (signal?: AbortSignal) => Promise<void>
   /** Where in-flight requests register as activity (idle unload, hold-awake). Default: the process-wide registry. */
   activity?: ActivityRegistry
   /** Ask for per-token top-8 logprobs (Brain tier-1 trace). Default true; the
@@ -61,7 +61,7 @@ export class LlamaCppProvider implements Provider {
   private readonly uncertaintyTrace: boolean
   /** Set when this server refuses tool_choice 'required'; later calls send 'auto'. */
   private toolChoiceUnsupported = false
-  private readonly ensureReady: (() => Promise<void>) | undefined
+  private readonly ensureReady: ((signal?: AbortSignal) => Promise<void>) | undefined
   private readonly activity: ActivityRegistry
 
   constructor(config: LlamaCppProviderConfig & { tokenCacheBound?: number }) {
@@ -137,7 +137,7 @@ export class LlamaCppProvider implements Provider {
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     const end = this.activity.begin('request', 'complete')
     try {
-      if (this.ensureReady) await this.ensureReady()
+      if (this.ensureReady) await this.ensureReady(request.signal)
       const body = this.buildRequestBody(request, false)
       const resp = await fetch(this.getCompletionsUrl(), {
         method: 'POST',
@@ -155,7 +155,7 @@ export class LlamaCppProvider implements Provider {
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
     const end = this.activity.begin('request', 'stream')
     try {
-      if (this.ensureReady) await this.ensureReady()
+      if (this.ensureReady) await this.ensureReady(request.signal)
       yield* this.streamBody(request)
     } finally {
       end()
@@ -314,12 +314,20 @@ export class LlamaCppProvider implements Provider {
    * heuristic and does NOT cache the fallback so a transient hiccup doesn't
    * poison future calls.
    */
-  async countTokens(text: string): Promise<number> {
+  async countTokens(text: string, signal?: AbortSignal): Promise<number> {
     if (text.length === 0) return 0
 
     const cached = this.tokenCache.get(text)
     if (cached !== undefined) return cached
-    if (this.ensureReady) await this.ensureReady()
+    if (this.ensureReady) {
+      // Every model call counts its context first, so on a lazy engine this is where a turn meets the
+      // wait for the model port. A Stop ends it with the heuristic, uncached; the caller's next step
+      // sees the same signal (F204).
+      try { await this.ensureReady(signal) } catch (e) {
+        if (signal?.aborted) return Math.ceil(text.length / 4)
+        throw e
+      }
+    }
 
     try {
       const resp = await fetch(`${this.getBaseUrl()}/tokenize`, {
