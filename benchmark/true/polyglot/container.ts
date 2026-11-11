@@ -15,11 +15,32 @@ function docker(args: string[], timeoutMs?: number) {
   return spawnSync('docker', args, { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 })
 }
 
-/** Build the polyglot-bench image if it doesn't exist yet. */
-export function ensureImage(dockerfileDir: string): void {
-  if (docker(['image', 'inspect', IMAGE]).status === 0) return
+/** The image build was killed at the bound its caller gave it: the network it waits on, not the Dockerfile. */
+export class ImageBuildTimeout extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`docker build of ${IMAGE} did not finish in ${Math.round(timeoutMs / 1000)} s and was stopped`)
+    this.name = 'ImageBuildTimeout'
+  }
+}
+
+/**
+ * Build the polyglot-bench image if it doesn't exist yet.
+ *
+ * `buildTimeoutMs` bounds the build. The build fetches from the Ubuntu mirror,
+ * NodeSource and rustup, and `spawnSync` blocks the thread, so no deadline
+ * outside this call can end it: CI sat 2,469 s in one on 2026-11-10. A build
+ * that outlives the bound throws `ImageBuildTimeout`; one that fails throws a
+ * plain error, so a broken Dockerfile is never mistaken for a slow mirror. The
+ * benchmark's own run (`run.ts`) passes no bound: the owner starts that build
+ * and watches it. `run` is the spawn, for the tests.
+ */
+export function ensureImage(dockerfileDir: string, opts: { buildTimeoutMs?: number; run?: typeof spawnSync } = {}): void {
+  const run = opts.run ?? spawnSync
+  if (run('docker', ['image', 'inspect', IMAGE], { encoding: 'utf-8' }).status === 0) return
   console.log(`[polyglot] building ${IMAGE} image (one-time, several minutes)...`)
-  const res = spawnSync('docker', ['build', '-t', IMAGE, dockerfileDir], { stdio: 'inherit' })
+  const res = run('docker', ['build', '-t', IMAGE, dockerfileDir], { stdio: 'inherit', timeout: opts.buildTimeoutMs })
+  const timedOut = !!res.error && /ETIMEDOUT/.test(String((res.error as NodeJS.ErrnoException).code ?? res.error.message))
+  if (timedOut && opts.buildTimeoutMs !== undefined) throw new ImageBuildTimeout(opts.buildTimeoutMs)
   if (res.status !== 0) throw new Error(`docker build failed (exit ${res.status})`)
 }
 
