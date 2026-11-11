@@ -42,6 +42,11 @@ export type SubAgentOptions = {
     updateAgentTurn: (id: string, turn: number, tokens: number) => void
     handleAlgedonic: (id: string, signal: string) => void
   }
+  /**
+   * The turn that started this agent. When it aborts (Stop), the agent is
+   * killed: its model call is cancelled and its running tool is told (F209).
+   */
+  signal?: AbortSignal
 }
 
 // ─── SubAgent ───────────────────────────────────────────────────
@@ -55,6 +60,12 @@ export class SubAgent {
   private governance: CyberneticsGovernance
   private toolExecutor: ToolExecutor
   private aborted = false
+  /**
+   * Cancels this agent's model call and is handed to every tool it runs.
+   * `kill()` aborts it, so a kill takes effect inside a model call or a tool,
+   * not at the next stream event.
+   */
+  private abortController = new AbortController()
   private _status: SubAgentStatus
   private s2: SubAgentOptions['s2'] | null
 
@@ -87,6 +98,9 @@ export class SubAgent {
       tokensUsed: 0,
       startTime: Date.now(),
     }
+
+    if (opts.signal?.aborted) this.kill()
+    else opts.signal?.addEventListener('abort', () => this.kill(), { once: true })
   }
 
   get id(): string {
@@ -99,6 +113,7 @@ export class SubAgent {
 
   kill(): void {
     this.aborted = true
+    this.abortController.abort()
     this._status.state = 'killed'
     this._status.endTime = Date.now()
   }
@@ -191,8 +206,7 @@ export class SubAgent {
         loadConfig: () => agentConfig,
       }
 
-      // AbortController for this agent
-      const abortController = new AbortController()
+      const abortController = this.abortController
 
       // 7. Model loop (bounded by maxIterations)
       const maxIterations = this.config.policyConstraints.maxIterations
@@ -368,7 +382,7 @@ export class SubAgent {
           }
 
           const startTime = Date.now()
-          const result = await this.toolExecutor.execute(toolUse.name, toolUse.input)
+          const result = await this.toolExecutor.execute(toolUse.name, toolUse.input, abortController.signal)
           const latencyMs = Date.now() - startTime
 
           if (result.isError) {
@@ -455,8 +469,9 @@ export class SubAgent {
 
       return result
     } catch (err) {
-      // Handle unexpected errors
-      this._status.state = 'failed'
+      // A killed agent's model call ends by throwing the abort error: that is
+      // the kill arriving, not a failure of the agent.
+      this._status.state = this.aborted ? 'killed' : 'failed'
       this._status.endTime = Date.now()
 
       const errorOutput = err instanceof Error ? err.message : String(err)

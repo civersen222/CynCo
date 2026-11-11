@@ -953,6 +953,10 @@ export class ConversationLoop {
       // a tool result), and the loop ends at its next check.
       for (const [id, entry] of [...this.pendingApprovals]) { this.pendingApprovals.delete(id); entry.resolve(false) }
       globalAskBroker.cancelAll(reason)
+      // A background sub-agent holds the signal of the turn that started it,
+      // which has ended; Stop ends those too, or the GPU goes on generating
+      // for an agent nobody is waiting for (F209).
+      for (const agent of this.runningAgents.values()) agent.kill()
       // Don't null the controller — the model loop checks signal.aborted
       // Setting it to null makes the check `this.abortController?.signal.aborted`
       // return undefined instead of true, so the loop never stops.
@@ -1415,6 +1419,8 @@ export class ConversationLoop {
           emit: this.emit,
           cwd: this.executor['cwd'],
           model: this.config.model ?? 'unknown',
+          // Stop ends a scout with the turn that sent it (F209).
+          ...(this.abortController ? { signal: this.abortController.signal } : {}),
           s2: {
             updateAgentTurn: (id: string, turn: number, tokens: number) => {
               try { this.s2.updateAgentTurn(id, turn, tokens) } catch {}
@@ -5537,6 +5543,8 @@ export class ConversationLoop {
             emit: this.emit,
             cwd: this.executor['cwd'],
             model: this.config.model!,
+            // Stop ends a sub-agent with the turn that started it (F209).
+            ...(this.abortController ? { signal: this.abortController.signal } : {}),
             s2: {
               updateAgentTurn: (id: string, turn: number, tokens: number) => {
                 try { this.s2.updateAgentTurn(id, turn, tokens) } catch {}

@@ -19,6 +19,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import { cyncoHome } from '../paths.js'
 import { lensEnabled } from './brainSwitch.js'
+import { killProcessTreeSync, ownProcessTree } from '../processTree.js'
 
 const SIDECAR_MODULE = 'jlens_service.server'
 
@@ -120,11 +121,8 @@ function killStaleSidecars(log: (msg: string) => void): void {
       ).toString().split(/\s+/).filter(Boolean)
       for (const pid of pids) {
         log(`[jlens] killing stale sidecar pid ${pid}`)
-        try {
-          execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore', timeout: 10000 })
-        } catch (e) {
-          log(`[jlens] stale pid ${pid} already gone: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
-        }
+        // Synchronous on purpose: the fresh sidecar binds the same port next.
+        killProcessTreeSync(Number(pid), log)
       }
     } else {
       execSync(`pkill -f ${SIDECAR_MODULE}`, { stdio: 'ignore', timeout: 10000 })
@@ -187,18 +185,16 @@ export function startJlensSidecar(opts: {
     log(`[jlens] sidecar failed to spawn: ${err.message} — is python on PATH? (LOCALCODE_JLENS_PYTHON overrides)`)
   })
   log(`[jlens] sidecar starting (pid ${proc.pid ?? '?'}, ${python} -u -m ${SIDECAR_MODULE})`)
+  // proc.kill() only signals the direct child; the owned tree is what actually
+  // releases the port on Windows (engine/processTree.ts).
+  const tree = ownProcessTree(proc.pid, log)
+  proc.on('exit', () => tree.release())
 
   return {
     proc,
     stop() {
       if (process.platform === 'win32' && proc.pid) {
-        // proc.kill() only signals the direct child; taskkill /T takes the
-        // tree, which is what actually releases the port on Windows.
-        try {
-          execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore', timeout: 10000 })
-        } catch (e) {
-          console.log(`[jlens] sidecar pid ${proc.pid} already gone: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
-        }
+        if (tree.kind === 'job' || proc.exitCode === null) void tree.kill()
       } else {
         proc.kill('SIGTERM')
       }

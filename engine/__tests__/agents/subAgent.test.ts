@@ -128,7 +128,8 @@ describe('SubAgent P1.8 repair-ladder parity', () => {
 
     // The tool should have been called exactly once with the repaired input
     expect(executeSpy).toHaveBeenCalledTimes(1)
-    expect(executeSpy).toHaveBeenCalledWith('Read', { file_path: 'a.ts' })
+    // The third argument is the agent's own abort signal (F209).
+    expect(executeSpy).toHaveBeenCalledWith('Read', { file_path: 'a.ts' }, expect.any(AbortSignal))
 
     // Agent should succeed (second turn yielded text output)
     expect(result.success).toBe(true)
