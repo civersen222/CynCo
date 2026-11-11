@@ -29,10 +29,25 @@ export type LoadedModel = { name: string; vramMib: number }
 const API_TIMEOUT_MS = 5_000
 const MIB = 1024 * 1024
 
+/**
+ * `fetch` with a deadline, by a timer that is cleared when the request settles. Not `AbortSignal.timeout`:
+ * this module is also reached from a Bun script (`scripts/cynco-apps.mjs`), where that is a known hazard,
+ * and a timer left running would hold a short script open.
+ */
+async function fetchWithin(ms: number, url: string, init: RequestInit = {}): Promise<Response> {
+  const abort = new AbortController()
+  const timer = setTimeout(() => abort.abort(new Error(`no answer in ${ms} ms`)), ms)
+  try {
+    return await fetch(url, { ...init, signal: abort.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** What Ollama holds in GPU memory right now. Ollama not running, or not answering, is nothing loaded. */
 export async function ollamaLoaded(url: string, log: (line: string) => void = () => {}): Promise<LoadedModel[]> {
   try {
-    const resp = await fetch(`${url}/api/ps`, { signal: AbortSignal.timeout(API_TIMEOUT_MS) })
+    const resp = await fetchWithin(API_TIMEOUT_MS, `${url}/api/ps`)
     if (!resp.ok) { log(`[apps] Ollama at ${url} answered /api/ps with HTTP ${resp.status}`); return [] }
     const j = (await resp.json()) as { models?: Array<{ name?: unknown; size_vram?: unknown }> }
     return (j.models ?? [])
@@ -46,10 +61,9 @@ export async function ollamaLoaded(url: string, log: (line: string) => void = ()
 
 async function unload(url: string, model: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    const resp = await fetch(`${url}/api/generate`, {
+    const resp = await fetchWithin(API_TIMEOUT_MS * 2, `${url}/api/generate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, keep_alive: 0 }),
-      signal: AbortSignal.timeout(API_TIMEOUT_MS * 2),
     })
     return resp.ok ? { ok: true } : { ok: false, reason: `HTTP ${resp.status}` }
   } catch (e) {

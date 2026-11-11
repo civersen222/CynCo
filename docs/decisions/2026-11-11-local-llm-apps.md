@@ -74,6 +74,7 @@ One rule, used by a chat turn and by a one-shot: **when CynCo needs the GPU and 
 3. The same rule for daemon one-shots: the one-shot no longer defers behind an app's server; it takes the port and the daemon gives it back after the run.
 4. Apps on Ollama: `engine/apps/ollama.ts` (decision 5).
 5. Missions: `scripts/cynco-apps.mjs`, the eager start, the lazy engine after a mission (decision 6).
+6. The dashboard: the Missions tab lists the apps CynCo knows (name, how each serves its model, whether it holds the GPU now, managed or not, owed its server or not) and switches `manage` per app. Reading is the read scope, so the phone sees it; the switch is management scope, so it is desk-only (`engine/dashboard/appsApi.ts`, `GET /api/apps`, `PUT /api/apps/<id>`). It is on the Missions tab and not Config because that is the tab both the desk and the phone show, and it is where the GPU's claim is already shown.
 
 Each is tested with stand-in servers; `standIn.test.ts` runs the whole path with real processes on a spare port (a launcher script, a server it starts, a client process in the app's folder, the real process reader, the real kill and the real out-of-job start).
 
