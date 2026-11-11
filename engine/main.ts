@@ -415,7 +415,7 @@ const waitPush = waitNtfy ? new WaitPush({
   publish: (notice) => waitNtfy.publish(notice, { queueOnFailure: false }),
   pending: () => loop.pendingDecisions(),
   clientCount: () => (dashboardServer?.clientCount ?? 0) + (wsServer.connected ? 1 : 0),
-  openAt: () => dashboardServer?.lastRemoteOrigin ?? null,
+  openAt: () => dashboardServer?.phoneOrigin ?? null,
 }) : null
 console.log(`[wait-push] ${waitPush ? 'on: the phone is told when an approval or a question waits with nobody connected' : 'off (CYNCO_NTFY_URL is not set)'}`)
 

@@ -190,3 +190,38 @@ describe('pairingPage', () => {
     expect(pairingPage({ revoked: true })).toContain('no longer paired')
   })
 })
+
+describe('phoneListenerOrigin (where a phone can reach the dashboard)', () => {
+  it('is the page address of the bound listener that is not the desk', async () => {
+    const { phoneListenerOrigin } = await import('../../dashboard/access.js')
+    expect(phoneListenerOrigin([
+      { host: '127.0.0.1', port: 9161, bound: true },
+      { host: '100.101.192.101', port: 9161, bound: true },
+    ])).toBe('http://100.101.192.101:9161')
+  })
+
+  it('is null with only the desk listener: a loopback address means nothing to the phone', async () => {
+    const { phoneListenerOrigin } = await import('../../dashboard/access.js')
+    expect(phoneListenerOrigin([{ host: '127.0.0.1', port: 9161, bound: true }])).toBeNull()
+    expect(phoneListenerOrigin([{ host: 'localhost', port: 9161, bound: true }, { host: '::1', port: 9161, bound: true }])).toBeNull()
+    expect(phoneListenerOrigin([])).toBeNull()
+  })
+
+  it('is null while the phone listener is not bound (Tailscale down): a link nothing answers is worse than none', async () => {
+    const { phoneListenerOrigin } = await import('../../dashboard/access.js')
+    expect(phoneListenerOrigin([
+      { host: '127.0.0.1', port: 9161, bound: true },
+      { host: '100.101.192.101', port: 9161, bound: false },
+    ])).toBeNull()
+  })
+
+  it('never names a wildcard: 0.0.0.0 is not an address a phone can open', async () => {
+    const { phoneListenerOrigin } = await import('../../dashboard/access.js')
+    expect(phoneListenerOrigin([{ host: '0.0.0.0', port: 9161, bound: true }, { host: '::', port: 9161, bound: true }])).toBeNull()
+  })
+
+  it('brackets an IPv6 listener', async () => {
+    const { phoneListenerOrigin } = await import('../../dashboard/access.js')
+    expect(phoneListenerOrigin([{ host: 'fd7a:115c:a1e0::1', port: 9161, bound: true }])).toBe('http://[fd7a:115c:a1e0::1]:9161')
+  })
+})

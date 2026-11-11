@@ -252,6 +252,18 @@ export function pageOrigin(origin: string | null | undefined): string | null {
   return o.protocol === 'http:' || o.protocol === 'https:' ? o.origin : null
 }
 
+/**
+ * The page address of the first bound listener a phone can reach, or null when there is none: the
+ * desk's loopback listener means nothing off this machine, a wildcard is not an address, and a
+ * listener that is not bound (Tailscale down) answers nobody. The dashboard is served over http.
+ */
+export function phoneListenerOrigin(listeners: { host: string; port: number; bound: boolean }[]): string | null {
+  const l = listeners.find(x => x.bound && !isLoopbackAddress(x.host) && !isWildcardHost(x.host) && x.host.trim().toLowerCase() !== 'localhost')
+  if (!l) return null
+  const host = l.host.trim()
+  return `http://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${l.port}`
+}
+
 // ---------------------------------------------------------------------------
 // The device token in the browser, and the pairing page
 // ---------------------------------------------------------------------------
