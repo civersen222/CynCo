@@ -35,6 +35,7 @@ import {
   GATE_MIN_USABLE,
 } from '../training/datasetBuilder.js'
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
+import { ReplayBuffer, parseCursor, type ReplayCursor } from './replay.js'
 import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
   classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, isWildcardHost,
@@ -388,7 +389,7 @@ function htmlResponse(body: string, status = 200, headers: Record<string, string
 }
 
 /** What a dashboard socket remembers about its client: which token record opened it (its name, never the secret). */
-export type DashboardSocketData = { holder: string | null }
+export type DashboardSocketData = { holder: string | null; /** Where the page got to before its last socket closed (replay.ts); null on a fresh page. */ cursor?: ReplayCursor | null }
 /** The names a paired device's record may have — the only records a remote client may authenticate with. */
 const DEVICE_NAME_RE = /^device-[0-9a-f]{8}$/
 
@@ -540,10 +541,12 @@ export class DashboardServer {
   /** Set on a paired device's socket only; read through `phoneOrigin`. */
   private remoteOrigin: string | null = null
   private clients: Set<ServerWebSocket<DashboardSocketData>> = new Set()
-  /** Last broadcast per replayable type, resent to late-joining clients.
+  /** Last broadcast per last-value type, resent to late-joining clients.
    *  brain.tier fires once at engine startup — browsers always connect later. */
-  private readonly replayCache = new Map<string, string>()
-  private static readonly REPLAY_TYPES = new Set(['brain.tier'])
+  private readonly lastValues = new Map<string, string>()
+  private static readonly LAST_VALUE_TYPES = new Set(['brain.tier'])
+  /** The numbered frames a page that lost its socket is sent when it comes back (replay.ts). */
+  private readonly replay = new ReplayBuffer()
   private deps: DashboardDeps
   private _port: number
   private _hostname: string
@@ -633,7 +636,7 @@ export class DashboardServer {
           }
           const auth = this.authenticate(req, 'inference', kind, { allowQueryToken: true })
           if (!auth.ok) return auth.response
-          const success = server.upgrade(req, { data: { holder: auth.holder } })
+          const success = server.upgrade(req, { data: { holder: auth.holder, cursor: parseCursor(url.searchParams) } })
           if (success) {
             // Past the Host check, the Origin check and the device token: this is the address the phone has the page on.
             if (kind === 'remote') this.remoteOrigin = pageOrigin(req.headers.get('origin')) ?? this.remoteOrigin
@@ -871,9 +874,19 @@ export class DashboardServer {
             return
           }
           this.clients.add(ws)
-          for (const json of this.replayCache.values()) {
+          for (const json of this.lastValues.values()) {
             try { ws.send(json) } catch (err) { console.log('[dashboard] replay send failed:', err) }
           }
+          // What the turn produced while this page's last socket was down, in
+          // order, before any live frame (broadcast is synchronous, so none can
+          // interleave); then where the stream is now. The page settles its run
+          // state only after `replay.state`, so a turn that ended meanwhile ends
+          // on the page from its own message.complete.
+          const missed = this.replay.since(ws.data?.cursor ?? null)
+          try {
+            for (const json of missed.frames) ws.send(json)
+            ws.send(this.replayStateFrame('connect', { replayed: missed.frames.length, resumed: missed.known && !missed.gap, gap: missed.gap }))
+          } catch (err) { console.log('[dashboard] missed-frame send failed:', err) }
           const project = this.deps.currentProject?.() ?? null
           if (project) {
             try { ws.send(JSON.stringify({ type: 'project.opened', ...project })) } catch (err) { console.log('[dashboard] project.opened on connect failed:', err) }
@@ -2234,13 +2247,31 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
   // ── WebSocket Broadcast ─────────────────────────────────────────
 
   broadcast(event: EngineEvent): void {
-    const json = JSON.stringify(event)
     const type = (event as { type?: string }).type
-    if (type && DashboardServer.REPLAY_TYPES.has(type)) this.replayCache.set(type, json)
-    if (this.clients.size === 0) return
-    for (const ws of this.clients) {
-      try { ws.send(json) } catch {}
+    // A change of conversation: nothing numbered so far belongs to what a page
+    // draws next. Connected pages are told the numbering starts over before
+    // the frame that changes the conversation; a page that is away finds a
+    // new epoch when it returns and loads the chat as a fresh page does.
+    if (type === 'project.opened') {
+      this.replay.reset()
+      this.sendAll(this.replayStateFrame('reset', { replayed: 0, resumed: false, gap: false }))
     }
+    // Numbered and kept when it draws the Chat pane — with nobody connected
+    // too: that is exactly when it will be asked for.
+    const json = this.replay.record(event as unknown as Record<string, unknown>) ?? JSON.stringify(event)
+    if (type && DashboardServer.LAST_VALUE_TYPES.has(type)) this.lastValues.set(type, json)
+    this.sendAll(json)
+  }
+
+  private sendAll(json: string): void {
+    for (const ws of this.clients) {
+      try { ws.send(json) } catch (err) { console.log('[dashboard] broadcast send failed:', err) }
+    }
+  }
+
+  /** `replay.state`: where the numbered stream is, and what became of the cursor a connecting page named. Sent by this server only; not an engine event. */
+  private replayStateFrame(reason: 'connect' | 'reset', r: { replayed: number; resumed: boolean; gap: boolean }): string {
+    return JSON.stringify({ type: 'replay.state', reason, ...this.replay.state(), ...r })
   }
 
   // ── Lifecycle ───────────────────────────────────────────────────

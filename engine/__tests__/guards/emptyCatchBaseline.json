@@ -10,7 +10,6 @@
   "daemon/oneShot.ts": 2,
   "daemon/taskRunner.ts": 5,
   "daemon/tradeScan.ts": 2,
-  "dashboard/server.ts": 1,
   "engine/callModel.ts": 5,
   "engine/toolCallRepair.ts": 1,
   "index/chunker.ts": 1,

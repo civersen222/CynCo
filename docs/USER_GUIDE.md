@@ -253,8 +253,10 @@ listener, the pairing code, revocation, troubleshooting): README → Phone acces
 
 On the phone, Enter inserts a newline and the Send button sends. The red Stop button
 ends the running turn (a tool that is already running finishes first). If the screen
-locks mid-turn the page reconnects on wake, redraws any approval card still waiting,
-and says so if the turn ended meanwhile. Configuration changes stay on the computer.
+locks mid-turn the page reconnects on wake, fills in what the turn produced while it
+was away (text, tool rows, pictures, in order), and redraws any approval card still
+waiting. If the engine was restarted meanwhile, a project chat is redrawn from its
+stored messages and the page says a turn ended unseen. Configuration changes stay on the computer.
 The security boundary and troubleshooting: README → Local tokens → Phone access.
 
 ---

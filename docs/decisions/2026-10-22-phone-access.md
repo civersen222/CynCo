@@ -127,6 +127,50 @@ from the desk via the Tailscale address (pair, prompt, stream, Stop, revoke). Th
 phone, Windows Firewall for `bun.exe` on the Tailscale interface, and iOS/Android keyboard
 behaviour are manual checks that remain.
 
+**Amendment 2026-11-11: what streamed while the phone was away.** "Rebuilding text streamed
+while the phone was away" under "Not covered" is now built (`engine/dashboard/replay.ts`, wired in
+`server.ts` and the page; guards: `replay.test.ts`, `replayOnReconnect.test.ts`,
+`replayPage.test.ts`).
+
+- *The mechanism.* The dashboard numbers each frame that draws the Chat pane (`seq`) and keeps
+  the recent ones in memory. A page remembers the last number it handled and names it on its next
+  socket (`/ws?…&epoch=…&since=…&off=…`); the server sends the frames after it, in order, before
+  any live frame, then a `replay.state` frame. The page drops a numbered frame at or before its
+  cursor, so nothing is drawn twice, and settles its run state from `/api/session` only after
+  `replay.state`, so a turn that ended meanwhile ends from its own `message.complete`. Consecutive
+  token frames are kept as one entry and share a number; `off` says how far into the run a frame
+  reaches, so the cursor is `(seq, off)` and the buffer costs about the size of the text.
+- *Why not the suggestion in NOW.md* (the loop's session id on `/api/session`, the page fetching
+  the transcript tail). Traced first: both journals are appended per completed message, so a
+  transcript never holds the message being streamed, which is exactly what a phone that locked
+  mid-answer is missing; and the pane is a state machine over frames (a token appends to the last
+  bubble, `tool.complete` finds its row by id), so redrawing it from a transcript discards that
+  state and needs a second renderer for the coding session. Sending the missed frames keeps the
+  page's existing handlers as the only renderer and is the same for a project chat and the coding
+  session.
+- *What is not replayed.* `approval.request` and `ask.request`: one answered at the desk while
+  the phone was away would come back as a live card. Decisions still open ride `/api/session`
+  `pending`, as before. Status snapshots and Brain telemetry are not kept either
+  (`NOT_REPLAYED_TYPES` gives each reason; a guard fails when the page handles a frame type that
+  is on neither list).
+- *Epochs.* One engine process and one conversation. A restart, a dispatch swap or a
+  `project.opened` starts a new epoch with an empty buffer: frames from before a change of
+  conversation would be drawn twice, since the transcript the page then loads already holds those
+  messages. A returning page with an old epoch is sent nothing; in a project chat it forgets which
+  chat its pane holds, so the engine's `project.opened` redraws it from the stored transcript; in
+  the coding session the existing "the turn ended while this page was away" line stands.
+- *Bounds.* 4,000 entries or 8,000,000 characters, oldest dropped first. A page that needed a
+  dropped frame is sent none (`gap`): a tail with a hole in it would glue the end of one message
+  onto another. All of what was missed, or none of it and a line saying so.
+- *What it adds.* One in-memory buffer per engine, owned by `DashboardServer`; two fields on
+  numbered frames (`seq`, `off`), which the page's handlers ignore (the TUI has its own socket and
+  never sees them); one server-only frame type (`replay.state`); three query parameters on `/ws`.
+  No new process, store, variable or dependency. Removed by deleting `replay.ts` and its call
+  sites in `server.ts`: the page then behaves as before.
+- *Still not covered.* A page the phone's browser discarded and reloads has no cursor: it loads as
+  any fresh page does (a project chat's stored messages, then live frames), so the part of the
+  message being streamed at that moment is missing until the message completes.
+
 **Amendment 2026-11-11: device hygiene.** Three of the items under "Not covered" are now built
 (`engine/security/localToken.ts`, `engine/dashboard/server.ts`; guards: `deviceTokens.test.ts`,
 `phoneAccess.test.ts` "device hygiene").
