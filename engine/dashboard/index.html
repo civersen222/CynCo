@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CynCo Governance Dashboard</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1e1e1e">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
 /* ── Reset & Base ─────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1471,16 +1475,22 @@ let reconnectTimer = null;
 let sessionTimer = null;
 let standaloneTimeout = null;
 
+/**
+ * The socket's address for the page at `loc`: wss behind the HTTPS name
+ * (`tailscale serve`), ws on the desk and on the plain tailnet address.
+ * `loc.host` carries the port only when the page has one, so the https name
+ * does not get a dangling colon. The token rides in the query string because a
+ * browser cannot set headers on a WebSocket handshake; everywhere else it is an
+ * Authorization header, added by the fetch wrapper the server injects.
+ */
+function wsUrl(loc, token, query) {
+  return (loc.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + loc.host + '/ws?token=' + encodeURIComponent(token || '') + (query || '');
+}
+
 function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // The token rides in the query string here because a browser cannot set
-  // headers on a WebSocket handshake. Everywhere else it is an Authorization
-  // header, added by the fetch wrapper the server injects above.
   // A page that was connected before also says how far it got, and the engine
   // sends what it missed before any live frame (engine/dashboard/replay.ts).
-  ws = new WebSocket(proto + '//' + location.hostname + ':' + location.port +
-    '/ws?token=' + encodeURIComponent(window.__CYNCO_TOKEN || '') +
-    (typeof replayQuery === 'function' ? replayQuery(replayCursor) : ''));
+  ws = new WebSocket(wsUrl(location, window.__CYNCO_TOKEN, typeof replayQuery === 'function' ? replayQuery(replayCursor) : ''));
 
   ws.onopen = function() {
     state.connected = true;
@@ -4305,6 +4315,11 @@ function renderPhoneAccess(data, error) {
   if (!extras.length) row('Phone URL', 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.');
   for (var i = 0; i < extras.length; i++) {
     row('Phone URL', 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)'));
+  }
+  // The listener `tailscale serve` forwards to for the https name (README, Phone access → HTTPS).
+  if (data.proxy) {
+    row('HTTPS proxy target', 'http://' + data.proxy.host + ':' + data.proxy.port +
+      (data.proxy.bound ? '   (tailscale serve points here; every client on it must be paired)' : '   (not bound: is another process on that port?)'));
   }
   row('Last phone request', data.lastRemoteRequestAt
     ? new Date(data.lastRemoteRequestAt).toLocaleString()

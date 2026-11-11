@@ -461,7 +461,7 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
       'fetchPredictions', 'fetchContracts', 'fetchTrainingData', 'renderToolFeed', 'renderSubsystems', 'escHtml',
       'projToast', 'indexedLabel', 'genuiSurfaces',
       'var ws = null; var reconnectDelay = 1000;\n' +
-      fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('reconcileProjectBinding') + fnSource('onProjectOpened') +
+      optional('wsUrl') + fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('reconcileProjectBinding') + fnSource('onProjectOpened') +
       fnSource('onProjectOpenRefused') + fnSource('projectChatUnsettled') + fnSource('fetchTranscript') + fnSource('renderTranscript') +
       fnSource('sendChatMessage') + fnSource('showProjectCwd') + fnSource('restoreCodingCwd') + fnSource('setCodingCwd') +
       fnSource('seedSessionCounters') + fnSource('showConnProject') + fnSource('onProjectIngest') +
@@ -470,7 +470,7 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
       '\nreturn { connect: function() { connectWS(); return ws; }, onProjectOpened: onProjectOpened, onProjectOpenRefused: onProjectOpenRefused,' +
       ' sendChatMessage: sendChatMessage, fetchSessionState: fetchSessionState, onProjectIngest: onProjectIngest, sendUiAction: sendUiAction };')
     const page = make(
-      WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161' }, { __CYNCO_TOKEN: 't' },
+      WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161', host: 'localhost:9161' }, { __CYNCO_TOKEN: 't' },
       { getElementById: (id: string) => (id === 'chatMessages' ? msgs : el(id)), body: el('body') },
       state, projectsState, fetchStub, () => 0, () => 0, () => {}, () => {}, () => {},
       (role: string, text: string) => put(`${role}: ${text}`),
@@ -515,11 +515,11 @@ describe('dashboard: the project chat re-binds after an engine restart', () => {
     const make = new Function('WebSocket', 'location', 'window', 'document', 'state', 'projectsState', 'fetch', 'setInterval', 'setTimeout',
       'render', 'genuiRecheckImages', 'handleEvent', 'appendChatMsg', 'setSlider', 'activateSession', 'clearChatCitations', 'brainViz', 'console',
       'fetchPredictions', 'fetchContracts', 'fetchTrainingData', 'renderToolFeed', 'renderSubsystems', 'escHtml',
-      'var ws = null; var reconnectDelay = 1000;\n' + fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('sendChatMessage') +
+      'var ws = null; var reconnectDelay = 1000;\n' + optional('wsUrl') + fnSource('connectWS') + fnSource('fetchSessionState') + fnSource('sendChatMessage') +
       fnSource('seedSessionCounters') + fnSource('showConnProject') + fnSource('setCodingCwd') +
       optional('reconcileProjectBinding') + optional('projectChatUnsettled') +
       '\nconnectWS(); return { ws: ws, sendChatMessage: sendChatMessage };')
-    const page = make(WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161' }, { __CYNCO_TOKEN: 't' },
+    const page = make(WebSocketStub, { protocol: 'http:', hostname: 'localhost', port: '9161', host: 'localhost:9161' }, { __CYNCO_TOKEN: 't' },
       { getElementById: el, body: el('body') }, { connected: false, turnCount: 0, context: null }, projectsState,
       (path: string) => Promise.resolve({ json: () => (path === '/api/session' ? { ...SESSION, project: null } : null) }),
       () => 0, () => 0, () => {}, () => {}, () => {}, (role: string, text: string) => lines.push(`${role}: ${text}`),

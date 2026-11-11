@@ -506,6 +506,37 @@ describe('the address the wait push links to: where a paired device last opened 
     expect(t.server.phoneOrigin).toBeNull()
   })
 
+  // docs/NOW.md "Left by the wait push" (a): the address was held in memory only, so every engine
+  // restart fell back to the listener address — the pairing screen for a phone that paired through a name.
+  it('survives an engine restart: the next engine links to the address the device used, before any socket', async () => {
+    const t = await start()
+    const { token } = await t.pair()
+    t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
+    const origin = t.server.phoneOrigin
+    t.server.stop()
+    const next = new DashboardServer({ port: 0, tokens: loadOrCreateTokens(t.dir), deps: { remoteAddress: () => DESK } })
+    servers.push(next)
+    vi.spyOn(next, 'listeners').mockReturnValue([
+      { host: '127.0.0.1', port: next.getPort(), bound: true, primary: true },
+      { host: '100.101.192.101', port: next.getPort(), bound: true, primary: false },
+    ])
+    expect(origin).toBe(`http://127.0.0.1:${t.port}`)
+    expect(next.phoneOrigin).toBe(origin)
+  })
+
+  it('a revoked device is not where the next notice points', async () => {
+    const t = await start()
+    const { name, token } = await t.pair()
+    t.asPhone()
+    expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
+    t.asDesk()
+    expect((await t.post('/api/phone/revoke', { name }, t.tokens.tokenFor('management'))).status).toBe(200)
+    const next = new DashboardServer({ port: 0, tokens: loadOrCreateTokens(t.dir), deps: { remoteAddress: () => DESK } })
+    servers.push(next)
+    expect(next.phoneOrigin).toBeNull()
+  })
+
   // F203: the address was only ever learned from a socket, so the first notice after every engine
   // restart went out with no link. `listeners()` is stubbed because a test cannot bind a tailnet address.
   it('is the bound phone listener before any device has opened a socket (a fresh engine)', async () => {
