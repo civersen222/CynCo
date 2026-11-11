@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { LOOK_INSTRUCTION, LOOK_NUM_CTX, LookClient, makeLookClient, parseLook } from '../../vision/lookClient.js'
+import { LOOK_INSTRUCTION, LOOK_KEEP_ALIVE, LOOK_NUM_CTX, LookClient, makeLookClient, parseLook } from '../../vision/lookClient.js'
 
 const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
 
@@ -24,7 +24,7 @@ describe('parseLook', () => {
 })
 
 describe('LookClient.look', () => {
-  it('sends one chat request with the instruction, the image as base64 and keep_alive 10m, and returns the parsed look with timing', async () => {
+  it('sends one chat request with the instruction, the image as base64 and a keep_alive of seconds, and returns the parsed look with timing', async () => {
     const f = fakeFetch(() => ollamaReply('TEXT: hello\nSTATE: lit\nDESCRIPTION: a lamp'))
     let t = 1000
     const c = new LookClient({ url: 'http://box:11434', model: 'qwen3-vl:8b-instruct', fetchFn: f.fn, now: () => (t += 2100) })
@@ -34,7 +34,8 @@ describe('LookClient.look', () => {
     const b = f.calls[0].body
     expect(b.model).toBe('qwen3-vl:8b-instruct')
     expect(b.stream).toBe(false)
-    expect(b.keep_alive).toBe('10m')
+    expect(b.keep_alive).toBe('5s')
+    expect(LOOK_KEEP_ALIVE).toBe('5s')
     // a 12 MP phone photo is ~4100 image tokens on qwen3-vl; Ollama's default 4096 window refused it (F190)
     expect(b.options).toEqual({ num_ctx: LOOK_NUM_CTX })
     expect(LOOK_NUM_CTX).toBe(8192)
@@ -52,7 +53,7 @@ describe('LookClient.look', () => {
     const r = await c.ask(png, 'image/png', 'which item is selected?')
     const b = f.calls[0].body
     expect(f.calls[0].url).toBe('http://box:11434/api/chat')
-    expect(b.model).toBe('qwen3-vl:8b-instruct'); expect(b.stream).toBe(false); expect(b.keep_alive).toBe('10m'); expect(b.options).toEqual({ num_ctx: LOOK_NUM_CTX })
+    expect(b.model).toBe('qwen3-vl:8b-instruct'); expect(b.stream).toBe(false); expect(b.keep_alive).toBe(LOOK_KEEP_ALIVE); expect(b.options).toEqual({ num_ctx: LOOK_NUM_CTX })
     expect(b.messages[0].content).toContain('which item is selected?')
     expect(b.messages[0].content).toMatch(/does not show it, say so/)
     expect(b.messages[0].images).toEqual([Buffer.from(png).toString('base64')])

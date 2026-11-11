@@ -404,6 +404,8 @@ const unloadVisionBeforeTransform = visionForImages ? async () => { const r = aw
 const askVisionAboutPhoto = visionForImages ? (photo: Uint8Array, name: string, question: string) => visionForImages.ask(photo, imageMime(name), question) : undefined
 const imageService = new ImageService({ emit: (e) => { wsServer.emit(e); dashboardServer?.broadcast(e) }, ...(unloadVisionBeforeTransform ? { beforeTransform: unloadVisionBeforeTransform } : {}), ...(askVisionAboutPhoto ? { askAboutPhoto: askVisionAboutPhoto } : {}) })
 void imageService.probe()
+// Nothing stays loaded that is not being used (F211): a model left on the image box by something this engine cannot see goes when ComfyUI's queue is empty.
+void imageService.freeAtStart()
 
 // Tell the phone when the engine waits (engine/daemon/waitPush.ts): an approval or a question still open
 // after a short grace, with no dashboard socket and no TUI connected, is one ntfy notification. Off unless

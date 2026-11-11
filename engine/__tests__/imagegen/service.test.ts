@@ -2193,3 +2193,47 @@ describe('ImageService: transforms', () => {
     expect(sc.reason).toContain('ComfyUI-GGUF')
   })
 })
+
+describe('the image box is freed at engine start when nobody is using it (F211)', () => {
+  it('ComfyUI\'s queue empty: one /free, and the log says the box was freed', async () => {
+    mock = await startMockComfy()
+    const s = start()
+    expect(await s.freeAtStart()).toBe('freed')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
+    expect(logs.filter(l => /^\[imagegen\] image box freed at engine start/.test(l)).length).toBe(1)
+  })
+  it('ComfyUI is running somebody\'s prompt: nothing is freed, and the log says what it is doing', async () => {
+    mock = await startMockComfy({ foreignQueue: { running: 1, pending: 2 } })
+    const s = start()
+    expect(await s.freeAtStart()).toBe('busy')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(0)
+    expect(logs.some(l => /^\[imagegen\] image box not freed at engine start: ComfyUI has 1 running and 2 pending/.test(l))).toBe(true)
+  })
+  it('a pending prompt alone is in use too', async () => {
+    mock = await startMockComfy({ foreignQueue: { running: 0, pending: 1 } })
+    expect(await start().freeAtStart()).toBe('busy')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(0)
+  })
+  it('a server that does not answer the question is not freed blind: logged once, nothing thrown', async () => {
+    mock = await startMockComfy({ queueFail: true })
+    const s = start()
+    expect(await s.freeAtStart()).toBe('unreachable')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(0)
+    expect(logs.filter(l => /^\[imagegen\] image box not freed at engine start: .*\/queue with HTTP 500/.test(l)).length).toBe(1)
+  })
+  it('a /free the server refuses is logged and not retried', async () => {
+    mock = await startMockComfy({ freeFail: true })
+    const s = start()
+    expect(await s.freeAtStart()).toBe('unreachable')
+    expect(mock.calls.filter(c => c.path === '/free').length).toBe(1)
+    expect(logs.filter(l => /^\[imagegen\] \/free at engine start failed: .*HTTP 500/.test(l)).length).toBe(1)
+  })
+  it('no image server configured: nothing is asked', async () => {
+    const s = start({ env: {} })
+    expect(await s.freeAtStart()).toBe('off')
+  })
+  it('main.ts asks at engine start, beside the probe', () => {
+    const main = readFileSync('engine/main.ts', 'utf-8')
+    expect(main).toMatch(/void imageService\.probe\(\)\s*\n[^\n]*\n?void imageService\.freeAtStart\(\)/)
+  })
+})
