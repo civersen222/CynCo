@@ -175,6 +175,72 @@ describe('when a device was last seen, and the idle expiry', () => {
   })
 })
 
+describe('the page address a device uses (kept so a restarted engine still knows where the phone opens the dashboard)', () => {
+  const T0 = new Date('2026-11-11T12:00:00Z')
+  const NAME = 'https://longdongsilver.tail05397a.ts.net'
+  const onDisk = (name: string) => JSON.parse(readFileSync(join(dir, TOKEN_FILENAME), 'utf-8')).tokens.find((t: any) => t.name === name)
+
+  it('is written the first time and when it changes, not on every socket', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    expect(set.lastDeviceOrigin()).toBeNull()
+    expect(set.setDeviceOrigin(rec.name, NAME)).toBe(true)
+    expect(onDisk(rec.name).origin).toBe(NAME)
+    expect(set.setDeviceOrigin(rec.name, NAME)).toBe(false) // the same address: no write
+    expect(set.setDeviceOrigin(rec.name, 'http://100.101.192.101:9161')).toBe(true)
+    expect(onDisk(rec.name).origin).toBe('http://100.101.192.101:9161')
+    expect(readdirSync(dir)).toEqual([TOKEN_FILENAME])
+  })
+
+  it('survives a reload, and the most recently seen device speaks for "where the phone is"', () => {
+    const set = loadOrCreateTokens(dir)
+    const tablet = set.addDevice('Tablet', T0)
+    const pixel = set.addDevice('Pixel', T0)
+    set.setDeviceOrigin(tablet.name, 'http://100.101.192.101:9161')
+    set.setDeviceOrigin(pixel.name, NAME)
+    set.touchDevice(pixel.name, new Date(T0.getTime() + 2 * LAST_SEEN_PERSIST_MS))
+    const again = loadOrCreateTokens(dir)
+    expect(again.lastDeviceOrigin()).toBe(NAME)
+    again.touchDevice(tablet.name, new Date(T0.getTime() + 5 * LAST_SEEN_PERSIST_MS))
+    expect(again.lastDeviceOrigin()).toBe('http://100.101.192.101:9161')
+  })
+
+  it('goes with the device: once revoked, its address is nobody\u2019s', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    set.setDeviceOrigin(rec.name, NAME)
+    set.revokeDevice(rec.name)
+    expect(set.lastDeviceOrigin()).toBeNull()
+    expect(loadOrCreateTokens(dir).lastDeviceOrigin()).toBeNull()
+  })
+
+  it('only a page address is kept: anything else, or a record that is not a device, is refused', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    for (const bad of ['javascript:alert(1)', 'file:///c:/x', 'not a url', '', 'https://user:pw@evil.example', 'https://x.ts.net/path?q=1']) {
+      expect(set.setDeviceOrigin(rec.name, bad), bad).toBe(false)
+    }
+    expect(set.setDeviceOrigin('admin', NAME)).toBe(false)
+    expect(set.setDeviceOrigin(DEVICE_PREFIX + 'deadbeef', NAME)).toBe(false)
+    expect(set.lastDeviceOrigin()).toBeNull()
+    // A file edited by hand to hold something else is not handed to the notifier either.
+    ;(set as any).file.tokens.find((t: any) => t.name === rec.name).origin = 'javascript:alert(1)'
+    expect(set.lastDeviceOrigin()).toBeNull()
+  })
+
+  it('a write that fails is said and does not throw: the socket it rode on still opens', () => {
+    const set = loadOrCreateTokens(dir)
+    const rec = set.addDevice('Pixel', T0)
+    const broken = new TokenSet((set as any).file, join(dir, 'no-such-dir', TOKEN_FILENAME))
+    const warned: string[] = []
+    const orig = console.warn
+    console.warn = (m: unknown) => { warned.push(String(m)) }
+    try { expect(() => broken.setDeviceOrigin(rec.name, NAME)).not.toThrow() } finally { console.warn = orig }
+    expect(warned.some(w => w.includes('page address'))).toBe(true)
+    expect(broken.lastDeviceOrigin()).toBe(NAME) // memory has it for this run
+  })
+})
+
 describe('revokeAllDevices', () => {
   it('forgets every device, persists, and leaves the three minted records alone', () => {
     const set = loadOrCreateTokens(dir)

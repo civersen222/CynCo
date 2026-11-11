@@ -47,6 +47,24 @@ export type LocalToken = {
    * Absent on a record paired before 2026-11-11, which counts from `createdAt`.
    */
   lastSeenAt?: string
+  /**
+   * A paired device: the page address (`scheme://host[:port]`) its browser last
+   * opened a socket from. The device token lives in that browser per origin, so
+   * this is the address that opens the dashboard for it and not the pairing
+   * screen; kept here so a restarted engine still knows it (the wait push links
+   * its notification to it).
+   */
+  origin?: string
+}
+
+/** `origin` when it is exactly a page address — http(s), no credentials, no path or query — else null. */
+function pageAddress(origin: unknown): string | null {
+  if (typeof origin !== 'string' || origin.length === 0 || origin.length > 300) return null
+  let u: URL
+  try { u = new URL(origin) } catch { return null }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+  if (u.username || u.password) return null
+  return u.origin === origin ? origin : null
 }
 
 /**
@@ -246,10 +264,47 @@ export class TokenSet {
     // Remembered before the write: a file that cannot be written is retried in an hour, not on every request.
     this.seenWritten.set(name, now.getTime())
     try {
-      this.persistLastSeen()
+      this.persistDeviceFacts()
     } catch (e) {
       console.warn(`[tokens] last-seen for ${name} could not be written: ${e instanceof Error ? e.message : String(e)}`)
     }
+  }
+
+  /**
+   * The page address this device's browser opened a socket from. Written when
+   * it is new for the device (a first socket, or a move to another address such
+   * as the https name) and not otherwise. True when it changed. Never throws,
+   * for the reason `touchDevice` does not: it rides a socket opening.
+   */
+  setDeviceOrigin(name: string, origin: string): boolean {
+    if (!name.startsWith(DEVICE_PREFIX)) return false
+    const record = this.file.tokens.find(t => t.name === name)
+    const clean = pageAddress(origin)
+    if (!record || clean === null || record.origin === clean) return false
+    record.origin = clean
+    try {
+      this.persistDeviceFacts()
+    } catch (e) {
+      console.warn(`[tokens] page address for ${name} could not be written: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    return true
+  }
+
+  /**
+   * Where the phone opens the dashboard: the page address of the device seen
+   * most recently, or null when no device has opened a socket from a page yet.
+   * A value that is not a page address (a file edited by hand) is not returned.
+   */
+  lastDeviceOrigin(): string | null {
+    let best: { at: number; origin: string } | null = null
+    for (const t of this.file.tokens) {
+      if (!t.name.startsWith(DEVICE_PREFIX)) continue
+      const origin = pageAddress(t.origin)
+      if (origin === null) continue
+      const at = idleFrom(t) ?? 0
+      if (best === null || at > best.at) best = { at, origin }
+    }
+    return best?.origin ?? null
   }
 
   /**
@@ -347,21 +402,24 @@ export class TokenSet {
   }
 
   /**
-   * Refresh the file's `lastSeenAt` fields and nothing else. The file is read
-   * again first and only records it already holds are changed, by name: this
-   * write happens hourly on a read path, and writing this process's whole list
-   * back would drop a device another process (a second engine on the same
-   * home) paired since this one loaded the file. Pairing and revoking still
-   * write the list this process holds — they are the owner acting, here.
+   * Refresh what the file says each device was last seen doing — `lastSeenAt`
+   * and `origin` — and nothing else. The file is read again first and only
+   * records it already holds are changed, by name: this write happens on a
+   * read path, and writing this process's whole list back would drop a device
+   * another process (a second engine on the same home) paired since this one
+   * loaded the file. Pairing and revoking still write the list this process
+   * holds — they are the owner acting, here.
    */
-  private persistLastSeen(): void {
+  private persistDeviceFacts(): void {
     if (this.path === null) return
     const onDisk: unknown = JSON.parse(readFileSync(this.path, 'utf-8'))
     if (!isUsable(onDisk)) throw new Error('the token file on disk is not one the engine could load')
     const mine = new Map(this.file.tokens.filter(t => t.name.startsWith(DEVICE_PREFIX)).map(t => [t.name, t]))
     for (const t of onDisk.tokens) {
-      const seen = mine.get(t.name)?.lastSeenAt
-      if (seen && t.secret === mine.get(t.name)!.secret) t.lastSeenAt = seen
+      const m = mine.get(t.name)
+      if (!m || t.secret !== m.secret) continue
+      if (m.lastSeenAt) t.lastSeenAt = m.lastSeenAt
+      if (m.origin) t.origin = m.origin
     }
     this.writeFile(onDisk)
   }

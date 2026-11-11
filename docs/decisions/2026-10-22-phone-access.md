@@ -127,6 +127,53 @@ from the desk via the Tailscale address (pair, prompt, stream, Stop, revoke). Th
 phone, Windows Firewall for `bun.exe` on the Tailscale interface, and iOS/Android keyboard
 behaviour are manual checks that remain.
 
+**Amendment 2026-11-11: HTTPS and an installable page.** "HTTPS, an installable page" under "Not
+covered" is built as far as code can take it (`engine/dashboard/installable.ts`, the proxy listener
+in `server.ts`, `scripts/phone-https.ps1`; guards: `httpsProxy.test.ts`, `installable.test.ts`,
+`scripts/__tests__/phone-https.test.mjs`); enabling certificates and running `tailscale serve` are
+the owner's steps.
+
+- *This record was wrong about the proxy.* It said a reverse proxy "must target a non-loopback
+  listener of its own" and that `tailscale serve` would later target the Tailscale listener.
+  `tailscale serve` proxies to `127.0.0.1` only (Tailscale's documentation: "only
+  `http://127.0.0.1` is supported for proxies"; version 1.104.4 here). What the rule protects is
+  unchanged — a proxied phone must never be classified `local` — and the way to keep it is the one
+  rejected alternative 1 already named: listener identity. `LOCALCODE_DASHBOARD_PROXY_PORT` (unset
+  by default: no listener) opens a second listener on `127.0.0.1` on which **every client is
+  `remote`**, whatever its address: the handler is told which listener it serves and never asks
+  where the peer is. No token in the page, pairing, a device token, management refused. Anything
+  on this machine that finds the port gets the phone's treatment, which is stricter than the
+  desk's. Nothing binds beyond loopback; `serve` (tailnet only, never Funnel) is what carries it.
+- *Host and Origin hold as written.* `serve` forwards the browser's `Host` unchanged
+  (`r.Out.Host = r.In.Host` in Tailscale's `ipn/ipnlocal/serve.go`), so the listener sees
+  `Host: <machine>.<tailnet>.ts.net` (no port) and `Origin: https://<machine>.<tailnet>.ts.net`:
+  `hostRefusal` accepts a `*.ts.net` name from a remote client, and `originMismatch` compares
+  host and port only, which is why the scheme difference behind a TLS proxy was allowed for in
+  the first place. A rebound name is still refused (421) and another tailnet name's Origin is
+  still refused (403). Tested with real loopback peers and those headers.
+- *The check that serve points at the right port.* `/pair` exists only for a remote client, so it
+  answers 200 on the proxy listener and 404 on a desk listener from this machine.
+  `scripts/phone-https.ps1` asks first and stops on a 404, before it sets anything.
+- *Installable.* A manifest and two icons at `/manifest.webmanifest`, `/icon-192.png`,
+  `/icon-512.png`, answered without a token like `GET /`: static, nothing about the engine in
+  them, and a browser fetches them with no Authorization header. The icons are drawn in code with
+  the PNG encoder already depended on. No service worker: Chrome's install criteria do not ask
+  for one, and one with a fetch handler would put a cache between the phone and a page that is
+  read once at engine start. Push will need one; that is its own increment.
+- *The device's page address is kept.* `origin` on the device record, written when a paired
+  device opens a socket from an address it had not used (`TokenSet.setDeviceOrigin`), by the same
+  field-only write as `lastSeenAt`. `DashboardServer.phoneOrigin` is the address of the most
+  recently seen device, else the bound phone listener, so the wait notification's link survives
+  an engine restart (NOW.md, "Left by the wait push" (a); F203 covered only the first notice).
+  Rejected: a file of its own — the address is a fact about one device and should go when that
+  device is revoked.
+- *A new origin pairs again.* The device token is kept per origin, so the phone pairs once more
+  on the https name. The old `http://100.x.y.z:9161` address keeps working; nothing is migrated.
+- *Cost if wrong.* If the owner never enables certificates, the variable stays unset and nothing
+  here runs except three static routes and four head tags. If `serve` were ever pointed at the
+  desk's port by hand, every device on the tailnet would be the desk; the script refuses, the
+  startup log says "never at <desk port>", and this record says why.
+
 **Amendment 2026-11-11: what streamed while the phone was away.** "Rebuilding text streamed
 while the phone was away" under "Not covered" is now built (`engine/dashboard/replay.ts`, wired in
 `server.ts` and the page; guards: `replay.test.ts`, `replayOnReconnect.test.ts`,
