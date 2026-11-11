@@ -6,6 +6,7 @@ import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
 import { evaluateSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
+import { portOwner } from './portOwner.js'
 import { existsSync, statSync } from 'fs'
 import { cyncoHome } from '../paths.js'
 
@@ -269,8 +270,10 @@ export type LazyWaitDeps = {
   /** gpu-busy.json with a live owner, or null. */
   readBusy: () => import('../daemon/gpuBusyFile.js').GpuBusy | null
   isPortOccupied: () => Promise<boolean>
-  /** Does whatever holds the port answer /health? Default: a 2 s GET. A healthy foreign server is waited on, never killed. */
+  /** Does whatever holds the port answer /health? Default: a 2 s GET. What happens to a healthy one is `portOwner`'s answer. */
   isHealthy?: () => Promise<boolean>
+  /** Whose server holds the port (portOwner.ts). `foreign` is stopped once and the port taken; `engine` and `unknown` are waited on. */
+  portOwner?: () => Promise<import('./portOwner.js').PortOwner>
   maxWaitMs: number
   pollMs?: number
   now?: () => number
@@ -376,14 +379,17 @@ export class ProcessManager {
   }
 
   /**
-   * The lazy counterpart of ensureRunning(): never kills a live occupant of
-   * the port. While `readBusy()` names a running one-shot (gpu-busy.json with
-   * a live pid) it waits, polling every `pollMs`, reporting the trigger and
-   * the remaining time through `onWaiting`. A port that is occupied with NO
-   * busy file is provably stale (the owner is gone) and is killed as before.
-   * Gives up after `maxWaitMs` with an error naming the trigger. The F140
-   * pre-spawn check still runs inside startProcess. Pinned by
-   * `ProcessManager.ensureRunningLazy` in processManager.test.ts.
+   * The lazy counterpart of ensureRunning(): never kills another CynCo
+   * engine's server. While `readBusy()` names a running one-shot
+   * (gpu-busy.json with a live pid) it waits, polling every `pollMs`,
+   * reporting the trigger and the remaining time through `onWaiting`. A
+   * healthy server on the port with no busy file is waited on when it is an
+   * engine's or its owner cannot be read, and stopped (once) when it is
+   * nobody's (F202, portOwner.ts). A port that is bound but does not answer
+   * /health is stale and is killed. Gives up after `maxWaitMs` with an error
+   * naming the trigger. The F140 pre-spawn check still runs inside
+   * startProcess. Pinned by `ProcessManager.ensureRunningLazy` in
+   * processManager.test.ts.
    */
   async ensureRunningLazy(deps: LazyWaitDeps): Promise<void> {
     if (this.isRunning()) return
@@ -392,6 +398,10 @@ export class ProcessManager {
     const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
     const started = now()
     const isHealthy = deps.isHealthy ?? (() => this.portAnswersHealth())
+    const whoseServer = deps.portOwner ?? (() => portOwner(this.port))
+    // Asked until it is settled: an engine's server stays an engine's, and a
+    // foreign one is stopped once, never in a loop.
+    let ownerSettled = false
     let lastTrigger: string | null = null
     // One notice per state, not one per 5 s poll: keyed on the reason and the
     // remaining whole minutes (review #2).
@@ -418,8 +428,27 @@ export class ProcessManager {
           notice(`GPU busy with ${busy.triggerId} (${busy.task})`, remainingMs)
         } else if (await deps.isPortOccupied()) {
           if (await isHealthy()) {
-            // A live server we did not start (a dispatched mission, a hand-started
-            // llama-server): the F182 shape. Wait; never kill a healthy one (review #6).
+            if (!ownerSettled) {
+              const owner = await whoseServer()
+              ownerSettled = owner.owner !== 'unknown'
+              if (owner.owner === 'foreign') {
+                // F202: a healthy server no CynCo engine started (another project's,
+                // or one left behind by hand). Nothing will ever free the port for us.
+                const said = `port ${this.port} was held by a server that is not CynCo's: ${owner.detail}. Stopped it to load the model.`
+                console.log(`[llama-cpp] ${said}`)
+                this.onWaiting?.(said)
+                await this.killProcessOnPort(this.port)
+                let free = false
+                for (let i = 0; i < 10 && !free; i++) {
+                  await sleep(500)
+                  free = !(await deps.isPortOccupied())
+                }
+                if (free) { await spawn(); return }
+                console.log(`[llama-cpp] port ${this.port} is still bound 5 s after the kill; waiting instead of spawning over it`)
+              }
+            }
+            // Another engine's server (a dispatched mission, a second engine), or one
+            // whose owner could not be read: the F182 shape. Wait (review #6).
             this.lazyPhase = 'waiting'
             lastTrigger = lastTrigger ?? `another llama-server on port ${this.port}`
             notice(`another llama-server owns port ${this.port}`, null)

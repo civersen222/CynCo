@@ -678,6 +678,7 @@ describe('ProcessManager.ensureRunningLazy', () => {
       readBusy: () => null,
       isPortOccupied: async () => false,
       isHealthy: async () => false,
+      portOwner: async () => ({ owner: 'unknown' as const, detail: 'not read in this test' }),
       maxWaitMs: 60_000,
       pollMs: 5_000,
       now: () => t,
@@ -719,14 +720,69 @@ describe('ProcessManager.ensureRunningLazy', () => {
     expect(waits.length).toBe(2)
   })
 
-  it('a healthy foreign server on the port is waited on, never killed (review #6)', async () => {
+  it('a healthy server that is another engine child is waited on, never killed (F182, review #6)', async () => {
     const { pm, calls } = lazyPm()
     let polls = 0
     const waits: { reason: string; remainingMs: number | null }[] = []
-    await pm.ensureRunningLazy(deps({ isPortOccupied: async () => polls++ < 2, isHealthy: async () => true, onWaiting: (i) => waits.push(i) }))
+    await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => polls++ < 2, isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'engine', detail: 'pid 9 (llama-server.exe), the child of a running bun.exe' }),
+      onWaiting: (i) => waits.push(i),
+    }))
     expect(calls).toEqual({ start: 1, kill: 0 })
     expect(waits[0].reason).toMatch(/another llama-server owns port 8081/)
     expect(waits[0].remainingMs).toBeNull()
+  })
+
+  it('a healthy server whose owner cannot be read is waited on, never killed', async () => {
+    const { pm, calls } = lazyPm()
+    let polls = 0
+    await pm.ensureRunningLazy(deps({ isPortOccupied: async () => polls++ < 2, isHealthy: async () => true }))
+    expect(calls).toEqual({ start: 1, kill: 0 })
+  })
+
+  it('a healthy server that is not CynCo-owned is stopped, the port is given time to free, the model loads, and the dashboard is told (F202)', async () => {
+    const { pm, calls } = lazyPm()
+    const told: string[] = []
+    pm.onWaiting = (m) => told.push(m)
+    let occupiedAnswers = 0
+    await pm.ensureRunningLazy(deps({
+      // occupied when first seen, still occupied on the first look after the kill, free on the second
+      isPortOccupied: async () => occupiedAnswers++ < 2,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
+    }))
+    expect(calls).toEqual({ start: 1, kill: 1 })
+    expect(occupiedAnswers).toBe(3)
+    expect(told.length).toBe(1)
+    expect(told[0]).toContain('pid 41364')
+    expect(told[0]).toContain('bash.exe')
+    expect(pm.modelState()).toBe('warm')
+  })
+
+  it('a foreign server that will not die is not spawned over and not killed again: the wait goes on and the error names the port', async () => {
+    const { pm, calls } = lazyPm()
+    await expect(pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => true,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
+      maxWaitMs: 12_000,
+    }))).rejects.toThrow(/GPU busy.*port 8081/)
+    expect(calls).toEqual({ start: 0, kill: 1 })
+  })
+
+  it('a one-shot named by gpu-busy.json is never asked about and never killed, whoever started its server', async () => {
+    const { pm, calls } = lazyPm()
+    let polls = 0
+    let asked = 0
+    await pm.ensureRunningLazy(deps({
+      readBusy: () => (polls++ < 2 ? busyInfo : null),
+      isPortOccupied: async () => polls <= 2,
+      isHealthy: async () => true,
+      portOwner: async () => { asked++; return { owner: 'foreign', detail: 'pid 1 (llama-server.exe), started by bash.exe' } },
+    }))
+    expect(asked).toBe(0)
+    expect(calls).toEqual({ start: 1, kill: 0 })
   })
 
   it('kills only a bound port whose /health fails (provably stale), then spawns', async () => {
