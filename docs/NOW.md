@@ -23,7 +23,7 @@ switch as wakeable workers, and S5 choosing the tier (`pc-wakefulness/knowledge/
 
 **The image box** (`docs/decisions/2026-11-08-image-box-design.md`, the 4070 Ti Super as CynCo's eyes and sketchpad): Part A vision BUILT 2026-11-08 (`engine/vision/`: one look per attached photo on the box's Ollama, into the turn and into knowledge; owner steps: `ollama pull qwen3-vl:8b-instruct` on the box, `LOCALCODE_VISION_URL`/`_MODEL` as user variables); Part C (the doorman wakes both boxes: `with`/`health` on targets) and Part B (`vary`/`outline` of a project photo on ComfyUI, `Image` `source` + `transform`) BUILT the same day; live checks wait on the owner steps in the three PRs.
 
-Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands.
+Phone access slice 1 (2026-10-22/27) is merged and in use; its design record stands. Device hygiene — built 2026-11-11 (last seen per device, 30-day idle expiry, Revoke all, a tailnet ACL sketch in README; the record's 2026-11-11 amendment); live check at the next sitting: Config → Phone access shows the Pixel's "seen" time move after the phone loads the page.
 
 Mission schedule control — built 2026-11-08 on branch `mission-schedule-control` (PR pending): the owner moves, switches off or pauses any daemon pass from a Missions tab (desk and phone) and the widget, with no restart; Resume picks up from now. Record: `docs/decisions/2026-11-08-mission-schedule-control.md`.
 
@@ -39,8 +39,6 @@ Mission schedule control — built 2026-11-08 on branch `mission-schedule-contro
    record), then a web manifest so the phone installs the page. Prerequisite for push.
 3. **Rebuild what streamed while the phone was away.** Put the loop's session id on
    `/api/session` so a reconnecting page can fetch the transcript tail instead of showing a gap.
-4. **Device hygiene.** `lastSeen` per device, an expiry, "revoke all", and a tailnet ACL note
-   limiting the dashboard port to the owner's devices.
 
 ## Backlog (worth doing, not started)
 

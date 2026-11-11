@@ -41,6 +41,12 @@ export type LocalToken = {
   label?: string
   /** A paired device: when it was paired, ISO 8601. */
   createdAt?: string
+  /**
+   * A paired device: when a request last arrived with its secret, ISO 8601.
+   * Exact in memory; written to the file at most once per `LAST_SEEN_PERSIST_MS`.
+   * Absent on a record paired before 2026-11-11, which counts from `createdAt`.
+   */
+  lastSeenAt?: string
 }
 
 /**
@@ -52,12 +58,33 @@ export type LocalToken = {
 export const DEVICE_PREFIX = 'device-'
 export const DEVICE_LABEL_MAX = 40
 
-/** What the dashboard shows about a paired device — never its secret. */
-export type DeviceSummary = { name: string; label: string; createdAt: string | null }
+/**
+ * A paired device that no request has come from for this long is forgotten:
+ * a phone that was replaced, a browser profile nobody opens any more. Idle, not
+ * absolute — the phone in daily use never meets it. A constant, not a variable:
+ * re-pairing costs one six-digit code at the desk, and a second way to
+ * configure how long a credential lives is one more thing to get wrong.
+ */
+export const DEVICE_IDLE_EXPIRY_MS = 30 * 24 * 60 * 60_000
+/** How stale the file's copy of `lastSeenAt` may get before a request refreshes it. */
+export const LAST_SEEN_PERSIST_MS = 60 * 60_000
+
+/**
+ * What the dashboard shows about a paired device — never its secret.
+ * `lastSeenAt` is null for a record paired before it was recorded; `expiresAt`
+ * is when the device will be forgotten if nothing arrives from it meanwhile.
+ */
+export type DeviceSummary = { name: string; label: string; createdAt: string | null; lastSeenAt: string | null; expiresAt: string | null }
 
 type TokenFile = { version: 1; tokens: LocalToken[] }
 
 const REQUIRED_SCOPES: TokenScope[] = ['bridge', 'inference', 'management']
+
+/** When a device's idle clock started (ms): when it was last seen, else when it paired; null when the record says neither. */
+function idleFrom(t: LocalToken): number | null {
+  const at = Date.parse(t.lastSeenAt ?? t.createdAt ?? '')
+  return Number.isFinite(at) ? at : null
+}
 
 function mint(): TokenFile {
   const secret = () => randomBytes(32).toString('hex')
@@ -120,7 +147,15 @@ export class TokenSet {
    * write it back. A set built without one (tests that never pair) can still
    * verify; it just cannot persist, and says so.
    */
-  constructor(private readonly file: TokenFile, private readonly path: string | null = null) {}
+  constructor(private readonly file: TokenFile, private readonly path: string | null = null) {
+    for (const t of file.tokens) {
+      const at = Date.parse(t.lastSeenAt ?? '')
+      if (t.name.startsWith(DEVICE_PREFIX) && Number.isFinite(at)) this.seenWritten.set(t.name, at)
+    }
+  }
+
+  /** Per device, the `lastSeenAt` (ms) the file holds as far as this process knows — what throttles `touchDevice`'s writes. */
+  private readonly seenWritten = new Map<string, number>()
 
   /** The secret to present for `scope`, or null if nothing holds it. */
   tokenFor(scope: TokenScope): string | null {
@@ -182,7 +217,74 @@ export class TokenSet {
   devices(): DeviceSummary[] {
     return this.file.tokens
       .filter(t => t.name.startsWith(DEVICE_PREFIX))
-      .map(t => ({ name: t.name, label: t.label ?? '', createdAt: t.createdAt ?? null }))
+      .map(t => {
+        const from = idleFrom(t)
+        return {
+          name: t.name,
+          label: t.label ?? '',
+          createdAt: t.createdAt ?? null,
+          lastSeenAt: t.lastSeenAt ?? null,
+          expiresAt: from === null ? null : new Date(from + DEVICE_IDLE_EXPIRY_MS).toISOString(),
+        }
+      })
+  }
+
+  /**
+   * A request arrived with this device's secret. Memory is exact; the file is
+   * refreshed only when its copy is more than `LAST_SEEN_PERSIST_MS` old, so a
+   * read route does not become a write (and an `icacls` spawn) per request.
+   * Never throws: the request this rode on is not a write, and a stale
+   * `lastSeenAt` on disk only makes a device expire a little early after a
+   * restart.
+   */
+  touchDevice(name: string, now: Date = new Date()): void {
+    if (!name.startsWith(DEVICE_PREFIX)) return
+    const record = this.file.tokens.find(t => t.name === name)
+    if (!record) return
+    record.lastSeenAt = now.toISOString()
+    if (now.getTime() - (this.seenWritten.get(name) ?? 0) < LAST_SEEN_PERSIST_MS) return
+    // Remembered before the write: a file that cannot be written is retried in an hour, not on every request.
+    this.seenWritten.set(name, now.getTime())
+    try {
+      this.persistLastSeen()
+    } catch (e) {
+      console.warn(`[tokens] last-seen for ${name} could not be written: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * Forget every device idle for `DEVICE_IDLE_EXPIRY_MS` and return their
+   * names (the dashboard closes their sockets). Memory first, as in
+   * `revokeDevice`. A write that fails is logged, not thrown: the device is
+   * refused from now on either way, and if it returns with the next engine
+   * start, the first check expires it again — its `lastSeenAt` is as old.
+   */
+  expireIdleDevices(now: Date = new Date()): string[] {
+    const gone = this.file.tokens
+      .filter(t => t.name.startsWith(DEVICE_PREFIX))
+      .filter(t => { const from = idleFrom(t); return from !== null && now.getTime() - from >= DEVICE_IDLE_EXPIRY_MS })
+      .map(t => t.name)
+    if (gone.length === 0) return gone
+    this.file.tokens = this.file.tokens.filter(t => !gone.includes(t.name))
+    try {
+      this.persist(this.file.tokens)
+    } catch (e) {
+      console.error(`[tokens] ${gone.join(', ')} expired in memory, but the token file could not be rewritten: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    return gone
+  }
+
+  /**
+   * Forget every device at once — a lost phone when the owner is not sure
+   * which record it was, or a clean slate. Returns the names that went. Memory
+   * first; a failed write is thrown to the caller to say, as in `revokeDevice`.
+   */
+  revokeAllDevices(): string[] {
+    const gone = this.file.tokens.filter(t => t.name.startsWith(DEVICE_PREFIX)).map(t => t.name)
+    if (gone.length === 0) return gone
+    this.file.tokens = this.file.tokens.filter(t => !t.name.startsWith(DEVICE_PREFIX))
+    this.persist(this.file.tokens)
+    return gone
   }
 
   /**
@@ -201,6 +303,8 @@ export class TokenSet {
       secret: randomBytes(32).toString('hex'),
       label: clean,
       createdAt: now.toISOString(),
+      // Pairing is itself a request from the device.
+      lastSeenAt: now.toISOString(),
     }
     // Written first, remembered second: a write that fails leaves no phantom
     // device in memory (counted, listed, and flushed to disk by a later write
@@ -208,6 +312,7 @@ export class TokenSet {
     const next = [...this.file.tokens, record]
     this.persist(next)
     this.file.tokens = next
+    this.seenWritten.set(name, now.getTime())
     return record
   }
 
@@ -238,7 +343,31 @@ export class TokenSet {
       console.warn('[tokens] token set has no file path — a device change was not persisted')
       return
     }
-    const next: TokenFile = { version: 1, tokens }
+    this.writeFile({ version: 1, tokens })
+  }
+
+  /**
+   * Refresh the file's `lastSeenAt` fields and nothing else. The file is read
+   * again first and only records it already holds are changed, by name: this
+   * write happens hourly on a read path, and writing this process's whole list
+   * back would drop a device another process (a second engine on the same
+   * home) paired since this one loaded the file. Pairing and revoking still
+   * write the list this process holds — they are the owner acting, here.
+   */
+  private persistLastSeen(): void {
+    if (this.path === null) return
+    const onDisk: unknown = JSON.parse(readFileSync(this.path, 'utf-8'))
+    if (!isUsable(onDisk)) throw new Error('the token file on disk is not one the engine could load')
+    const mine = new Map(this.file.tokens.filter(t => t.name.startsWith(DEVICE_PREFIX)).map(t => [t.name, t]))
+    for (const t of onDisk.tokens) {
+      const seen = mine.get(t.name)?.lastSeenAt
+      if (seen && t.secret === mine.get(t.name)!.secret) t.lastSeenAt = seen
+    }
+    this.writeFile(onDisk)
+  }
+
+  private writeFile(next: TokenFile): void {
+    if (this.path === null) return
     if (!isUsable(next)) throw new Error('refusing to write a token file the engine could not load again')
     // Restricted BEFORE the rename: the ACL travels with the file, so a crash
     // between write and rename leaves a straggler that is already owner-only
