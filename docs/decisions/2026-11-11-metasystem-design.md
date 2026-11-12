@@ -1,6 +1,6 @@
 # The metasystem: one watcher above everything the owner runs on local models
 
-**Date:** 2026-11-11 · **Status:** approved by the owner on 2026-11-11 with the five recommendations as written ("1070 ti. Approve"). Slice 1 (memory and the note) was built on 2026-11-12 and is not deployed; see "Slice 1 as built" at the end. Slices 2 to 6 are not built.
+**Date:** 2026-11-11 · **Status:** approved by the owner on 2026-11-11 with the five recommendations as written ("1070 ti. Approve"). Slice 1 (memory and the note) was built on 2026-11-12 and has been live since 2026-11-12 04:40Z on the doorman and the main PC, at the owner's word ("Do it live"); see "Slice 1 as built" at the end. Slices 2 to 6 are not built.
 
 Companion records: `docs/decisions/2026-11-08-wakefulness-design.md` (the boxes, the doorman), `docs/decisions/2026-11-11-local-llm-apps.md` (the apps as CynCo's use cases), `docs/decisions/2026-11-08-image-box-design.md`, the owner's `pc-wakefulness/knowledge/tiering-preview.md`, `engine/vsm/CLAUDE.md`, `engine/cybernetics-core/README.md`.
 
@@ -248,7 +248,7 @@ The sampling beat; the store's schema; the exact form of the measures; how the o
 
 ## Slice 1 as built (2026-11-12)
 
-Built and proven against the records of 2026-11-11; not deployed, and not yet seen on a real night. Where things are: the watcher `scripts/doorman/` (`CLAUDE.md` there), the main PC's reporter `engine/power/reporter/` (`engine/power/CLAUDE.md`), the go-live steps `docs/liveness-setup.md` § 8, what it left `docs/NOW.md`.
+Built and proven against the records of 2026-11-11, and **live since 2026-11-12 04:40Z**: `watcher.service` on the doorman (listeners on `100.110.117.10` only: 9170, 9171, 8090) and the task "CynCo box reporter" on the main PC. On its first read of real data, at 04:41Z, the note said `main: awake since 21:40, last heard 25 s ago` and flagged the eight wakes of F221 from the PC's own System log, with the 10:11Z scheduled wake left out. The same note also flagged a silence that was not one, the 13.9 hours before the reporter existed (F232, fixed the same day: silence is only counted after a real report, and a stop the reporter announces is "not watched"). The second proof this design asks for, one real night, is the night of 2026-11-12. Where things are: the watcher `scripts/doorman/` (`CLAUDE.md` there), the main PC's reporter `engine/power/reporter/` (`engine/power/CLAUDE.md`), the go-live steps `docs/liveness-setup.md` § 8, what it left `docs/NOW.md`.
 
 **What the owner can do afterwards.** Open `http://100.110.117.10:9171/` from any of their devices, with the PC asleep or awake, and read for any day: what was flagged (what was seen, what was expected, what the watcher believes it means, a suggested action in words), what is still learning, the measures, and per box a chart on one time axis (state, who held the GPU, each service, jobs, temperature) with the flagged times marked.
 

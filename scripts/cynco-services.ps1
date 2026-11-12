@@ -25,7 +25,7 @@ $services = @(
   @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
   @{ Name = 'embed';    Task = 'CynCo embed server';        Match = 'llama-server.*--embeddings'; Log = "$env:USERPROFILE\.cynco\embed-server.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-embed-server.cmd'); Description = 'CynCo embedding server: llama-server --embeddings on 127.0.0.1:9165 (nomic-embed-text, CPU) for every engine''s project and code index' } },
   @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log" },
-  @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
+  @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Goodbye = 'engine\power\reporter\main.ts'; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
   @{ Name = 'ntfy';     Remote = '100.110.117.10'; Port = 8090; Note = 'on the doorman (docker compose, /opt/doorman/ntfy)' },
   @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Log = '' }
 )
@@ -61,6 +61,15 @@ foreach ($s in $services) {
       Write-Output "$($s.Name): started"
     }
     'stop' {
+      if ($s.Goodbye -and $proc) {
+        # Windows ends a task's process outright. A service that can say it is stopping is asked to
+        # first: the box reporter tells the watcher, which then shows this box as not watched and
+        # not as gone silent (F232). No answer in ten seconds, and it is stopped anyway.
+        Push-Location $repo
+        try { & bun $s.Goodbye --stop | ForEach-Object { Write-Output "$($s.Name): $_" } }
+        catch { Write-Output "$($s.Name): could not ask it to stop first ($($_.Exception.Message)); stopping it anyway" }
+        finally { Pop-Location }
+      }
       if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -TaskName $s.Task }
       if ($proc) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
       if ($task -or $proc) { Write-Output "$($s.Name): stopped" } else { Write-Output "$($s.Name): not running" }

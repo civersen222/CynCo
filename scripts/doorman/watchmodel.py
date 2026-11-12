@@ -83,9 +83,16 @@ def _power_intervals(events: List[dict], box: str, sample_times: Optional[List[f
 def timeline(samples: List[dict], events: List[dict], box: str, t0: float, t1: float, now: float) -> List[dict]:
     """The box's state over [t0, min(t1, now)) as segments {"state","from","to","basis"}.
 
-    States: `asleep` and `off` come from the box's own power events; `awake` from its samples, and from
-    a wake that ends in a sleep with nothing in between; `silent` is a gap in the samples that no sleep
-    or shutdown covers; `unknown` is time nothing was reported about.
+    States: `asleep` and `off` come from the box's own power events; `awake` from its samples, and
+    from its System log where no sample exists (a wake that ends in a sleep, or a wake before the
+    reporter had started); `unknown` is time nothing was reported about.
+
+    `silent` is only ever a stretch that follows a real report (F232): a gap between two samples, the
+    time after the last sample, or the time after a wake when the box was reporting right up to that
+    sleep. History the reporter read back out of the System log is not a heartbeat: a box cannot be
+    silent before its reporter has run, and after a boot nothing reports until somebody logs on.
+    A stretch that would be silent is `unwatched` when the reporter said it was stopping
+    (`reporter.stop`): a stop that is announced is not silence.
     """
     end = min(t1, now)
     if end <= t0:
@@ -113,6 +120,22 @@ def timeline(samples: List[dict], events: List[dict], box: str, t0: float, t1: f
     explicit = merged
 
     times = sorted(x["at"] for x in samples if t0 - SILENT_GAP_S <= x["at"] < end)
+    every = sorted(x["at"] for x in samples)
+    stops = sorted((e for e in events if e["box"] == box and e["kind"] == "reporter.stop"), key=lambda e: e["at"])
+
+    def reporting_at(at: float) -> bool:
+        """Was the box sending samples right up to `at`."""
+        return any(at - SILENT_GAP_S <= t <= at for t in every)
+
+    def quiet(last: float, a: float, b: float) -> dict:
+        """The stretch [a, b) after the last sample at `last`: unwatched if the reporter announced
+        its stop around then, otherwise silent."""
+        said = next((e for e in stops if last - 1.0 <= e["at"] <= last + SILENT_GAP_S), None)
+        if said:
+            why = said["data"].get("reason")
+            return {"state": "unwatched", "from": a, "to": b, "basis": "the reporter was stopped on purpose at %s%s" % (iso(said["at"]), " (%s)" % why if why else "")}
+        return {"state": "silent", "from": a, "to": b, "basis": "no sample since %s" % iso(last)}
+
     out: List[dict] = []
     cursor = t0
     bounds = explicit + [None]
@@ -124,14 +147,23 @@ def timeline(samples: List[dict], events: List[dict], box: str, t0: float, t1: f
             right_is_sleep = nxt is not None and nxt["_from"] >= a
             inside = [t for t in times if a <= t < b]
             before = [t for t in times if t < a]
+            # Was the box reporting when the stretch before this one began: right up to the sleep it
+            # has just woken from. Never after a shutdown (the reporter starts again at logon), and
+            # never when no sample precedes it (the reporter had not run yet).
+            was_reporting = left_is_wake and prev["state"] == "asleep" and reporting_at(prev["_from"])
+            # ... or right up to this stretch itself (the window opens in the middle of a quiet spell).
+            # Only at the window's own start: after a sleep or a shutdown the rule above is the one.
+            just_before = prev is None and bool(before) and a - before[-1] <= SILENT_GAP_S
             if not inside:
-                if left_is_wake and right_is_sleep:
+                if was_reporting and b - a > SILENT_GAP_S:
+                    out.append({"state": "silent", "from": a, "to": b, "basis": "no sample since it woke at %s" % iso(a)})
+                elif left_is_wake and right_is_sleep:
                     why = "idle sleep" if nxt["state"] == "asleep" and nxt.get("_reason") == "idle" else "between a wake and the next %s" % ("sleep" if nxt["state"] == "asleep" else "shutdown")
                     out.append({"state": "awake", "from": a, "to": b, "basis": why})
-                elif before and a - before[-1] <= SILENT_GAP_S and b - before[-1] <= SILENT_GAP_S:
+                elif just_before and b - before[-1] <= SILENT_GAP_S:
                     out.append({"state": "awake", "from": a, "to": b, "basis": "samples"})
-                elif before and a - before[-1] <= SILENT_GAP_S:
-                    out.append({"state": "silent", "from": a, "to": b, "basis": "no sample since %s" % iso(before[-1])})
+                elif just_before:
+                    out.append(quiet(before[-1], a, b))
                 else:
                     out.append({"state": "unknown", "from": a, "to": b, "basis": "nothing was reported"})
             else:
@@ -140,19 +172,28 @@ def timeline(samples: List[dict], events: List[dict], box: str, t0: float, t1: f
                 if first > a:
                     if lead_ok:
                         out.append({"state": "awake", "from": a, "to": first, "basis": "samples"})
-                    elif left_is_wake or (before and a - before[-1] <= SILENT_GAP_S):
-                        out.append({"state": "silent", "from": a, "to": first, "basis": "no sample until %s" % iso(first)})
+                    elif was_reporting:
+                        out.append({"state": "silent", "from": a, "to": first, "basis": "no sample from the wake until %s" % iso(first)})
+                    elif just_before:
+                        out.append(quiet(before[-1], a, first))
+                    elif left_is_wake:
+                        # Awake by its own log, and nothing was reporting yet: not a silence.
+                        what = "woke" if prev["state"] == "asleep" else "started"
+                        out.append({"state": "awake", "from": a, "to": first, "basis": "the box's System log: it %s then and records no sleep or shutdown since; its reporter was not running yet" % what})
                     else:
                         out.append({"state": "unknown", "from": a, "to": first, "basis": "nothing was reported"})
                 for i in range(len(inside) - 1):
                     s, e = inside[i], inside[i + 1]
-                    out.append({"state": "awake" if e - s <= SILENT_GAP_S else "silent", "from": s, "to": e, "basis": "samples" if e - s <= SILENT_GAP_S else "no sample since %s" % iso(s)})
+                    out.append({"state": "awake", "from": s, "to": e, "basis": "samples"} if e - s <= SILENT_GAP_S else quiet(s, s, e))
                 last = inside[-1]
                 if b > last:
-                    if b - last <= SILENT_GAP_S:
+                    after_last = quiet(last, last, b)
+                    # A stop that was announced shows at once; an unannounced quiet is given
+                    # SILENT_GAP_S before it is called anything.
+                    if b - last <= SILENT_GAP_S and after_last["state"] != "unwatched":
                         out.append({"state": "awake", "from": last, "to": b, "basis": "samples"})
                     else:
-                        out.append({"state": "silent", "from": last, "to": b, "basis": "no sample since %s" % iso(last)})
+                        out.append(after_last)
         if nxt:
             out.append({k: v for k, v in nxt.items() if not k.startswith("_")})
             cursor = nxt["to"]
@@ -247,11 +288,12 @@ def service_observations(samples: List[dict], events: List[dict], box: str, name
 def service_bands(samples: List[dict], events: List[dict], box: str, name: str, segments: List[dict], end: float) -> List[dict]:
     """One service as stretches {"state": "up"|"down"|"idle", "from", "to", ...}; `idle` = not wanted.
 
-    A stretch ends where the next observation begins or where the box stopped being awake (asleep,
-    off, or silent: it is not "not answering while wanted" when the box itself is not there).
+    A stretch ends where the next observation begins or where the box stopped being awake and watched
+    (asleep, off, silent or unwatched: it is not "not answering while wanted" when the box itself is
+    not there, and nothing is known of it while its reporter is stopped).
     """
     obs = service_observations(samples, events, box, name)
-    not_awake = [g for g in segments if g["state"] in ("asleep", "off", "silent")]
+    not_awake = [g for g in segments if g["state"] in ("asleep", "off", "silent", "unwatched")]
     bands: List[dict] = []
     for i, o in enumerate(obs):
         nxt = obs[i + 1]["at"] if i + 1 < len(obs) else end

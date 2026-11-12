@@ -6,14 +6,14 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
-import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { daemonHasWork, getJson, holderReader, modelRows, readBusyClaim, readDaemonUp, readEngine, readInferenceToken, readModelPort, readServices, type FetchLike } from '../../../power/reporter/engineFacts.js'
 import { ticksBetween } from '../../../power/reporter/idle.js'
 import { Outbox } from '../../../power/reporter/outbox.js'
 import { fingerprint, gatherSample, type Sources } from '../../../power/reporter/sample.js'
-import { cached, createReporter, main, watcherUrl, GAP_MS, LOOK_MS, type ReporterState } from '../../../power/reporter/main.js'
+import { cached, createReporter, createStopWatch, main, requestStop, stopRequestFile, watcherUrl, GAP_MS, LOOK_MS, type ReporterState } from '../../../power/reporter/main.js'
 import type { EngineRow, Sample, WatchEvent, WatchRecord } from '../../../power/reporter/types.js'
 import type { PortTree } from '../../../apps/portTree.js'
 import type { LocalApp } from '../../../apps/registry.js'
@@ -453,6 +453,90 @@ describe('the loop', () => {
     r.lines.push(['[embed] No embedding endpoint answered at http://127.0.0.1:9165 (Unable to connect.)'])
     await r.reporter.tick()
     expect(r.events().find(e => e.kind === 'service.said_down')).toMatchObject({ at: '2026-11-12T03:00:00.000Z', data: { service: 'embed' } })
+  })
+})
+
+describe('a stop that is announced (F232)', () => {
+  // A reporter that is stopped on purpose says so, and the watcher then shows the box as not
+  // watched, not as gone silent. Windows ends a task's process outright, so the stop is asked for
+  // through a file first (`--stop`, `cynco-services.ps1 stop watch`).
+  const dir = () => mkdtempSync(join(tmpdir(), 'cynco-stop-'))
+
+  it('stop() tells the watcher reporter.stop with the reason and the time, and sends it at once', async () => {
+    const added: WatchRecord[] = []
+    let flushes = 0
+    const reporter = createReporter({
+      sources: sources(), outbox: { add: r => { added.push(...r) }, flush: async () => { flushes++; return 'empty' as const }, size: () => 0 },
+      readPower: async () => [], engineLog: () => [], jobs: () => [], state: {}, saveState: () => {}, modelPort: 8081, now: () => new Date(NOW), log: () => {},
+    })
+    await reporter.stop('asked')
+    expect(added).toEqual([{ t: 'event', at: '2026-11-12T03:00:00.000Z', kind: 'reporter.stop', key: 'stop:2026-11-12T03:00:00.000Z', data: { reason: 'asked', pid: process.pid } }])
+    expect(flushes).toBe(1)
+  })
+
+  it('a stop the watcher cannot be told of now stays in the backlog on disk and is sent at the next start', async () => {
+    const f = join(dir(), 'outbox.jsonl')
+    const out = new Outbox({ url: await deadAddress(), box: 'main', file: f, log: () => {}, timeoutMs: 500 })
+    const reporter = createReporter({
+      sources: sources(), outbox: out, readPower: async () => [], engineLog: () => [], jobs: () => [], state: {}, saveState: () => {}, modelPort: 8081, now: () => new Date(NOW), log: () => {},
+    })
+    await reporter.stop('asked')
+    expect(readFileSync(f, 'utf-8')).toContain('"kind":"reporter.stop"')
+    const got: WatchEvent[] = []
+    const url = await standIn(r => { got.push(...(JSON.parse(r.body).records as WatchEvent[])); return { json: { ok: true } } })
+    await new Outbox({ url, box: 'main', file: f, log: () => {} }).flush()
+    expect(got.map(e => [e.kind, e.at])).toEqual([['reporter.stop', '2026-11-12T03:00:00.000Z']])
+  })
+
+  it('the running reporter takes a request: it waits for the look in flight, starts no other, says so, removes the request and ends', async () => {
+    const d = dir()
+    const file = stopRequestFile(d)
+    const order: string[] = []
+    let busy = true
+    const watch = createStopWatch({ file, isBusy: () => busy, hold: () => order.push('hold'), stop: async reason => { order.push(`stop:${reason}`) }, exit: code => order.push(`exit:${code}`), log: () => {} })
+    expect(await watch.check()).toBe(false) // no request: nothing happens
+    expect(order).toEqual([])
+    writeFileSync(file, '{}')
+    const taking = watch.check()
+    await new Promise(r => setTimeout(r, 120))
+    expect(order).toEqual([]) // a look is in flight: not yet
+    busy = false
+    expect(await taking).toBe(true)
+    expect(order).toEqual(['hold', 'stop:asked', 'exit:0'])
+    expect(existsSync(file)).toBe(false)
+    expect(await watch.check('interrupted')).toBe(false) // once
+  })
+
+  it('Ctrl+C is a stop on purpose with no request file, and a watcher that cannot be told does not keep the process alive', async () => {
+    const order: string[] = []
+    const said: string[] = []
+    const watch = createStopWatch({ file: stopRequestFile(dir()), isBusy: () => false, hold: () => {}, stop: async reason => { order.push(reason); throw new Error('refused') }, exit: code => order.push(`exit:${code}`), log: l => said.push(l) })
+    expect(await watch.check('interrupted')).toBe(true)
+    expect(order).toEqual(['interrupted', 'exit:0'])
+    expect(said[0]).toContain('telling the watcher failed: refused')
+  })
+
+  it('--stop: a reporter that takes the request answers stopped; with nobody there the request is taken back', async () => {
+    const d = dir()
+    const file = stopRequestFile(d)
+    const taker = setInterval(() => { if (existsSync(file)) rmSync(file) }, 20) // stands in for the running reporter
+    try { expect(await requestStop(d, { timeoutMs: 2000, pollMs: 20 })).toBe('stopped') } finally { clearInterval(taker) }
+    expect(await requestStop(d, { timeoutMs: 150, pollMs: 20 })).toBe('no-answer')
+    expect(existsSync(file)).toBe(false) // or it would stop the next reporter the moment it started
+  })
+
+  it('main wires it: a stale request is cleared at start, the request is watched for, and the services script asks before it kills', () => {
+    const main = readFileSync(join(process.cwd(), 'engine', 'power', 'reporter', 'main.ts'), 'utf-8')
+    const body = main.slice(main.indexOf('export async function main('))
+    expect(body.indexOf('rmSync(stopFile, { force: true })')).toBeGreaterThan(0)
+    expect(body.indexOf('rmSync(stopFile, { force: true })')).toBeLessThan(body.indexOf('await look()'))
+    expect(body).toContain('createStopWatch({ file: stopFile')
+    expect(body).toContain("argv.includes('--stop')")
+    const services = readFileSync(join(process.cwd(), 'scripts', 'cynco-services.ps1'), 'utf-8')
+    expect(/Name = 'watch';[^\n]*Goodbye = 'engine\\power\\reporter\\main\.ts'/.test(services)).toBe(true)
+    const stop = services.slice(services.indexOf("'stop' {"))
+    expect(stop.indexOf('& bun $s.Goodbye --stop')).toBeGreaterThan(0)
+    expect(stop.indexOf('& bun $s.Goodbye --stop')).toBeLessThan(stop.indexOf('Stop-ScheduledTask'))
   })
 })
 
