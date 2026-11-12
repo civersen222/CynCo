@@ -559,6 +559,9 @@ try {
           model: modelName, contextLength: config.contextLength || 32768, tier: config.tier || 'auto', projectPath: loop.getExecutor()?.['cwd'] ?? process.cwd(),
           modelState: pm?.modelState ? pm.modelState() : null,
           busy,
+          // What this engine has open right now (a turn, a model request, the picture queue): the box
+          // reporter reads it to tell a model in use from one that is only loaded (engine/power/reporter).
+          activity: activity.snapshot(),
           brain: brainEnabled(),
           lens: lensEnabled(),
         }

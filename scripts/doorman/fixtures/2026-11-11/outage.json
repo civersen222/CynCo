@@ -1,0 +1,18 @@
+{
+  "service": "embed",
+  "what": "CynCo's embedding service on 127.0.0.1:9165 was down while the engine depended on it (docs/cynco-failure-log.md F215). Nothing sampled the port that day: the reporter did not exist. These are the two times that real records give, and how firmly.",
+  "saidDown": {
+    "at": "2026-11-11T15:06:00Z",
+    "timeIs": "anchored",
+    "basis": "the engine's own log line; the log carries no times, and the line sits 39 lines above the index stamp 2026-11-11T15:06:00.871Z of the same engine start"
+  },
+  "back": {
+    "at": "2026-11-11T17:18:12Z",
+    "timeIs": "reconstructed",
+    "basis": "F215 in the failure log: the service was started by hand at 10:18:12 local, read from the task's last-run time that day; no log line records it"
+  },
+  "notEstablished": [
+    "When the service stopped answering. Its 49-hour run ended with the planned restart (the System log: shutdown 09:47:06Z, three boots by 09:49:41Z); nobody was logged on until 14:59:00Z, so nothing of CynCo ran and nothing depended on it in between. What stopped its start at logon is not known (Task Scheduler's history log is disabled).",
+    "Any reading of the port between the two times. The fixture carries no sample for the outage: only the engine's words that open it and the recorded restart that closes it."
+  ]
+}

@@ -1,0 +1,56 @@
+[audit] Initialized: C:\Users\civer\.cynco\audit-log (session=session-, project=bdf55b2b78cb)
+[wait-push] on: the phone is told when an approval or a question waits with nobody connected
+[vsm] GovernanceDB initialized
+[s5] rule authority: earned (0 predictive of 0)
+[snapshot] Initialized workspace snapshot for C:\Users\civer\localcode
+[session] Journal: C:\Users\civer\.cynco\sessions\session-1794409555667.jsonl
+[dashboard] phone listener bound: http://100.101.192.101:9161
+[dashboard] Governance dashboard on http://127.0.0.1:9161
+[dashboard] phone listener http://100.101.192.101:9161 — bound
+[brain] off for this engine (LOCALCODE_BRAIN=off): no jlens sidecar, no activations consumer
+[localcode] Ready. Waiting for TUI connection on ws://localhost:9160
+[localcode] llama-cpp is reachable
+[index] sqlite-vec loaded — vector search enabled (dim=768)
+[localcode] Auto-indexing project for CodeIndex tool...
+[index] Found 1100 source files
+[index] Embedding 149 chunks...
+[embed] No embedding endpoint answered at http://127.0.0.1:9165 (Unable to connect. Is the computer able to access the url?). Semantic code search is OFF for this session — retrieval falls back to keyword search.
+[embed] Fix: run an embedding server and point LOCALCODE_EMBED_BASE_URL at it (Ollama: `ollama pull jina-code-embeddings-0.5b`; llama.cpp: start llama-server with --embeddings). LOCALCODE_EMBED_API=ollama|openai pins the wire format.
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[imagegen] GET http://192.168.0.47:8188/system_stats failed: timeout
+[imagegen] not ready: ComfyUI did not answer at http://192.168.0.47:8188 (timeout) — it listens on 127.0.0.1 unless started with --listen, and the PC's firewall must allow port 8188
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] Indexed 60/149 chunks...
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] Indexed 110/149 chunks...
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] ⚠ Embed batch failed: Error: Unable to connect. Is the computer able to access the url?
+[index] ⚠ Embedding failed: Error: Unable to connect. Is the computer able to access the url? — using keyword search only
+[index] git rev-parse HEAD failed in C:\Users\civer\localcode: spawnSync git ETIMEDOUT
+[index] Done: 149 chunks indexed, 1071 files unchanged
+[index] Indexed 149 chunks from 29 files (1071 skipped)
+[localcode] Index ready: Index: 5329 chunks from 1100 files (model: nomic-embed-text, last: 2026-11-11T15:06:00.871Z)
