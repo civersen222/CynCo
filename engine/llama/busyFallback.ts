@@ -21,7 +21,11 @@
  * cannot be read: a dispatched mission's engine holds the port for hours with
  * no busy file, and a chat turn waited up to 30 minutes behind it with no
  * answer at all. A server that is not CynCo's is not such a holder: the lazy
- * path takes the port from it (F202). `countTokens` follows the route because
+ * path takes the port from it (F202). Unless it could not: a server started as
+ * administrator cannot be stopped by an engine that is not, the lazy path then
+ * refuses with a `PortHeldError` instead of waiting (F223), and the request
+ * that met the refusal, and the ones after it while that server holds the
+ * port, are answered here. `countTokens` follows the route because
  * the primary tokenizer would itself wait on the busy GPU. Everything else
  * (adapters, capability probe, listModels, `processManager` for main.ts) is the
  * primary's. Design: docs/decisions/2026-11-08-wakefulness-design.md (slice 2b).
@@ -29,6 +33,7 @@
 import type { CompletionRequest, ModelCapabilities, ModelInfo, Provider } from '../provider.js'
 import type { CompletionResponse, StreamEvent } from '../types.js'
 import type { GpuBusy } from '../daemon/gpuBusyFile.js'
+import { isPortHeldError } from './errors.js'
 import { abortError } from './processManager.js'
 import type { PortOwner } from './portOwner.js'
 
@@ -63,23 +68,28 @@ export function portHolderReader(deps: {
   isPortOccupied: () => Promise<boolean>
   isHealthy: () => Promise<boolean>
   portOwner: () => Promise<PortOwner>
+  /** The server the lazy path tried to stop and could not (`ProcessManager.cannotStop`, F223), as `portOwner` described it. */
+  cannotStop?: () => { detail: string; why: string } | null
   now?: () => number
   ttlMs?: number
 }): () => Promise<PortHolder | null> {
   const now = deps.now ?? (() => Date.now())
   const ttlMs = deps.ttlMs ?? PORT_HOLDER_TTL_MS
-  let remembered: { at: number; holder: PortHolder | null } | null = null
+  let remembered: { at: number; holder: PortHolder | null; stuck: string | null } | null = null
   return async () => {
     if (deps.ownServerUp()) { remembered = null; return null }
     if (!(await deps.isPortOccupied())) { remembered = null; return null }
-    if (remembered && now() - remembered.at < ttlMs) return remembered.holder
+    const stuck = deps.cannotStop?.() ?? null
+    // A reading from before a stop was refused says "not a holder" about the very server that now is one.
+    if (remembered && now() - remembered.at < ttlMs && remembered.stuck === (stuck?.detail ?? null)) return remembered.holder
     let holder: PortHolder | null = null
     if (await deps.isHealthy()) {
       const owner = await deps.portOwner()
       if (owner.owner === 'engine') holder = { key: owner.detail, says: `another CynCo engine's model server (${owner.detail})` }
       else if (owner.owner === 'unknown') holder = { key: `unknown:${deps.port}`, says: `a model server on port ${deps.port} whose owner could not be read` }
+      else if (stuck && owner.detail === stuck.detail) holder = { key: `cannot-stop:${owner.detail}`, says: `${owner.detail}, which CynCo could not stop (${stuck.why})` }
     }
-    remembered = { at: now(), holder }
+    remembered = { at: now(), holder, stuck: stuck?.detail ?? null }
     return holder
   }
 }
@@ -168,21 +178,57 @@ export class BusyFallbackProvider implements Provider {
 
   // A stopped turn is not routed (F205): `route` asks the fallback box for health and waits up to
   // HEALTH_TIMEOUT_MS when it is down, once per call, and a turn makes one call per message it counts.
+  /**
+   * The primary refused because a server it cannot stop holds the port (F223). It refuses before it has
+   * answered anything, so the request can still go to the fallback: the route is asked again, and now names
+   * that server as a holder. Null: no fallback to go to, and the refusal is the answer.
+   */
+  private async afterRefusal(e: unknown): Promise<Provider | null> {
+    if (!isPortHeldError(e)) return null
+    const p = await this.route()
+    return p === this.deps.fallback ? p : null
+  }
+
   async complete(request: CompletionRequest): Promise<CompletionResponse> {
     if (request.signal?.aborted) throw abortError(request.signal)
     const p = await this.route()
-    return p === this.deps.fallback ? p.complete(this.forFallback(request)) : p.complete(request)
+    if (p === this.deps.fallback) return p.complete(this.forFallback(request))
+    try {
+      return await p.complete(request)
+    } catch (e) {
+      const fallback = await this.afterRefusal(e)
+      if (!fallback) throw e
+      return fallback.complete(this.forFallback(request))
+    }
   }
 
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
     if (request.signal?.aborted) throw abortError(request.signal)
     const p = await this.route()
-    yield* p === this.deps.fallback ? p.stream(this.forFallback(request)) : p.stream(request)
+    if (p === this.deps.fallback) { yield* p.stream(this.forFallback(request)); return }
+    let answered = false
+    try {
+      for await (const event of p.stream(request)) { answered = true; yield event }
+    } catch (e) {
+      // Only a refusal that came before anything was answered: half an answer is not continued on another model.
+      const fallback = answered ? null : await this.afterRefusal(e)
+      if (!fallback) throw e
+      yield* fallback.stream(this.forFallback(request))
+    }
   }
 
   async countTokens(text: string, signal?: AbortSignal): Promise<number> {
     if (signal?.aborted) return Math.ceil(text.length / 4)
-    const p = await this.route()
+    let p = await this.route()
+    if (p !== this.deps.fallback && p.countTokens) {
+      try {
+        return await p.countTokens(text, signal)
+      } catch (e) {
+        const fallback = await this.afterRefusal(e)
+        if (!fallback) throw e
+        p = fallback
+      }
+    }
     if (p.countTokens) return p.countTokens(text, signal)
     return Math.ceil(text.length / 4)
   }

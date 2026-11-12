@@ -17,6 +17,18 @@
  *   5. Anything else is `foreign`, as before, and what cannot be read is
  *      `unknown`.
  *
+ * A server started from an administrator window (F223) gives none of that: the
+ * command lines of the server and of the shell that started it read as nothing
+ * from an engine that is not elevated. What can still be read is the names in
+ * the parent chain and the app's own processes that are not elevated, so when
+ * the nearest shell's command line cannot be read:
+ *
+ *   3a. the registered app whose launcher is that kind of script and which is
+ *       running (a process from its folder) is the answer, if there is one;
+ *   4a. otherwise the project folders something is running from are looked at
+ *       for a script of that kind that starts a model server on this port.
+ *       Exactly one such script in exactly one such folder is the app.
+ *
  * A process's working directory cannot be read from the process list, which is
  * why step 4 looks for the script instead of asking where it ran.
  */
@@ -24,8 +36,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 import { classifyPortOwner } from '../llama/portOwner.js'
+import { appInUse } from './displace.js'
 import { appsFile, loadApps, saveApp, type LocalApp } from './registry.js'
-import { readPortTree, type PortTree, type Proc } from './portTree.js'
+import { listProcesses as readProcessList, readPortTree, type ListedProc, type PortTree, type Proc } from './portTree.js'
 
 export type LauncherKind = 'bash' | 'cmd' | 'powershell' | 'python' | 'node'
 export type Launcher = { proc: Proc; kind: LauncherKind; script: string }
@@ -36,12 +49,12 @@ export type Holder =
   | { owner: 'foreign'; detail: string; listener: Proc }
   | { owner: 'unknown'; detail: string }
 
-const INTERPRETERS: Array<{ kind: LauncherKind; name: RegExp; script: RegExp }> = [
-  { kind: 'bash', name: /^(bash|sh|zsh)(\.exe)?$/i, script: /\.(sh|bash)$/i },
-  { kind: 'cmd', name: /^cmd(\.exe)?$/i, script: /\.(cmd|bat)$/i },
-  { kind: 'powershell', name: /^(powershell|pwsh)(\.exe)?$/i, script: /\.ps1$/i },
-  { kind: 'python', name: /^(python[\d.]*|pythonw|py)(\.exe)?$/i, script: /\.py$/i },
-  { kind: 'node', name: /^(node|bun)(\.exe)?$/i, script: /\.(js|mjs|cjs|ts)$/i },
+const INTERPRETERS: Array<{ kind: LauncherKind; name: RegExp; script: RegExp; ext: string }> = [
+  { kind: 'bash', name: /^(bash|sh|zsh)(\.exe)?$/i, script: /\.(sh|bash)$/i, ext: '.sh' },
+  { kind: 'cmd', name: /^cmd(\.exe)?$/i, script: /\.(cmd|bat)$/i, ext: '.cmd' },
+  { kind: 'powershell', name: /^(powershell|pwsh)(\.exe)?$/i, script: /\.ps1$/i, ext: '.ps1' },
+  { kind: 'python', name: /^(python[\d.]*|pythonw|py)(\.exe)?$/i, script: /\.py$/i, ext: '.py' },
+  { kind: 'node', name: /^(node|bun)(\.exe)?$/i, script: /\.(js|mjs|cjs|ts)$/i, ext: '.js' },
 ]
 
 /** A Windows command line into its arguments: double quotes group, and are dropped. */
@@ -80,6 +93,19 @@ export function launcherOf(tree: PortTree, platform: string = process.platform):
     if (!interp || !proc.commandLine) continue
     const script = splitCommandLine(proc.commandLine).slice(1).find(a => interp.script.test(a))
     if (script) return { proc, kind: interp.kind, script: normalizeScript(script, platform) }
+  }
+  return null
+}
+
+/**
+ * The nearest ancestor that is a shell or interpreter, when its command line cannot be read: what a
+ * launcher started from an administrator window looks like to an engine that is not elevated (F223).
+ * Null when that ancestor can be read (then `launcherOf` has the answer, or there is none).
+ */
+export function unreadableLauncher(tree: PortTree): { proc: Proc; kind: LauncherKind } | null {
+  for (const proc of tree.ancestors) {
+    const interp = INTERPRETERS.find(i => i.name.test(proc.name))
+    if (interp) return proc.commandLine ? null : { proc, kind: interp.kind }
   }
   return null
 }
@@ -146,6 +172,50 @@ export function discoverApp(tree: PortTree, deps: DiscoverDeps): LocalApp | null
   }
 }
 
+/** Where a project keeps the script that starts its model server: its own folder, `scripts`, `bin`. */
+const SCRIPT_DIRS = ['', 'scripts', 'bin']
+const MAX_SCRIPT_BYTES = 256 * 1024
+
+/**
+ * The app behind a server whose launcher cannot be read, from what can be: among the project folders
+ * something is running from (not a checkout of CynCo, which has such scripts of its own), the scripts of
+ * the launcher's kind that start a model server and name this port. Exactly one script in exactly one
+ * folder is the app; anything else is not guessed.
+ */
+export function discoverByFolder(tree: PortTree, launcher: { proc: Proc; kind: LauncherKind }, port: number, deps: DiscoverDeps & { procs: ListedProc[] }): LocalApp | null {
+  const interp = INTERPRETERS.find(i => i.kind === launcher.kind)!
+  const namesPort = new RegExp(`(^|[^0-9])${port}([^0-9]|$)`)
+  const found: Array<{ root: string; script: string }> = []
+  for (const root of deps.roots) {
+    if (!appInUse({ root }, -1, deps.procs)) continue
+    if (existsSync(join(root, 'docs', 'cynco-failure-log.md'))) continue
+    for (const dir of SCRIPT_DIRS) {
+      const folder = join(root, dir)
+      if (!statSync(folder, { throwIfNoEntry: false })?.isDirectory()) continue
+      for (const entry of readdirSync(folder, { withFileTypes: true })) {
+        if (!entry.isFile() || !interp.script.test(entry.name)) continue
+        const file = join(folder, entry.name)
+        if (statSync(file).size > MAX_SCRIPT_BYTES) continue
+        const text = readFileSync(file, 'utf-8')
+        if (STARTS_MODEL_SERVER.test(text) && namesPort.test(text)) found.push({ root, script: dir ? `${dir}/${entry.name}` : entry.name })
+      }
+    }
+  }
+  if (found.length !== 1) return null
+  const { root, script } = found[0]
+  const name = basename(root)
+  const when = (deps.now ?? (() => new Date()))().toISOString()
+  return {
+    id: name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-'),
+    name,
+    root,
+    script,
+    launch: { exe: launcher.proc.exe ?? launcher.proc.name, args: launchArgs(launcher.kind, script), cwd: root },
+    manage: true,
+    source: `discovered ${when}: pid ${tree.listener.pid} (${tree.listener.name}) was started by ${launcher.proc.name}, whose command line could not be read (as for a process started as administrator); ${root} is the only project folder with a running process and a ${interp.ext} script that starts a model server on port ${port} (${script})`,
+  }
+}
+
 const SKIP_HOME_CHILDREN = /^(\.|_|AppData$|Application Data$|Local Settings$|My Documents$|NetHood$|PrintHood$|Recent$|SendTo$|Start Menu$|Templates$|Cookies$|NTUSER|ntuser|OneDrive|Documents$|Downloads$|Desktop$|Pictures$|Music$|Videos$|Links$|Favorites$|Contacts$|Searches$|Saved Games$|3D Objects$|Temp$|node_modules$|bin$)/
 
 /** Where the owner's projects live: the folders directly under the home folder and under `CYNCO-PROJECTS`. */
@@ -165,6 +235,8 @@ export type IdentifyDeps = {
   registryFile?: string
   /** Project folders to search when the registry does not know the server. Default: `projectDirs()`. */
   roots?: string[]
+  /** Every process, for "is this app running": asked only when the launcher's command line cannot be read (F223). */
+  listProcesses?: () => Promise<ListedProc[]>
   log?: (line: string) => void
 }
 
@@ -180,24 +252,39 @@ export async function identifyPortHolder(port: number, deps: IdentifyDeps = {}):
   if (base.owner === 'engine') return { owner: 'engine', detail: base.detail, listener: tree.listener }
 
   const file = deps.registryFile ?? appsFile()
-  let app = matchApp(tree, loadApps(file, log))
+  const registered = loadApps(file, log)
+  const launcher = launcherOf(tree)
+  // Only when there is no launcher to read at all: a readable one that matches nothing is somebody else's server.
+  const unread = launcher ? null : unreadableLauncher(tree)
+  let app = matchApp(tree, registered)
   let discovered = false
-  if (!app) {
-    try {
+  try {
+    if (!app && unread) {
+      // F223: the shell that started it cannot be read. The app's own processes, which are not elevated, can.
+      const procs = await (deps.listProcesses ?? readProcessList)()
+      const kind = INTERPRETERS.find(i => i.kind === unread.kind)!
+      const running = registered.filter(a => kind.script.test(a.script) && appInUse(a, -1, procs))
+      if (running.length === 1) app = running[0]
+      else if (running.length === 0) {
+        app = discoverByFolder(tree, unread, port, { roots: deps.roots ?? projectDirs(), procs })
+        discovered = !!app
+      }
+    } else if (!app) {
       app = discoverApp(tree, { roots: deps.roots ?? projectDirs() })
-    } catch (e) {
-      log(`[apps] looking for the project that started pid ${tree.listener.pid} failed: ${e instanceof Error ? e.message : String(e)}`)
+      discovered = !!app
     }
-    if (app) {
-      discovered = true
-      try { saveApp(app, file) } catch (e) { log(`[apps] ${app.name} could not be written to ${file}: ${e instanceof Error ? e.message : String(e)}`) }
-      log(`[apps] ${app.source}; registered as ${app.name} in ${file}`)
-    }
+  } catch (e) {
+    log(`[apps] looking for the project that started pid ${tree.listener.pid} failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if (app && discovered) {
+    try { saveApp(app, file) } catch (e) { log(`[apps] ${app.name} could not be written to ${file}: ${e instanceof Error ? e.message : String(e)}`) }
+    log(`[apps] ${app.source}; registered as ${app.name} in ${file}`)
   }
   if (app && app.manage) {
-    const launcher = launcherOf(tree)
-    const by = launcher ? `started by ${launcher.proc.name} ${launcher.script}` : 'its launcher has gone'
-    return { owner: 'app', app, detail: `${app.name}'s model server (${who(tree.listener)}, ${by})`, listener: tree.listener, discovered, launcherPid: launcher?.proc.pid ?? null }
+    const by = launcher ? `started by ${launcher.proc.name} ${launcher.script}`
+      : unread ? `started by ${unread.proc.name}; its command line cannot be read, as for a process started as administrator`
+      : 'its launcher has gone'
+    return { owner: 'app', app, detail: `${app.name}'s model server (${who(tree.listener)}, ${by})`, listener: tree.listener, discovered, launcherPid: launcher?.proc.pid ?? unread?.proc.pid ?? null }
   }
   return { owner: 'foreign', detail: base.detail, listener: tree.listener }
 }

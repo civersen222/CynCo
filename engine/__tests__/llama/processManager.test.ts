@@ -11,6 +11,7 @@ import {
   shouldRestartAfterExit,
   validateChatTemplate,
 } from '../../llama/processManager.js'
+import { isPortHeldError } from '../../llama/errors.js'
 
 function argValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
@@ -757,7 +758,107 @@ describe('ProcessManager.ensureRunningLazy', () => {
     expect(told.length).toBe(1)
     expect(told[0]).toContain('pid 41364')
     expect(told[0]).toContain('bash.exe')
+    expect(told[0]).toContain('Stopped it to load the model.')
     expect(pm.modelState()).toBe('warm')
+  })
+
+  it('"Stopped it" is said only once the port is free, never before (F223)', async () => {
+    const { pm } = lazyPm()
+    const toldAfterLooks: number[] = []
+    let looks = 0
+    pm.onWaiting = () => toldAfterLooks.push(looks)
+    await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => looks++ < 2,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
+    }))
+    // Three looks at the port: bound, bound after the kill, free. The owner is told after the third.
+    expect(toldAfterLooks).toEqual([3])
+  })
+
+  it('a server that could not be stopped is said to be still there, with the reason, and no wait is offered behind it (F223)', async () => {
+    const { pm, calls } = lazyPm()
+    ;(pm as any).killProcessOnPort = async () => { calls.kill++; return 'Windows refused (Access is denied): it was started as administrator and CynCo was not' }
+    const told: string[] = []
+    const waits: unknown[] = []
+    pm.onWaiting = (m) => told.push(m)
+    const d = deps({
+      isPortOccupied: async () => true,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 29720 (llama-server.exe), started by bash.exe' }),
+      onWaiting: (i) => waits.push(i),
+      maxWaitMs: 30 * 60_000,
+    })
+    const first = await pm.ensureRunningLazy(d).then(() => null, e => e)
+    expect(isPortHeldError(first)).toBe(true)
+    expect(first.message).toContain('pid 29720 (llama-server.exe), started by bash.exe')
+    expect(first.message).toContain('Access is denied')
+    expect(told).toHaveLength(1)
+    expect(told[0]).not.toMatch(/Stopped it/)
+    expect(told[0]).toMatch(/CynCo could not stop it: Windows refused \(Access is denied\)/)
+    expect(told[0]).toMatch(/Close the window it was started from/)
+    // Not "waiting": nothing will ever free the port, so no wait state is reported and no model is started.
+    expect(waits).toEqual([])
+    expect(pm.modelState()).not.toBe('waiting')
+    expect(calls).toEqual({ start: 0, kill: 1 })
+    expect(pm.cannotStop()).toEqual({ detail: 'pid 29720 (llama-server.exe), started by bash.exe', why: expect.stringContaining('Access is denied') })
+
+    // The next request meets the same server: it is not killed again and not announced again, and it is refused at once.
+    const second = await pm.ensureRunningLazy(d).then(() => null, e => e)
+    expect(isPortHeldError(second)).toBe(true)
+    expect(calls).toEqual({ start: 0, kill: 1 })
+    expect(told).toHaveLength(1)
+  })
+
+  it('a server that is still listening five seconds after a kill that reported nothing is refused the same way', async () => {
+    const { pm, calls } = lazyPm()
+    const told: string[] = []
+    pm.onWaiting = (m) => told.push(m)
+    const e = await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => true,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
+    })).then(() => null, err => err)
+    expect(isPortHeldError(e)).toBe(true)
+    expect(told[0]).toMatch(/CynCo could not stop it: it was still listening 5 s after the kill/)
+    expect(calls).toEqual({ start: 0, kill: 1 })
+  })
+
+  it('once the port is free again the model loads and the refusal is forgotten', async () => {
+    const { pm, calls } = lazyPm()
+    let bound = true
+    const d = deps({
+      isPortOccupied: async () => bound,
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
+    })
+    await pm.ensureRunningLazy(d).catch(() => {})
+    expect(pm.cannotStop()).not.toBeNull()
+    bound = false
+    await pm.ensureRunningLazy(d)
+    expect(calls.start).toBe(1)
+    expect(pm.cannotStop()).toBeNull()
+  })
+
+  it('an app\'s server the app module could not stop: what the app module said is the refusal, and the port is not swept or waited on (F223)', async () => {
+    const { pm, calls } = lazyPm()
+    const told: string[] = []
+    pm.onWaiting = (m) => told.push(m)
+    let looks = 0
+    const said = 'dndai\'s model server holds port 8081 (pid 29720). CynCo could not stop it: Windows refused (Access is denied): it was started as administrator and CynCo was not.'
+    const e = await pm.ensureRunningLazy(deps({
+      isPortOccupied: async () => { looks++; return true },
+      isHealthy: async () => true,
+      portOwner: async () => ({ owner: 'app', detail: 'dndai\'s model server (pid 29720 (llama-server.exe), started by bash.exe; its command line cannot be read)' }),
+      takeFromApp: async (say) => { say(said); return { refused: 'Windows refused (Access is denied): it was started as administrator and CynCo was not' } },
+    })).then(() => null, err => err)
+    expect(isPortHeldError(e)).toBe(true)
+    expect(e.message).toBe(said)
+    expect(told).toEqual([said])
+    expect(pm.cannotStop()?.why).toBe('Windows refused (Access is denied): it was started as administrator and CynCo was not')
+    expect(calls).toEqual({ start: 0, kill: 0 })
+    // One look that found the port bound; no five-second wait for a port that was never going to be freed.
+    expect(looks).toBe(1)
   })
 
   it('an eager start (a mission engine, a one-shot, the desk engine) asks the app module first: an app\'s server on the port is taken by it, not killed blind (F219)', async () => {
@@ -824,17 +925,6 @@ describe('ProcessManager.ensureRunningLazy', () => {
     }))
     expect(calls).toEqual({ start: 1, kill: 1 })
     expect(told[0]).toContain('dndai\'s model server')
-  })
-
-  it('a foreign server that will not die is not spawned over and not killed again: the wait goes on and the error names the port', async () => {
-    const { pm, calls } = lazyPm()
-    await expect(pm.ensureRunningLazy(deps({
-      isPortOccupied: async () => true,
-      isHealthy: async () => true,
-      portOwner: async () => ({ owner: 'foreign', detail: 'pid 41364 (llama-server.exe), started by bash.exe' }),
-      maxWaitMs: 12_000,
-    }))).rejects.toThrow(/GPU busy.*port 8081/)
-    expect(calls).toEqual({ start: 0, kill: 1 })
   })
 
   it('a one-shot named by gpu-busy.json is never asked about and never killed, whoever started its server', async () => {

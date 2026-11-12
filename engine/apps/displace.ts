@@ -78,7 +78,8 @@ export type DisplaceCtx = {
   port: number
   /** Who is taking the GPU, for the record: `the chat engine (pid N)`, `the one-shot digest-espn`. */
   by: string
-  kill: (pid: number) => Promise<void>
+  /** Stop the process. `{ stopped: false, why }` when it is still there; a kill that answers nothing is taken at its word. */
+  kill: (pid: number) => Promise<{ stopped: true } | { stopped: false; why: string } | void>
   say: (message: string) => void
   file?: string
   listProcesses?: () => Promise<ListedProc[]>
@@ -86,8 +87,12 @@ export type DisplaceCtx = {
   log?: (line: string) => void
 }
 
-/** Stop an app's model server for CynCo's work. `displaced`: its server is owed back. `leftover`: the app was not running. */
-export async function displaceApp(holder: { app: LocalApp; listener: Proc; launcherPid?: number | null }, ctx: DisplaceCtx): Promise<'displaced' | 'leftover'> {
+/**
+ * Stop an app's model server for CynCo's work. `displaced`: its server is owed back. `leftover`: the app
+ * was not running. `refused`: it could not be stopped (it runs as administrator, F223): that is said, with
+ * what the owner can do, nothing is owed, and nothing is called stopped.
+ */
+export async function displaceApp(holder: { app: LocalApp; listener: Proc; launcherPid?: number | null }, ctx: DisplaceCtx): Promise<'displaced' | 'leftover' | 'refused'> {
   const { app, listener } = holder
   const log = ctx.log ?? console.log
   let inUse = true
@@ -98,8 +103,8 @@ export async function displaceApp(holder: { app: LocalApp; listener: Proc; launc
     log(`[apps] could not tell whether ${app.name} is running (${e instanceof Error ? e.message : String(e)}); taking it to be`)
   }
   const held = `${app.name}'s model server held port ${ctx.port} (pid ${listener.pid})`
+  const file = ctx.file ?? displacedFile()
   if (inUse) {
-    const file = ctx.file ?? displacedFile()
     const owed: Displaced = { appId: app.id, name: app.name, root: app.root, port: ctx.port, at: (ctx.now ?? (() => new Date()))().toISOString(), by: ctx.by, launch: app.launch }
     try {
       writeJsonAtomic(file, [...readDisplaced(file, log).filter(d => d.appId !== app.id), owed])
@@ -107,7 +112,18 @@ export async function displaceApp(holder: { app: LocalApp; listener: Proc; launc
       log(`[apps] the debt to ${app.name} could not be written to ${file}: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
-  await ctx.kill(listener.pid)
+  const result = await ctx.kill(listener.pid)
+  if (result && !result.stopped) {
+    // The debt was written first so that a crash between the two could not lose it; the server is still there, so nothing is owed.
+    if (inUse) {
+      try { forgetDebt(app.id, file, log) } catch (e) { log(`[apps] the debt to ${app.name} could not be taken back from ${file}: ${e instanceof Error ? e.message : String(e)}`) }
+    }
+    const instead = app.start
+      ? `start ${app.name} from its Desktop icon, which does not run as administrator and which CynCo can manage`
+      : `start ${app.name} again from a window that is not run as administrator`
+    ctx.say(`${app.name}'s model server holds port ${ctx.port} (pid ${listener.pid}). CynCo could not stop it: ${result.why}. ${app.name} keeps its server and CynCo's model is not loaded. Close the window ${app.name} was started from, or ${instead}.`)
+    return 'refused'
+  }
   if (!inUse) {
     ctx.say(`${held} with ${app.name} itself not running. CynCo stopped it to load its own model; it is not started again.`)
     return 'leftover'

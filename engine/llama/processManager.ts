@@ -1,7 +1,7 @@
 // engine/llama/processManager.ts
 import { type ChildProcess, spawn } from 'child_process'
 import { basename, join } from 'path'
-import { ServerStartError } from './errors.js'
+import { PortHeldError, ServerStartError } from './errors.js'
 import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
@@ -277,8 +277,9 @@ export type LazyWaitDeps = {
   /**
    * The server `portOwner` just called an `app`'s is stopped by the app module (engine/apps/gpu.ts), which says which
    * app through `say` and records what the app is owed afterwards. Absent: an app's server is stopped like a foreign one.
+   * `{ refused: why }`: the app module could not stop it and has said so (F223); the port is not waited for.
    */
-  takeFromApp?: (say: (message: string) => void) => Promise<void>
+  takeFromApp?: (say: (message: string) => void) => Promise<'displaced' | 'leftover' | { refused: string } | void>
   maxWaitMs: number
   pollMs?: number
   now?: () => number
@@ -344,6 +345,12 @@ export class ProcessManager {
   onFault?: (reason: string) => void
   /** Lazy path: called with a one-line reason each poll while another process owns the GPU. main.ts relays it to the dashboard. */
   onWaiting?: (reason: string) => void
+  /** A server on our port that the lazy path tried to stop and could not (F223), with what was said about it. Forgotten when a model loads. */
+  private unstoppable: { detail: string; why: string; said: string } | null = null
+  /** The server on the model port that could not be stopped, as `portOwner` described it, or null. The fallback answers behind it (`busyFallback.ts`). */
+  cannotStop(): { detail: string; why: string } | null {
+    return this.unstoppable ? { detail: this.unstoppable.detail, why: this.unstoppable.why } : null
+  }
   /**
    * Asked once by the pre-spawn check when the card is short of VRAM: free what can be freed by asking, and say how
    * many things let go. bootstrapProvider wires it to engine/apps/ollama.ts, which asks Ollama to unload the models
@@ -412,8 +419,10 @@ export class ProcessManager {
    * reporting the trigger and the remaining time through `onWaiting`. A
    * healthy server on the port with no busy file is waited on when it is an
    * engine's or its owner cannot be read, and stopped (once) when it is
-   * nobody's (F202, portOwner.ts). A port that is bound but does not answer
-   * /health is stale and is killed. Gives up after `maxWaitMs` with an error
+   * nobody's (F202, portOwner.ts). "Stopped" is said once the port is free;
+   * a server that is still there is said to be, with the reason, and the call
+   * ends with a PortHeldError instead of a wait that nothing would end (F223).
+   * A port that is bound but does not answer /health is stale and is killed. Gives up after `maxWaitMs` with an error
    * naming the trigger. The F140 pre-spawn check still runs inside
    * startProcess. Pinned by `ProcessManager.ensureRunningLazy` in
    * processManager.test.ts.
@@ -457,8 +466,10 @@ export class ProcessManager {
       this.lazyPhase = 'loading'
       // A crash may have scheduled its own restart; one spawn, not two (review #5).
       if (this.restartTimer) { clearTimeout(this.restartTimer); this.restartTimer = null }
+      this.unstoppable = null
       await this.startProcess()
     }
+    const tell = (message: string) => { console.log(`[llama-cpp] ${message}`); this.onWaiting?.(message) }
     try {
       for (;;) {
         stopIfAborted()
@@ -476,22 +487,39 @@ export class ProcessManager {
               if (owner.owner === 'foreign' || owner.owner === 'app') {
                 // F202: a healthy server no CynCo engine started (another project's,
                 // or one left behind by hand). Nothing will ever free the port for us.
-                if (owner.owner === 'app' && deps.takeFromApp) {
+                // The same server that could not be stopped a moment ago: not tried and not announced again.
+                if (this.unstoppable?.detail === owner.detail) throw new PortHeldError(this.port, this.unstoppable.said)
+                const byAppModule = owner.owner === 'app' && !!deps.takeFromApp
+                let lastSaid = ''
+                let why: string | null = null
+                let refused = false
+                if (byAppModule) {
                   // One of the owner's apps: the app module stops it, names the app, and owes it its server back.
-                  await deps.takeFromApp((message) => { console.log(`[llama-cpp] ${message}`); this.onWaiting?.(message) })
+                  const outcome = await deps.takeFromApp!((message) => { lastSaid = message; tell(message) })
+                  if (outcome && typeof outcome === 'object') { refused = true; why = outcome.refused }
                 } else {
-                  const said = `port ${this.port} was held by a server that is not CynCo's: ${owner.detail}. Stopped it to load the model.`
-                  console.log(`[llama-cpp] ${said}`)
-                  this.onWaiting?.(said)
-                  await this.killProcessOnPort(this.port)
+                  why = (await this.killProcessOnPort(this.port)) ?? null
                 }
+                // A kill that Windows refused outright frees nothing: the five seconds are for a server that is on its way out.
                 let free = false
-                for (let i = 0; i < 10 && !free; i++) {
+                for (let i = 0; i < 10 && !free && !refused && why === null; i++) {
                   await sleep(500)
                   free = !(await deps.isPortOccupied())
                 }
-                if (free) { await spawn(); return }
-                console.log(`[llama-cpp] port ${this.port} is still bound 5 s after the kill; waiting instead of spawning over it`)
+                if (free) {
+                  // Said now, not before the kill: the live hand-off of 2026-11-11 announced a stop that had been refused (F223).
+                  if (!byAppModule) tell(`port ${this.port} was held by a server that is not CynCo's: ${owner.detail}. Stopped it to load the model.`)
+                  await spawn()
+                  return
+                }
+                why = why ?? 'it was still listening 5 s after the kill'
+                if (!refused) {
+                  lastSaid = `port ${this.port} is held by a server that is not CynCo's: ${owner.detail}. CynCo could not stop it: ${why}. Close the window it was started from; CynCo's model loads once the port is free.`
+                  tell(lastSaid)
+                }
+                // Nothing will free this port, so no wait is offered behind it: the request ends here with the reason.
+                this.unstoppable = { detail: owner.detail, why: why!, said: lastSaid }
+                throw new PortHeldError(this.port, lastSaid)
               }
             }
             // Another engine's server (a dispatched mission, a second engine), or one
@@ -842,7 +870,8 @@ export class ProcessManager {
     }
   }
 
-  private async killProcessOnPort(port: number): Promise<void> {
+  /** Kill whatever listens on the port. Resolves to why a kill was refused when it said so (F223), else nothing: the caller looks at the port. */
+  private async killProcessOnPort(port: number): Promise<string | void> {
     if (process.platform !== 'win32') {
       try {
         const { execSync } = require('child_process')
@@ -850,6 +879,7 @@ export class ProcessManager {
       } catch {}
       return
     }
+    let refusedBecause: string | undefined
 
     // Windows: find PID listening on port, then kill it
     try {
@@ -861,12 +891,17 @@ export class ProcessManager {
           const pid = parts[parts.length - 1]
           if (pid && /^\d+$/.test(pid)) {
             try {
-              execSync(`taskkill /F /PID ${pid}`, { timeout: 5000 })
+              execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
               console.log(`[llama-cpp] Killed stale process PID ${pid} on port ${port}`)
-            } catch {}
+            } catch (e) {
+              const said = String((e as { stderr?: unknown }).stderr ?? (e instanceof Error ? e.message : e)).trim()
+              console.log(`[llama-cpp] taskkill ${pid} on port ${port}: ${said.split(/\r?\n/).filter(Boolean).pop() ?? 'failed'}`)
+              if (/access is denied/i.test(said)) refusedBecause = 'Windows refused (Access is denied): it was started as administrator and CynCo was not'
+            }
           }
         }
       }
     } catch {}
+    return refusedBecause
   }
 }
