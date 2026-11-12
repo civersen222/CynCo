@@ -17,9 +17,8 @@ import re
 import sqlite3
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
-SAMPLE_DAYS = 90  # samples older than this are pruned; events and answers are kept
+SAMPLE_DAYS = 90  # samples older than this are pruned; events are kept
 BOX_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-ANSWERS = ("me", "normal", "wrong")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -32,7 +31,6 @@ CREATE TABLE IF NOT EXISTS events (
   PRIMARY KEY (box, kind, key)
 );
 CREATE INDEX IF NOT EXISTS events_at ON events (at);
-CREATE TABLE IF NOT EXISTS answers (finding_id TEXT PRIMARY KEY, answer TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
@@ -121,12 +119,6 @@ class Store:
                     duplicates += 1
         return {"stored": stored, "duplicates": duplicates, "rejected": rejected}
 
-    def set_answer(self, finding_id: str, answer: str, at: float) -> None:
-        if answer not in ANSWERS:
-            raise ValueError("an answer is one of %s" % (ANSWERS,))
-        with self._conn() as c:
-            c.execute("INSERT OR REPLACE INTO answers (finding_id, answer, at) VALUES (?,?,?)", (finding_id, answer, at))
-
     def set_meta(self, key: str, value: Any) -> None:
         with self._conn() as c:
             c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, json.dumps(value)))
@@ -179,11 +171,6 @@ class Store:
             lo = [x for x in (c.execute("SELECT MIN(at) FROM samples").fetchone()[0], c.execute("SELECT MIN(at) FROM events").fetchone()[0]) if x is not None]
             hi = [x for x in (c.execute("SELECT MAX(at) FROM samples").fetchone()[0], c.execute("SELECT MAX(at) FROM events").fetchone()[0]) if x is not None]
         return (min(lo), max(hi)) if lo and hi else None
-
-    def answers(self) -> Dict[str, dict]:
-        with self._conn() as c:
-            rows = c.execute("SELECT finding_id, answer, at FROM answers").fetchall()
-        return {fid: {"answer": ans, "at": at} for fid, ans, at in rows}
 
     def meta(self, key: str, default: Any = None) -> Any:
         with self._conn() as c:

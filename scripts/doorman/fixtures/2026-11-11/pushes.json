@@ -1,0 +1,247 @@
+{
+  "v": 1,
+  "box": "main",
+  "sentAt": "2026-11-11T17:20:00.000Z",
+  "records": [
+    {
+      "t": "event",
+      "at": "2026-11-11T09:47:06.169Z",
+      "kind": "power.shutdown",
+      "key": "shutdown:2026-11-11T09:47:06Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T09:47:31.500Z",
+      "kind": "power.boot",
+      "key": "boot:2026-11-11T09:47:31Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T09:48:14.597Z",
+      "kind": "power.shutdown",
+      "key": "shutdown:2026-11-11T09:48:14Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T09:48:45.500Z",
+      "kind": "power.boot",
+      "key": "boot:2026-11-11T09:48:45Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T09:49:15.498Z",
+      "kind": "power.shutdown",
+      "key": "shutdown:2026-11-11T09:49:15Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T09:49:41.500Z",
+      "kind": "power.boot",
+      "key": "boot:2026-11-11T09:49:41Z",
+      "data": {}
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T10:10:16.298Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T10:10:16Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T10:11:17.691Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T10:11:17Z",
+      "data": {
+        "sleepAt": "2026-11-11T10:10:16.298Z",
+        "source": "Device -USB4(TM) Host Router (Microsoft)"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T10:31:40.228Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T10:31:40Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T10:46:46.589Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T10:46:46Z",
+      "data": {
+        "sleepAt": "2026-11-11T10:31:40.228Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T11:07:09.333Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T11:07:09Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T11:16:46.631Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T11:16:46Z",
+      "data": {
+        "sleepAt": "2026-11-11T11:07:09.333Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T11:37:09.065Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T11:37:09Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T11:47:54.608Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T11:47:54Z",
+      "data": {
+        "sleepAt": "2026-11-11T11:37:09.065Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T12:08:17.467Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T12:08:17Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T12:18:02.608Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T12:18:02Z",
+      "data": {
+        "sleepAt": "2026-11-11T12:08:17.467Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T12:38:25.522Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T12:38:25Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T12:47:55.593Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T12:47:55Z",
+      "data": {
+        "sleepAt": "2026-11-11T12:38:25.522Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T13:08:18.569Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T13:08:18Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T13:17:55.611Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T13:17:55Z",
+      "data": {
+        "sleepAt": "2026-11-11T13:08:18.569Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T13:38:18.395Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T13:38:18Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T14:02:55.608Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T14:02:55Z",
+      "data": {
+        "sleepAt": "2026-11-11T13:38:18.395Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T14:23:18.476Z",
+      "kind": "power.sleep",
+      "key": "sleep:2026-11-11T14:23:18Z",
+      "data": {
+        "reason": "idle"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T14:46:47.611Z",
+      "kind": "power.wake",
+      "key": "wake:2026-11-11T14:46:47Z",
+      "data": {
+        "sleepAt": "2026-11-11T14:23:18.476Z",
+        "source": "Power Button"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T15:06:00.000Z",
+      "kind": "service.said_down",
+      "key": "embed-down:2026-11-11T15:06:00Z",
+      "data": {
+        "service": "embed",
+        "by": "the engine",
+        "url": "http://127.0.0.1:9165",
+        "text": "[embed] No embedding endpoint answered at http://127.0.0.1:9165 (Unable to connect. Is the computer able to access the url?). Semantic code search is OFF for this session — retrieval falls back to keyword search.",
+        "timeIs": "anchored",
+        "basis": "the engine's own log line; the log carries no times, and the line sits 39 lines above the index stamp 2026-11-11T15:06:00.871Z of the same engine start"
+      }
+    },
+    {
+      "t": "event",
+      "at": "2026-11-11T17:18:12.000Z",
+      "kind": "service.said_up",
+      "key": "embed-up:2026-11-11T17:18:12Z",
+      "data": {
+        "service": "embed",
+        "by": "the engine",
+        "reconstructed": true,
+        "timeIs": "reconstructed",
+        "basis": "F215 in the failure log: the service was started by hand at 10:18:12 local, read from the task's last-run time that day; no log line records it"
+      }
+    }
+  ]
+}

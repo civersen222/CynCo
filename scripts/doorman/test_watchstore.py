@@ -91,13 +91,8 @@ def test_prune_drops_old_samples_and_keeps_events(tmp_path):
     assert len(s.events(old - 1, T + 1)) == 1
 
 
-def test_answers_and_meta_round_trip_and_an_unknown_answer_is_refused(tmp_path):
+def test_meta_round_trips(tmp_path):
     s = store(tmp_path)
-    s.set_answer("wake.unexplained:main:2026-11-11", "me", T)
-    s.set_answer("wake.unexplained:main:2026-11-11", "wrong", T + 5)
-    assert s.answers() == {"wake.unexplained:main:2026-11-11": {"answer": "wrong", "at": T + 5}}
-    with pytest.raises(ValueError):
-        s.set_answer("x", "maybe", T)
     assert s.meta("bursts.offset", 0) == 0
     s.set_meta("bursts.offset", 4096)
     assert s.meta("bursts.offset") == 4096

@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from watchmodel import MODEL_UNUSED_MIN_S, SILENT_GAP_S, WAKE_MATCH_BEFORE_S
 from watchstore import iso
 
-ANSWER_NOTE = "This page takes no input. Findings are answered on the CynCo dashboard (that was me / that is normal now / that is wrong), which passes the answer on."
+ANSWER_NOTE = "This page takes no input. Answering a finding (that was me / that is normal now / that is wrong) is not built yet: it belongs on the CynCo dashboard."
 
 KIND_TITLE = {
     "wake.unexplained": "Wakes with nothing behind them",
@@ -30,7 +30,6 @@ KIND_TITLE = {
     "change.step": "A lasting change (a step)",
     "change.slope": "A lasting change (a slope)",
 }
-ANSWER_WORDS = {"me": "that was me", "normal": "that is normal now", "wrong": "that is wrong"}
 
 W = 960  # the chart's own coordinate width; the SVG scales to the page
 GUTTER = 128
@@ -56,7 +55,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;p
 th{color:var(--ink2);font-weight:600}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
 .meter{display:inline-block;width:120px;height:8px;border-radius:4px;background:var(--grid);vertical-align:middle;margin-right:8px;overflow:hidden}
 .meter i{display:block;height:8px;background:var(--s1)}
-svg{display:block;width:100%;height:auto}
+.chart{overflow-x:auto}svg{display:block;width:100%;min-width:720px;height:auto}
 svg text{font:11px system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--ink2)}
 svg .lab{fill:var(--ink)}svg .tick{fill:var(--muted)}
 .grid{stroke:var(--grid);stroke-width:1}.axis{stroke:var(--axis);stroke-width:1}
@@ -160,14 +159,21 @@ def box_chart(box: dict, report: dict, marks: List[dict]) -> str:
     # 3. a row per service
     for name, bands in box["services"].items():
         rows.append(label(name, y + 10))
-        for b in bands:
-            if b["to"] <= b["from"]:
-                continue
+        drawn = [b for b in bands if b["to"] > b["from"]]
+        for n, b in enumerate(drawn):
             top, hh = (y + 4, 4) if b["state"] == "idle" else (y, 12)
             word = {"up": "answering", "down": "NOT answering", "idle": "not wanted"}[b["state"]]
             rows.append(band(b["from"], b["to"], top, hh, b["state"], "%s %s · %s" % (name, word, _span(b["from"], b["to"], off))))
-            if b["state"] == "down" and x(b["to"]) + 70 < W - PAD_R:
-                rows.append('<text x="%.1f" y="%.1f">down %s</text>' % (x(b["to"]) + 5, y + 10, e(_dur(b["to"] - b["from"]))))
+            # A direct label on an outage, only where there is room for it before the next band and the edge.
+            # It steps past a short band that adjoins the outage (the few minutes of "answering again").
+            if b["state"] != "down":
+                continue
+            at_x, k = x(b["to"]), n + 1
+            while k < len(drawn) and x(drawn[k]["from"]) - at_x < 2 and x(drawn[k]["to"]) - x(b["to"]) <= 30:
+                at_x, k = x(drawn[k]["to"]), k + 1
+            room_to = x(drawn[k]["from"]) if k < len(drawn) else W - PAD_R
+            if room_to - at_x >= 76:
+                rows.append('<text x="%.1f" y="%.1f">down %s</text>' % (at_x + 5, y + 10, e(_dur(b["to"] - b["from"]))))
         y += 12 + 10
 
     # 4. scheduled jobs, and the engine's stalls
@@ -200,7 +206,8 @@ def box_chart(box: dict, report: dict, marks: List[dict]) -> str:
         def ty(v: float) -> float:
             return plot_top + ph - (v - lo_t) / (hi_t - lo_t) * ph
 
-        rows.append(label("GPU °C", plot_top + 12))
+        # The row label sits left of the tick labels, at mid height, so the two never share a spot.
+        rows.append('<text class="lab" x="%d" y="%.1f" text-anchor="end">GPU °C</text>' % (GUTTER - 36, plot_top + ph / 2 + 4))
         step = 10 if hi_t - lo_t <= 40 else 20
         v = lo_t
         while v <= hi_t:
@@ -349,15 +356,13 @@ def render(report: dict) -> str:
         tags = ""
         if f["open"]:
             tags += '<span class="tag">still true</span>'
-        if f.get("answer"):
-            tags += '<span class="tag">answered: %s</span>' % e(ANSWER_WORDS.get(f["answer"], f["answer"]))
         out.append(
             '<article class="card finding" id="%s"><h3>%s<span class="tag">%s</span>%s</h3><dl>'
             "<dt>What was seen</dt><dd>%s</dd><dt>What was expected</dt><dd>%s</dd>"
             "<dt>What the watcher believes it means</dt><dd>%s</dd><dt>Suggested</dt><dd>%s</dd></dl></article>"
             % (e(f["id"]), e(KIND_TITLE.get(f["kind"], f["kind"])), e(f["box"]), tags, e(f["seen"]), e(f["expected"]), e(f["means"]), e(f["suggest"]))
         )
-    out.append('<p class="small">%s An item nobody has answered that is still true the next day moves up this list; it does not become an alert.</p>' % e(ANSWER_NOTE))
+    out.append('<p class="small">%s An item that is still true the next day moves up this list; it does not become an alert.</p>' % e(ANSWER_NOTE))
 
     if report["learning"]:
         out.append("<h2>Still learning (%d)</h2><div class=\"card\"><table><tr><th>series</th><th>box</th><th>before it can be compared</th></tr>%s</table>"
@@ -370,7 +375,7 @@ def render(report: dict) -> str:
         if not b["segments"] or all(g["state"] == "unknown" for g in b["segments"]) and not b["services"] and not b["jobs"]:
             out.append('<p class="sub">Nothing was recorded for this box on this day.</p>')
         else:
-            out.append(box_chart(b, report, marks))
+            out.append('<div class="chart">%s</div>' % box_chart(b, report, marks))
             out.append(_legend(b, bool(marks)))
             out.append(_tables(b, report))
         out.append("</div><div class=\"card\">%s</div>" % _measures(b))
@@ -391,7 +396,7 @@ def findings_json(report: dict) -> dict:
         "generatedAt": iso(report["generatedAt"]),
         "findings": [
             {"id": f["id"], "kind": f["kind"], "title": KIND_TITLE.get(f["kind"], f["kind"]), "box": f["box"], "from": iso(f["from"]), "to": iso(f["to"]), "open": f["open"],
-             "seen": f["seen"], "expected": f["expected"], "means": f["means"], "suggest": f["suggest"], "marks": [iso(m) for m in f["marks"]], "answer": f.get("answer")}
+             "seen": f["seen"], "expected": f["expected"], "means": f["means"], "suggest": f["suggest"], "marks": [iso(m) for m in f["marks"]]}
             for f in report["findings"]
         ],
         "learning": report["learning"],

@@ -252,17 +252,24 @@ def service_bands(samples: List[dict], events: List[dict], box: str, name: str, 
     for i, o in enumerate(obs):
         nxt = obs[i + 1]["at"] if i + 1 < len(obs) else end
         stop = nxt
-        for g in not_awake:  # a silent stretch starts at the last sample, so one look never stands for the hours after it
+        if not (o["said"] and not o["up"]):
+            # Only "it does not answer", in the dependent's own words, is a state that holds until
+            # somebody says otherwise. One look at the port, or "it is back", stands for the minutes
+            # after it and not for the hours: the band ends there and the rest is not drawn.
+            stop = min(stop, o["at"] + SILENT_GAP_S)
+        for g in not_awake:  # a silent stretch starts at the last sample
             if g["from"] >= o["at"] and g["from"] < stop:
                 stop = g["from"]
         state = "idle" if not o["wanted"] else ("up" if o["up"] else "down")
         closed_by_up = i + 1 < len(obs) and stop == nxt
+        closer = obs[i + 1]["said"] if closed_by_up else None  # the words that ended it, when words did
         if bands and bands[-1]["state"] == state and abs(bands[-1]["to"] - o["at"]) < 1e-6:
             bands[-1]["to"] = stop
             bands[-1]["observed"] += 1
             bands[-1]["closed"] = closed_by_up
+            bands[-1]["closedSaid"] = closer
         else:
-            bands.append({"state": state, "from": o["at"], "to": stop, "by": o["by"], "said": o["said"], "observed": 1, "closed": closed_by_up})
+            bands.append({"state": state, "from": o["at"], "to": stop, "by": o["by"], "said": o["said"], "observed": 1, "closed": closed_by_up, "closedSaid": closer})
     return [b for b in bands if b["to"] > b["from"] or b["state"] == "down"]
 
 
@@ -434,6 +441,8 @@ def findings_by_construction(samples: List[dict], events: List[dict], box: str, 
                 if b["said"].get("basis"):
                     seen += " (%s)" % b["said"]["basis"]
                 seen += "."
+            if b.get("closedSaid") and b["closedSaid"].get("basis"):
+                seen += " The time it answered again is from: %s." % b["closedSaid"]["basis"]
             out.append({
                 "id": "service.down:%s:%s:%s" % (box, name, iso(b["from"])), "kind": "service.down", "box": box,
                 "from": b["from"], "to": b["to"], "open": still, "seen": seen,
@@ -648,7 +657,6 @@ def day_report(store: Any, day: str, now: float, tz_offset_min: int) -> dict:
     end = min(t1, now)
     margin = 86400.0
     events = store.events(t0 - margin, t1 + 2 * margin)
-    answers = store.answers()
     boxes = []
     findings: List[dict] = []
     learning: List[dict] = []
@@ -681,11 +689,9 @@ def day_report(store: Any, day: str, now: float, tz_offset_min: int) -> dict:
             "series": {k: v for k, v in classified.items()},
             "samples": len(inside),
         })
-    for f in findings:
-        a = answers.get(f["id"])
-        f["answer"] = a["answer"] if a else None
-    # Unanswered first; among those, what is still true and what is oldest rises (it does not become an alert).
-    findings.sort(key=lambda f: (f["answer"] is not None and f["answer"] != "wrong", not f["open"], f["from"]))
+    # What is still true comes first, and among the rest the oldest: an item that stays true rises
+    # up the page from day to day. It does not become an alert.
+    findings.sort(key=lambda f: (not f["open"], f["from"]))
     bursts = [{"at": e["at"], **e["data"]} for e in events if e["box"] == DOORMAN_BOX and e["kind"] == "doorman.burst" and t0 <= e["at"] < t1]
     sched = [e for e in events if e["box"] == DOORMAN_BOX and e["kind"] == "doorman.schedule" and e["at"] < t1]
     return {

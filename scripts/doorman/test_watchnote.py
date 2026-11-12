@@ -84,7 +84,7 @@ def test_what_a_box_sent_is_escaped_everywhere(tmp_path):
     assert "service.down" in kinds and "model.unused" in kinds
 
 
-def test_an_unanswered_finding_that_is_still_true_comes_first_and_an_answer_is_shown(tmp_path):
+def test_a_finding_that_is_still_true_comes_first(tmp_path):
     store = Store(str(tmp_path / "w.db"))
     night(store)
     t = P("2026-11-11T16:00:00Z")
@@ -97,11 +97,7 @@ def test_an_unanswered_finding_that_is_still_true_comes_first_and_an_answer_is_s
     page = watchnote.render(r)
     assert page.index("A service was not answering") < page.index("Wakes with nothing behind them")
     assert "still true" in page
-    store.set_answer(r["findings"][0]["id"], "me", now)
-    r2 = wm.day_report(store, "2026-11-11", now, OFF)
-    assert [f["kind"] for f in r2["findings"]] == ["wake.unexplained", "box.silent", "service.down"], "an answered item gives way"
-    assert "answered: that was me" in watchnote.render(r2)
-    assert watchnote.findings_json(r2)["findings"][2]["answer"] == "me"
+    assert "is not built yet" in page, "the page does not claim an answer path that does not exist"
 
 
 def test_the_status_line_says_silent_while_a_box_has_not_explained_itself(tmp_path):
@@ -129,5 +125,5 @@ def test_findings_json_has_the_pages_ids_and_iso_times(tmp_path):
     data = watchnote.findings_json(r)
     assert [f["id"] for f in data["findings"]] == [f["id"] for f in r["findings"]]
     f = data["findings"][0]
-    assert f["marks"] == ["2026-11-11T10:46:46Z"] and f["from"] == "2026-11-11T10:46:46Z" and f["answer"] is None
+    assert f["marks"] == ["2026-11-11T10:46:46Z"] and f["from"] == "2026-11-11T10:46:46Z"
     assert data["boxes"][0]["box"] == "main"
