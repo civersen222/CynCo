@@ -58,14 +58,14 @@ describe('startApp', () => {
   it('starts what is not running, in the order given, each in its own folder, and names the address to open', async () => {
     const { deps, said, ran } = harness({ bound: new Set(), checks: {}, onRun: { database: { binds: [5433], exit: 0 }, 'model server': { binds: [8081] }, 'web app': { binds: [3000] } } })
     const out = await startApp(game([
-      { name: 'database', port: 5433, exe: 'docker', args: ['compose', 'up', '-d'], cwd: 'db' },
+      { name: 'database', port: 5433, exe: 'pg_ctl', args: ['start', '-D', 'data'], cwd: 'db' },
       { name: 'model server', model: true, port: 8081 },
       { name: 'web app', port: 3000, exe: 'cmd.exe', args: ['/c', 'npm', 'run', 'dev'], cwd: 'web' },
     ]), deps)
     expect(out.ok).toBe(true)
     expect(out.open).toBe('http://localhost:3000')
     expect(ran.map(r => r.step)).toEqual(['database', 'model server', 'web app'])
-    expect(ran[0].launch).toEqual({ exe: 'docker', args: ['compose', 'up', '-d'], cwd: `${ROOT}\\db` })
+    expect(ran[0].launch).toEqual({ exe: 'pg_ctl', args: ['start', '-D', 'data'], cwd: `${ROOT}\\db` })
     expect(ran[1].launch).toEqual(LAUNCH)
     expect(ran[2].launch.cwd).toBe(`${ROOT}\\web`)
     expect(said.join('\n')).toMatch(/database: started \(port 5433/)
@@ -75,7 +75,7 @@ describe('startApp', () => {
   it('starts nothing that is already running', async () => {
     const { deps, said, ran } = harness({ bound: new Set([5433, 3000]), checks: {}, onRun: {} })
     const out = await startApp(game([
-      { name: 'database', port: 5433, exe: 'docker', args: ['compose', 'up', '-d'], cwd: 'db' },
+      { name: 'database', port: 5433, exe: 'pg_ctl', args: ['start', '-D', 'data'], cwd: 'db' },
       { name: 'web app', port: 3000, exe: 'cmd.exe', args: ['/c', 'npm', 'run', 'dev'], cwd: 'web' },
     ]), deps)
     expect(out.ok).toBe(true)
@@ -84,17 +84,17 @@ describe('startApp', () => {
   })
 
   it('takes a command that exits 0 as the readiness of what has no port', async () => {
-    const { deps, said, ran } = harness({ bound: new Set(), checks: { 'docker info': true }, onRun: {} })
-    const out = await startApp(game([{ name: 'Docker Desktop', check: { exe: 'docker', args: ['info'] }, exe: 'C:\\Docker\\Docker Desktop.exe', args: [], keep: true }]), deps)
+    const { deps, said, ran } = harness({ bound: new Set(), checks: { 'sc query search': true }, onRun: {} })
+    const out = await startApp(game([{ name: 'search service', check: { exe: 'sc', args: ['query', 'search'] }, exe: 'C:\\Tools\\search.exe', args: [], keep: true }]), deps)
     expect(out.ok).toBe(true)
     expect(ran).toEqual([])
-    expect(said).toEqual(['Docker Desktop: already running'])
+    expect(said).toEqual(['search service: already running'])
   })
 
   it('stops at the step that did not come up, says how long it waited and shows the end of its log', async () => {
     const { deps, said, ran } = harness({ bound: new Set(), checks: {}, onRun: {} })
     const out = await startApp(game([
-      { name: 'database', port: 5433, exe: 'docker', args: ['compose', 'up', '-d'], cwd: 'db', waitSeconds: 20 },
+      { name: 'database', port: 5433, exe: 'pg_ctl', args: ['start', '-D', 'data'], cwd: 'db', waitSeconds: 20 },
       { name: 'web app', port: 3000, exe: 'cmd.exe', args: ['/c', 'npm', 'run', 'dev'], cwd: 'web' },
     ]), deps)
     expect(out.ok).toBe(false)

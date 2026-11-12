@@ -18,10 +18,30 @@ import { fileURLToPath } from 'url'
 
 export type SiblingDecision = 'none' | 'handoff'
 
-/** Only an eager, interactive engine on Windows hands off; the phone engine and one-shots never do. */
-export function siblingDecision(env: { lazy: boolean; runTask: boolean; platform: string }): SiblingDecision {
+/** The bridge port the phone engine listens on (`LOCALCODE_WS_PORT` unset). */
+export const PHONE_ENGINE_PORT = 9160
+
+/**
+ * Is this engine taking the phone engine's place: the same bridge port and the same home? That is the
+ * owner's desk engine. An engine on another port or in another home (a smoke run, a test) is a second
+ * engine beside it and has no business stopping it.
+ */
+export function inPhoneEnginesSeat(env: { wsPort: string | undefined; cyncoHome: string; defaultHome: string }): boolean {
+  const port = parseInt(env.wsPort ?? String(PHONE_ENGINE_PORT), 10)
+  const same = (a: string, b: string) => a.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() === b.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  return port === PHONE_ENGINE_PORT && same(env.cyncoHome, env.defaultHome)
+}
+
+/**
+ * Only an eager, interactive engine on Windows that takes the phone engine's seat hands off; the phone
+ * engine, one-shots, and any engine on another port or in another home never do. A smoke engine on
+ * 19161 with a scratch home stopped the live phone engine for nine and a half minutes on 2026-11-12,
+ * because nothing asked whose place it was taking (F224).
+ */
+export function siblingDecision(env: { lazy: boolean; runTask: boolean; platform: string; inPhoneSeat: boolean }): SiblingDecision {
   if (env.platform !== 'win32') return 'none'
   if (env.lazy || env.runTask) return 'none'
+  if (!env.inPhoneSeat) return 'none'
   return 'handoff'
 }
 

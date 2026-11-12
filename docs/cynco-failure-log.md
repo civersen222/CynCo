@@ -4338,3 +4338,57 @@ Rule: a timeout is a duration, so measure it. And a grader that produced no outp
 Pinned by `engine/__tests__/apps/identifyUnreadable.test.ts`, `cannotStop.test.ts`, `engine/__tests__/llama/busyFallbackCannotStop.test.ts` and the lazy cases in `processManager.test.ts`, all seen red first (20 failing).
 
 **Rule:** a sentence that says something was done is written after the check that it was, and the check is of the thing itself (the port, the pid), not of the command having returned. And a stand-in a test starts itself proves the path for a process CynCo owns; a path that touches someone else's process is also tested against the answers "cannot be read" and "cannot be stopped".
+
+## F224 — A smoke engine started to reproduce a stall stopped the live phone engine for nine and a half minutes (2026-11-12 00:22:56Z to 00:32:33Z; done by the session building the apps work, against its own limit "never stop or restart the live services")
+
+**Where:** `engine/main.ts`, the desk-phone hand-off at start (`siblingDecision`, `takeOverFromHeadless` in `engine/power/siblingEngine.ts`); and the working method of the session that started the engine.
+
+**How:** to reproduce the dashboard stall of F225 a smoke engine was started on 19160/19161 with a scratch `CYNCO_HOME`, the image box and the phone listener switched off, and `LOCALCODE_PROVIDER=openai-compat` against a stand-in model server on a spare port. The engine was not lazy, so `siblingDecision` answered `handoff` and the engine ran `cynco-services.ps1 stop engine`. Its second line of log said so: `[power] phone engine stopped for this desk session; it restarts when this engine exits`. The session had read the start-up log through a filter (`grep` for the dashboard line and for errors) and did not see it. It noticed nine minutes later, when a read-only look at the live engine's memory found nothing listening on 9161. The smoke engine was then shut down over its own bridge socket (`/quit`, which the dashboard socket refuses), so its hand-back ran: `[power] phone engine restarted`. The engine came back on the same code (`6fa0da13`), cold, and gave the GPU back to dndai at start (`dndai's model server is started again`): the idle-unload restore the live sitting was waiting to see did not happen, and CynCo's loaded model was lost. A chat turn in flight would have been cut; the last line before the stop was a finished turn.
+
+**Why:** the hand-off asked two questions, "is this engine lazy" and "is it a one-shot", and took any other engine on Windows to be the owner's desk engine taking the phone engine's place. A smoke engine on its own port with its own home takes nobody's place, and nothing asked. And the session knew the rule "a smoke engine listens on 19161" as if the port were the whole of it: it had not read what an engine does at start, and it read its first log through a filter that could only show what it already expected.
+
+**Fix:** `siblingDecision` takes `inPhoneSeat` (`inPhoneEnginesSeat`: the bridge port is the phone engine's 9160 and `CYNCO_HOME` is the default home). An engine on another port or in a scratch home is a second engine beside the phone engine, not the owner's desk engine taking its place, and stops nobody; it logs `[power] not in the phone engine's seat ...`. Pinned in `engine/__tests__/power/siblingEngine.test.ts`, with the call in `main.ts`. `AGENTS.md` and `engine/power/CLAUDE.md` say how a second engine is started. The start-up filter is not code and is covered by the rule.
+
+**Rule:** before starting any engine beside the live one, read what an engine does at start, and read the whole of its first screen of log, unfiltered, before doing anything with it. A mechanism that stops a live service asks first whether the caller is the one it was built for.
+
+## F225 — The dashboard did not answer for 20 s after the first turn on a freshly loaded model, and the cause was not found (live engine, 2026-11-12 00:14Z, and 8 s earlier that day after the first turn following a restart; no run lost)
+
+**Where:** the engine's event loop, somewhere after `message.complete`. Not placed.
+
+**How:** one `/api/session` request sent just after `message.complete` got no answer in 20 s; a minute later the engine answered at once. Three timed turns on a warm model answered within 4 ms throughout. `/api/session` is served from memory (`DashboardServer.getSession`), so the loop itself was held by something synchronous. The log lines after that `message.complete` were `[index] sqlite-vec loaded`, `[power] released the PC`, `[trajectory] Labeled ...`, `[llama-cpp] slot save: ok — saved 28471 tokens`; the slot snapshot (2.02 GB) was written at that moment.
+
+**What was measured, and ruled out as the 20 s** (a smoke engine with a stall watcher, then each candidate alone with a probe on the loop):
+- The end-of-task trajectory labeling runs several `git` commands with `execSync` (`collectGitFacts`, and `collectDirtyPaths` at task start): it blocks the loop for 200 to 270 ms at every task end, in the real main checkout and in a worktree idle for weeks alike, and the same while 2 GB was being written to the same disk (the disk wrote 2 GB in one second).
+- Indexing the finished project chat (`ingestChat`, 60 turns, 136 KB): longest stall 67 ms, with the embedding service answering, refusing and absent.
+- The workspace snapshot's first `git add -A` blocks for 5.6 s, at engine start only.
+None comes near 20 s on a quiet machine. What could not be imitated without the real model: the state of the machine right after a 20 GB model load.
+
+**Why it could not be placed:** the engine log carries no times, and nothing in it says that the loop stopped, so a stall cannot be put between two lines afterwards; and it happens only after a cold load of the real model, which a session that may not touch the live engine cannot produce.
+
+**Fix (for the next occurrence, not for the cause):** `engine/loopWatch.ts`, started when the engine is ready: a timer that arrives more than a second late logs `[engine] the event loop was blocked for N s, until HH:MM:SSZ ...`, directly under the lines of whatever ran. Pinned by `engine/__tests__/loopWatch.test.ts`, including a real synchronous wait. The three measured blocks are in `docs/NOW.md` as known, small and unfixed.
+
+**Rule:** a server answered from one loop says in its own log when that loop was held. A stall that is only seen from outside, in a log without times, costs a day and may still not be found.
+
+## F226 — "dndai is answered by CynCo's server meanwhile" was true for chat only: its embeddings server went down with its chat server (live hand-off, 2026-11-12 00:14Z; no run lost)
+
+**Where:** `displaceApp` in `engine/apps/displace.ts`.
+
+**How:** the second live hand-off worked: dndai was named, its server on 8081 stopped, CynCo's model loaded, the turn ended in 39 s. But `scripts/start-llm.sh` runs dndai's chat server in the foreground and an embeddings server on 8082 in the background, and its exit trap stops the second when the first ends. After CynCo took 8081 nothing listened on 8082, and the notice had said the app was answered by CynCo's server. This was known when the hand-off was built (it is item (e) of the apps line in `docs/NOW.md`) and the sentence was written as if it were not.
+
+**Why:** the notice described the port CynCo takes and spoke for the whole app. What else the launcher runs was a gotcha in the package document and not a fact the code looked at.
+
+**Fix:** before the stop `launcherSiblings` finds the other servers in the launcher's tree (a process with a `--port` on its command line that is neither the server nor something the server started); after the stop the ones that are gone are named in the notice: `Its launcher also ended its embeddings server on port 8082 (pid N): CynCo does not stand in for that, so what dndai does with embeddings is down until its own server is back.` One that is still running is not reported. Decision 9 of `docs/decisions/2026-11-11-local-llm-apps.md` says why CynCo does not stand in and what would make the loss go away. Pinned by `engine/__tests__/apps/alsoLost.test.ts`.
+
+**Rule:** a notice that says an app is served says what it is served for. What a mechanism is known not to cover goes into the sentence the owner reads, not only into a document.
+
+## F227 — The dndai launch recipe would have started Docker Desktop, the one thing the owner had ruled out on this PC (written 2026-11-11, caught by the owner 2026-11-12 before the icon was ever used; nothing was started)
+
+**Where:** the `start` recipe this work wrote for dndai into the live `~/.cynco/apps.json` and into decision 7 of `docs/decisions/2026-11-11-local-llm-apps.md`; and the survey behind it.
+
+**How:** the recipe's first two steps were `Docker Desktop` (start it when `docker info` fails) and `database` (`docker compose up -d` in `db\`). They came from dndai's own documents: `README.md` and `CLAUDE.md` say Postgres runs in a container on 5433, and two handoffs call it the live database. The survey also saw five untracked scripts that set Postgres up inside WSL and a stopped WSL distro, compared disk timestamps, and chose Docker as "established" because the documents said so. The owner had decided long before that Docker does not run on this PC beside the larger models: it takes the memory they need. That decision was in no document either session could read. When the session running the sitting told the owner to start Docker for the database, the owner's answer was: "WEVE BEEN ... OVER THIS DOCKER IS TOO ... MEMORY HUNGRY TO RUN ALONG SIDE OUR LARGER LLMS". The icon had not been used: the main checkout was not pulled, so it still said why it could not start.
+
+**Why:** "how the app is really started" was answered from the app's documents, and a recipe that starts a memory-heavy program of the owner's was written without asking whether the owner runs that program at all. The reports listed it as a decision ("dndai's icon starts Docker Desktop and the database too") with the cost "Docker Desktop stays up after the game", which was the wrong cost: the real one was the models' memory.
+
+**Fix:** the two steps were taken out of the live registry at once. The database step is now Postgres 16 inside the WSL distro `Ubuntu-24.04`, read from the distro itself (systemd, `postgresql` enabled and online on 5433, the database `dndai` with 38 tables, 5433 answering from Windows): `wsl.exe -d Ubuntu-24.04 --exec sleep infinity` with `always: true`, which holds the distro for as long as the launcher's window is open, because the distro stops when nothing holds it. Run for real, alone, through the launcher: `database: started (port 5433, 0 s)`, two holders while open, none after the close. `startApp` refuses any step that starts, runs or asks Docker (`namesDocker`), and `engine/__tests__/apps/noDocker.test.ts` fails when a recipe in this repository names it, when discovery starts producing recipes, or when launcher code mentions it. Decision 10 is the rule.
+
+**Rule:** an app's launch may only start what the owner already runs beside the models. What an app's documents say it needs is a question for the owner, not a step; and a decision the owner has made once is written where the next session will read it.

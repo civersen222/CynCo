@@ -52,6 +52,8 @@ describe('displaceApp', () => {
   const ctx = (procs: ListedProc[], said: string[], killed: number[]) => ({
     port: 8081, by: 'the chat engine (pid 77)', file: record,
     listProcesses: async () => procs, kill: async (pid: number) => { killed.push(pid) }, say: (m: string) => said.push(m), now: () => new Date('2026-11-11T18:00:00Z'),
+    // The launcher's embeddings server is taken to be still running here; what is said when it went down with the chat server is alsoLost.test.ts.
+    exists: () => true, sleep: async () => {},
   })
 
   it('an app in use: its server is stopped, the owner is told what happens next, and the debt is written down', async () => {
