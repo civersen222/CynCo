@@ -329,6 +329,23 @@ describe('the outbox', () => {
     expect(kept.size()).toBe(1)
   })
 
+  it('a backlog file with CRLF line endings loads the same records as one with LF (F231)', () => {
+    const lf = file()
+    const crlf = file()
+    writeFileSync(lf, [ev(1), ev(2)].map(r => JSON.stringify(r)).join('\n') + '\n')
+    writeFileSync(crlf, [ev(1), ev(2)].map(r => JSON.stringify(r)).join('\r\n') + '\r\n')
+    const sent: string[] = []
+    const take = (f: string) => new Outbox({ url: 'http://127.0.0.1:1', box: 'main', file: f, log: () => {}, fetchImpl: async (_u, init) => { sent.push(init.body.replace(/"sentAt":"[^"]+"/, '')); return { ok: true, status: 200 } } })
+    const a = take(lf)
+    const b = take(crlf)
+    expect(b.size()).toBe(2)
+    return Promise.all([a.flush(), b.flush()]).then(() => {
+      expect(sent).toHaveLength(2)
+      expect(sent[1]).toBe(sent[0])
+      expect(sent[1]).not.toContain('\\r')
+    })
+  })
+
   it('a torn last line in the backlog file is skipped', () => {
     const f = file()
     writeFileSync(f, JSON.stringify(ev(1)) + '\n{"t":"event","at":"2026')

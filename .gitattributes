@@ -5,5 +5,11 @@ benchmark/true/tasks/**/*.patch text eol=lf
 benchmark/true/tasks/**/*.py text eol=lf
 benchmark/true/tasks/**/*.json text eol=lf
 
+# The watcher's fixtures are real records replayed as they were written (a journal, a log
+# excerpt, the pushes derived from them). They must be the same bytes on every platform: on a
+# Windows checkout with core.autocrlf=true they arrived as CRLF and the replay failed there,
+# having passed where it was written and on Linux CI (F231).
+scripts/doorman/fixtures/** text eol=lf
+
 # C6 wave-11 in-flight patch is applied via `git apply`; CRLF would corrupt it.
 docs/civkings-redesign-briefs/*.patch text eol=lf

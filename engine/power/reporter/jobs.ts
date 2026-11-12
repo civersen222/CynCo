@@ -8,14 +8,15 @@
  */
 import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { FileTail } from './logTail.js'
+import { FileTail, withoutCr } from './logTail.js'
 import type { WatchEvent } from './types.js'
 
 const SUMMARY_MAX = 160
 
 export function jobEvents(mission: string, lines: string[]): WatchEvent[] {
   const out: WatchEvent[] = []
-  for (const line of lines) {
+  for (const raw of lines) {
+    const line = withoutCr(raw) // JSON.parse would forgive it; the rule is that no reader of lines depends on that (F231)
     if (!line.trim()) continue
     let r: Record<string, unknown>
     try { r = JSON.parse(line) as Record<string, unknown> } catch { continue } // a torn line: the next look has it whole or not at all

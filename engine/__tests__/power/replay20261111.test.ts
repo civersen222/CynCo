@@ -44,6 +44,31 @@ describe('the fixture is what the reporter produces from the raw records', () =>
     expect(committed).toEqual(JSON.parse(JSON.stringify(buildPushes())))
     expect(committed.records).toHaveLength(26)
   })
+
+  // F231: on a Windows checkout git gave these fixtures CRLF line endings and the test above failed
+  // on a carriage return in the engine's line. It had passed where it was written (the files as
+  // typed, LF) and on CI (Linux, no conversion). Both halves of the fix are pinned here.
+  it('the same records come out whether the raw records have LF or CRLF line endings', () => {
+    const committed = JSON.parse(readFileSync(join(FIXTURE_DIR, 'pushes.json'), 'utf-8'))
+    for (const eol of ['\n', '\r\n']) {
+      const dir = mkdtempSync(join(tmpdir(), 'cynco-fixture-eol-'))
+      for (const name of ['system-log.json', 'outage.json', 'engine-log-excerpt.txt']) {
+        writeFileSync(join(dir, name), readFileSync(join(FIXTURE_DIR, name), 'utf-8').replace(/\r\n/g, '\n').replace(/\n/g, eol))
+      }
+      expect(JSON.parse(JSON.stringify(buildPushes(dir))), `line ending ${JSON.stringify(eol)}`).toEqual(committed)
+    }
+  })
+
+  it('git is told to keep every fixture under scripts/doorman/fixtures LF on every platform', () => {
+    const files = ['2026-11-11/engine-log-excerpt.txt', '2026-11-11/doorman-journal.txt', '2026-11-11/README.md', '2026-11-11/pushes.json', '2026-11-11/system-log.json', 'cusum-parity.json']
+      .map(f => `scripts/doorman/fixtures/${f}`)
+    const r = spawnSync('git', ['check-attr', 'text', 'eol', '--', ...files], { cwd: process.cwd(), encoding: 'utf-8', windowsHide: true })
+    expect(r.status, r.stderr).toBe(0)
+    for (const f of files) {
+      expect(r.stdout).toContain(`${f}: eol: lf`)
+      expect(r.stdout).toContain(`${f}: text: set`)
+    }
+  })
 })
 
 describe.skipIf(!python)('2026-11-11 replayed through the reporter and a real watcher', () => {

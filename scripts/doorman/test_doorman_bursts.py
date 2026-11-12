@@ -107,6 +107,22 @@ def test_the_real_journal_of_2026_11_11_has_one_burst_before_the_night_and_none_
     assert [b["cause"] for b in bursts if b["target"] == "image"][0] == "with:main"
 
 
+def test_the_journal_gives_the_same_bursts_with_lf_and_crlf_line_endings():
+    # F231: a Windows checkout gives this fixture CRLF. Read in binary so the endings are exactly these.
+    with open(os.path.join(FIXTURE, "doorman-journal.txt"), "rb") as f:
+        text = f.read().decode("utf-8").replace("\r\n", "\n")
+    lf = text.split("\n")
+    crlf = [line + "\r" for line in lf]  # what splitting a CRLF file on "\n" leaves behind
+    knock = [
+        '2026-11-12T05:00:00+00:00 doorman sh[1]: 100.64.0.9 "GET /wake?target=main HTTP/1.1" 200 -',
+        "2026-11-12T05:00:00+00:00 doorman sudo[2]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00",
+    ]
+    want = journal_bursts.parse(lf + knock, MACS, COMPANIONS)
+    assert len(want) > 4 and want[-1]["cause"] == "knock"
+    assert journal_bursts.parse(crlf + [k + "\r" for k in knock], MACS, COMPANIONS) == want
+    assert journal_bursts.parse([line + "\r\n" for line in lf + knock], MACS, COMPANIONS) == want  # lines as a file object yields them
+
+
 def test_a_wake_request_in_the_journal_makes_the_burst_a_knock():
     lines = [
         '2026-11-12T05:00:00+00:00 doorman sh[1]: 100.64.0.9 "GET /wake?target=main HTTP/1.1" 200 -',

@@ -122,6 +122,22 @@ def test_the_doormans_burst_journal_is_read_once_and_only_whole_lines(tmp_path):
     assert [(e["data"]["target"], e["data"]["cause"]) for e in got] == [("main", "knock"), ("main", "schedule"), ("image", "with:main"), ("main", "knock")]
 
 
+def test_a_burst_journal_with_crlf_line_endings_gives_the_same_events(tmp_path):
+    # F231: nothing that splits a file into lines may care how the lines end.
+    t = parse_iso("2026-11-11T10:11:09Z")
+    lines = burst_line(t) + burst_line(t + 1, target="image", cause="with:main") + burst_line(t + 7200, cause="knock")
+    got = {}
+    for name, text in (("lf", lines), ("crlf", lines.replace("\n", "\r\n"))):
+        store = Store(str(tmp_path / (name + ".db")))
+        path = tmp_path / (name + ".jsonl")
+        path.write_bytes(text.encode("utf-8"))
+        assert watcher.ingest_doorman_files(store, str(path), None, NOW) == 3
+        assert watcher.ingest_doorman_files(store, str(path), None, NOW) == 0
+        got[name] = [(e["at"], e["key"], e["data"]) for e in store.events(0, NOW + 1, box="doorman")]
+    assert got["crlf"] == got["lf"]
+    assert "\r" not in json.dumps(got["crlf"])
+
+
 def test_a_burst_journal_the_doorman_trimmed_is_read_again_and_stores_nothing_twice(tmp_path):
     store = Store(str(tmp_path / "watch.db"))
     bursts = tmp_path / "bursts.jsonl"

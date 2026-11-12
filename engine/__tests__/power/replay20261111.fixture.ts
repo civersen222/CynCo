@@ -22,6 +22,8 @@ type Outage = { service: string; saidDown: { at: string; timeIs: string; basis: 
 export function buildPushes(dir: string = FIXTURE_DIR): PushBody {
   const rows = JSON.parse(readFileSync(join(dir, 'system-log.json'), 'utf-8')) as SystemLogRow[]
   const outage = JSON.parse(readFileSync(join(dir, 'outage.json'), 'utf-8')) as Outage
+  // Split on \n only, as a reader of a real log would: the parser, not this builder, is what must
+  // not care whether the file has CRLF endings (F231).
   const excerpt = readFileSync(join(dir, 'engine-log-excerpt.txt'), 'utf-8').split('\n')
 
   // Real: the System log, through the parser the reporter runs.
