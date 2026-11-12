@@ -1,5 +1,5 @@
-# CynCo background services on this PC: the headless phone engine, the embedding server, the liveness daemon
-# and the dynasty approval listener; plus ntfy, which runs on the doorman and is shown as reachable or not. Each is a Task Scheduler task that
+# CynCo background services on this PC: the headless phone engine, the embedding server, the liveness daemon,
+# the box reporter (it tells the watcher on the doorman what this PC is doing) and the dynasty approval listener; plus ntfy, which runs on the doorman and is shown as reachable or not. Each is a Task Scheduler task that
 # starts at logon; this script is the one place to see whether they are actually running,
 # and to start, stop or register them without hunting through Task Scheduler.
 #
@@ -7,7 +7,7 @@
 #   scripts\cynco-services.ps1 start           start every stopped service
 #   scripts\cynco-services.ps1 stop            stop every running service
 #   scripts\cynco-services.ps1 start engine    start/stop one by its short name
-#   scripts\cynco-services.ps1 register engine create the logon task when it is missing (engine only;
+#   scripts\cynco-services.ps1 register engine create the logon task when it is missing (engine, embed, watch;
 #                                              the dynasty tasks are owned by fantasyman\dynasty\ops)
 #
 # Status reads the task's own state (Running/Ready), the process behind it when
@@ -25,10 +25,11 @@ $services = @(
   @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
   @{ Name = 'embed';    Task = 'CynCo embed server';        Match = 'llama-server.*--embeddings'; Log = "$env:USERPROFILE\.cynco\embed-server.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-embed-server.cmd'); Description = 'CynCo embedding server: llama-server --embeddings on 127.0.0.1:9165 (nomic-embed-text, CPU) for every engine''s project and code index' } },
   @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log" },
+  @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
   @{ Name = 'ntfy';     Remote = '100.110.117.10'; Port = 8090; Note = 'on the doorman (docker compose, /opt/doorman/ntfy)' },
   @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Log = '' }
 )
-if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, embed, daemon, ntfy, listener)"; exit 2 } }
+if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, embed, daemon, watch, ntfy, listener)"; exit 2 } }
 
 $procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $ExcludePid }
 

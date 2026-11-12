@@ -1,0 +1,20 @@
+[Unit]
+Description=CynCo watcher (boxes push their state; memory, the model and the daily note on the tailnet)
+After=network-online.target tailscaled.service doorman.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Not root: it reads the doorman's burst journal and schedule (world-readable) and writes only
+# its own state directory, /var/lib/cynco-watcher, which systemd creates for this user.
+User=cynco
+StateDirectory=cynco-watcher
+NoNewPrivileges=true
+# Bind the Tailscale address only (the design forbids 0.0.0.0). Re-read at every start.
+ExecStartPre=/bin/sh -c 'until tailscale ip -4 >/dev/null 2>&1; do sleep 2; done'
+ExecStart=/bin/sh -c 'exec /usr/bin/python3 /opt/doorman/watcher.py --bind "$(tailscale ip -4)" --port 9171 --db /var/lib/cynco-watcher/watch.db'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

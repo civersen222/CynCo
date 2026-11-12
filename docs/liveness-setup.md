@@ -193,9 +193,25 @@ While a one-shot runs, the daemon holds the PC awake (`engine/power/awake.ts`); 
 nothing, and the owner's "Sleep after" setting decides. `scripts/cynco-services.ps1` shows and starts/stops the
 daemon, the headless phone engine, the embedding server (`embed`: `llama-server --embeddings` on 127.0.0.1:9165, `docs/decisions/2026-11-08-embeddings-own-llama-server.md`) and the approval listener, and reports whether the doorman's ntfy answers.
 
+## 8. The watcher and the box reporter (metasystem slice 1, built 2026-11-12, not yet live)
+
+The watcher on the doorman keeps what each box pushes and serves the daily note; the box reporter on this PC does the pushing. Neither acts on anything (`docs/decisions/2026-11-11-metasystem-design.md`; `scripts/doorman/CLAUDE.md`; `engine/power/CLAUDE.md`). Going live is these steps, in this order, by the owner. Each says what should be seen and how to undo it.
+
+1. **Pull main** in the main checkout (PowerShell, in `C:\Users\civer\localcode`): `git pull`. Nothing running changes yet.
+2. **Deploy to the doorman** (Git Bash, from the repo root): `bash scripts/doorman/deploy.sh`. It copies the watcher's five files and `watcher.service`, and restarts `doorman`, `naswatch` and `watcher`. Seen: `--- watcher:  active (enabled) - the note: http://100.110.117.10:9171/`, with `doorman` and `naswatch` active as before. The doorman restart is a few seconds in which a knock is not answered; its schedule is re-read from disk. Undo: `ssh -i ~/.ssh/cynco-doorman cynco@100.110.117.10 "sudo systemctl disable --now watcher"`; the doorman's new burst file is harmless and can stay.
+3. **Open the note** on any tailnet device: `http://100.110.117.10:9171/`. Seen: "No box has pushed anything yet." If the page does not open, on the doorman: `systemctl status watcher` and `journalctl -u watcher -n 30`.
+4. **Optional, the doorman's last days of bursts** (so the first notes can match wakes from before today), once, on the doorman: `sudo journalctl -u doorman --utc -o short-iso -q --since "2026-11-09 00:00:00 UTC" | python3 /opt/doorman/journal_bursts.py --targets /etc/doorman/targets.json | sudo tee -a /var/lib/doorman/bursts.jsonl > /dev/null`. Seen within 15 s: "The doorman's own record" at the foot of the page for those days. Undo: none needed; a burst is stored once however often it is read.
+5. **Register and start the reporter** on this PC (PowerShell, not elevated): `scripts\cynco-services.ps1 register watch` then `scripts\cynco-services.ps1 start watch`. Seen: `watch: registered 'CynCo box reporter' (at logon)`, `watch: started`, and `scripts\cynco-services.ps1` lists `watch RUNNING (pid N)` with the last line of `~\.cynco\box-reporter.log`, which begins `[watch] reporting this box as "main" to http://100.110.117.10:9171`. The engine, the daemon and the embedding service are not restarted by this. Undo: `scripts\cynco-services.ps1 stop watch`, and `Unregister-ScheduledTask -TaskName 'CynCo box reporter' -Confirm:$false` to remove it; `~\.cynco\watch` can be deleted.
+6. **Reload the note.** Seen within a minute: `main: awake since HH:MM, last heard N s ago`, a chart for `main` with its state, the GPU's temperature line and a row each for `dashboard`, `embed` and `daemon`. The reporter's first look reads three days of the System log, so if this sitting is within three days of it, the note for 2026-11-11 (`/day/2026-11-11`) shows that night's wakes from the PC's own log; with step 4 done, the 10:11Z wake is matched to the doorman and the other eight are flagged.
+7. **Restart the engine once, whenever convenient** (`scripts\cynco-services.ps1 stop engine`, `start engine`): only a restarted engine answers `/api/session` with what it has open. Until then a loaded model's use reads from the model port's `/slots`, or as unknown, and "loaded and unused" is not flagged on a guess.
+8. **The next morning**, the second proof the design asks for: the note for the night shows each sleep and wake of the PC, and no "Wakes with nothing behind them" unless something other than the doorman woke it (F221's fix has not had its night yet).
+
+The reporter's address is `LOCALCODE_WATCHER_URL`; `scripts\run-box-reporter.cmd` sets it to `http://100.110.117.10:9171` unless it is already set. Port 9171 is on the doorman only, bound to its Tailscale address; nothing new listens on this PC.
+
 ## Security posture
 
 - ntfy listens only on the doorman's Tailscale interface; tailnet membership is the authentication (no auth file, no token).
+- The watcher (port 9171) listens only on the doorman's Tailscale interface too, with the same authentication: any tailnet device can push records to it and read the note. Its page takes no input, and nothing it receives can make it act, because it has no action to take. The box reporter on this PC listens on nothing.
 - The daemon makes outbound connections only (MFL API, ntfy publish, ntfy SSE).
 - The Mfl tool is read-only by whitelist; MFL write endpoints (TYPE=import) are unreachable until Phase C.
 - Phone commands are limited to `{recId, verdict}` — free-text commands are not parsed in Phase B.

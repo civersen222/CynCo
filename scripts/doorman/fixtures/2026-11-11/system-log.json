@@ -1,0 +1,587 @@
+[
+    {
+        "record":  55143,
+        "id":  13,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:47:06.169Z",
+        "data":  {
+                     "StopTime":  "2026-11-11T09:47:06.1691460Z"
+                 }
+    },
+    {
+        "record":  55144,
+        "id":  12,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:47:31.942Z",
+        "data":  {
+                     "MajorVersion":  "10",
+                     "MinorVersion":  "0",
+                     "BuildVersion":  "26100",
+                     "QfeVersion":  "9974",
+                     "ServiceVersion":  "0",
+                     "BootMode":  "0",
+                     "StartTime":  "2026-11-11T09:47:31.5000000Z"
+                 }
+    },
+    {
+        "record":  55381,
+        "id":  13,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:48:14.597Z",
+        "data":  {
+                     "StopTime":  "2026-11-11T09:48:14.5973601Z"
+                 }
+    },
+    {
+        "record":  55382,
+        "id":  12,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:48:45.875Z",
+        "data":  {
+                     "MajorVersion":  "10",
+                     "MinorVersion":  "0",
+                     "BuildVersion":  "26100",
+                     "QfeVersion":  "9974",
+                     "ServiceVersion":  "0",
+                     "BootMode":  "0",
+                     "StartTime":  "2026-11-11T09:48:45.5000000Z"
+                 }
+    },
+    {
+        "record":  55527,
+        "id":  13,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:49:15.498Z",
+        "data":  {
+                     "StopTime":  "2026-11-11T09:49:15.4985362Z"
+                 }
+    },
+    {
+        "record":  55528,
+        "id":  12,
+        "provider":  "Microsoft-Windows-Kernel-General",
+        "at":  "2026-11-11T09:49:41.873Z",
+        "data":  {
+                     "MajorVersion":  "10",
+                     "MinorVersion":  "0",
+                     "BuildVersion":  "26100",
+                     "QfeVersion":  "9974",
+                     "ServiceVersion":  "0",
+                     "BootMode":  "0",
+                     "StartTime":  "2026-11-11T09:49:41.5000000Z"
+                 }
+    },
+    {
+        "record":  55666,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T10:10:19.618Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "1"
+                 }
+    },
+    {
+        "record":  55667,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T10:10:22.223Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55675,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T10:11:18.713Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T10:10:16.2988055Z",
+                     "WakeTime":  "2026-11-11T10:11:17.6910871Z",
+                     "SleepDuration":  "3320",
+                     "WakeDuration":  "3195",
+                     "DriverInitDuration":  "3087",
+                     "BiosInitDuration":  "3942",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912624128",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "5",
+                     "WakeSourceTextLength":  "32",
+                     "WakeSourceText":  "USB4(TM) Host Router (Microsoft)",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "37"
+                 }
+    },
+    {
+        "record":  55679,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T10:31:43.541Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "2"
+                 }
+    },
+    {
+        "record":  55680,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T10:31:46.032Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55688,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T10:46:47.611Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T10:31:40.2281319Z",
+                     "WakeTime":  "2026-11-11T10:46:46.5898729Z",
+                     "SleepDuration":  "3314",
+                     "WakeDuration":  "3089",
+                     "DriverInitDuration":  "3079",
+                     "BiosInitDuration":  "3922",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "38"
+                 }
+    },
+    {
+        "record":  55692,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T11:07:12.643Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "3"
+                 }
+    },
+    {
+        "record":  55693,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T11:07:15.423Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55701,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T11:16:47.648Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T11:07:09.3332660Z",
+                     "WakeTime":  "2026-11-11T11:16:46.6312806Z",
+                     "SleepDuration":  "3311",
+                     "WakeDuration":  "3131",
+                     "DriverInitDuration":  "3120",
+                     "BiosInitDuration":  "3924",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "38"
+                 }
+    },
+    {
+        "record":  55705,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T11:37:12.383Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "4"
+                 }
+    },
+    {
+        "record":  55706,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T11:37:14.713Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55714,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T11:47:55.622Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T11:37:09.0654895Z",
+                     "WakeTime":  "2026-11-11T11:47:54.6083224Z",
+                     "SleepDuration":  "3319",
+                     "WakeDuration":  "3107",
+                     "DriverInitDuration":  "3098",
+                     "BiosInitDuration":  "3940",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "36"
+                 }
+    },
+    {
+        "record":  55718,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T12:08:20.778Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "5"
+                 }
+    },
+    {
+        "record":  55719,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T12:08:23.091Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55727,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T12:18:03.625Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T12:08:17.4676990Z",
+                     "WakeTime":  "2026-11-11T12:18:02.6088527Z",
+                     "SleepDuration":  "3311",
+                     "WakeDuration":  "3108",
+                     "DriverInitDuration":  "3098",
+                     "BiosInitDuration":  "3907",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "38"
+                 }
+    },
+    {
+        "record":  55731,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T12:38:28.839Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "6"
+                 }
+    },
+    {
+        "record":  55732,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T12:38:31.094Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55740,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T12:47:56.605Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T12:38:25.5227964Z",
+                     "WakeTime":  "2026-11-11T12:47:55.5932308Z",
+                     "SleepDuration":  "3318",
+                     "WakeDuration":  "3092",
+                     "DriverInitDuration":  "3083",
+                     "BiosInitDuration":  "3942",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "38"
+                 }
+    },
+    {
+        "record":  55744,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T13:08:21.887Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "7"
+                 }
+    },
+    {
+        "record":  55745,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T13:08:24.324Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55753,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T13:17:56.630Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T13:08:18.5692616Z",
+                     "WakeTime":  "2026-11-11T13:17:55.6118903Z",
+                     "SleepDuration":  "3319",
+                     "WakeDuration":  "3111",
+                     "DriverInitDuration":  "3102",
+                     "BiosInitDuration":  "3929",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "37"
+                 }
+    },
+    {
+        "record":  55757,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T13:38:21.713Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "8"
+                 }
+    },
+    {
+        "record":  55758,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T13:38:24.059Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55767,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T14:02:56.626Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T13:38:18.3953886Z",
+                     "WakeTime":  "2026-11-11T14:02:55.6086725Z",
+                     "SleepDuration":  "3319",
+                     "WakeDuration":  "3108",
+                     "DriverInitDuration":  "3098",
+                     "BiosInitDuration":  "3901",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "39"
+                 }
+    },
+    {
+        "record":  55771,
+        "id":  42,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T14:23:21.864Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "Reason":  "7",
+                     "Flags":  "0",
+                     "TransitionsToOn":  "9"
+                 }
+    },
+    {
+        "record":  55772,
+        "id":  107,
+        "provider":  "Microsoft-Windows-Kernel-Power",
+        "at":  "2026-11-11T14:23:24.155Z",
+        "data":  {
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeFromState":  "4",
+                     "ProgrammedWakeTimeAc":  "1601-01-01T00:00:00.0000000Z",
+                     "ProgrammedWakeTimeDc":  "1601-01-01T00:00:00.0000000Z",
+                     "WakeRequesterTypeAc":  "0",
+                     "WakeRequesterTypeDc":  "0"
+                 }
+    },
+    {
+        "record":  55780,
+        "id":  1,
+        "provider":  "Microsoft-Windows-Power-Troubleshooter",
+        "at":  "2026-11-11T14:46:48.631Z",
+        "data":  {
+                     "SleepTime":  "2026-11-11T14:23:18.4768621Z",
+                     "WakeTime":  "2026-11-11T14:46:47.6117713Z",
+                     "SleepDuration":  "3388",
+                     "WakeDuration":  "3111",
+                     "DriverInitDuration":  "3101",
+                     "BiosInitDuration":  "3905",
+                     "HiberWriteDuration":  "0",
+                     "HiberReadDuration":  "0",
+                     "HiberPagesWritten":  "0",
+                     "Attributes":  "1912622080",
+                     "TargetState":  "4",
+                     "EffectiveState":  "4",
+                     "WakeSourceType":  "1",
+                     "WakeSourceTextLength":  "0",
+                     "WakeSourceText":  "",
+                     "WakeTimerOwnerLength":  "0",
+                     "WakeTimerContextLength":  "0",
+                     "NoMultiStageResumeReason":  "0",
+                     "WakeTimerOwner":  "",
+                     "WakeTimerContext":  "",
+                     "CheckpointDuration":  "48"
+                 }
+    }
+]

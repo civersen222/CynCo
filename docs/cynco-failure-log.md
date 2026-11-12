@@ -4392,3 +4392,41 @@ None comes near 20 s on a quiet machine. What could not be imitated without the 
 **Fix:** the two steps were taken out of the live registry at once. The database step is now Postgres 16 inside the WSL distro `Ubuntu-24.04`, read from the distro itself (systemd, `postgresql` enabled and online on 5433, the database `dndai` with 38 tables, 5433 answering from Windows): `wsl.exe -d Ubuntu-24.04 --exec sleep infinity` with `always: true`, which holds the distro for as long as the launcher's window is open, because the distro stops when nothing holds it. Run for real, alone, through the launcher: `database: started (port 5433, 0 s)`, two holders while open, none after the close. `startApp` refuses any step that starts, runs or asks Docker (`namesDocker`), and `engine/__tests__/apps/noDocker.test.ts` fails when a recipe in this repository names it, when discovery starts producing recipes, or when launcher code mentions it. Decision 10 is the rule.
 
 **Rule:** an app's launch may only start what the owner already runs beside the models. What an app's documents say it needs is a question for the owner, not a step; and a decision the owner has made once is written where the next session will read it.
+
+## F228 — Reading the doorman's journal for the night of F221 answered "No entries" twice, for two different reasons, and neither meant there were none (2026-11-12, while building metasystem slice 1; caught before anything was built on it)
+
+**Where:** a read-only `journalctl -u doorman --utc --since "2026-11-11 09:30:00" --until "2026-11-11 15:10:00"` over ssh as `cynco`, to take the doorman's own record of that night into a fixture.
+
+**How:** the first read printed `-- No entries --`. It would have agreed with F221 ("the doorman's journal has no request and no `etherwake`") and been taken as the record. Above it was a hint: `You are currently not seeing messages from other users and the system`. The doorman runs as root and `cynco` is not in `systemd-journal`, so the user sees none of that unit's lines whatever happened. Read with `sudo`, the same window returned 150 `etherwake` lines, all from 16:37Z to 19:12Z: `--utc` changes how times are printed and not how `--since` is read, and the doorman keeps the owner's zone (UTC−7), so the window asked for was seven hours later than the one meant. With `--since "2026-11-11 00:00:00 UTC"` the record is what F221 said, and more exact: a scheduled burst at 10:11:09Z, its last packet at 10:12:10Z, no line of any kind until 15:06:47Z, no `etherwake` until 19:12:00Z.
+
+**Why:** an empty answer was about to be read as a fact about the doorman when it was a fact about the reader: who was asking, and which window. Both faults produce the answer that was expected, which is the case where nobody looks twice.
+
+**Fix:** the fixture was taken with `sudo journalctl -u doorman --utc -o short-iso -q --since "... UTC"`, and that command is written down in `scripts/doorman/fixtures/2026-11-11/README.md`, in `scripts/doorman/journal_bursts.py` and under Gotchas in `scripts/doorman/CLAUDE.md`. It will not be needed for long: the doorman now writes each burst and its cause to `/var/lib/doorman/bursts.jsonl`, which the watcher reads and anyone can read.
+
+**Rule:** "nothing found" is evidence only when the same read is shown to find something that is known to be there. Before using an empty result, run the query against a time or a place where the answer is known not to be empty; and give a time zone to every time handed to another machine.
+
+## F229 — A patch delivered through a heredoc lost its backslashes again, twice in one session (2026-11-12, metasystem slice 1; both caught by the next test run, nothing committed broken)
+
+**Where:** two Python patch scripts fed to `python -` through a Bash heredoc: one added `jsonl_recorder` to `scripts/doorman/doorman.py`, one added the `watch` row to `scripts/cynco-services.ps1`.
+
+**How:** in the first, `f.write(json.dumps(rec) + "\n")` arrived as a string broken over two lines, a syntax error that stopped every doorman test from being collected. In the second, the row's `Log = "$env:USERPROFILE\.cynco\box-reporter.log"` and `'scripts\run-box-reporter.cmd'` arrived with a backspace and a carriage return in them (`\b`, `\r`), which the script still parsed; `git diff` showed `.cyncoox-reporter.log`. F150 is the same fault (a heredoc-delivered patch that turned a two-character escape into the character) and its rule was already in this session's notes.
+
+**Why:** the rule was known as "heredocs eat escapes" and applied as "be careful with regexes". A file path with a backslash, and a `"\n"` inside the code being inserted, did not look like the case. The first failure was fixed by hand and the method kept; the second came an hour later from the same method.
+
+And a third time, after this entry was written: a patch script was itself delivered through a heredoc, and a `'\n'` in the text it was to find arrived as something else. Its own `assert` that the text occurs exactly once stopped it before it wrote to that file.
+
+**Fix:** both lines were rewritten with the editor, and the services row by a script written to a file with raw strings; `cynco-services.ps1` was then parsed with PowerShell's own parser (0 errors) and asked for `status watch`. From the second failure on, every patch in the session that carries a backslash was written to a file first. `engine/__tests__/power/reporter/reporter.test.ts` now reads the row back out of the script and matches it against the reporter's real command line, so a mangled row fails a test instead of a status read.
+
+**Rule:** a backslash anywhere in a patch (a Windows path, an escape inside inserted code, a regex) means the patch goes through a file written by the editor, never through a heredoc, and that includes the script that applies the patch. After the first time a method fails, change the method, not the instance. Every scripted replacement asserts that its target occurs exactly once: that assert is what made the third time harmless.
+
+## F230 — Nothing ran the doorman's tests but a person: not the suite, not CI (found 2026-11-12 while adding the watcher beside them)
+
+**Where:** `scripts/doorman/test_doorman.py`, `test_doorman_persist.py`, `test_naswatch.py`; `vitest.config.ts` (`include`), `.github/workflows/ci.yml` (the TUI's pytest only), `docs/POST-CHANGE-VERIFICATION.md`.
+
+**How:** the doorman's services are Python and their tests are pytest files beside them. `npx vitest run` collects `engine/` and `scripts/__tests__/*.test.mjs`; CI runs `cd tui && python -m pytest tests/`; the verification list names those two. The wakefulness record says the doorman's tests are "run on the PC". So a change to `doorman.py` could pass every check this repository lists while its own tests were red, and the service it changes is the one that wakes the PC. They were green when run (26 passed); nothing had made that true.
+
+**Why:** the suite was defined by its runner's file types, and the doorman is the one part of CynCo that is neither TypeScript nor the TUI. Its tests were written, run once by the session that wrote them, and left out of every list.
+
+**Fix:** `scripts/__tests__/doorman-python.test.mjs` runs `python -m pytest scripts/doorman -q` inside the suite and fails when it does; without a Python 3 that has pytest it skips and prints why. The CI suite job already installs Python and pytest for the TUI, so it runs there too. The guard lane (the required check) does not run it: it runs the guards folder only.
+
+**Rule:** when a part of the system is written in another language, its tests go into the one command the verification list names, in the same change that adds the part. A test that only its author ever ran is a note, not a check.

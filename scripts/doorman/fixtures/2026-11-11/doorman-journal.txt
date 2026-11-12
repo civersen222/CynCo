@@ -1,0 +1,82 @@
+2026-11-11T09:04:38+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T09:11:08+00:00 doorman sudo[104394]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T09:11:08+00:00 doorman sudo[104397]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T09:11:23+00:00 doorman sudo[104422]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T09:11:24+00:00 doorman sudo[104425]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T09:11:39+00:00 doorman sudo[104430]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T09:11:39+00:00 doorman sudo[104433]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T09:11:54+00:00 doorman sudo[104436]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T09:11:54+00:00 doorman sudo[104439]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T09:12:09+00:00 doorman sudo[104443]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T09:12:09+00:00 doorman sudo[104445]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T09:14:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T09:24:38+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T09:34:38+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T09:44:38+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T10:11:09+00:00 doorman sudo[105966]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T10:11:10+00:00 doorman sudo[105969]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T10:11:25+00:00 doorman sudo[105994]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T10:11:25+00:00 doorman sudo[105997]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T10:11:40+00:00 doorman sudo[106001]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T10:11:40+00:00 doorman sudo[106000]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T10:11:55+00:00 doorman sudo[106008]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T10:11:55+00:00 doorman sudo[106009]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T10:12:10+00:00 doorman sudo[106015]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T10:12:10+00:00 doorman sudo[106016]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T15:06:47+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T15:17:06+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T15:27:06+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T15:37:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T15:47:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T15:57:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:07:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:17:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:27:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:37:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:47:07+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T16:57:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:07:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:17:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:27:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:37:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:47:08+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T17:57:09+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:07:09+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:17:09+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:27:09+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:37:21+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:47:21+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T18:57:21+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T19:07:22+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T19:12:00+00:00 doorman sudo[120667]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:12:00+00:00 doorman sudo[120670]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:12:15+00:00 doorman sudo[120673]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:12:15+00:00 doorman sudo[120675]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:12:30+00:00 doorman sudo[120679]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:12:30+00:00 doorman sudo[120681]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:12:45+00:00 doorman sudo[120686]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:12:45+00:00 doorman sudo[120688]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:13:00+00:00 doorman sudo[120716]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:13:00+00:00 doorman sudo[120718]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:15:22+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T19:17:22+00:00 doorman sudo[120831]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:17:22+00:00 doorman sudo[120834]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:17:37+00:00 doorman sudo[120837]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:17:37+00:00 doorman sudo[120840]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:17:52+00:00 doorman sudo[120865]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:17:52+00:00 doorman sudo[120868]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:18:07+00:00 doorman sudo[120873]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:18:07+00:00 doorman sudo[120876]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:18:22+00:00 doorman sudo[120880]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:18:23+00:00 doorman sudo[120882]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:20:22+00:00 doorman sh[35474]: 100.101.192.101 "POST /schedule HTTP/1.1" 200 -
+2026-11-11T19:27:22+00:00 doorman sudo[121115]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:27:22+00:00 doorman sudo[121118]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:27:37+00:00 doorman sudo[121121]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:27:37+00:00 doorman sudo[121124]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:27:52+00:00 doorman sudo[121148]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:27:52+00:00 doorman sudo[121151]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:28:07+00:00 doorman sudo[121156]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:28:07+00:00 doorman sudo[121158]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B
+2026-11-11T19:28:23+00:00 doorman sudo[121162]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 6C:6E:07:2D:AA:00
+2026-11-11T19:28:23+00:00 doorman sudo[121164]:     root : PWD=/ ; USER=root ; COMMAND=/usr/sbin/etherwake -i enp1s0 D8:43:AE:96:AE:8B

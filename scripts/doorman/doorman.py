@@ -71,24 +71,33 @@ class Doorman:
         self._schedule_times: Dict[str, List[float]] = {n: [] for n in targets}
         self._lock = threading.Lock()  # knock() under ThreadingHTTPServer must start one burst, not two
         self.schedule_path: Optional[str] = None  # set by main(); None = in-memory only (tests)
+        # Called once per burst that starts, with {"at","target","cause","forAt"}: the watcher reads these to match a
+        # box's wake to a knock or a scheduled job (docs/decisions/2026-11-11-metasystem-design.md, slice 1).
+        self.record: Callable[[dict], None] = lambda rec: None
 
     def _target(self, name: str) -> Target:
         return self.targets[name]  # KeyError for an unknown target, by design
 
-    def knock(self, name: str) -> dict:
+    def knock(self, name: str, cause: str = "knock", for_at: Optional[float] = None) -> dict:
         """Start a wake burst for `name` and for every target in its `with` list (the image box
-        wakes with the main PC: docs/decisions/2026-11-08-image-box-design.md §5). Never doubled."""
+        wakes with the main PC: docs/decisions/2026-11-08-image-box-design.md §5). Never doubled.
+        `cause` is "knock" (somebody asked) or "schedule" (a time the daemon posted, `for_at`)."""
         t = self._target(name)
         for n in [name, *t.with_]:
-            self._burst_start(n)
+            self._burst_start(n, cause if n == name else "with:" + name, for_at)
         return self.status(name)
 
-    def _burst_start(self, name: str) -> None:
+    def _burst_start(self, name: str, cause: str = "knock", for_at: Optional[float] = None) -> None:
         with self._lock:
             start = self._burst[name] is None
             if start:
                 self._burst[name] = self._now()
         if start:
+            try:
+                self.record({"at": self._burst[name], "target": name, "cause": cause, "forAt": for_at})
+            except Exception as e:  # the record is for the watcher; a wake must never wait on it
+                import sys as _sys
+                print("doorman: burst not recorded: %s" % e, file=_sys.stderr)
             self._burst_tick(name)
 
     def status(self, name: str) -> dict:
@@ -113,9 +122,9 @@ class Doorman:
         for at in times:
             fire_at = max(now, at - LEAD_S)
 
-            def fire(n: str = name, g: int = gen) -> None:
+            def fire(n: str = name, g: int = gen, scheduled: float = at) -> None:
                 if self._schedule_gen[n] == g:
-                    self.knock(n)
+                    self.knock(n, cause="schedule", for_at=scheduled)
 
             self._schedule_handles[name].append(self._schedule_later(fire_at, fire))
         self._persist_schedule()
@@ -210,6 +219,36 @@ def real_schedule_later(when: float, fn: Callable[[], None]) -> Callable[[], Non
     return timer.cancel
 
 
+def jsonl_recorder(path: str, max_lines: int = 20000) -> Callable[[dict], None]:
+    """Append each burst to `path` as one JSON line. Over `max_lines` the file is rewritten with its
+    newest half, so it cannot grow without bound; the watcher re-reads a file that got shorter."""
+    lock = threading.Lock()
+    count = [-1]  # lines in the file; counted on first use
+
+    def record(rec: dict) -> None:
+        with lock:
+            if count[0] < 0:
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        count[0] = sum(1 for _ in f)
+                except OSError:
+                    count[0] = 0
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+            count[0] += 1
+            if count[0] > max_lines:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                keep = lines[-(max_lines // 2):]
+                tmp = path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.writelines(keep)
+                os.replace(tmp, path)
+                count[0] = len(keep)
+
+    return record
+
+
 def _make_handler(d: Doorman, page_html: str):
     class Handler(BaseHTTPRequestHandler):
         server_version = "doorman/1"
@@ -284,6 +323,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--bind", required=True, help="Tailscale address to bind (never 0.0.0.0)")
     p.add_argument("--port", type=int, default=9170)
     p.add_argument("--schedule-file", default="/var/lib/doorman/schedule.json", help="the daemon's wake times survive a restart here")
+    p.add_argument("--bursts-file", default="/var/lib/doorman/bursts.jsonl", help="one line per wake burst, read by the watcher")
     a = p.parse_args(argv)
     if a.bind in ("0.0.0.0", "::"):
         print("refusing to bind a wildcard address", file=sys.stderr)
@@ -291,6 +331,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     d = Doorman(load_targets(a.targets), real_send_wake, real_probe_up, time.time, real_schedule_later)
     os.makedirs(os.path.dirname(a.schedule_file), exist_ok=True)
     d.schedule_path = a.schedule_file
+    os.makedirs(os.path.dirname(a.bursts_file), exist_ok=True)
+    d.record = jsonl_recorder(a.bursts_file)  # before load_schedule: a missed time fires at once and is a burst too
     d.load_schedule()
     srv = serve(a.bind, a.port, d)
     print("doorman listening on %s:%d targets=%s" % (a.bind, a.port, list(d.targets)), file=sys.stderr)
