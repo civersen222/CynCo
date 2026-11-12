@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 from watchmodel import MODEL_UNUSED_MIN_S, SILENT_GAP_S, WAKE_MATCH_BEFORE_S
 from watchstore import iso
 
+STATE_WORDS = {"unwatched": "not watched"}
+
 ANSWER_NOTE = "This page takes no input. Answering a finding (that was me / that is normal now / that is wrong) is not built yet: it belongs on the CynCo dashboard."
 
 KIND_TITLE = {
@@ -59,7 +61,7 @@ th{color:var(--ink2);font-weight:600}td.n,th.n{text-align:right;font-variant-num
 svg text{font:11px system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--ink2)}
 svg .lab{fill:var(--ink)}svg .tick{fill:var(--muted)}
 .grid{stroke:var(--grid);stroke-width:1}.axis{stroke:var(--axis);stroke-width:1}
-.awake{fill:var(--s1)}.asleep{fill:var(--rest)}.off{fill:none;stroke:var(--axis);stroke-width:1}.silent{fill:var(--serious)}
+.awake{fill:var(--s1)}.asleep{fill:var(--rest)}.off{fill:none;stroke:var(--axis);stroke-width:1}.silent{fill:var(--serious)}.unwatched{fill:var(--rest)}
 .oneshot{fill:var(--s2)}.engine{fill:var(--s3)}.app{fill:var(--s4)}.foreign{fill:var(--s5)}
 .up{fill:var(--good)}.down{fill:var(--critical)}.idle{fill:var(--rest)}
 .ok{fill:var(--good);stroke:var(--surface);stroke-width:2}.fail{stroke:var(--critical);stroke-width:2.5;stroke-linecap:round}
@@ -142,7 +144,10 @@ def box_chart(box: dict, report: dict, marks: List[dict]) -> str:
     for g in box["segments"]:
         if g["state"] == "unknown":
             continue
-        rows.append(band(g["from"], g["to"], y, 18, g["state"], "%s %s · %s" % (g["state"], _span(g["from"], g["to"], off), g["basis"])))
+        # Not watched (the reporter was stopped on purpose) is drawn thin, like a service nobody wants:
+        # nothing is known there, and that is not a fault.
+        top, hh = (y + 7, 4) if g["state"] == "unwatched" else (y, 18)
+        rows.append(band(g["from"], g["to"], top, hh, g["state"], "%s %s · %s" % (STATE_WORDS.get(g["state"], g["state"]), _span(g["from"], g["to"], off), g["basis"])))
     for w in box["wakes"]:
         if w["explained"]:
             rows.append('<circle class="woke" cx="%.1f" cy="%.1f" r="4"><title>%s</title></circle>' % (x(w["at"]), y + 9, e("woke %s (%s): %s" % (_local(w["at"], off), iso(w["at"]), w["explained"]["text"]))))
@@ -253,13 +258,15 @@ def box_chart(box: dict, report: dict, marks: List[dict]) -> str:
 
 def _legend(box: dict, has_marks: bool) -> str:
     items = [("awake", "awake"), ("asleep", "asleep"), ("off", "off (hollow)"), ("silent", "silent, unexplained")]
+    if any(g["state"] == "unwatched" for g in box["segments"]):
+        items.append(("unwatched", "not watched: the reporter was stopped on purpose (thin)"))
     if box["holders"]:
         items += [("oneshot", "a scheduled one-shot"), ("engine", "the CynCo engine"), ("app", "one of the owner's apps"), ("foreign", "not CynCo's")]
     if box["services"]:
         items += [("up", "service answering"), ("down", "service not answering"), ("idle", "not wanted (thin)")]
     out = []
     for cls, text in items:
-        style = "border:1px solid var(--axis)" if cls == "off" else "background:var(--%s)" % {"awake": "s1", "asleep": "rest", "silent": "serious", "oneshot": "s2", "engine": "s3", "app": "s4", "foreign": "s5", "up": "good", "down": "critical", "idle": "rest"}[cls]
+        style = "border:1px solid var(--axis)" if cls == "off" else "background:var(--%s)" % {"awake": "s1", "asleep": "rest", "silent": "serious", "unwatched": "rest", "oneshot": "s2", "engine": "s3", "app": "s4", "foreign": "s5", "up": "good", "down": "critical", "idle": "rest"}[cls]
         out.append('<span><i style="%s"></i>%s</span>' % (style, e(text)))
     if box["jobs"]:
         out.append("<span>● job ran ok</span><span>✕ job failed</span>")
@@ -328,7 +335,8 @@ def _box_status(box: dict, report: dict) -> str:
     if report["t1"] <= now:
         return "%s: %s (this is a past day)" % (box["box"], heard)
     since = (" since %s" % _local(box["since"], off)) if box["since"] else ""
-    words = {"awake": "awake", "asleep": "asleep", "off": "off", "silent": "silent, with no sleep or shutdown reported yet", "unknown": "nothing reported"}[box["state"]]
+    words = {"awake": "awake", "asleep": "asleep", "off": "off", "silent": "silent, with no sleep or shutdown reported yet",
+             "unwatched": "not watched (its reporter was stopped on purpose)", "unknown": "nothing reported"}.get(box["state"], box["state"])
     return "%s: %s%s, %s" % (box["box"], words, since, heard)
 
 

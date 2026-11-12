@@ -92,8 +92,9 @@ def test_a_finding_that_is_still_true_comes_first(tmp_path):
     store.add("main", down, t + 600)
     now = t + 9 * 60 + 20
     r = wm.day_report(store, "2026-11-11", now, OFF)
-    # The box woke at 10:46Z and was not heard from until 16:00Z: that silence is a finding of its own.
-    assert [f["kind"] for f in r["findings"]] == ["service.down", "wake.unexplained", "box.silent"], "what is still true rises above what is over"
+    # The box woke at 10:46Z and its first report is at 16:00Z. Nothing was reporting before that,
+    # so those hours are not a silence and not a finding (F232).
+    assert [f["kind"] for f in r["findings"]] == ["service.down", "wake.unexplained"], "what is still true rises above what is over"
     page = watchnote.render(r)
     assert page.index("A service was not answering") < page.index("Wakes with nothing behind them")
     assert "still true" in page
@@ -107,6 +108,35 @@ def test_the_status_line_says_silent_while_a_box_has_not_explained_itself(tmp_pa
     page = watchnote.render(wm.day_report(store, "2026-11-11", t + 3600, OFF))
     assert "main: silent, with no sleep or shutdown reported yet since 09:09, last heard 51 min ago" in page
     assert "Flagged (0)" in page
+
+
+def test_the_first_live_day_shows_the_hours_before_the_first_report_as_awake_and_flags_no_silence(tmp_path):
+    # F232. What the store held on 2026-11-12 04:41Z: three days of the System log read back by the
+    # reporter's first look (here, the wake of 10:46:46Z) and samples from 04:40:10Z on.
+    store = Store(str(tmp_path / "w.db"))
+    night(store)
+    first = P("2026-11-12T04:40:10Z")
+    store.add("main", [{"t": "event", "at": iso(first), "kind": "reporter.start", "key": "start", "data": {"pid": 1}}]
+              + [{"t": "sample", "at": iso(first + i * 60), "idleS": 20} for i in range(2)], first + 60)
+    r = wm.day_report(store, "2026-11-11", first + 75, OFF)
+    assert [f["kind"] for f in r["findings"]] == ["wake.unexplained"]
+    page = watchnote.render(r)
+    assert "went silent" not in page and 'class="silent"' not in page
+    assert "main: awake since 03:46, last heard 15 s ago" in page
+    assert "its reporter was not running yet" in page
+
+
+def test_a_reporter_stopped_on_purpose_is_drawn_and_said_as_not_watched(tmp_path):
+    store = Store(str(tmp_path / "w.db"))
+    t = P("2026-11-11T16:00:00Z")
+    store.add("main", [{"t": "sample", "at": iso(t + i * 60), "idleS": 1000} for i in range(10)]
+              + [{"t": "event", "at": iso(t + 545), "kind": "reporter.stop", "key": "stop", "data": {"reason": "asked"}}], t + 546)
+    page = watchnote.render(wm.day_report(store, "2026-11-11", t + 3600, OFF))
+    assert "main: not watched (its reporter was stopped on purpose) since 09:09, last heard 51 min ago" in page
+    assert 'class="unwatched"' in page and "not watched: the reporter was stopped on purpose (thin)" in page
+    assert "Flagged (0)" in page and 'class="silent"' not in page
+    # read the next day, it is still not a finding
+    assert "Flagged (0)" in watchnote.render(report(store))
 
 
 def test_a_young_series_is_listed_as_still_learning(tmp_path):

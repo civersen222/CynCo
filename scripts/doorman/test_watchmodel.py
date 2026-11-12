@@ -160,6 +160,108 @@ def test_the_same_sleep_reported_twice_a_few_seconds_apart_is_one_sleep():
     assert [(iso(s["from"]), iso(s["to"])) for s in segs if s["state"] == "asleep"] == [("2026-11-11T16:09:20Z", "2026-11-11T16:40:00Z")]
 
 
+# ---- silence is only ever between real reports (F232) ---------------------------------------
+def test_a_box_is_not_silent_before_its_reporter_has_ever_run():
+    # The first live day, 2026-11-12: the reporter started at 04:40:10Z and its first push carried
+    # three days of the System log. The last event in that history was the wake at 14:46:47Z the day
+    # before. The note called the 13.9 hours between them "went silent without saying why".
+    events = night_events() + [burst("2026-11-11T10:11:09Z"), ev("main", "2026-11-12T04:40:10Z", "reporter.start", pid=1)]
+    samples = minute_samples("2026-11-12T04:40:10Z", 20, idleS=30)
+    now = P("2026-11-12T05:00:00Z")
+    segs = wm.timeline(samples, events, "main", DAY0, DAY1, now)
+    assert "silent" not in [s["state"] for s in segs]
+    last_wake = P("2026-11-11T14:46:47Z")
+    after = [s for s in segs if s["from"] >= last_wake]
+    assert [(s["state"], iso(s["from"])) for s in after] == [("awake", "2026-11-11T14:46:47Z")]
+    assert "System log" in after[0]["basis"], "awake by its own log: no sleep or shutdown is recorded for that time"
+    found = construct(samples, events, now=now)
+    assert kinds(found) == ["wake.unexplained"], "the eight wakes, and nothing about silence"
+    # and it is still not a finding when the day is read later (the test's samples end at 04:59Z,
+    # so the rest of that day is a silence of its own; the 13.9 hours before the first report are not)
+    later = [f for f in construct(samples, events, now=LATER) if f["kind"] == "box.silent"]
+    assert [iso(f["from"]) for f in later] == ["2026-11-12T04:59:10Z"]
+
+
+def test_backfilled_history_alone_is_never_silence():
+    # Power events with no sample anywhere: the reporter did not exist.
+    events = night_events()
+    for now in (P("2026-11-11T20:00:00Z"), LATER):
+        segs = wm.timeline([], events, "main", DAY0, DAY1, now)
+        assert "silent" not in [s["state"] for s in segs]
+        assert "box.silent" not in kinds(construct([], events, now=now))
+
+
+def test_a_late_logon_after_a_boot_is_not_silence():
+    # The reporter starts at logon. Between the boot and the first report nothing was ever reporting.
+    events = [ev("main", "2026-11-11T09:47:06Z", "power.shutdown"), ev("main", "2026-11-11T09:47:31Z", "power.boot")]
+    before = minute_samples("2026-11-11T09:30:00Z", 17)  # reporting right up to the shutdown
+    after = minute_samples("2026-11-11T14:59:10Z", 10)  # logged on five hours later
+    segs = wm.timeline(before + after, events, "main", DAY0, DAY1, P("2026-11-11T15:10:00Z"))
+    assert "silent" not in [s["state"] for s in segs]
+    assert construct(before + after, events, now=P("2026-11-11T15:10:00Z")) == []
+
+
+def test_a_box_that_was_reporting_when_it_slept_and_does_not_report_after_the_wake_is_silent():
+    before = minute_samples("2026-11-11T16:00:00Z", 10)  # reporting until it slept
+    events = [ev("main", "2026-11-11T16:09:20Z", "power.sleep", reason="idle"), ev("main", "2026-11-11T16:40:00Z", "power.wake", sleepAt="2026-11-11T16:09:20Z", source="x"), burst("2026-11-11T16:39:50Z", cause="knock")]
+    after = minute_samples("2026-11-11T18:00:00Z", 5)  # heard again 80 minutes after the wake
+    found = construct(before + after, events)
+    assert kinds(found) == ["box.silent"]
+    assert (iso(found[0]["from"]), iso(found[0]["to"])) == ("2026-11-11T16:40:00Z", "2026-11-11T18:00:00Z")
+
+
+def test_a_stop_the_reporter_announced_is_not_silence():
+    before = minute_samples("2026-11-11T16:00:00Z", 10)
+    after = minute_samples("2026-11-11T18:30:00Z", 10)
+    stop = [ev("main", "2026-11-11T16:09:05Z", "reporter.stop", reason="asked"), ev("main", "2026-11-11T18:30:00Z", "reporter.start", pid=2)]
+    segs = wm.timeline(before + after, stop, "main", DAY0, DAY1, P("2026-11-11T18:40:00Z"))
+    mid = [(s["state"], iso(s["from"]), iso(s["to"])) for s in segs if s["state"] != "unknown"]
+    assert mid == [("awake", "2026-11-11T16:00:00Z", "2026-11-11T16:09:00Z"), ("unwatched", "2026-11-11T16:09:00Z", "2026-11-11T18:30:00Z"), ("awake", "2026-11-11T18:30:00Z", "2026-11-11T18:40:00Z")]
+    assert "stopped on purpose" in [s for s in segs if s["state"] == "unwatched"][0]["basis"]
+    assert construct(before + after, stop, now=P("2026-11-11T18:40:00Z")) == []
+    # the same two stretches with nothing announced are silence, and a finding
+    assert kinds(construct(before + after, [], now=P("2026-11-11T18:40:00Z"))) == ["box.silent"]
+
+
+def test_a_reporter_stopped_on_purpose_and_not_started_again_is_unwatched_not_silent_however_late_it_is_read():
+    before = minute_samples("2026-11-11T16:00:00Z", 10)
+    stop = [ev("main", "2026-11-11T16:09:05Z", "reporter.stop", reason="asked")]
+    for now in (P("2026-11-11T17:00:00Z"), LATER):
+        segs = wm.timeline(before, stop, "main", DAY0, DAY1, now)
+        assert segs[-1]["state"] == "unwatched"
+        assert construct(before, stop, now=now) == []
+
+
+def test_an_announced_stop_shows_at_once_and_a_restart_within_minutes_leaves_no_trace():
+    before = minute_samples("2026-11-11T16:00:00Z", 10)
+    stop = [ev("main", "2026-11-11T16:09:05Z", "reporter.stop", reason="asked")]
+    segs = wm.timeline(before, stop, "main", DAY0, DAY1, P("2026-11-11T16:09:30Z"))
+    assert segs[-1]["state"] == "unwatched", "said the moment it is stopped, not five minutes later"
+    again = minute_samples("2026-11-11T16:10:00Z", 5)  # started again 55 s later, as after an update
+    segs = wm.timeline(before + again, stop, "main", DAY0, DAY1, P("2026-11-11T16:14:30Z"))
+    assert [s["state"] for s in segs if s["state"] != "unknown"] == ["awake"]
+
+
+def test_an_announced_stop_does_not_excuse_a_later_silence():
+    # Stopped and started on purpose in the morning; went quiet, unannounced, in the afternoon.
+    a = minute_samples("2026-11-11T16:00:00Z", 10)
+    b = minute_samples("2026-11-11T16:30:00Z", 10)
+    c = minute_samples("2026-11-11T19:00:00Z", 5)
+    stop = [ev("main", "2026-11-11T16:09:05Z", "reporter.stop", reason="asked")]
+    found = construct(a + b + c, stop, now=P("2026-11-11T19:05:00Z"))
+    assert kinds(found) == ["box.silent"]
+    assert iso(found[0]["from"]) == "2026-11-11T16:39:00Z"
+
+
+def test_a_wanted_service_is_not_called_down_while_the_box_is_unwatched():
+    a = minute_samples("2026-11-11T16:00:00Z", 10, **svc(False))
+    b = minute_samples("2026-11-11T18:30:00Z", 3, **svc(True))
+    stop = [ev("main", "2026-11-11T16:09:05Z", "reporter.stop", reason="asked")]
+    found = construct(a + b, stop, now=P("2026-11-11T18:33:00Z"))
+    assert kinds(found) == ["service.down"]
+    assert iso(found[0]["to"]) == "2026-11-11T16:09:00Z", "what was seen ends where the watching ended"
+
+
 def test_silence_that_is_still_going_on_is_a_status_not_yet_a_finding():
     samples = minute_samples("2026-11-11T16:00:00Z", 10)
     now = P("2026-11-11T17:00:00Z")

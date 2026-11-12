@@ -2,6 +2,7 @@
  * engine/power/reporter/main.ts — this box tells the watcher what it is doing.
  *
  *   bun engine/power/reporter/main.ts [--box main] [--once]
+ *   bun engine/power/reporter/main.ts --stop     ask the running reporter to say it is stopping, and end
  *
  * The main PC's part of the metasystem's first slice
  * (docs/decisions/2026-11-11-metasystem-design.md): a small process of its own,
@@ -17,7 +18,7 @@
  * Switched on by `LOCALCODE_WATCHER_URL` (the watcher's address on the
  * doorman, `http://100.110.117.10:9171`). Unset: it says so and exits 0.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { cyncoHome, missionsDir } from '../../paths.js'
 import { ollamaLoaded } from '../../apps/ollama.js'
@@ -71,7 +72,7 @@ export type ReporterDeps = {
 }
 
 /** The loop's body, with the timer left to the caller: `tick()` is one look. */
-export function createReporter(deps: ReporterDeps): { tick: () => Promise<void> } {
+export function createReporter(deps: ReporterDeps): { tick: () => Promise<void>; stop: (reason: string) => Promise<void> } {
   const now = deps.now ?? (() => new Date())
   const log = deps.log ?? console.log
   const lookMs = deps.lookMs ?? LOOK_MS
@@ -132,6 +133,80 @@ export function createReporter(deps: ReporterDeps): { tick: () => Promise<void> 
         if ((await deps.outbox.flush()) !== 'sent' || deps.outbox.size() === 0) break
       }
       deps.saveState(deps.state)
+    },
+    stop: async (reason: string) => {
+      const at = now().toISOString()
+      deps.outbox.add([{ t: 'event', at, kind: 'reporter.stop', key: `stop:${at}`, data: { reason, pid: process.pid } }])
+      // An unreachable watcher keeps it in the backlog on disk; it is sent at the next start, with its own time.
+      for (let i = 0; i < MAX_FLUSHES_PER_LOOK; i++) {
+        if ((await deps.outbox.flush()) !== 'sent' || deps.outbox.size() === 0) break
+      }
+      deps.saveState(deps.state)
+    },
+  }
+}
+
+/** Where a request to stop is left for the running reporter (`<cyncoHome>/watch/stop-request`). */
+export function stopRequestFile(dir: string): string {
+  return join(dir, 'stop-request')
+}
+
+/**
+ * Ask the reporter running on this box to say it is stopping and to end (`--stop`). Windows ends a
+ * scheduled task's process outright, so a stop can only be announced if it is asked for first:
+ * `scripts/cynco-services.ps1 stop watch` does. `stopped` = the reporter took the request;
+ * `no-answer` = nobody did within `timeoutMs`, and the request is taken back so that it cannot
+ * stop the next reporter the moment it starts.
+ */
+export async function requestStop(dir: string, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<'stopped' | 'no-answer'> {
+  const file = stopRequestFile(dir)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), by: process.pid }), 'utf-8')
+  const deadline = Date.now() + (opts.timeoutMs ?? 10_000)
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, opts.pollMs ?? 250))
+    if (!existsSync(file)) return 'stopped'
+  }
+  rmSync(file, { force: true })
+  return 'no-answer'
+}
+
+export type StopWatchDeps = {
+  file: string
+  /** Is a look in flight. */
+  isBusy: () => boolean
+  /** Called once the last look has ended: no further look may start. */
+  hold: () => void
+  stop: (reason: string) => Promise<void>
+  exit: (code: number) => void
+  log?: (line: string) => void
+}
+
+/**
+ * The running reporter's side of a stop: `check()` is called every second, and when a request is
+ * there (or `force` names a reason, as for Ctrl+C) it waits for the look in flight, says
+ * `reporter.stop` to the watcher, takes the request away and ends the process. The watcher then
+ * shows the box as not watched instead of silent (F232).
+ */
+export function createStopWatch(deps: StopWatchDeps): { check: (force?: string) => Promise<boolean> } {
+  const log = deps.log ?? console.log
+  let stopping = false
+  return {
+    check: async (force?: string) => {
+      if (stopping || (!force && !existsSync(deps.file))) return false
+      stopping = true
+      while (deps.isBusy()) await new Promise(r => setTimeout(r, 50))
+      deps.hold()
+      const reason = force ?? 'asked'
+      try {
+        await deps.stop(reason)
+        log(`[watch] stopping (${reason}): the watcher was told, so this is not a silence`)
+      } catch (err) {
+        log(`[watch] stopping (${reason}); telling the watcher failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      rmSync(deps.file, { force: true })
+      deps.exit(0)
+      return true
     },
   }
 }
@@ -194,6 +269,13 @@ export function liveSources(env: NodeJS.ProcessEnv, modelPort: number): Sources 
 }
 
 export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): Promise<number> {
+  if (argv.includes('--stop')) {
+    const got = await requestStop(join(cyncoHome(), 'watch'))
+    log(got === 'stopped'
+      ? '[watch] the reporter said it was stopping and ended: the watcher shows this box as not watched until it is started again'
+      : '[watch] no running reporter took the request (it is not running, it predates --stop, or it is stuck): nothing was announced')
+    return got === 'stopped' ? 0 : 1
+  }
   const url = watcherUrl(env)
   if (!url) {
     log('[watch] off: LOCALCODE_WATCHER_URL is not set, so nothing is gathered and nothing is sent')
@@ -224,13 +306,22 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
   })
   log(`[watch] reporting this box as "${box}" to ${url} every ${SAMPLE_MS / 1000} s and on change (looking every ${LOOK_MS / 1000} s); engine log ${existsSync(engineLogFile) ? engineLogFile : `${engineLogFile} (not there yet)`}`)
   let busy = false
+  let held = false
   const look = async (): Promise<void> => {
-    if (busy) return // a slow look (a hung PowerShell) must not stack up behind itself
+    if (busy || held) return // a slow look (a hung PowerShell) must not stack up behind itself; none starts once it is stopping
     busy = true
     try { await reporter.tick() } catch (err) { log(`[watch] a look failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`) } finally { busy = false }
   }
+  // A request left for a reporter that was not there must not stop this one as it starts.
+  const stopFile = stopRequestFile(dir)
+  rmSync(stopFile, { force: true })
   await look()
   if (argv.includes('--once')) return 0 // one look, sent, and out: for trying it by hand
+  const stopWatch = createStopWatch({ file: stopFile, isBusy: () => busy, hold: () => { held = true }, stop: reason => reporter.stop(reason), exit: code => process.exit(code), log })
+  setInterval(() => { void stopWatch.check() }, 1000)
+  // Ctrl+C in a window it was started in by hand is a stop on purpose too.
+  process.once('SIGINT', () => { void stopWatch.check('interrupted') })
+  process.once('SIGTERM', () => { void stopWatch.check('terminated') })
   setInterval(() => { void look() }, LOOK_MS)
   return await new Promise<number>(() => {}) // runs until the task is stopped
 }
