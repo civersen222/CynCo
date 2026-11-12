@@ -1,6 +1,6 @@
 # The metasystem: one watcher above everything the owner runs on local models
 
-**Date:** 2026-11-11 · **Status:** design, awaiting the owner's approval; nothing is built.
+**Date:** 2026-11-11 · **Status:** approved by the owner on 2026-11-11 with the five recommendations as written ("1070 ti. Approve"); nothing is built.
 
 Companion records: `docs/decisions/2026-11-08-wakefulness-design.md` (the boxes, the doorman), `docs/decisions/2026-11-11-local-llm-apps.md` (the apps as CynCo's use cases), `docs/decisions/2026-11-08-image-box-design.md`, the owner's `pc-wakefulness/knowledge/tiering-preview.md`, `engine/vsm/CLAUDE.md`, `engine/cybernetics-core/README.md`.
 
@@ -156,7 +156,7 @@ The watcher needs three things: to be awake when everything else is asleep, to b
 **Recommended.** Two organs.
 
 - **The always-on part lives on the doorman** (Beelink N100, already on at all hours, already wired to the wake switch, already running the doorman, ntfy and the NAS watchdog). It holds the memory, the model, the filter, the note and charts, the alarm routing and the allocation rules. Like `doorman.py` and `naswatch.py` it is Python with the standard library only, run as its own systemd service. Nothing from the TypeScript engine runs there.
-- **The GTX box is the metasystem's helper**, woken when there is thinking to do that needs a GPU: writing the note in plain language, embeddings, speech. It is also the third tier for jobs.
+- **The GTX box (a GTX 1070 Ti, 8 GB) is the metasystem's helper**, woken when there is thinking to do that needs a GPU: writing the note in plain language, embeddings, speech. It is also the third tier for jobs.
 
 This is the owner's intent, that the small GTX box serves the metasystem, with the reflexes placed on the machine that never sleeps and can wake the rest. The alternative is in "Decisions for the owner".
 
@@ -221,7 +221,9 @@ Each is usable on its own.
 
 ## Decisions for the owner
 
-1. **Which machine is always on.** Recommended: the doorman holds the always-on part and the GTX box is woken to help, because the doorman already never sleeps, already wakes the others, and should idle at a few watts where a desktop with a GTX card idles at several tens (typical figures for such machines; neither box has been measured). The alternative is the GTX box always on, doing all of it. Also to confirm: every record calls that box a GTX 1080 Ti with 11 GB; the owner called it a 1070 Ti.
+All five were answered on 2026-11-11: the owner approved the recommendation in each, and corrected the card in decision 1 to a GTX 1070 Ti.
+
+1. **Which machine is always on.** Recommended: the doorman holds the always-on part and the GTX box is woken to help, because the doorman already never sleeps, already wakes the others, and should idle at a few watts where a desktop with a GTX card idles at several tens (typical figures for such machines; neither box has been measured). The alternative is the GTX box always on, doing all of it. The box is a GTX 1070 Ti (the owner, 2026-11-11), which is an 8 GB card; the earlier records that call it a 1080 Ti with 11 GB (`docs/decisions/2026-11-08-wakefulness-design.md`, the owner's `pc-wakefulness` notes) are wrong on that point.
 2. **What counts as an intruder, and what closing the door means.** Proposed triggers: the pairing lock-out firing; a device joining the tailnet that was not there before; repeated refused management requests from a remote client; a failed-login burst on the doorman. Proposed response: the PC revokes every paired device and stops its HTTPS proxy, and the doorman answers only the main PC until the owner clears the alarm, since its wake and schedule routes are open to any tailnet device today. This cuts the owner's own phone off until they pair again at the desk.
 3. **A scheduled job that is already running when the owner starts something heavy.** Recommended: it is interrupted and run again from the start once the owner is done, for jobs marked safe to repeat; other jobs finish while the owner's app is answered by the smaller model on the other box. The alternative is that a running job always finishes first.
 4. **Shadow first, or live from the first day**, for the attention loop. Recommended: shadow, for as long as it takes the record to be clean.
