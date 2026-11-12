@@ -33,10 +33,14 @@ export type OutboxOpts = {
 
 export type FlushResult = 'sent' | 'failed' | 'empty'
 
+const FAILURE_SAID_EVERY_MS = 10 * 60_000
+
 export class Outbox {
   private queue: WatchRecord[] = []
   private dropped = 0
   private onDisk = false
+  private failures = 0
+  private lastFailureSaidAt = 0
   private readonly url: string
   private readonly fetchImpl: OutboxFetch
   private readonly max: number
@@ -94,6 +98,9 @@ export class Outbox {
       if (resp.ok) {
         this.queue.splice(0, records.length)
         this.persist()
+        if (this.failures > 0) this.log(`[watch] the watcher answers again after ${this.failures} failed tr${this.failures === 1 ? 'y' : 'ies'}; ${this.queue.length} record(s) still to send`)
+        this.failures = 0
+        this.lastFailureSaidAt = 0
         return 'sent'
       }
       why = `HTTP ${resp.status}`
@@ -112,7 +119,14 @@ export class Outbox {
       clearTimeout(timer)
     }
     this.persist()
-    this.log(`[watch] not delivered to ${this.url} (${why}); ${this.queue.length} record(s) kept for the next try`)
+    // Said at the first failure and then every ten minutes: an unreachable doorman is tried every
+    // look, and a line per try would be thousands a day in a log nobody is asked to read.
+    this.failures++
+    const at = this.now().getTime()
+    if (this.failures === 1 || at - this.lastFailureSaidAt >= FAILURE_SAID_EVERY_MS) {
+      this.lastFailureSaidAt = at
+      this.log(`[watch] not delivered to ${this.url} (${why}); ${this.queue.length} record(s) kept for the next try${this.failures > 1 ? ` (${this.failures} tries failed so far)` : ''}`)
+    }
     return 'failed'
   }
 

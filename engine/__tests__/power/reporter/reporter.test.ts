@@ -268,12 +268,17 @@ describe('the outbox', () => {
     const f = file()
     const dead = await deadAddress()
     const said: string[] = []
-    const out = new Outbox({ url: dead, box: 'main', file: f, log: l => said.push(l), timeoutMs: 500 })
+    let clock = NOW
+    const out = new Outbox({ url: dead, box: 'main', file: f, log: l => said.push(l), timeoutMs: 500, now: () => new Date(clock) })
     out.add([ev(1)])
     expect(await out.flush()).toBe('failed')
     out.add([ev(2)])
     expect(await out.flush()).toBe('failed')
-    expect(said.join('\n')).toContain('2 record(s) kept for the next try')
+    expect(said).toHaveLength(1) // said once, not once per try
+    expect(said[0]).toContain('1 record(s) kept for the next try')
+    clock += 11 * 60_000
+    expect(await out.flush()).toBe('failed')
+    expect(said[1]).toContain('2 record(s) kept for the next try (3 tries failed so far)')
     expect(readFileSync(f, 'utf-8').trim().split('\n')).toHaveLength(2)
 
     const got: string[] = []
@@ -290,12 +295,14 @@ describe('the outbox', () => {
     const got: WatchEvent[] = []
     let up = false
     const url = await standIn(r => { if (!up) return { status: 503 }; got.push(...(JSON.parse(r.body).records as WatchEvent[])); return { json: { ok: true } } })
-    const out = new Outbox({ url, box: 'main', file: file(), max: 5, batch: 10, log: () => {}, now: () => new Date(NOW) })
+    const said: string[] = []
+    const out = new Outbox({ url, box: 'main', file: file(), max: 5, batch: 10, log: l => said.push(l), now: () => new Date(NOW) })
     for (let i = 1; i <= 8; i++) out.add([ev(i)])
     expect(out.size()).toBe(5)
     expect(await out.flush()).toBe('failed')
     up = true
     expect(await out.flush()).toBe('sent')
+    expect(said.some(l => l.includes('the watcher answers again after 1 failed try'))).toBe(true)
     expect(got.filter(e => e.kind === 'job.run').map(e => e.key)).toEqual(['k5', 'k6', 'k7', 'k8'])
     const dropped = got.find(e => e.kind === 'reporter.dropped')!
     expect(dropped.data.n).toBe(3)

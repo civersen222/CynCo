@@ -4413,9 +4413,11 @@ None comes near 20 s on a quiet machine. What could not be imitated without the 
 
 **Why:** the rule was known as "heredocs eat escapes" and applied as "be careful with regexes". A file path with a backslash, and a `"\n"` inside the code being inserted, did not look like the case. The first failure was fixed by hand and the method kept; the second came an hour later from the same method.
 
+And a third time, after this entry was written: a patch script was itself delivered through a heredoc, and a `'\n'` in the text it was to find arrived as something else. Its own `assert` that the text occurs exactly once stopped it before it wrote to that file.
+
 **Fix:** both lines were rewritten with the editor, and the services row by a script written to a file with raw strings; `cynco-services.ps1` was then parsed with PowerShell's own parser (0 errors) and asked for `status watch`. From the second failure on, every patch in the session that carries a backslash was written to a file first. `engine/__tests__/power/reporter/reporter.test.ts` now reads the row back out of the script and matches it against the reporter's real command line, so a mangled row fails a test instead of a status read.
 
-**Rule:** a backslash anywhere in a patch (a Windows path, an escape inside inserted code, a regex) means the patch goes through a file written by the editor, never through a heredoc. After the first time a method fails, change the method, not the instance.
+**Rule:** a backslash anywhere in a patch (a Windows path, an escape inside inserted code, a regex) means the patch goes through a file written by the editor, never through a heredoc, and that includes the script that applies the patch. After the first time a method fails, change the method, not the instance. Every scripted replacement asserts that its target occurs exactly once: that assert is what made the third time harmless.
 
 ## F230 — Nothing ran the doorman's tests but a person: not the suite, not CI (found 2026-11-12 while adding the watcher beside them)
 
