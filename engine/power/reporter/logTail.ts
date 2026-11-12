@@ -32,10 +32,20 @@ function timeOfDayBefore(seenAt: Date, h: number, m: number, s: number): Date {
   return d
 }
 
+/**
+ * A line without the carriage return a CRLF file leaves on it when it is split on `\n`. The logs on
+ * this PC are written by Windows programs, so every reader of lines here must give the same records
+ * for LF and CRLF input (F231: the proof test passed only where its fixture had been typed).
+ */
+export function withoutCr(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line
+}
+
 export function logLineEvents(lines: string[], seenAt: Date): WatchEvent[] {
   const out: WatchEvent[] = []
   const seenIso = seenAt.toISOString()
-  for (const line of lines) {
+  for (const raw of lines) {
+    const line = withoutCr(raw)
     const b = BLOCKED.exec(line)
     if (b) {
       const until = timeOfDayBefore(seenAt, Number(b[2]), Number(b[3]), Number(b[4])).toISOString()
@@ -85,6 +95,6 @@ export class FileTail {
       return []
     }
     this.offset += end + 1
-    return text.subarray(0, end).toString('utf-8').split('\n').map(l => l.replace(/\r$/, ''))
+    return text.subarray(0, end).toString('utf-8').split('\n').map(withoutCr)
   }
 }

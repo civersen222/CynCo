@@ -159,6 +159,20 @@ describe('the engine log', () => {
     expect(got[1]).toMatchObject({ at: '2026-11-12T00:58:05.000Z', key: 'blocked:2026-11-12T00:58:05Z', data: { seconds: 6, until: '2026-11-12T00:58:05Z' } })
   })
 
+  it('gives the same events for LF and CRLF lines: the logs on this PC are written by Windows programs (F231)', () => {
+    const text = readFileSync(join(FIXTURE, 'engine-log-excerpt.txt'), 'utf-8').replace(/\r\n/g, '\n')
+    const more = [
+      '[embed] the embedding endpoint at http://127.0.0.1:9165 answers again — semantic search is back on',
+      '[engine] the event loop was blocked for 6.0 s, until 15:05:05Z: nothing was answered meanwhile (the dashboard, the phone, a Stop).',
+    ]
+    const lf = [...text.split('\n'), ...more]
+    const crlf = lf.map(l => `${l}\r`) // what splitting a CRLF file on \n leaves behind
+    const fromLf = logLineEvents(lf, seen)
+    expect(fromLf.map(e => e.kind)).toEqual(['service.said_down', 'service.said_up', 'engine.loop_blocked'])
+    expect(logLineEvents(crlf, seen)).toEqual(fromLf)
+    for (const e of logLineEvents(crlf, seen)) expect(JSON.stringify(e)).not.toContain('\\r')
+  })
+
   it('a blocked line read just after midnight belongs to the evening before', () => {
     const got = logLineEvents(['[engine] the event loop was blocked for 1.1 s, until 23:59:58Z: nothing was answered meanwhile'], new Date('2026-11-12T00:00:10Z'))
     expect(got[0]!.at).toBe('2026-11-11T23:59:58.000Z')
@@ -200,6 +214,20 @@ describe('scheduled-job runs', () => {
     expect(got[0]!.key).toBe('fantasy-digest/digest-bronze-card/2026-11-11T22:05:36.180Z')
     expect(String(got[0]!.data.summary)).toHaveLength(160)
     expect(got[0]!.data).toMatchObject({ mission: 'fantasy-digest', triggerId: 'digest-bronze-card' })
+  })
+
+  it('gives the same runs for LF and CRLF lines, and a CRLF runs.jsonl tails to the same events (F231)', () => {
+    const lines = [line('2026-11-11T22:05:36.180Z', true), line('2026-11-12T01:45:57.995Z', false)]
+    expect(jobEvents('fantasy-digest', lines.map(l => `${l}\r`))).toEqual(jobEvents('fantasy-digest', lines))
+    const missions = mkdtempSync(join(tmpdir(), 'cynco-missions-crlf-'))
+    for (const [name, eol] of [['lf', '\n'], ['crlf', '\r\n']] as const) {
+      mkdirSync(join(missions, name))
+      writeFileSync(join(missions, name, 'runs.jsonl'), lines.map(l => l + eol).join(''))
+    }
+    const got = new JobTails(missions, { lf: 0, crlf: 0 }).read()
+    const strip = (mission: string) => got.filter(e => e.data.mission === mission).map(e => ({ at: e.at, ok: e.data.ok, summary: e.data.summary, trigger: e.data.triggerId }))
+    expect(strip('crlf')).toEqual(strip('lf'))
+    expect(strip('crlf')).toHaveLength(2)
   })
 
   it('tails every mission folder from where it left off', () => {
