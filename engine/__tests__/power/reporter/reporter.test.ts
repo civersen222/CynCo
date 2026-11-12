@@ -401,6 +401,24 @@ describe('the loop', () => {
     expect(r.events().filter(e => e.kind.startsWith('power.'))).toHaveLength(2)
   })
 
+  it('a wake whose row was not written yet at the resume is found by the next look, not ten minutes later', async () => {
+    const entering = { id: 42, provider: 'Microsoft-Windows-Kernel-Power', at: '2026-11-12T03:00:43.000Z', data: { Reason: '7' } }
+    const woke = { id: 1, provider: 'Microsoft-Windows-Power-Troubleshooter', at: '2026-11-12T03:20:02.000Z', data: { SleepTime: '2026-11-12T03:00:40.0000000Z', WakeTime: '2026-11-12T03:20:00.0000000Z', WakeSourceType: '1', WakeSourceText: '' } }
+    let rows: Array<typeof entering | typeof woke> = []
+    const r = rig({ power: () => rows })
+    await r.reporter.tick()
+    rows = [entering] // the look right at the resume: Windows has written the sleep and not yet the wake
+    r.advance(LOOK_MS + GAP_MS + 1000); await r.reporter.tick()
+    expect(r.events().filter(e => e.kind.startsWith('power.')).map(e => e.kind)).toEqual(['power.sleep'])
+    rows = [entering, woke]
+    r.advance(LOOK_MS); await r.reporter.tick()
+    expect(r.events().filter(e => e.kind === 'power.wake').map(e => e.key)).toEqual(['wake:2026-11-12T03:20:00Z'])
+    const asked = r.powerAsked.length
+    r.advance(LOOK_MS); await r.reporter.tick() // the second look after the gap reads once more
+    r.advance(LOOK_MS); await r.reporter.tick() // and then it is back to the ten-minute beat
+    expect(r.powerAsked).toHaveLength(asked + 1)
+  })
+
   it('a System log that cannot be read is asked for again at the next look, with the same window', async () => {
     let fail = true
     const r = rig({ power: () => fail ? null : [] })

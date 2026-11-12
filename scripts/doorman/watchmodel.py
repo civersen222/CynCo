@@ -30,6 +30,7 @@ OWNER_WOKE_WITHIN_S = 120.0  # a sample this soon after a wake can show the owne
 SERVICE_DOWN_MIN_S = 180.0  # shorter than this is a restart, not an outage
 MODEL_UNUSED_MIN_S = 1200.0  # the phone engine's own idle unload is 15 minutes; longer is nobody's plan
 SILENT_GAP_S = 300.0  # a box that is awake reports every minute
+SLEEP_SETTLE_S = 30.0  # a sample this long after a sleep began was sent after the box woke again
 NEED_IDLE_S = 300.0  # input within this long means the owner is at the box
 
 WINDOW = 30  # readings in the rolling baseline
@@ -45,7 +46,7 @@ DOORMAN_BOX = "doorman"
 
 
 # ---- the timeline -----------------------------------------------------------------------------
-def _power_intervals(events: List[dict], box: str) -> Tuple[List[dict], List[dict]]:
+def _power_intervals(events: List[dict], box: str, sample_times: Optional[List[float]] = None) -> Tuple[List[dict], List[dict]]:
     """(asleep, off) intervals from one box's power events, each {"from","to","reason"|"open"}."""
     mine = sorted((e for e in events if e["box"] == box and e["kind"].startswith("power.")), key=lambda e: e["at"])
     asleep: List[dict] = []
@@ -62,10 +63,13 @@ def _power_intervals(events: List[dict], box: str) -> Tuple[List[dict], List[dic
         reason = next((s["data"].get("reason") for s in mine if s["kind"] == "power.sleep" and abs(s["at"] - sleep_at) <= 10.0), None)
         asleep.append({"from": sleep_at, "to": e["at"], "reason": reason, "wake": e})
         covered_sleeps.append(sleep_at)
-    # A sleep nobody has reported the end of yet: asleep from then on (closed by the caller's horizon).
+    # A sleep nobody has reported the end of yet: asleep from then on (closed by the caller's horizon),
+    # or until the box is heard from again. Its wake is written up a moment after it resumes, so its
+    # first samples can arrive before the wake does; a box that is sending samples is not asleep.
     for s in mine:
         if s["kind"] == "power.sleep" and not any(abs(s["at"] - c) <= 10.0 for c in covered_sleeps):
             later = [x["at"] for x in mine if x["at"] > s["at"] and x["kind"] in ("power.wake", "power.boot")]
+            later += [t for t in (sample_times or []) if t > s["at"] + SLEEP_SETTLE_S]
             asleep.append({"from": s["at"], "to": min(later) if later else None, "reason": s["data"].get("reason"), "wake": None})
     off: List[dict] = []
     downs = [e for e in mine if e["kind"] == "power.shutdown"]
@@ -86,7 +90,7 @@ def timeline(samples: List[dict], events: List[dict], box: str, t0: float, t1: f
     end = min(t1, now)
     if end <= t0:
         return []
-    asleep, off = _power_intervals(events, box)
+    asleep, off = _power_intervals(events, box, [x["at"] for x in samples])
     explicit: List[dict] = []
     for iv, state in [(a, "asleep") for a in asleep] + [(o, "off") for o in off]:
         a, b = iv["from"], iv["to"] if iv["to"] is not None else end

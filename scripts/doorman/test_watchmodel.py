@@ -136,6 +136,30 @@ def test_a_gap_the_box_later_explains_as_sleep_is_asleep_not_silent():
     assert construct(samples, events) == []
 
 
+def test_a_sleep_whose_wake_is_not_reported_yet_ends_where_the_box_is_heard_from_again():
+    # Windows writes the wake's own row a moment after the resume: the box's samples can arrive first.
+    before = minute_samples("2026-11-11T16:00:00Z", 10)
+    after = minute_samples("2026-11-11T16:40:30Z", 5)
+    sleep = [ev("main", "2026-11-11T16:09:20Z", "power.sleep", reason="idle")]
+    now = P("2026-11-11T16:45:00Z")
+    segs = wm.timeline(before + after, sleep, "main", DAY0, DAY1, now)
+    tail = [(s["state"], iso(s["from"]), iso(s["to"])) for s in segs if s["to"] > P("2026-11-11T16:00:00Z")]
+    assert tail == [("awake", "2026-11-11T16:00:00Z", "2026-11-11T16:09:20Z"), ("asleep", "2026-11-11T16:09:20Z", "2026-11-11T16:40:30Z"), ("awake", "2026-11-11T16:40:30Z", "2026-11-11T16:45:00Z")]
+    # with no sample after it, the box is asleep until now
+    assert wm.timeline(before, sleep, "main", DAY0, DAY1, now)[-1]["state"] == "asleep"
+
+
+def test_the_same_sleep_reported_twice_a_few_seconds_apart_is_one_sleep():
+    # First from Kernel-Power 42 alone (read at the resume), then with the wake's row, whose sleep time is 3 s earlier.
+    events = [
+        ev("main", "2026-11-11T16:09:23Z", "power.sleep", reason="idle"),
+        ev("main", "2026-11-11T16:09:20Z", "power.sleep", reason="idle"),
+        ev("main", "2026-11-11T16:40:00Z", "power.wake", sleepAt="2026-11-11T16:09:20Z", source="Power Button"),
+    ]
+    segs = wm.timeline([], events, "main", DAY0, DAY1, LATER)
+    assert [(iso(s["from"]), iso(s["to"])) for s in segs if s["state"] == "asleep"] == [("2026-11-11T16:09:20Z", "2026-11-11T16:40:00Z")]
+
+
 def test_silence_that_is_still_going_on_is_a_status_not_yet_a_finding():
     samples = minute_samples("2026-11-11T16:00:00Z", 10)
     now = P("2026-11-11T17:00:00Z")

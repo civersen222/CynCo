@@ -81,6 +81,7 @@ export function createReporter(deps: ReporterDeps): { tick: () => Promise<void> 
   let lastPowerAt: number | null = null
   let lastSampleAt = 0
   let lastPrint = ''
+  let rereadAfterGap = 0
 
   const tell = (events: WatchEvent[]): void => {
     const fresh = events.filter(e => !told.has(`${e.kind}|${e.key}`))
@@ -109,7 +110,12 @@ export function createReporter(deps: ReporterDeps): { tick: () => Promise<void> 
       if (first) tell([{ t: 'event', at: at.toISOString(), kind: 'reporter.start', key: `start:${at.toISOString()}`, data: { pid: process.pid, protocol: 1 } }])
       if (gap) log(`[watch] ${Math.round((t - lastTickAt!) / 1000)} s since the last look: the box was asleep or stalled; reading the System log`)
       lastTickAt = t
-      if (first || gap || lastPowerAt === null || t - lastPowerAt >= POWER_EVERY_MS) await readPower(t)
+      // Windows writes the wake's own row a moment after the wake: a read made right at the resume
+      // can find the sleep and not yet the wake, so the two looks after a gap read again.
+      if (gap) rereadAfterGap = 2
+      const reread = !gap && rereadAfterGap > 0
+      if (reread) rereadAfterGap--
+      if (first || gap || reread || lastPowerAt === null || t - lastPowerAt >= POWER_EVERY_MS) await readPower(t)
 
       try { tell(logLineEvents(deps.engineLog(), at)) } catch (err) { log(`[watch] the engine log could not be read: ${err instanceof Error ? err.message : String(err)}`) }
       try { tell(deps.jobs()) } catch (err) { log(`[watch] the job runs could not be read: ${err instanceof Error ? err.message : String(err)}`) }
