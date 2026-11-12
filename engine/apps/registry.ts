@@ -28,15 +28,17 @@ export type AppStep = {
   port?: number
   /** Ready only when this address answers 2xx, for what listens before it can answer (a model server that is still loading). */
   url?: string
-  /** Ready when this command exits 0, for what has no port (`docker info`). */
+  /** Ready when this command exits 0, for what has no port (`sc query <service>`). */
   check?: { exe: string; args: string[] }
   /** How it is started when it is not ready. Absent: CynCo does not start it, and says so. */
   exe?: string
   args?: string[]
   /** Relative to the app's folder. */
   cwd?: string
-  /** Left running when the launcher's window is closed (Docker Desktop). */
+  /** Left running when the launcher's window is closed. */
   keep?: boolean
+  /** Started even when it already answers: for what only stays up while something holds it (a WSL distro and the database in it). */
+  always?: boolean
   /** How long to wait for it to be ready. Default 60, and 240 for the model server. */
   waitSeconds?: number
 }
@@ -111,6 +113,7 @@ function readStart(v: unknown): AppStart | undefined {
       ...(typeof raw.exe === 'string' && raw.exe ? { exe: raw.exe, args: isStrings(raw.args) ? raw.args : [] } : {}),
       ...(typeof raw.cwd === 'string' && raw.cwd ? { cwd: raw.cwd } : {}),
       ...(raw.keep === true ? { keep: true } : {}),
+      ...(raw.always === true ? { always: true } : {}),
       ...(typeof raw.waitSeconds === 'number' && raw.waitSeconds > 0 ? { waitSeconds: raw.waitSeconds } : {}),
     })
   }

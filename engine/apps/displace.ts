@@ -74,6 +74,38 @@ export function appInUse(app: Pick<LocalApp, 'root'>, launcherPid: number, procs
   return procs.some(p => !tree.has(p.pid) && (norm(p.commandLine).includes(root) || norm(p.exe).startsWith(root)))
 }
 
+/** A pid the caller may not signal still exists (EPERM); only "no such process" is gone. */
+function processExists(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch (e) { return (e as { code?: string }).code === 'EPERM' }
+}
+
+/**
+ * The other servers the app's launcher started beside the model server: the processes in the launcher's
+ * tree, other than the launcher, the server and what the server itself started, whose command line names
+ * a port. dndai's launcher starts an embeddings server on 8082 this way and stops it when the chat server
+ * ends. A console host or a helper with no port is not something the app is answered by, and is not listed.
+ */
+export function launcherSiblings(launcherPid: number, listenerPid: number, procs: ListedProc[]): Array<{ pid: number; what: string }> {
+  const under = (root: number): Set<number> => {
+    const tree = new Set<number>([root])
+    for (let grew = true; grew;) {
+      grew = false
+      for (const p of procs) if (!tree.has(p.pid) && tree.has(p.ppid) && p.ppid !== 0) { tree.add(p.pid); grew = true }
+    }
+    return tree
+  }
+  const ofLauncher = under(launcherPid), ofServer = under(listenerPid)
+  const out: Array<{ pid: number; what: string }> = []
+  for (const p of procs) {
+    if (!ofLauncher.has(p.pid) || ofServer.has(p.pid) || p.pid === launcherPid) continue
+    const port = /--port[ =](\d+)/.exec(p.commandLine)?.[1]
+    if (!port) continue
+    const name = /--embeddings?\b/.test(p.commandLine) ? 'its embeddings server' : basename(p.exe.replace(/\\/g, '/')) || 'a process'
+    out.push({ pid: p.pid, what: `${name} on port ${port} (pid ${p.pid})` })
+  }
+  return out
+}
+
 export type DisplaceCtx = {
   port: number
   /** Who is taking the GPU, for the record: `the chat engine (pid N)`, `the one-shot digest-espn`. */
@@ -83,6 +115,9 @@ export type DisplaceCtx = {
   say: (message: string) => void
   file?: string
   listProcesses?: () => Promise<ListedProc[]>
+  /** Is there still a process with this pid? For what the launcher took down with its server. */
+  exists?: (pid: number) => boolean
+  sleep?: (ms: number) => Promise<void>
   now?: () => Date
   log?: (line: string) => void
 }
@@ -96,8 +131,11 @@ export async function displaceApp(holder: { app: LocalApp; listener: Proc; launc
   const { app, listener } = holder
   const log = ctx.log ?? console.log
   let inUse = true
+  let beside: Array<{ pid: number; what: string }> = []
   try {
-    inUse = appInUse(app, holder.launcherPid ?? listener.pid, await (ctx.listProcesses ?? readProcessList)())
+    const procs = await (ctx.listProcesses ?? readProcessList)()
+    inUse = appInUse(app, holder.launcherPid ?? listener.pid, procs)
+    if (holder.launcherPid) beside = launcherSiblings(holder.launcherPid, listener.pid, procs)
   } catch (e) {
     // Not knowing is not a reason to leave the owner's game without its server.
     log(`[apps] could not tell whether ${app.name} is running (${e instanceof Error ? e.message : String(e)}); taking it to be`)
@@ -132,7 +170,22 @@ export async function displaceApp(holder: { app: LocalApp; listener: Proc; launc
   const meanwhile = /^llama-server(\.exe)?$/i.test(listener.name)
     ? `: ${app.name} is answered by CynCo's server on the same port meanwhile, and its own server is started again when CynCo is done.`
     : '; it is started again when CynCo is done.'
-  ctx.say(`${held}. CynCo stopped it to load its own model${meanwhile}`)
+  // "Answered by CynCo's server" is true for the port CynCo takes and for nothing else the launcher ran.
+  // A launcher that ends with its server takes those down too: seen live 2026-11-12, dndai's embeddings on 8082.
+  let lost: typeof beside = []
+  if (beside.length > 0) {
+    const exists = ctx.exists ?? processExists
+    const sleep = ctx.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+    for (let i = 0; i < 20; i++) {
+      lost = beside.filter(b => !exists(b.pid))
+      if (lost.length === beside.length) break
+      await sleep(100)
+    }
+  }
+  const names = lost.map(l => l.what)
+  const also = lost.length === 0 ? ''
+    : ` Its launcher also ended ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`}: CynCo does not stand in for ${lost.length === 1 ? 'that' : 'those'}, so what ${app.name} does with ${lost.every(l => l.what.startsWith('its embeddings')) ? 'embeddings' : 'them'} is down until its own server is back.`
+  ctx.say(`${held}. CynCo stopped it to load its own model${meanwhile}${also}`)
   return 'displaced'
 }
 

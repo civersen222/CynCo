@@ -56,6 +56,17 @@ export type StartDeps = {
 export type ModelHold = { step: AppStep; launch: AppLaunch; running: Running | null }
 export type StartOutcome = { ok: boolean; open?: string; running: Running[]; model?: ModelHold }
 
+/**
+ * The owner's rule (2026-11-12, F227): an app's launch may only start what the owner already runs beside
+ * the models, and never Docker. Docker Desktop takes the memory the larger models need; the first dndai
+ * recipe would have started it. A step that starts Docker, runs `docker`, or asks it whether it is up is
+ * refused here, whatever the registry file says.
+ */
+export function namesDocker(step: Pick<AppStep, 'name' | 'exe' | 'args' | 'check'>): boolean {
+  return /docker/i.test([step.name, step.exe ?? '', ...(step.args ?? []), step.check?.exe ?? '', ...(step.check?.args ?? [])].join(' '))
+}
+const NO_DOCKER = 'CynCo does not start Docker on this PC, or anything that needs it: it takes the memory the models need (the owner\'s rule). Take this step out of the recipe; what an app needs must be something the owner already runs beside the models'
+
 const DEFAULT_WAIT_S = 60
 const MODEL_WAIT_S = 240
 const POLL_MS = 500
@@ -96,7 +107,7 @@ async function runAndWait(step: AppStep, launch: AppLaunch, deps: StartDeps, wai
   }
   for (;;) {
     if (await isReady(step, launch.cwd, deps)) return null
-    // A command that ends cleanly may have handed over to something that is still coming up (`docker compose up -d`).
+    // A command that ends cleanly may have handed over to something that is still coming up (a service start).
     if (!running.alive() && running.exitCode() !== 0) return `its process ended (exit code ${running.exitCode() ?? 'none'}) before ${what}${tail()}`
     if (now() - began >= waitS * 1000) {
       return `${step.url ? `${step.url} did not answer` : step.port ? `nothing was listening on port ${step.port}` : `${step.check!.exe} ${step.check!.args.join(' ')} still failed`} after ${waitS} s${tail()}`
@@ -122,6 +133,7 @@ export async function startApp(app: Startable, deps: StartDeps): Promise<StartOu
   for (const step of app.start?.steps ?? []) {
     const began = now()
     const took = () => `${Math.round((now() - began) / 1000)} s`
+    if (namesDocker(step) || (step.model && app.launch && namesDocker({ name: '', exe: app.launch.exe, args: app.launch.args }))) return fail(step, NO_DOCKER)
     if (step.model) {
       if (!app.launch || !step.port) return fail(step, `${app.name}'s registry entry has no "launch"${step.port ? '' : ' and the step no "port"'}: CynCo does not know how its model server is started`)
       model = { step, launch: app.launch, running: null }
@@ -143,7 +155,8 @@ export async function startApp(app: Startable, deps: StartDeps): Promise<StartOu
       continue
     }
     const cwd = folderOf(app.root, step.cwd)
-    if (await isReady(step, cwd, deps)) {
+    // `always`: what only stays up while something holds it is started even when it answers right now.
+    if (!step.always && await isReady(step, cwd, deps)) {
       deps.say(`${step.name}: already running${step.port ? ` (${where(step)})` : ''}`)
       continue
     }

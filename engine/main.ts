@@ -155,8 +155,14 @@ import { bootstrapProvider } from './bootstrapProvider.js'
 let siblingRelease: (() => Promise<void>) | null = null
 {
   const { lazySettings } = await import('./llama/lazyLoad.js')
-  const { siblingDecision, takeOverFromHeadless, defaultServicesRunner, defaultServicesRunnerSync } = await import('./power/siblingEngine.js')
-  if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform }) === 'handoff') {
+  const { siblingDecision, inPhoneEnginesSeat, takeOverFromHeadless, defaultServicesRunner, defaultServicesRunnerSync } = await import('./power/siblingEngine.js')
+  const { cyncoHome } = await import('./paths.js')
+  const { homedir } = await import('os')
+  const { join } = await import('path')
+  const inPhoneSeat = inPhoneEnginesSeat({ wsPort: process.env.LOCALCODE_WS_PORT, cyncoHome: cyncoHome(), defaultHome: join(homedir(), '.cynco') })
+  // A second engine beside the phone engine (another port, a scratch home) leaves it running (F224).
+  if (!inPhoneSeat && !lazySettings().lazy && !process.argv.includes('--run-task')) console.log('[power] not in the phone engine\'s seat (another port or home): the phone engine is left running')
+  if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform, inPhoneSeat }) === 'handoff') {
     const handoff = await takeOverFromHeadless({ services: defaultServicesRunner(), servicesSync: defaultServicesRunnerSync(), log: (l) => console.log(l) })
     if (handoff.wasRunning) {
       siblingRelease = handoff.release
@@ -1536,6 +1542,12 @@ provider.healthCheck().then(async ok => {
 const markerSeal = markerChannelSealLine(process.env)
 if (markerSeal) console.log(markerSeal)
 console.log(`[localcode] Ready. Waiting for TUI connection on ws://localhost:${port}`)
+// From here on a blocked event loop is said in the log, with how long and when (F225): the dashboard, the phone
+// and a Stop are all answered from this one loop, and the log has no other way to show that it stopped.
+{
+  const { startLoopWatch } = await import('./loopWatch.js')
+  startLoopWatch()
+}
 
 // Keep process alive
 setInterval(() => {}, 60_000)

@@ -18,8 +18,8 @@ describe('a start recipe in apps.json', () => {
   it('is read with its steps in order, on either kind of app', () => {
     const file = join(fresh(), 'apps.json')
     const steps = [
-      { name: 'Docker Desktop', check: { exe: 'docker', args: ['info'] }, exe: 'C:\\Docker\\Docker Desktop.exe', keep: true, waitSeconds: 180 },
-      { name: 'database', port: 5433, exe: 'docker', args: ['compose', 'up', '-d'], cwd: 'db' },
+      { name: 'search service', check: { exe: 'sc', args: ['query', 'search'] }, exe: 'C:\\Tools\\search.exe', keep: true, waitSeconds: 180 },
+      { name: 'database', port: 5433, exe: 'C:\\Windows\\System32\\wsl.exe', args: ['-d', 'Ubuntu-24.04', '--exec', 'sleep', 'infinity'], always: true },
       { name: 'model server', model: true, port: 8081 },
     ]
     writeFileSync(file, JSON.stringify({

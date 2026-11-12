@@ -13,7 +13,7 @@
  * again (`launchOutsideJob`) has no window at all (measured: session 1, window
  * handle 0), and a 20 GB model server the owner cannot see or close is the
  * opposite of "if it's not being used the models should not be loaded". A step
- * marked `keep` (Docker Desktop) is started detached and stays.
+ * marked `keep` is started detached and stays.
  *
  * `createIcons` writes one `.lnk` per app that has a recipe. Each runs
  * `cmd /c if exist <launcher> (<launcher> <id>) else (echo why & pause)`: an

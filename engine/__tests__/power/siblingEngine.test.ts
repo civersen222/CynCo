@@ -1,12 +1,39 @@
 import { describe, expect, it } from 'bun:test'
-import { servicesArgs, siblingDecision, takeOverFromHeadless } from '../../power/siblingEngine.js'
+import { readFileSync } from 'node:fs'
+import { inPhoneEnginesSeat, servicesArgs, siblingDecision, takeOverFromHeadless } from '../../power/siblingEngine.js'
 
 describe('siblingDecision', () => {
   it('a desk engine (eager, not a one-shot) hands off; the headless engine and one-shots do not', () => {
-    expect(siblingDecision({ lazy: false, runTask: false, platform: 'win32' })).toBe('handoff')
-    expect(siblingDecision({ lazy: true, runTask: false, platform: 'win32' })).toBe('none')
-    expect(siblingDecision({ lazy: false, runTask: true, platform: 'win32' })).toBe('none')
-    expect(siblingDecision({ lazy: false, runTask: false, platform: 'linux' })).toBe('none')
+    expect(siblingDecision({ lazy: false, runTask: false, platform: 'win32', inPhoneSeat: true })).toBe('handoff')
+    expect(siblingDecision({ lazy: true, runTask: false, platform: 'win32', inPhoneSeat: true })).toBe('none')
+    expect(siblingDecision({ lazy: false, runTask: true, platform: 'win32', inPhoneSeat: true })).toBe('none')
+    expect(siblingDecision({ lazy: false, runTask: false, platform: 'linux', inPhoneSeat: true })).toBe('none')
+  })
+
+  it('an engine that is not in the phone engine\'s seat stops nobody, whatever else it is (F224)', () => {
+    // 2026-11-12: a smoke engine on 19161 with a scratch home ran the hand-off and took the live phone
+    // engine down for nine and a half minutes.
+    expect(siblingDecision({ lazy: false, runTask: false, platform: 'win32', inPhoneSeat: false })).toBe('none')
+  })
+
+  it('main.ts asks whose seat this engine takes before it stops anybody', () => {
+    const main = readFileSync('engine/main.ts', 'utf-8')
+    expect(main).toMatch(/inPhoneEnginesSeat\(\{ wsPort: process\.env\.LOCALCODE_WS_PORT, cyncoHome: cyncoHome\(\), defaultHome: join\(homedir\(\), '\.cynco'\) \}\)/)
+    expect(main).toMatch(/siblingDecision\(\{[^}]*inPhoneSeat[^}]*\}\)/)
+  })
+})
+
+describe('inPhoneEnginesSeat', () => {
+  const HOME = 'C:\\Users\\o\\.cynco'
+  it('the desk engine: the phone engine\'s port and home', () => {
+    expect(inPhoneEnginesSeat({ wsPort: undefined, cyncoHome: HOME, defaultHome: HOME })).toBe(true)
+    expect(inPhoneEnginesSeat({ wsPort: '9160', cyncoHome: 'c:/users/o/.cynco/', defaultHome: HOME })).toBe(true)
+  })
+
+  it('a smoke engine: another port, or a scratch home, or both', () => {
+    expect(inPhoneEnginesSeat({ wsPort: '19160', cyncoHome: HOME, defaultHome: HOME })).toBe(false)
+    expect(inPhoneEnginesSeat({ wsPort: undefined, cyncoHome: 'C:\\tmp\\smoke\\.cynco', defaultHome: HOME })).toBe(false)
+    expect(inPhoneEnginesSeat({ wsPort: '19160', cyncoHome: 'C:\\tmp\\smoke\\.cynco', defaultHome: HOME })).toBe(false)
   })
 })
 
