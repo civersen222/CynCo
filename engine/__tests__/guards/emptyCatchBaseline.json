@@ -14,7 +14,7 @@
   "engine/toolCallRepair.ts": 1,
   "index/chunker.ts": 1,
   "index/indexer.ts": 1,
-  "llama/processManager.ts": 5,
+  "llama/processManager.ts": 4,
   "lsp/manager.ts": 1,
   "main.ts": 7,
   "memory/atomicWrite.ts": 1,

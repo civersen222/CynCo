@@ -264,6 +264,8 @@ export async function bootstrapProvider(
             isPortOccupied: () => processManager.isPortOccupied(),
             isHealthy: () => processManager.portAnswersHealth(),
             portOwner: lazyApps.portOwner,
+            // A server the lazy path could not stop (it runs as administrator): the fallback answers behind it too (F223).
+            cannotStop: () => processManager.cannotStop(),
           }),
           fallbackHealthy: () => fallback.healthCheck(),
           notify: (m) => processManager.onWaiting?.(m),

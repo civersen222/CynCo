@@ -33,6 +33,25 @@ export class ModelNotFoundError extends Error {
   }
 }
 
+/**
+ * The model port is held by a server CynCo tried to stop and could not (it runs as administrator, F223).
+ * Nothing will free the port, so the lazy path refuses with this instead of waiting; the small-model
+ * fallback, where it is set up, answers the request that met it (`busyFallback.ts`).
+ */
+export class PortHeldError extends Error {
+  readonly name = 'PortHeldError' as const
+  readonly port: number
+
+  constructor(port: number, message: string) {
+    super(message)
+    this.port = port
+  }
+}
+
+export function isPortHeldError(e: unknown): e is PortHeldError {
+  return e instanceof Error && e.name === 'PortHeldError'
+}
+
 export class ServerStartError extends Error {
   readonly name = 'ServerStartError' as const
   readonly port: number
