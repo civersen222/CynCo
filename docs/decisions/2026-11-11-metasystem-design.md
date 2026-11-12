@@ -1,6 +1,6 @@
 # The metasystem: one watcher above everything the owner runs on local models
 
-**Date:** 2026-11-11 · **Status:** approved by the owner on 2026-11-11 with the five recommendations as written ("1070 ti. Approve"); nothing is built.
+**Date:** 2026-11-11 · **Status:** approved by the owner on 2026-11-11 with the five recommendations as written ("1070 ti. Approve"). Slice 1 (memory and the note) was built on 2026-11-12 and is not deployed; see "Slice 1 as built" at the end. Slices 2 to 6 are not built.
 
 Companion records: `docs/decisions/2026-11-08-wakefulness-design.md` (the boxes, the doorman), `docs/decisions/2026-11-11-local-llm-apps.md` (the apps as CynCo's use cases), `docs/decisions/2026-11-08-image-box-design.md`, the owner's `pc-wakefulness/knowledge/tiering-preview.md`, `engine/vsm/CLAUDE.md`, `engine/cybernetics-core/README.md`.
 
@@ -245,6 +245,42 @@ All five were answered on 2026-11-11: the owner approved the recommendation in e
 ## Left to the builder
 
 The sampling beat; the store's schema; the exact form of the measures; how the owner's input and the foreground window are read on Windows and tied to a unit; how the local service is packaged; the chart library; the wording of the note; how many days of history a series needs before the filter speaks. The limits for each essential variable are not left to the builder: they come from the vendor's figures and the owner's answer to decision 2.
+
+## Slice 1 as built (2026-11-12)
+
+Built and proven against the records of 2026-11-11; not deployed, and not yet seen on a real night. Where things are: the watcher `scripts/doorman/` (`CLAUDE.md` there), the main PC's reporter `engine/power/reporter/` (`engine/power/CLAUDE.md`), the go-live steps `docs/liveness-setup.md` § 8, what it left `docs/NOW.md`.
+
+**What the owner can do afterwards.** Open `http://100.110.117.10:9171/` from any of their devices, with the PC asleep or awake, and read for any day: what was flagged (what was seen, what was expected, what the watcher believes it means, a suggested action in words), what is still learning, the measures, and per box a chart on one time axis (state, who held the GPU, each service, jobs, temperature) with the flagged times marked.
+
+**Not built, by decision.** The owner's three answers to a finding (the first follow-up, `docs/NOW.md` says why it was left out whole), one-tap actions (not in this slice), the hand-off measure (it needs slice 4's switches), and "going to sleep" said ahead of the sleep.
+
+**The builder's choices** ("Left to the builder" above), each a constant in one place:
+
+| Choice | Value | Where |
+|---|---|---|
+| Sampling beat | a look every 15 s; a sample when the state fingerprint changed, else every 60 s | `engine/power/reporter/main.ts` |
+| Store | SQLite, tables `samples` (box, at), `events` (box, kind, key), `meta`; samples kept 90 days | `scripts/doorman/watchstore.py` |
+| A wake is behind a burst when | the burst for that box started between 120 s before and 5 s after the wake; or the owner's input is at the moment of the wake | `scripts/doorman/watchmodel.py` |
+| Grace | a service down 180 s, a model unused 20 min, silence 300 s | same |
+| History before the filter speaks | 12 readings over at least 3 days; window 30; outlier at 3 robust sigma; a step is 3 in a row; CUSUM slack 0.5, threshold 5 | same |
+| Measures | asleep ÷ time nothing needed the box (idle 5 min and nothing open, or a stretch that ended in an idle sleep); unused ÷ loaded; answering ÷ wanted; runs ok ÷ runs | same |
+| Charts | inline SVG written by hand, no library, no script | `scripts/doorman/watchnote.py` |
+| The owner's input | `GetLastInputInfo` in the owner's session; the foreground window is not read (the attention loop's, slice 4) | `engine/power/reporter/idle.ts` |
+| Packaging | a fifth scheduled task at logon, `bun engine\power\reporter\main.ts` | `scripts/run-box-reporter.cmd` |
+
+The design's own example holds: over the four hours of F221 "asleep when it could be" reads 0.44 (112 minutes of 255); over that whole local day, with the first sleep and the stretch after the update's restart, 0.38.
+
+**What the build added beyond the table in "What is reused and what is new"**, with the six questions:
+
+| Added | Problem | Why the existing thing is not enough | State and failure it adds | Verified by | Disabled by | Maintained with |
+|---|---|---|---|---|---|---|
+| The doorman's burst journal (`/var/lib/doorman/bursts.jsonl`) | A wake can only be matched to a knock or a scheduled job if the doorman wrote down which it was | Its journal has the packets and not the cause, and only root reads it | One bounded file (rewritten to its newest half over 20,000 lines); a write that fails is logged and the wake still goes out | `test_doorman_bursts.py` | `doorman.record` left as the no-op | `scripts/doorman/` |
+| `LOCALCODE_WATCHER_URL` | The reporter needs the watcher's address and a way to be off | No existing variable names the watcher | None; unset means nothing is gathered or sent | `reporter.test.ts`, the README inventory guard | Unset it, or do not register the task | `engine/power/` |
+| The reporter's folder `~/.cynco/watch/` | A restart must not resend a day of logs or lose a backlog | Nothing else keeps a read position for the System log, the engine log or `runs.jsonl` | `state.json` (three positions) and `outbox.jsonl` (only while there is a backlog, at most 5,000 records); deleted, it starts from the end of each log | `reporter.test.ts` | Delete the folder | `engine/power/` |
+| `activity` on `GET /api/session` | From outside the engine, a model in use and a model only loaded look the same | `activity.snapshot()` had no caller; `processing` covers a turn and not a lone model request | One more field on an existing answer, behind the same token | `reporter.test.ts` | Not reading it: an engine without the field gives `open: null` and use is "unknown" | `engine/power/` |
+| The doorman's pytest files run by `npx vitest run` | Nothing ran the doorman's tests but a person (F230) | CI and the suite never started Python for them | A test that needs Python 3 and pytest, and says so and skips without them | Itself | Deleting the test file | `scripts/__tests__/` |
+
+**Calls made in the build that the owner did not make**: sleep is read back after the wake, not announced; the wake source Windows names is shown and never taken as the answer; the port's holder is read without discovery, so an unregistered app reads as not CynCo's; `/push` has no authentication beyond the tailnet, as the doorman's routes; findings give times in UTC and the chart in local time; the answers are left out whole. Each with what it costs if wrong is in the build's report and in `docs/NOW.md`.
 
 ## Sources
 

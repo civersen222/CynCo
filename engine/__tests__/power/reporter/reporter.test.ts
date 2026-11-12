@@ -9,7 +9,7 @@ import type { AddressInfo } from 'net'
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { daemonHasWork, getJson, holderReader, modelRows, readDaemonUp, readEngine, readInferenceToken, readModelPort, readServices, type FetchLike } from '../../../power/reporter/engineFacts.js'
+import { daemonHasWork, getJson, holderReader, modelRows, readBusyClaim, readDaemonUp, readEngine, readInferenceToken, readModelPort, readServices, type FetchLike } from '../../../power/reporter/engineFacts.js'
 import { ticksBetween } from '../../../power/reporter/idle.js'
 import { Outbox } from '../../../power/reporter/outbox.js'
 import { fingerprint, gatherSample, type Sources } from '../../../power/reporter/sample.js'
@@ -174,6 +174,18 @@ describe('who holds the GPU, by CynCo own reckoning', () => {
     expect((await read(true)).unit).toBe('foreign')
     tree = null
     expect((await read(true)).unit).toBe('unknown')
+  })
+
+  it('the one-shot claim is read and left alone: a claim whose process is gone is no claim, and the file is not deleted', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-busy-'))
+    const file = join(dir, 'gpu-busy.json')
+    expect(readBusyClaim(file)).toBeNull()
+    writeFileSync(file, JSON.stringify({ task: 'fantasy-digest', triggerId: 'digest-bronze-card', startedAt: '2026-11-12T03:00:00Z', timeoutMs: 900000, pid: 4242 }))
+    expect(readBusyClaim(file, () => true)).toEqual({ triggerId: 'digest-bronze-card', task: 'fantasy-digest' })
+    expect(readBusyClaim(file, () => false)).toBeNull()
+    expect(existsSync(file)).toBe(true) // the engine's reader would have removed it; an observer does not
+    writeFileSync(file, '{torn')
+    expect(readBusyClaim(file, () => true)).toBeNull()
   })
 
   it('one reading of the owner is trusted while the port stays up, and asked again after it went down or could not be read', async () => {
@@ -428,6 +440,25 @@ describe('switches and small things', () => {
   it('tick counts wrap at 32 bits', () => {
     expect(ticksBetween(5000, 2000)).toBe(3000)
     expect(ticksBetween(100, 0xffffff00)).toBe(356)
+  })
+
+  it('nothing that finds or kills "the engine" by its command line can take the reporter for it', () => {
+    // The F215 class: a selector written when only one thing was started that way. These are the
+    // patterns of dispatch-mission.sh and cynco-mission-driver.mjs (a -like on engine/main.ts),
+    // cynco-widget.ps1 and cynco-services.ps1 (the engine and daemon rows).
+    const launch = readFileSync(join(process.cwd(), 'scripts', 'run-box-reporter.cmd'), 'utf-8')
+    const commandLine = launch.split(/\r?\n/).find(l => l.startsWith('bun '))!.split(' >>')[0]!
+    expect(commandLine).toBe('bun engine\\power\\reporter\\main.ts')
+    expect(commandLine.includes('engine/main.ts')).toBe(false)
+    expect(/engine[\\/]main\.ts/.test(commandLine)).toBe(false)
+    expect(/engine\\main\.ts(?!.*--run-task)/.test(commandLine)).toBe(false)
+    expect(/engine\\daemon\\main/.test(commandLine)).toBe(false)
+    // and the services script finds it by its own row
+    const services = readFileSync(join(process.cwd(), 'scripts', 'cynco-services.ps1'), 'utf-8')
+    const row = /Name = 'watch';[^\n]*Match = '([^']+)'/.exec(services)
+    expect(row).not.toBeNull()
+    expect(new RegExp(row![1]!).test(commandLine)).toBe(true)
+    expect(services).toContain("scripts\\run-box-reporter.cmd")
   })
 
   it('the engine session answer carries what the engine has open (the first caller of activity.snapshot)', () => {

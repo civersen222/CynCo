@@ -1,7 +1,7 @@
 /**
  * engine/power/reporter/main.ts — this box tells the watcher what it is doing.
  *
- *   bun engine/power/reporter/main.ts [--box main]
+ *   bun engine/power/reporter/main.ts [--box main] [--once]
  *
  * The main PC's part of the metasystem's first slice
  * (docs/decisions/2026-11-11-metasystem-design.md): a small process of its own,
@@ -224,6 +224,7 @@ export async function main(argv: string[] = process.argv.slice(2), env: NodeJS.P
     try { await reporter.tick() } catch (err) { log(`[watch] a look failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`) } finally { busy = false }
   }
   await look()
+  if (argv.includes('--once')) return 0 // one look, sent, and out: for trying it by hand
   setInterval(() => { void look() }, LOOK_MS)
   return await new Promise<number>(() => {}) // runs until the task is stopped
 }

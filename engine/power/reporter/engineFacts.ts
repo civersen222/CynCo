@@ -19,7 +19,7 @@
 import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { cyncoHome, missionsDir } from '../../paths.js'
-import { readGpuBusy } from '../../daemon/gpuBusyFile.js'
+import { defaultIsPidAlive, gpuBusyPath } from '../../daemon/gpuBusyFile.js'
 import { classifyPortOwner } from '../../llama/portOwner.js'
 import { readPortTree, listProcesses, type ListedProc, type PortTree } from '../../apps/portTree.js'
 import { matchApp } from '../../apps/identify.js'
@@ -146,6 +146,21 @@ export async function readServices(engine: EngineRow | null, deps: ServiceDeps):
   return out
 }
 
+/**
+ * The daemon one-shot's claim on the GPU (`gpu-busy.json`), read and left alone. The engine's own
+ * reader, `readGpuBusy`, deletes a claim whose process is gone; that cleanup is the engine's and
+ * the daemon's to do, and observing must not write. A claim whose process is gone is no claim.
+ */
+export function readBusyClaim(path: string = gpuBusyPath(), isPidAlive: (pid: number) => boolean = defaultIsPidAlive): { triggerId: string; task: string } | null {
+  try {
+    const p = JSON.parse(readFileSync(path, 'utf-8')) as { pid?: unknown; triggerId?: unknown; task?: unknown }
+    if (typeof p?.pid !== 'number' || typeof p?.triggerId !== 'string') return null
+    return isPidAlive(p.pid) ? { triggerId: p.triggerId, task: typeof p.task === 'string' ? p.task : '' } : null
+  } catch {
+    return null // no file: nothing holds the GPU by the daemon's claim
+  }
+}
+
 export type HolderDeps = {
   readBusy?: () => { triggerId: string; task: string } | null
   readTree?: (port: number) => Promise<PortTree | null>
@@ -160,7 +175,7 @@ export type HolderDeps = {
  * server is on the model port. Returns a reader that remembers its last look at the port's owner.
  */
 export function holderReader(port: number, deps: HolderDeps = {}): (modelUp: boolean) => Promise<HolderRow> {
-  const readBusy = deps.readBusy ?? (() => readGpuBusy())
+  const readBusy = deps.readBusy ?? (() => readBusyClaim())
   const readTree = deps.readTree ?? ((p: number) => readPortTree(p, undefined, () => {}))
   const apps = deps.apps ?? (() => loadApps(undefined, () => {}))
   const now = deps.now ?? Date.now
