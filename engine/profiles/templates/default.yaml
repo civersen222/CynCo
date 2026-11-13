@@ -16,8 +16,15 @@
 # file nothing had downloaded. Resolution is env > profile > built-in, so a user
 # who sets LOCALCODE_PROVIDER still wins, and a user whose own profile names no
 # provider still falls through to 'llama-cpp'.
+#
+# `qwen3.8:27b`, not `qwen3.6`: in Ollama's library the bare `qwen3.6` tag is
+# `qwen3.6:latest`, which is the 35B-A3B MoE (23 GB), not the 27B the README
+# describes, and Qwen3.8-27B is the model CynCo is developed and measured on
+# (2026-11-13). The size tag is spelled out so the pull cannot drift to another
+# size when the library moves `latest`. Temperature 1.0 is the Qwen3.8 model
+# card's thinking-mode sampler, the same value the owner's own profiles use.
 name: default
 provider: ollama
-model: qwen3.6
+model: qwen3.8:27b
 context_length: 65536
-temperature: 0.7
+temperature: 1.0

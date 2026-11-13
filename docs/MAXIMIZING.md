@@ -29,9 +29,9 @@ Two backends, picked with `LOCALCODE_PROVIDER`:
 
 ### Ollama (simplest)
 ```bash
-ollama pull qwen3.6
+ollama pull qwen3.8:27b
 ollama pull nomic-embed-text   # required for code indexing
-LOCALCODE_MODEL=qwen3.6 bun engine/main.ts
+LOCALCODE_MODEL=qwen3.8:27b bun engine/main.ts
 ```
 Good default. Manages model loading for you.
 

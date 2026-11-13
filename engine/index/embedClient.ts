@@ -113,7 +113,7 @@ export function warnEmbedUnavailable(baseUrl: string, detail?: string): void {
   )
   console.log(
     `[embed] Fix: run an embedding server and point LOCALCODE_EMBED_BASE_URL at it ` +
-    `(Ollama: \`ollama pull ${'jina-code-embeddings-0.5b'}\`; llama.cpp: start llama-server with --embeddings). ` +
+    `(Ollama: \`ollama pull nomic-embed-text\`; llama.cpp: start llama-server with --embeddings). ` + // the fallback model: Ollama's library has no jina-code-embeddings-0.5b
     `LOCALCODE_EMBED_API=ollama|openai pins the wire format.`
   )
 }
