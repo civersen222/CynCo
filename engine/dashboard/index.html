@@ -450,6 +450,20 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 
 .empty-text { color: #808080; font-size: 12px; font-style: italic; }
 
+/* ── Missions (the outcome ledger) ───────────────────────── */
+.mh-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 6px; }
+.mh-controls select, .mh-controls button { background: #1e1e1e; color: #d4d4d4; border: 1px solid #3a3a3a; border-radius: 4px; padding: 2px 8px; font: inherit; }
+.mh-controls button:disabled { opacity: 0.4; }
+.mh-list { max-height: 520px; overflow-y: auto; font-size: 11px; }
+.mh-row { padding: 6px 0; border-bottom: 1px solid #2a2a2a; overflow-wrap: anywhere; }
+.mh-row .mh-id { color: #dcdcaa; font-weight: 600; }
+.mh-sub { color: #808080; }
+.mh-live { border-left: 3px solid #4caf50; padding-left: 8px; }
+.mh-ok { color: #4caf50; }
+.mh-bad { color: #f48771; }
+.mh-campaign { color: #569cd6; cursor: pointer; text-decoration: underline; }
+.campaign-focus { outline: 2px solid #569cd6; outline-offset: 4px; border-radius: 4px; }
+
 /* ── Brain pane ───────────────────────────────────────────── */
 .thinking { opacity: .7; font-style: italic; white-space: pre-wrap; font-size: 12px; }
 .thinking.done { opacity: .45; }
@@ -1032,6 +1046,22 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
   <div class="panel full-width hidden" id="panelCampaign">
     <div class="panel-title">Campaign</div>
     <div id="campaignList"></div>
+  </div>
+
+  <!-- Missions panel: every mission the outcome ledger holds (GET /api/mission-history), newest
+       first and paged, whatever launched it — a campaign wave, an authoring run, or
+       dispatch-mission.sh run by hand with no campaign. The live mission (/api/mission) sits on
+       top while one runs; it reaches the list when its driver writes the ledger row. A mission
+       that belongs to a campaign opens that campaign's block in the panel above. -->
+  <div class="panel full-width" id="panelMissionHistory">
+    <div class="panel-title">Missions</div>
+    <div class="mh-controls">
+      <label>Campaign <select id="missionHistoryFilter"><option value="">all campaigns</option></select></label>
+      <button type="button" id="missionHistoryNewer" disabled>Newer</button>
+      <span id="missionHistoryRange">&mdash;</span>
+      <button type="button" id="missionHistoryOlder" disabled>Older</button>
+    </div>
+    <div class="mh-list" id="missionHistoryList"><div class="empty-text">loading…</div></div>
   </div>
 
   <!-- Row 2: Governance Health -->
@@ -3099,8 +3129,13 @@ function fetchSessionState() {
 
   // Mission mode: when dispatch launched this engine, show the Mission panel
   // and hide the panels that carry no signal during an unattended run.
+  // `lastLiveMission` (page level, below the Missions panel's builders): the
+  // Missions panel draws the live mission on top from this poll's last answer.
   function pollMission() {
     fetch('/api/mission').then(function(r) { return r.json(); }).then(function(m) {
+      var wasLive = !!(lastLiveMission && lastLiveMission.active);
+      lastLiveMission = m;
+      if (wasLive || (m && m.active)) renderMissionHistory();
       // No mission (an interactive chat, a project): no Mission panel.
       if (!m || !m.active) {
         document.body.classList.remove('mission-mode');
@@ -3356,8 +3391,18 @@ function fetchSessionState() {
           ' · sealed ' + (authoring && authoring.sealedAt ? authoring.sealedAt : '—');
         var authoringProblems = (authoring && authoring.lastCheck && authoring.lastCheck.problems) ? authoring.lastCheck.problems : [];
         var board = campaignScoreboardText(c.scoreboard);
+        // The anchor a mission row's campaign link scrolls to (focusCampaign).
+        block.id = 'campaign-' + c.id;
+        if (campaignFocus === c.id) block.classList.add('campaign-focus');
+        var home = c.home || {};
+        var specRow = campaignSpecText(c.spec);
         var rows = [
           ['Campaign', c.id + (c.id === data.active ? ' (ACTIVE)' : '')],
+          // Where it works: the spec's own home, CivKings' values where the spec names none.
+          ['Repository', home.repo || '—'],
+          ['Held-out family', home.heldoutFamily || '—'],
+          ['Spec', specRow.text, specRow.title],
+          ['Roadmap line', c.roadmapLine ? c.roadmapLine.id + ' ' + c.roadmapLine.status + (c.roadmapLine.name ? ' — ' + c.roadmapLine.name : '') : (home.roadmap ? 'not on ' + home.roadmap : 'no roadmap')],
           ['Wave', c.waveCount + (c.budgetWaves != null ? ' / ' + c.budgetWaves : '')],
           ['Last decision', c.lastDecision ? (c.lastDecision.kind + ' — ' + c.lastDecision.why) : '—'],
           ['Last fails', failText, fails.join('\n')],
@@ -3494,6 +3539,164 @@ function escAttr(s) {
   return escHtml(s).replace(/'/g, '&#39;');
 }
 
+// ── Missions (the outcome ledger, GET /api/mission-history) ──
+// Pure string builders over the endpoint's rows; every value off disk goes
+// through escHtml. Lifted by engine/__tests__/dashboard/missionHistoryView.test.ts.
+function missionDurationText(s) {
+  if (typeof s !== 'number' || !isFinite(s) || s < 0) return '—';
+  var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  if (h) return h + 'h ' + m + 'm';
+  if (m) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
+// Local time, minutes: when a mission was dispatched, as the owner reads a clock.
+function missionWhenText(iso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  var two = function(n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + '-' + two(d.getMonth() + 1) + '-' + two(d.getDate()) + ' ' + two(d.getHours()) + ':' + two(d.getMinutes());
+}
+function missionFileName(p) {
+  if (!p) return '—';
+  var parts = String(p).split(/[\\/]/);
+  return parts[parts.length - 1] || String(p);
+}
+function missionVerifiedHtml(v) {
+  if (v === true) return '<span class="mh-ok">verified</span>';
+  if (v === false) return '<span class="mh-bad">not verified</span>';
+  return '<span class="mh-sub">verified —</span>';
+}
+// A runner campaign links to its block in the Campaign panel; a campaign id with
+// no campaign folder (a hand-run series, an authoring run) is named, not linked.
+function missionCampaignHtml(m) {
+  if (m.campaignLink) {
+    return '<a href="#" class="mh-campaign" data-campaign="' + escAttr(m.campaignLink) + '" title="open this campaign in the Campaign panel">' + escHtml(m.campaignId) + '</a>' +
+      (m.campaignFrom === 'waves' ? ' <span class="mh-sub">(named by its waves)</span>' : '');
+  }
+  if (m.campaignId) return escHtml(m.campaignId) + ' <span class="mh-sub">(no campaign folder)</span>';
+  return '<span class="mh-sub">no campaign</span>';
+}
+function missionHistoryRowHtml(m) {
+  var range = m.commitRange ? String(m.commitRange.base || '?').slice(0, 7) + '..' + String(m.commitRange.head || '?').slice(0, 7) : '—';
+  var gp = m.graderProbes
+    ? (m.graderProbes.probes != null ? m.graderProbes.probes : '?') + ' of ' + (m.graderProbes.total != null ? m.graderProbes.total : '?')
+    : '—';
+  var check = m.check ? 'check <code>' + escHtml(m.check.command || '?') + '</code> → ' + escHtml(m.check.result) : 'no check';
+  return '<div class="mh-row" data-mission="' + escAttr(m.missionId) + '">' +
+    '<div><span class="mh-id">' + escHtml(m.missionId) + '</span> · ' + missionCampaignHtml(m) + ' · ' + escHtml(m.outcome || '—') + ' · ' +
+      missionVerifiedHtml(m.verified) + (m.exitReason ? ' · ' + escHtml(m.exitReason) : '') + '</div>' +
+    '<div class="mh-sub">repo ' + escHtml(m.cwd || '—') + ' · brief <span title="' + escAttr(m.briefFile || '') + '">' + escHtml(missionFileName(m.briefFile)) + '</span>' +
+      ' · dispatched ' + escHtml(missionWhenText(m.dispatchedAt)) + ' · ran ' + escHtml(missionDurationText(m.durationS)) + '</div>' +
+    '<div class="mh-sub">commits ' + escHtml(range) + ' · turns ' + (m.turns != null ? m.turns : '—') + ' · grader probes ' + escHtml(gp) +
+      ' · <span title="' + escAttr(m.check ? m.check.tail : '') + '">' + check + '</span> · ledger ' + escHtml(m.ledger) + '</div>' +
+    '</div>';
+}
+// The mission running now (/api/mission): not in the ledger until its driver writes the row.
+function missionLiveRowHtml(live) {
+  if (!live || !live.active) return '';
+  var tools = live.toolCalls != null ? String(live.toolCalls) + (live.maxIterations ? ' of ' + live.maxIterations : '') : '—';
+  return '<div class="mh-row mh-live">' +
+    '<div><span class="mh-id">LIVE</span> · marker "' + escHtml(live.marker) + '" ' + (live.markerSeen ? '<span class="mh-ok">seen</span>' : 'not seen yet') + ' · tool calls ' + escHtml(tools) + '</div>' +
+    '<div class="mh-sub">repo ' + escHtml(live.cwd) + ' · ' + Number(live.commitsSinceBase || 0) + ' commit(s) since ' + escHtml(String(live.base || '?').slice(0, 7)) +
+      (live.gitStale ? ' (git slow, last known)' : '') + ' · ' + (live.checkCmd ? 'check <code>' + escHtml(live.checkCmd) + '</code> at the close' : 'no check') + '</div>' +
+    '<div class="mh-sub">reaches the list below when its driver writes the ledger row</div>' +
+    '</div>';
+}
+function missionHistoryHtml(page, live) {
+  var out = missionLiveRowHtml(live);
+  var rows = (page && page.missions) || [];
+  if (!rows.length) out += '<div class="empty-text">No missions in the ledger' + (page && page.campaign ? ' for ' + escHtml(page.campaign === 'none' ? 'no campaign' : page.campaign) : '') + '</div>';
+  for (var i = 0; i < rows.length; i++) out += missionHistoryRowHtml(rows[i]);
+  var errors = (page && page.errors) || [];
+  if (errors.length) out += '<div class="empty-text">' + errors.map(escHtml).join('<br>') + '</div>';
+  return out;
+}
+function missionHistoryRangeText(page) {
+  if (!page || !page.total) return '0 missions';
+  return (page.offset + 1) + '–' + Math.min(page.offset + page.missions.length, page.total) + ' of ' + page.total;
+}
+// The campaign filter: every campaign id among the missions with its count; `none` = no campaign.
+function missionHistoryFilterHtml(groups, selected) {
+  var opts = ['<option value=""' + (!selected ? ' selected' : '') + '>all campaigns</option>'];
+  (groups || []).forEach(function(g) {
+    var v = g.campaignId === null ? 'none' : g.campaignId;
+    opts.push('<option value="' + escAttr(v) + '"' + (selected === v ? ' selected' : '') + '>' +
+      escHtml(g.campaignId === null ? 'no campaign' : g.campaignId) + ' (' + g.count + ')</option>');
+  });
+  return opts.join('');
+}
+// The Campaign panel's Spec row: which spec file the panel read, and why that one.
+function campaignSpecText(spec) {
+  var gone = spec && spec.missing ? 'the runner recorded ' + spec.missing + ', which is gone' : '';
+  if (!spec || !spec.path) return { text: 'none found', title: gone };
+  return { text: spec.path + (spec.from === 'state' ? ' (recorded by the runner)' : ' (CivKings briefs folder: state.json predates the recorded path)'), title: gone };
+}
+
+// The Missions panel's state, at page level and wired once (wireMissionHistory,
+// called beside connectWS): fetchSessionState runs again on every reconnect,
+// and listeners added there would stack. `lastLiveMission` is pollMission's last
+// /api/mission answer; `campaignFocus` is the campaign a row's link opened,
+// which pollCampaign re-outlines on each rebuild until it lapses.
+var lastLiveMission = null;
+var campaignFocus = null;
+var missionHistory = { offset: 0, limit: 25, campaign: '', page: null };
+function focusCampaign(id) {
+  campaignFocus = id;
+  var el = document.getElementById('campaign-' + id);
+  if (el) { el.classList.add('campaign-focus'); el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  setTimeout(function() {
+    if (campaignFocus !== id) return;
+    campaignFocus = null;
+    var again = document.getElementById('campaign-' + id);
+    if (again) again.classList.remove('campaign-focus');
+  }, 6000);
+}
+function renderMissionHistory() {
+  var list = document.getElementById('missionHistoryList');
+  if (!list) return;
+  var p = missionHistory.page;
+  list.innerHTML = missionHistoryHtml(p, lastLiveMission);
+  document.getElementById('missionHistoryRange').textContent = missionHistoryRangeText(p);
+  document.getElementById('missionHistoryNewer').disabled = !p || p.offset <= 0;
+  document.getElementById('missionHistoryOlder').disabled = !p || p.offset + p.missions.length >= p.total;
+  var sel = document.getElementById('missionHistoryFilter');
+  if (p && document.activeElement !== sel) sel.innerHTML = missionHistoryFilterHtml(p.groups, missionHistory.campaign);
+}
+function pollMissionHistory() {
+  var q = '?offset=' + missionHistory.offset + '&limit=' + missionHistory.limit +
+    (missionHistory.campaign ? '&campaign=' + encodeURIComponent(missionHistory.campaign) : '');
+  fetch('/api/mission-history' + q).then(function(r) { return r.json(); }).then(function(page) {
+    missionHistory.page = page;
+    renderMissionHistory();
+  }).catch(function(e) { console.warn('mission history poll failed', e); });
+}
+// Polled every 30 s (a row reaches the ledger once per mission); the filter and
+// the pager ask at once; a campaign link opens that campaign's block.
+function wireMissionHistory() {
+  document.getElementById('missionHistoryFilter').addEventListener('change', function(ev) {
+    missionHistory.campaign = ev.target.value;
+    missionHistory.offset = 0;
+    pollMissionHistory();
+  });
+  document.getElementById('missionHistoryNewer').addEventListener('click', function() {
+    missionHistory.offset = Math.max(0, missionHistory.offset - missionHistory.limit);
+    pollMissionHistory();
+  });
+  document.getElementById('missionHistoryOlder').addEventListener('click', function() {
+    missionHistory.offset += missionHistory.limit;
+    pollMissionHistory();
+  });
+  document.getElementById('missionHistoryList').addEventListener('click', function(ev) {
+    var a = ev.target && ev.target.closest ? ev.target.closest('.mh-campaign') : null;
+    if (!a) return;
+    ev.preventDefault();
+    focusCampaign(a.getAttribute('data-campaign'));
+  });
+  pollMissionHistory();
+  setInterval(pollMissionHistory, 30000);
+}
+
 // ── Brain "thinking" visualization ───────────────────────────
 // A stylized brain that crackles with electricity rays whenever the
 // engine is actively working (streaming tokens, thinking, running tools).
@@ -3610,6 +3813,8 @@ setupSliders();
 fetchParams();
 renderPredictions();
 connectWS();
+// The Missions panel (the outcome ledger): once per page, not per reconnect.
+wireMissionHistory();
 startSessionTimer();
 brainViz.init();
 // A phone's screen lock suspends the socket; on wake, reconnect now rather than

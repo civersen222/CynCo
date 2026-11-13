@@ -132,6 +132,23 @@ describe('loadCampaignSpec', () => {
     expect(() => loadCampaignSpec(write({ ...good(), positive: 3 }))).toThrow(/positive must be a non-empty string/)
     expect(() => loadCampaignSpec(write({ ...good(), authorMissionId: 7 }))).toThrow(/authorMissionId must be a string or null/)
   })
+  // The campaign's home (scripts/cynco-campaign-home.mjs): optional keys, today's
+  // CivKings values when absent, so a spec with none of them loads unchanged.
+  it('loads a spec with no home keys unchanged, and one that declares its whole home', () => {
+    const plain = loadCampaignSpec(write(good()))
+    for (const k of ['briefsDir', 'campaignLog', 'heldoutFamily', 'roadmap', 'suiteTarget']) expect(plain[k]).toBeUndefined()
+    const casino = loadCampaignSpec(write({ ...good(), repo: 'C:/Users/civer/casino', briefsDir: '~/.cynco/campaigns/partynight',
+      campaignLog: '~/.cynco/campaigns/partynight/campaign-log.md', heldoutFamily: 'partynight', roadmap: null, suiteTarget: null, markerCheck: 'npx vitest run' }))
+    expect(casino.briefsDir).toBe('~/.cynco/campaigns/partynight')
+    expect(casino.roadmap).toBeNull()
+    expect(casino.suiteTarget).toBeNull()
+  })
+  it('refuses a bad home key with the home module sentence', () => {
+    expect(() => loadCampaignSpec(write({ ...good(), briefsDir: '' }))).toThrow(/briefsDir must be a non-empty path/)
+    expect(() => loadCampaignSpec(write({ ...good(), heldoutFamily: '../civkings-redesign' }))).toThrow(/heldoutFamily must be one folder name/)
+    expect(() => loadCampaignSpec(write({ ...good(), roadmap: 3 }))).toThrow(/roadmap must be a non-empty path/)
+    expect(() => loadCampaignSpec(write({ ...good(), suiteTarget: null }))).toThrow(/must name its own markerCheck/)
+  })
 })
 
 describe('checkIdentity', () => {
@@ -176,6 +193,16 @@ describe('checkIdentity', () => {
     expect(checkIdentity({ ...good(), markerCheck: 'python C:/Users/civer/.cynco/heldout/civkings-redesign/c8/gate_c8.py' }, io()).problems.join()).toMatch(/markerCheck names the sealed instrument "gate_c8\.py"/)
     expect(checkIdentity({ ...good(), markerCheck: 'python perturb_c8.py' }, io()).problems.join()).toMatch(/perturb_c8\.py/)
     expect(checkIdentity({ ...good(), markerCheck: 'git log | grep "stage c8 complete"' }, io()).problems.join()).toMatch(/markerCheck must not contain the marker/)
+  })
+  // A declared heldoutFamily is where the sealed instruments live; an absent
+  // one checks nothing beyond ~/.cynco/heldout/ (c8..c11 and the smoke specs).
+  it('holds the instruments to a DECLARED heldoutFamily and says nothing when none is declared', () => {
+    expect(checkIdentity({ ...good(), heldoutFamily: 'civkings-redesign' }, io())).toEqual({ ok: true, problems: [] })
+    const wrong = checkIdentity({ ...good(), heldoutFamily: 'partynight' }, io()).problems
+    expect(wrong.filter(p => /not in the declared heldoutFamily "partynight"/.test(p)).map(p => p.split(' ')[0])).toEqual(['gate', 'perturb', 'suiteBaseline'])
+    const pos = { ...good(), heldoutFamily: 'partynight', gate: '~/.cynco/heldout/partynight/t3/gate_t3.py', perturb: '~/.cynco/heldout/partynight/t3/perturb_t3.py',
+      suiteBaseline: '~/.cynco/heldout/partynight/t3/suite.txt', positive: 'C:/Users/civer/.cynco/heldout/other/t3/positive_t3.py' }
+    expect(checkIdentity(pos, io()).problems).toEqual([expect.stringMatching(/^positive is not in the declared heldoutFamily/)])
   })
   it('scans the title, KEEP-GREEN command, allow lists and deny list too', () => {
     for (const patch of [

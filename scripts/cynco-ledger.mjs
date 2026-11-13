@@ -874,7 +874,11 @@ export function buildMissionRecord(collector, meta) {
     // dispatched outside a campaign. The mission id alone does not say: it is
     // built from the brief's filename, and `brief-4-1790216986923` names no
     // campaign at all. Reading the ledger by campaign was a grep over briefFile.
-    campaignId: meta.campaignId ?? process.env.CYNCO_CAMPAIGN_ID ?? null,
+    // A hand-run series sets it too (`CYNCO_CAMPAIGN_ID=partynight-cast
+    // scripts/dispatch-mission.sh …`), so the dashboard's missions view can
+    // group missions no runner drove. `||`, not `??`: dispatch-mission.sh hands
+    // the engine `CYNCO_CAMPAIGN_ID=""` when none is set, and blank is no campaign.
+    campaignId: meta.campaignId || process.env.CYNCO_CAMPAIGN_ID || null,
     // What the engine declared at session.ready (see the collector field): the
     // prompt arm a row ran under is read from here, never from a typed label.
     engineCapabilities: collector.engineCapabilities ?? null,

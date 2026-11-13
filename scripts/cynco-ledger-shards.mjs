@@ -78,15 +78,25 @@ export function activeShardPath(dir = LEDGER_DIR, maxBytes = SHARD_MAX_BYTES) {
  */
 export function readLedger(dir = LEDGER_DIR) {
   const rows = []
-  for (const path of shardPaths(dir)) {
-    const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
-    lines.forEach((line, i) => {
-      const rec = JSON.parse(line)
-      Object.defineProperty(rec, '__shard', { value: path, enumerable: false })
-      Object.defineProperty(rec, '__line', { value: i, enumerable: false })
-      rows.push(rec)
-    })
-  }
+  for (const path of shardPaths(dir)) rows.push(...readShard(path))
+  return rows
+}
+
+/**
+ * One shard's records, tagged as readLedger tags them. A reader that keeps the
+ * ledger open for days (the dashboard's missions view) parses each shard once
+ * and re-reads only the one that changed, instead of all ~170 MB on every
+ * append; the frozen shards never change.
+ */
+export function readShard(path) {
+  const rows = []
+  const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean)
+  lines.forEach((line, i) => {
+    const rec = JSON.parse(line)
+    Object.defineProperty(rec, '__shard', { value: path, enumerable: false })
+    Object.defineProperty(rec, '__line', { value: i, enumerable: false })
+    rows.push(rec)
+  })
   return rows
 }
 

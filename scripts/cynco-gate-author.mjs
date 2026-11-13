@@ -29,6 +29,7 @@ import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { lintGate } from './cynco-gate-lint.mjs'
 import { parseGateOutput } from './cynco-gate-parse.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
+import { CIVKINGS_HOME } from './cynco-campaign-home.mjs'
 import { sidecarPath } from './cynco-contract.mjs'
 import { loadRoadmap, lineFor, nextOpenLine, setLineStatus, saveRoadmap, ROADMAP_PATH } from './cynco-roadmap.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
@@ -81,9 +82,14 @@ export const WORKER_INVARIANTS = { editGapCap: 40, commitGapCap: 150, revertBan:
 // reaches the bun-only grade chain through `calibrate`.
 export { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR }
 
-const CIVKINGS_REPO = 'C:/Users/civer/civkings'
-const HELDOUT_FAMILY = 'civkings-redesign'
-const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
+// The gate author writes CivKings gates: its brief teaches the `gilded`
+// package map and the CivKings exemplar gates, and its roadmap is CivKings'.
+// So its home is the CivKings home, named once in scripts/cynco-campaign-home.mjs
+// (the same defaults every spec without home keys gets), never spelled again
+// here. A campaign on another repository brings a hand-written sealed gate.
+const CIVKINGS_REPO = CIVKINGS_HOME.repo
+const HELDOUT_FAMILY = CIVKINGS_HOME.heldoutFamily
+const BRIEFS_DIR = CIVKINGS_HOME.briefsDir
 // Runner-owned spec fields (spec §2c). The author never picks these: a gate
 // author that chose its own wave budget or its own invariants would be
 // choosing how hard the campaign it is grading may push.

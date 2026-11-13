@@ -2,6 +2,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { homeProblems } from './cynco-campaign-home.mjs'
 
 const REQUIRED = ['id', 'title', 'repo', 'base', 'gate', 'perturb', 'suiteBaseline', 'marker', 'keepGreen', 'budget', 'invariants', 'posiwid', 'allow', 'deny', 'measures', 'work', 'rules']
 /** The only env keys a campaign spec may hand the dispatched engine (F161): the explicit-path overrides for the runtime assets. */
@@ -82,6 +83,11 @@ export function loadCampaignSpec(path) {
   spec.author = spec.author ?? 'human'
   if (spec.authorMissionId !== undefined && spec.authorMissionId !== null && typeof spec.authorMissionId !== 'string') throw new Error('campaign spec authorMissionId must be a string or null')
   spec.authorMissionId = spec.authorMissionId ?? null
+  // The campaign's home (scripts/cynco-campaign-home.mjs): briefsDir,
+  // campaignLog, heldoutFamily, roadmap, suiteTarget — each optional, today's
+  // CivKings value when absent. Checked here for shape; read through campaignHome.
+  const home = homeProblems(spec)
+  if (home.length) throw new Error(home[0])
   spec.ideation = spec.ideation ?? { enabled: true }
   return spec
 }
@@ -115,6 +121,15 @@ export function checkIdentity(spec, io = defaultIo) {
     if (!io.exists(spec[k])) problems.push(`${k} does not exist: ${spec[k]}`)
   }
   if (!underHeldout(spec.suiteBaseline)) problems.push(`suiteBaseline must live under ~/.cynco/heldout/ (sealed); got ${spec.suiteBaseline}`)
+  // A DECLARED family is where the instruments live: a spec that names one and
+  // seals its gate in another folder has two answers to "which gates are these".
+  // An absent key says nothing (c8..c11 and the smoke specs predate it).
+  if (spec.heldoutFamily !== undefined) {
+    const familyDir = `/.cynco/heldout/${spec.heldoutFamily}/`
+    for (const k of ['gate', 'perturb', 'suiteBaseline', ...(spec.positive ? ['positive'] : [])]) {
+      if (underHeldout(spec[k]) && !norm(spec[k]).includes(familyDir)) problems.push(`${k} is not in the declared heldoutFamily "${spec.heldoutFamily}" (~/.cynco/heldout/${spec.heldoutFamily}/); got ${spec[k]}`)
+    }
+  }
   if (!io.gitHasCommit(spec.repo, spec.base)) problems.push(`base ${spec.base} is not a commit in ${spec.repo}`)
   if (spec.keepGreen.includes(spec.marker)) problems.push('keepGreen must not contain the marker')
   const instruments = [basename(norm(spec.gate)), basename(norm(spec.perturb)), ...(spec.positive ? [basename(norm(spec.positive))] : [])]

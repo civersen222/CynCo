@@ -5,15 +5,16 @@
 # The fix that log asked for was "a canonical launch snippet so it can't be
 # dropped". This is it. Do not dispatch a mission by typing the env out again.
 #
-# Usage: scripts/dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]
+# Usage: scripts/dispatch-mission.sh <brief-file> <marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]
 #
 # Every value below can be overridden from the caller's environment; the
-# defaults are the ones measured on the run that set them.
+# defaults are the ones measured on the run that set them. The repository is
+# not one of them: it is named on every dispatch, never assumed to be CivKings.
 set -euo pipefail
 
-BRIEF=${1:?usage: dispatch-mission.sh <brief-file> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]}
+BRIEF=${1:?usage: dispatch-mission.sh <brief-file> <marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]}
 MARKER=${2:?missing commit marker}
-MISSION_CWD=${3:-C:\\Users\\civer\\civkings}
+MISSION_CWD=${3:?missing cwd: the repository the mission works in}
 TIMEOUT_S=${4:-21600}
 CHECK_CMD=${5:-}
 PROBE_CMD=${6:-}
@@ -73,10 +74,30 @@ DRIVER_LOG=${DRIVER_LOG:-/c/tmp/driver_${STAMP}.log}
 # On Windows the child outlives the parent, so a killed engine leaves its
 # llama-server holding the port and the next engine adopts a server whose args
 # nobody can account for. Kill the tree, then confirm it is gone.
+#
+# F234: the always-on phone engine (Task Scheduler "CynCo headless engine",
+# scripts/run-headless-engine.cmd) runs `bun engine\main.ts` with a backslash,
+# and the old `-like '*engine/main.ts*'` sweep missed it: the mission engine
+# found 9160 taken and refused. It is stopped through its TASK first, because
+# the task restarts on failure and a killed phone engine could come straight
+# back onto the port; it is started again when the mission is over (the idle
+# engine below). Then every engine left, either slash, is killed; the selector
+# is scripts/cynco-engine-sweep.mjs (a daemon one-shot is never selected).
+PHONE_ENGINE_TASK='CynCo headless engine'
+phone_engine_task_state() { powershell -NoProfile -Command "(Get-ScheduledTask -TaskName '$PHONE_ENGINE_TASK' -ErrorAction SilentlyContinue).State" 2>/dev/null | tr -d '\r'; }
+PHONE_ENGINE_WAS_RUNNING=
+if [ "$(phone_engine_task_state)" = "Running" ]; then
+  PHONE_ENGINE_WAS_RUNNING=1
+  echo "[dispatch] stopping the phone engine through its task (started again when the mission is over)"
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 stop engine 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+fi
 echo "[dispatch] killing any live engine tree"
-for pid in $(powershell -NoProfile -Command \
-      "Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Where-Object { \$_.CommandLine -like '*engine/main.ts*' } | Select-Object -ExpandProperty ProcessId" \
-      2>/dev/null | tr -d '\r'); do
+lc_engine_pids() { bun scripts/cynco-engine-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+if ! LC_ENGINE_PIDS=$(lc_engine_pids); then
+  echo "[dispatch] could not list the live engines — refusing to dispatch blind" >&2
+  exit 1
+fi
+for pid in $LC_ENGINE_PIDS; do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
 # The owner's local-LLM apps first (F219): a model server of theirs on our port
@@ -321,8 +342,15 @@ echo "[dispatch] driver log $DRIVER_LOG"
 # cleanShutdown, children included. Without it the C4 wave-3 engine sat
 # finished-but-undead for 7.3 hours. Set here and only here: the driver run by
 # hand against an engine it does not own must never inherit it.
+# CYNCO_CAMPAIGN_ID reaches the driver explicitly as well: the driver writes
+# the ledger row, whose `campaignId` it reads from this variable. A mission
+# launched by hand with it set (`CYNCO_CAMPAIGN_ID=partynight-cast
+# scripts/dispatch-mission.sh …`) is recorded under that id, so the
+# dashboard's missions view groups a hand-run series with no runner behind it.
+if [ -n "${CYNCO_CAMPAIGN_ID:-}" ]; then echo "[dispatch] campaign $CYNCO_CAMPAIGN_ID (recorded on the ledger row)"; fi
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
 CYNCO_PROBE_TIMEOUT_MS="$CYNCO_PROBE_TIMEOUT_MS" \
+CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
 CYNCO_TEARDOWN_ENGINE=1 \
   bun scripts/cynco-mission-driver.mjs \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
@@ -350,6 +378,13 @@ echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 # plain idle engine (no LOCALCODE_MISSION_* env -> /api/mission active:false)
 # so the same URL keeps answering. The next dispatch's kill sweep removes it.
 #
+# F234: when the dispatch stopped the phone engine's task, the task is started
+# again instead. Its environment (lazy llama, the busy fallback on the image
+# box, ntfy, the idle unload, the phone listener) is richer than this bare idle
+# engine's, and a bare engine left on the port would keep the phone engine off
+# it until someone noticed. The bare engine stays the answer when no phone
+# engine was running before the mission.
+#
 # A subshell cannot `wait` on a sibling it did not spawn, so poll the pid.
 if [ -z "${CYNCO_SKIP_IDLE_ENGINE:-}" ]; then
   IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
@@ -359,13 +394,23 @@ if [ -z "${CYNCO_SKIP_IDLE_ENGINE:-}" ]; then
     if curl -s -o /dev/null --max-time 3 http://127.0.0.1:9161/ 2>/dev/null; then
       exit 0   # something already answers (a hand-started engine, or the next dispatch)
     fi
+    if [ -n "$PHONE_ENGINE_WAS_RUNNING" ]; then
+      powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 start engine >> "$DRIVER_LOG" 2>&1
+      echo "[dispatch] mission over — the phone engine's task was started again, so the dashboard on 9161 keeps answering (log ~/.cynco/engine-headless.log)" >> "$DRIVER_LOG"
+      exit 0
+    fi
     # Lazy (F219): this engine exists so the dashboard keeps answering, not to hold the GPU. The mission engine
     # gave the GPU back to an app on its way out; an eager start here would take it straight back.
     LOCALCODE_LLAMA_LAZY=true LOCALCODE_LLAMA_IDLE_UNLOAD_MS="${LOCALCODE_LLAMA_IDLE_UNLOAD_MS:-900000}" LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
     echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
   ) > /dev/null 2>&1 &
   disown 2>/dev/null || true
-  echo "[dispatch] after the driver exits, an idle engine will be booted so the dashboard keeps answering (log $IDLE_LOG)"
+  if [ -n "$PHONE_ENGINE_WAS_RUNNING" ]; then
+    echo "[dispatch] after the driver exits, the phone engine's task will be started again so the dashboard keeps answering"
+  else
+    echo "[dispatch] after the driver exits, an idle engine will be booted so the dashboard keeps answering (log $IDLE_LOG)"
+  fi
 else
   echo "[dispatch] CYNCO_SKIP_IDLE_ENGINE set — the caller owns the dashboard engine after this run"
+  if [ -n "$PHONE_ENGINE_WAS_RUNNING" ]; then echo "[dispatch] the phone engine's task was stopped for this run; the caller starts it again (scripts\\cynco-services.ps1 start engine)"; fi
 fi

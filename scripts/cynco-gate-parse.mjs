@@ -6,6 +6,17 @@ const GATE_LINE = /^([A-Za-z0-9_.\-]+): (PASS|FAIL)(.*)$/
 const TERMINATOR = /^GATE: (PASS|MISS)(?: \((\d+) fails?\))?/
 const ERROR_LINE = /Traceback|Error:|FABRICATED/
 
+/**
+ * The interpreter a sealed instrument (gate, perturb stub, positive shim) runs
+ * under, by its extension: `.mjs`, `.cjs` or `.js` under node (a gate for a
+ * JavaScript or TypeScript repository, like the casino's `gate_t1.mjs`), and
+ * anything else under python, as every CivKings gate always has. The output
+ * format below is the same whatever writes it.
+ */
+export function gateInterpreter(path) {
+  return /\.(mjs|cjs|js)$/i.test(String(path ?? '')) ? 'node' : 'python'
+}
+
 export function parseGateOutput(text) {
   const out = { fails: [], passes: [], terminator: null, failCount: null, errors: [], priorRegressions: null }
   for (const raw of String(text ?? '').split(/\r?\n/)) {

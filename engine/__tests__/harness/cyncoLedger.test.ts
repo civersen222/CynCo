@@ -107,6 +107,13 @@ describe('cynco mission outcome ledger', () => {
 
       // An explicit meta value wins over the ambient one.
       expect(buildMissionRecord(collectAll(), { ...base, campaignId: 'c8' }).campaignId).toBe('c8')
+
+      // A hand-run series names itself the same way, and a blank id (what
+      // dispatch-mission.sh hands on when none is set) is no campaign, not ''.
+      process.env.CYNCO_CAMPAIGN_ID = 'partynight-cast'
+      expect(buildMissionRecord(collectAll(), base).campaignId).toBe('partynight-cast')
+      process.env.CYNCO_CAMPAIGN_ID = ''
+      expect(buildMissionRecord(collectAll(), base).campaignId).toBeNull()
     } finally {
       if (prior === undefined) delete process.env.CYNCO_CAMPAIGN_ID
       else process.env.CYNCO_CAMPAIGN_ID = prior

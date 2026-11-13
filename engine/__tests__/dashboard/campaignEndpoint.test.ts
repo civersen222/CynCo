@@ -733,3 +733,74 @@ describe('GET /api/campaign', () => {
     expect(res.status).toBe(401)
   })
 })
+
+// A campaign declares its home in its spec (scripts/cynco-campaign-home.mjs),
+// and the runner records the spec's absolute path in state.json. The panel
+// reads the spec, budget, repository, family, roadmap line and approve command
+// from there; a state.json written before `specPath` (c8..c11) reads the
+// CivKings briefs folder exactly as it always did.
+describe('GET /api/campaign — each campaign\'s own home', () => {
+  it('reads a non-CivKings campaign\'s repository, family, roadmap line, budget and approve command from the spec its state.json names', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-home-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    const folder = join(CYNCO_HOME, 'campaigns', 'pn1')
+    mkdirSync(folder, { recursive: true })
+    const roadmapPath = join(folder, 'roadmap.json').replace(/\\/g, '/')
+    writeFileSync(roadmapPath, JSON.stringify({ lines: [{ id: 'pn1', name: 'The cast', bar: 'b', base: '293dc1c', status: 'running' }] }))
+    const specPath = join(folder, 'pn1.campaign.json').replace(/\\/g, '/')
+    writeFileSync(specPath, JSON.stringify({ id: 'pn1', repo: 'C:\\Users\\civer\\casino', briefsDir: folder, heldoutFamily: 'partynight', roadmap: roadmapPath, budget: { waves: 3 } }))
+    writeCampaign(CYNCO_HOME, 'pn1', {
+      waveCount: 1, specPath,
+      proposals: [{ type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, currentValue: 40, bounds: { min: 40, max: 80 }, status: 'pending', proposedAt: '2026-11-13T00:00:00.000Z' }],
+    }, [{ wave: 1, decision: { kind: 'next', why: '1 line(s) still FAIL' } }])
+
+    const data = await (await authFetch(`${BASE}/api/campaign`)).json() as any
+    const pn1 = data.campaigns.find((c: any) => c.id === 'pn1')
+    expect(pn1.spec).toEqual({ path: specPath, from: 'state', missing: null })
+    expect(pn1.home).toEqual({ repo: 'C:/Users/civer/casino', heldoutFamily: 'partynight', briefsDir: folder.replace(/\\/g, '/'), roadmap: roadmapPath })
+    expect(pn1.roadmapLine).toEqual({ id: 'pn1', name: 'The cast', status: 'running' })
+    expect(pn1.budgetWaves).toBe(3)
+    expect(pn1.pendingProposals[0].approveCommand).toBe(`bun scripts/cynco-campaign.mjs ${specPath} --approve-proposal invariants/editGapCap`)
+    // The top-level roadmap is still the CivKings one, unchanged for c8..c11's panel.
+    const onDisk = JSON.parse(readFileSync(join(process.cwd(), 'docs', 'civkings-redesign-briefs', 'roadmap.json'), 'utf-8'))
+    expect(data.roadmap).toEqual(onDisk.lines.map((l: any) => ({ id: l.id, name: l.name, status: l.status })))
+  })
+
+  it('a campaign whose state.json predates specPath reads the CivKings briefs folder, and shows the CivKings home', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-legacy-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c8', { waveCount: 3 }, [{ wave: 3, decision: { kind: 'pass', why: 'sealed gate PASS' } }])
+    const data = await (await authFetch(`${BASE}/api/campaign`)).json() as any
+    const c8 = data.campaigns.find((c: any) => c.id === 'c8')
+    expect(c8.spec).toEqual({ path: 'docs/civkings-redesign-briefs/c8.campaign.json', from: 'legacy', missing: null })
+    expect(c8.home).toEqual({ repo: 'C:/Users/civer/civkings', heldoutFamily: 'civkings-redesign', briefsDir: 'docs/civkings-redesign-briefs', roadmap: 'docs/civkings-redesign-briefs/roadmap.json' })
+    expect(c8.roadmapLine).toMatchObject({ id: 'c8', name: expect.any(String) })
+    expect(STATUSES).toContain(c8.roadmapLine.status)
+    expect(c8.budgetWaves).toBe(8)
+  })
+
+  it('a recorded spec that is gone (a removed campaign worktree) falls back to the briefs folder and names what is missing', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-gone-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    const gone = 'C:/Users/civer/localcode/.claude/worktrees/campaign-c11-removed/docs/civkings-redesign-briefs/c11.campaign.json'
+    writeCampaign(CYNCO_HOME, 'c11', { waveCount: 2, specPath: gone,
+      proposals: [{ type: 'Parameter', name: 'invariants/editGapCap', newValue: 60, currentValue: 40, bounds: { min: 40, max: 80 }, status: 'pending', proposedAt: '2026-10-05T00:00:00.000Z' }] })
+    const data = await (await authFetch(`${BASE}/api/campaign`)).json() as any
+    const c11 = data.campaigns.find((c: any) => c.id === 'c11')
+    expect(c11.spec).toEqual({ path: 'docs/civkings-redesign-briefs/c11.campaign.json', from: 'legacy', missing: gone })
+    expect(c11.home.repo).toBe('C:/Users/civer/civkings')
+    expect(c11.pendingProposals[0].approveCommand).toBe('bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/c11.campaign.json --approve-proposal invariants/editGapCap')
+  })
+
+  it('a campaign with no spec anywhere shows no budget and no home, never a made-up one', async () => {
+    CYNCO_HOME = mkdtempSync(join(tmpdir(), 'cynco-campaign-nospec-'))
+    process.env.CYNCO_HOME = CYNCO_HOME
+    writeCampaign(CYNCO_HOME, 'c77', { waveCount: 0 })
+    const data = await (await authFetch(`${BASE}/api/campaign`)).json() as any
+    const c77 = data.campaigns.find((c: any) => c.id === 'c77')
+    expect(c77.spec).toEqual({ path: null, from: null, missing: null })
+    expect(c77.home).toEqual({ repo: null, heldoutFamily: null, briefsDir: null, roadmap: null })
+    expect(c77.roadmapLine).toBeNull()
+    expect(c77.budgetWaves).toBeNull()
+  })
+})

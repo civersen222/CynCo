@@ -15,6 +15,11 @@
  *   GET  /api/missions                           missions, triggers, pause state
  *   PUT  /api/missions/<id>/triggers/<tid>       per-trigger schedule override
  *   POST /api/daemon/pause                       { paused: boolean }
+ *
+ * Campaign and mission history (GET, inference scope, read-only):
+ *   GET  /api/campaign                           every runner campaign under ~/.cynco/campaigns, any repository
+ *   GET  /api/mission                            the live mission, from this engine's LOCALCODE_MISSION_* env
+ *   GET  /api/mission-history?offset=&limit=&campaign=   every mission in the outcome ledger, newest first
  */
 
 import { join, dirname } from 'path'
@@ -36,6 +41,7 @@ import {
 } from '../training/datasetBuilder.js'
 import { readMissionsView, patchTrigger, setPaused } from './missionsApi.js'
 import { readAppsView, setAppManagedApi } from './appsApi.js'
+import { MissionHistory, missionHistoryQuery } from './missionHistory.js'
 import { ReplayBuffer, parseCursor, type ReplayCursor } from './replay.js'
 import { webManifest, appIconPng, isAppIconSize } from './installable.js'
 import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
@@ -86,6 +92,14 @@ const loadScoreboardModule = (): Promise<ScoreboardModule> =>
   // @ts-expect-error — .mjs script, no types.
   import('../../scripts/cynco-scoreboard.mjs') as Promise<ScoreboardModule>
 
+/** A campaign's home off its spec (repository, briefs folder, held-out family, roadmap): the runner's
+ *  one spelling of the defaults (scripts/cynco-campaign-home.mjs), loaded lazily for the same reason. */
+type CampaignHome = { repo: string; briefsDir: string; campaignLog: string; heldoutFamily: string; roadmap: string | null; suiteTarget: string | null }
+type CampaignHomeModule = { campaignHome: (spec: unknown) => CampaignHome; legacySpecPath: (id: string) => string }
+const loadCampaignHomeModule = (): Promise<CampaignHomeModule> =>
+  // @ts-expect-error — .mjs script, no types.
+  import('../../scripts/cynco-campaign-home.mjs') as Promise<CampaignHomeModule>
+
 // ---------------------------------------------------------------------------
 // DashboardDeps — optional callbacks into the engine
 // ---------------------------------------------------------------------------
@@ -134,6 +148,8 @@ export interface DashboardDeps {
   setBrainLayer?: (layer: number) => void
   /** Test seam: load scripts/cynco-scoreboard.mjs. Default: a lazy dynamic import. */
   loadScoreboard?: () => Promise<ScoreboardModule>
+  /** Test seam: the outcome ledger's directory for `/api/mission-history`. Default: this checkout's benchmark/cynco-ledger. */
+  ledgerDir?: string
   /** Projects mode deps (Task 8 mounts the /api/projects routes over these). */
   projects?: ProjectsDeps
   /**
@@ -451,7 +467,17 @@ function validateInteger(value: unknown, min: number, max: number, field: string
 interface CampaignSummary {
   id: string
   waveCount: number
+  /** `budget.waves` off the campaign's spec (below), or null when it cannot be read. */
   budgetWaves: number | null
+  /** Where the spec was read from: `state` = the absolute path the runner recorded in state.json,
+   *  `legacy` = the CivKings briefs folder (a state.json written before `specPath`), null = nowhere.
+   *  `missing` is a recorded path that is gone (a removed campaign worktree). */
+  spec: { path: string | null; from: 'state' | 'legacy' | null; missing: string | null }
+  /** The campaign's home off that spec (scripts/cynco-campaign-home.mjs; CivKings' values for a
+   *  key the spec leaves out). Null fields when the spec or the home module could not be read. */
+  home: { repo: string | null; heldoutFamily: string | null; briefsDir: string | null; roadmap: string | null }
+  /** This campaign's line on its own roadmap, or null when it has none. */
+  roadmapLine: { id: string; name: string; status: string } | null
   lastDecision: { kind: string; why: string } | null
   lastFails: string[]
   pendingProposals: Array<{ name: string; currentValue: unknown; newValue: unknown; max: unknown; approveCommand: string; type: string | null; decidedBy: string | null }>
@@ -775,6 +801,8 @@ export class DashboardServer {
               return await this.getMission()
             case '/api/campaign':
               return await this.getCampaign()
+            case '/api/mission-history':
+              return await this.getMissionHistory(url)
             case '/api/predictions':
               return this.getPredictions()
             case '/api/contracts':
@@ -1793,6 +1821,7 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       // the panel cannot contribute a board for is NAMED here, never silently
       // left out (F16).
       const excluded: string[] = []
+      const homeMod = await this.loadCampaignHome()
       for (const id of ids) {
         if (!existsSync(join(campaignsDir, id, 'waves.jsonl'))) {
           excluded.push(`${id}: no waves.jsonl (not runner-driven)`)
@@ -1804,7 +1833,7 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
         // must not escape to the outer catch below and wipe every OTHER
         // healthy campaign out of the response along with it.
         try {
-          const c = this.readCampaignSummary(id)
+          const c = this.readCampaignSummary(id, homeMod)
           if (!c) {
             if (existsSync(join(campaignsDir, id, 'waves.jsonl'))) excluded.push(`${id}: state.json missing or not JSON`)
             continue
@@ -1833,9 +1862,77 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
     }
   }
 
+  /**
+   * The Missions history (missionHistory.ts): every mission in the outcome
+   * ledger, newest first, `?offset=&limit=&campaign=` (an id, or `none` for the
+   * missions run under no campaign). Read-only; parsed once per shard and kept
+   * reduced, so a poll costs a stat per shard and the campaign dirs' waves.
+   */
+  private missionHistory: MissionHistory | null = null
+  private async getMissionHistory(url: URL): Promise<Response> {
+    try {
+      this.missionHistory ??= new MissionHistory({ ledgerDir: this.deps.ledgerDir })
+      const q = missionHistoryQuery(url)
+      return jsonResponse(await this.missionHistory.page({ ...q, campaignsDir: join(cyncoHome(), 'campaigns') }))
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error(`[dashboard] mission history failed (${message})`)
+      return jsonResponse({ total: 0, offset: 0, limit: 0, campaign: null, groups: [], missions: [], errors: [message] })
+    }
+  }
+
+  /** scripts/cynco-campaign-home.mjs, loaded once; a load that rejects is dropped so the next poll retries it. */
+  private campaignHomeModule: Promise<CampaignHomeModule> | null = null
+  private async loadCampaignHome(): Promise<CampaignHomeModule | null> {
+    if (!this.campaignHomeModule) {
+      const loading = loadCampaignHomeModule()
+      this.campaignHomeModule = loading
+      loading.catch((e: unknown) => {
+        console.error(`[dashboard] scripts/cynco-campaign-home.mjs failed to load — campaign repositories unknown, retried on the next poll (${e instanceof Error ? e.message : String(e)})`)
+        if (this.campaignHomeModule === loading) this.campaignHomeModule = null
+      })
+    }
+    try { return await this.campaignHomeModule } catch (e) {
+      console.warn(`[dashboard] campaign home module unavailable this poll (${e instanceof Error ? e.message : String(e)})`)
+      return null
+    }
+  }
+
+  /**
+   * The spec a campaign runs from: the absolute path the runner recorded in
+   * state.json (`specPath`), when that file is there; else the CivKings briefs
+   * folder, where c8..c11's specs live (their state.json predates `specPath`).
+   * `missing` names a recorded spec that is gone (a removed campaign worktree).
+   * The legacy path stays checkout-relative, as it always was read.
+   */
+  private campaignSpec(id: string, state: any, legacyPath: string): { path: string | null; from: 'state' | 'legacy' | null; spec: any | null; missing: string | null } {
+    const recorded = typeof state?.specPath === 'string' && state.specPath ? state.specPath : null
+    const tryRead = (p: string): any | null => {
+      try { return JSON.parse(readFileSync(p, 'utf-8')) } catch (e) {
+        console.warn(`[dashboard] campaign ${id}: spec ${p} unreadable, showing no budget or home from it (${e instanceof Error ? e.message : String(e)})`)
+        return null
+      }
+    }
+    if (recorded && existsSync(recorded)) return { path: recorded, from: 'state', spec: tryRead(recorded), missing: null }
+    if (existsSync(legacyPath)) return { path: legacyPath, from: 'legacy', spec: tryRead(legacyPath), missing: recorded }
+    return { path: null, from: null, spec: null, missing: recorded }
+  }
+
+  /** This campaign's line on its own roadmap, `{ id, name, status }`, or null when it has none or it cannot be read. */
+  private roadmapLineOf(id: string, roadmapPath: string | null): { id: string; name: string; status: string } | null {
+    if (!roadmapPath || !existsSync(roadmapPath)) return null
+    try {
+      const line = (JSON.parse(readFileSync(roadmapPath, 'utf-8'))?.lines ?? []).find((l: any) => l?.id === id)
+      return line ? { id: line.id, name: line.name, status: line.status } : null
+    } catch (e) {
+      console.warn(`[dashboard] campaign ${id}: roadmap ${roadmapPath} unreadable, showing no line (${e instanceof Error ? e.message : String(e)})`)
+      return null
+    }
+  }
+
   /** One campaign's row, or null when its state.json is missing or corrupt —
    *  a bad campaign directory must not take the whole endpoint down with it. */
-  private readCampaignSummary(id: string): { summary: CampaignSummary; board: unknown; boardAt: string; runnerDriven: boolean; waveRecords: number } | null {
+  private readCampaignSummary(id: string, homeMod: CampaignHomeModule | null = null): { summary: CampaignSummary; board: unknown; boardAt: string; runnerDriven: boolean; waveRecords: number } | null {
     const dir = join(cyncoHome(), 'campaigns', id)
     const statePath = join(dir, 'state.json')
     if (!existsSync(statePath)) return null
@@ -1894,6 +1991,19 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       : []
     const lastFails: string[] = lastFailLines.length > 0 ? lastFailLines : (state.lastFails ?? [])
 
+    // The spec this campaign runs from, and the home it declares (or the
+    // CivKings defaults it takes): its repository, held-out family, briefs
+    // folder and roadmap. The approve command names the same spec file.
+    const legacyPath = homeMod ? homeMod.legacySpecPath(id) : join('docs', 'civkings-redesign-briefs', `${id}.campaign.json`)
+    const found = this.campaignSpec(id, state, legacyPath)
+    let home: CampaignHome | null = null
+    if (found.spec && homeMod) {
+      try { home = homeMod.campaignHome(found.spec) } catch (e) {
+        console.warn(`[dashboard] campaign ${id}: home not resolved from ${found.path} (${e instanceof Error ? e.message : String(e)})`)
+      }
+    }
+    const specArg = found.from === 'state' ? found.path : legacyPath.replace(/\\/g, '/')
+
     const pendingProposals = (state.proposals ?? [])
       .filter((p: any) => p?.status === 'pending')
       .map((p: any) => ({
@@ -1907,8 +2017,10 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
         // gate-author verb names its proposal `gate/<campaign id>`), so this
         // template needs no special-casing for it — main routes
         // `--approve-proposal gate/<id>` to the state by that basename even
-        // when `<id>.campaign.json` does not exist yet (Task 4).
-        approveCommand: `bun scripts/cynco-campaign.mjs docs/civkings-redesign-briefs/${id}.campaign.json --approve-proposal ${p.name}`,
+        // when `<id>.campaign.json` does not exist yet (Task 4). The spec path
+        // is the runner's recorded one when there is one, else the CivKings
+        // briefs folder's, exactly as the command always read.
+        approveCommand: `bun scripts/cynco-campaign.mjs ${specArg} --approve-proposal ${p.name}`,
         type: p.type ?? null,
         decidedBy: p.decidedBy ?? null,
       }))
@@ -1926,7 +2038,12 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
     const summary: CampaignSummary = {
       id,
       waveCount: state.waveCount ?? 0,
-      budgetWaves: this.readCampaignBudget(id),
+      budgetWaves: typeof found.spec?.budget?.waves === 'number' ? found.spec.budget.waves : null,
+      spec: { path: found.path ? found.path.replace(/\\/g, '/') : null, from: found.from, missing: found.missing },
+      home: home
+        ? { repo: home.repo, heldoutFamily: home.heldoutFamily, briefsDir: home.briefsDir, roadmap: home.roadmap }
+        : { repo: typeof found.spec?.repo === 'string' ? found.spec.repo : null, heldoutFamily: null, briefsDir: null, roadmap: null },
+      roadmapLine: this.roadmapLineOf(id, home?.roadmap ?? null),
       lastDecision: lastWave?.decision ?? null,
       lastFails,
       pendingProposals,
@@ -2087,22 +2204,6 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       return roadmap.lines.map((l: any) => ({ id: l.id, name: l.name, status: l.status }))
     } catch (e) {
       console.warn(`[dashboard] roadmap unreadable from docs/civkings-redesign-briefs/roadmap.json, showing none (${e instanceof Error ? e.message : String(e)})`)
-      return null
-    }
-  }
-
-  /** `budget.waves` from docs/civkings-redesign-briefs/<id>.campaign.json — the
-   *  spec this campaign was dispatched from — or null when it cannot be read.
-   *  A campaign row must not render a made-up budget for a spec file that has
-   *  moved, been renamed, or never existed under this id. */
-  private readCampaignBudget(id: string): number | null {
-    try {
-      const specPath = join('docs', 'civkings-redesign-briefs', `${id}.campaign.json`)
-      if (!existsSync(specPath)) return null
-      const spec = JSON.parse(readFileSync(specPath, 'utf-8'))
-      return typeof spec?.budget?.waves === 'number' ? spec.budget.waves : null
-    } catch (e) {
-      console.warn(`[dashboard] campaign ${id}: budget unreadable from docs/civkings-redesign-briefs/${id}.campaign.json, showing no budget (${e instanceof Error ? e.message : String(e)})`)
       return null
     }
   }

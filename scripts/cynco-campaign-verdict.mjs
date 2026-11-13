@@ -175,7 +175,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   lines.push(`- **Sealed gate at ${grade.sha}: ${grade.gate.terminator ?? 'NO TERMINATOR'}${grade.gate.failCount != null ? ` (${grade.gate.failCount} fails)` : ''}${grade.gate.harnessFault ? ` — HARNESS FAULT: ${grade.gate.harnessFault}` : ''}.** ${grade.gate.priorRegressions != null ? `Prior-campaign regressions: ${grade.gate.priorRegressions}.` : ''}`)
   for (const f of grade.gate.fails) lines.push(`  - \`${f.line}\``)
   if (grade.gate.passes.length) lines.push(`  - PASS: ${grade.gate.passes.map(p => p.id).join(', ')}`)
-  lines.push(`- Suite gate ${grade.suite.harnessFault ? `REFUSED (${grade.suite.harnessFault})` : grade.suite.exit === 0 ? 'PASS' : 'FAIL'}: REGRESSED ${grade.suite.regressions.length}${grade.suite.regressions.length ? ` (${grade.suite.regressions.join(', ')})` : ''}, REPAIRED ${grade.suite.repairs.length}.`)
+  if (grade.suite.skipped) lines.push(`- Suite gate not run: ${grade.suite.skipped}.`)
+  else lines.push(`- Suite gate ${grade.suite.harnessFault ? `REFUSED (${grade.suite.harnessFault})` : grade.suite.exit === 0 ? 'PASS' : 'FAIL'}: REGRESSED ${grade.suite.regressions.length}${grade.suite.regressions.length ? ` (${grade.suite.regressions.join(', ')})` : ''}, REPAIRED ${grade.suite.repairs.length}.`)
   lines.push(grade.sweep
     ? `- Derived sweep ${grade.sweep.killed}/${grade.sweep.total}${grade.sweep.kind === 'derived-full' ? ' (derived-full: refused on the diff, retried with --mutate over the wave\'s sources)' : ''}; survivors: ${grade.sweep.survived.length ? grade.sweep.survived.join(', ') : 'none'}.`
     : grade.sweepFault
