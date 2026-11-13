@@ -5,6 +5,7 @@
 // there is no code path here that paraphrases one.
 import { IDEATION_MAX_AUTHORITY } from './cynco-ideation.mjs'
 import { complied, KINDS } from './cynco-triples.mjs'
+import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
 
 const wrap = (s) => String(s).replace(/\s+$/, '')
 
@@ -43,11 +44,17 @@ ${patches.map(p => `    git apply --3way "${p.patchPath}"`).join('\n')}
   COMMIT 0. If the patch does not apply cleanly, commit whatever applied and say so in the message.`)
 }
 
-function misses(ctx) {
+function misses(spec, ctx) {
   const lines = ctx.fails.map(f => `  ${f.line}`).join('\n')
   const keep = ctx.passes.length ? `\n\n  Already PASS at BASE and must stay so: ${ctx.passes.map(p => p.id).join(', ')}.` : ''
-  return wrap(`THE MISSES (sealed gate at BASE ${ctx.base}, verbatim — the gate grades pixels, drawn
-regions pressed at their centres, files on disk, and values the game returns; never a claim)\n\n${lines}${keep}`)
+  // What the gate grades, said of the CivKings gates (a game drawn and pressed)
+  // only to a campaign whose instruments are theirs; another repository's gate
+  // is described by its own HOW THE GATE MEASURES, not by the game's.
+  const grades = campaignHome(spec).heldoutFamily === CIVKINGS_HOME.heldoutFamily
+    ? `the gate grades pixels, drawn
+regions pressed at their centres, files on disk, and values the game returns; never a claim`
+    : 'the gate grades what the code does, as HOW THE GATE MEASURES defines it; never a claim'
+  return wrap(`THE MISSES (sealed gate at BASE ${ctx.base}, verbatim — ${grades})\n\n${lines}${keep}`)
 }
 
 function work(spec, ctx) {
@@ -182,7 +189,7 @@ export function generateBrief(spec, ctx) {
     spec.assets ? wrap(spec.assets.text) : null,
     fact0(ctx),
     step0(ctx),
-    misses(ctx),
+    misses(spec, ctx),
     wrap(spec.measures),
     work(spec, ctx),
     ideation(ctx),

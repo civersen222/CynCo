@@ -5,7 +5,8 @@
 // exactly as the CivKings campaigns always have. Every path here is a temp dir;
 // the live docs/civkings-redesign-briefs is never written.
 import { describe, it, expect, afterEach } from 'vitest'
-import { runWave, dirtyOutsideCampaign, suiteGateCommand, suiteGateRefusal, waveDispatch, decide, fileInCheckout, recordSpecPath, SUITE_GATE_ENV_KEYS } from '../cynco-campaign.mjs'
+import { runWave, dirtyOutsideCampaign, suiteGateCommand, suiteGateRefusal, waveDispatch, waveContext, decide, fileInCheckout, recordSpecPath, SUITE_GATE_ENV_KEYS } from '../cynco-campaign.mjs'
+import { generateBrief } from '../cynco-brief.mjs'
 import { runSuiteGate, runGate } from '../cynco-campaign-grade.mjs'
 import { verdictEntry } from '../cynco-campaign-verdict.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -164,6 +165,16 @@ describe('a sealed gate runs under the interpreter its file names', () => {
     seen.length = 0
     runGate(spec, io, { repo: '/tmp/repo' })
     expect(seen).toEqual(['node gate_t3.mjs'])
+  })
+})
+
+describe('the brief says what the gate grades in the campaign\'s own terms', () => {
+  const brief = (spec) => generateBrief(spec, waveContext(spec, freshState(spec.id).state, { salvageOf: () => null }))
+  it('a CivKings-family campaign keeps the game\'s sentence; another family gets a neutral one', () => {
+    expect(brief(specFor({ id: 'c99' }))).toContain('values the game returns; never a claim')
+    const casino = brief(specFor({ heldoutFamily: 'partynight' }))
+    expect(casino).toContain('the gate grades what the code does, as HOW THE GATE MEASURES defines it; never a claim')
+    expect(casino).not.toMatch(/pixels|the game returns/)
   })
 })
 
