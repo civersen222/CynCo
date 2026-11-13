@@ -26,14 +26,19 @@ There are two ways to work:
 
 1. **A model backend**, one of:
    - **Ollama** (simplest): install from [ollama.com](https://ollama.com), then
-     pull a model. Recommended: `ollama pull qwen3.6`. For semantic code search
-     also `ollama pull jina-code-embeddings-0.5b`; without it CynCo falls back to
-     `nomic-embed-text`, then to keyword search, and says so on `context.status`.
+     pull a model. Recommended: `ollama pull qwen3.8:27b`, the model the shipped
+     profile runs. For semantic code search also `ollama pull nomic-embed-text`:
+     the code index asks for `jina-code-embeddings-0.5b` first, which Ollama's
+     library does not have, and falls back to `nomic-embed-text`, then to
+     keyword search, saying so in the chat and on `context.status`.
    - **llama.cpp** (`llama-server`) with a local GGUF file — see MAXIMIZING.md.
-2. **Bun** (the engine runtime).
+2. **Bun** (the engine runtime), then `bun install` in the repository root for
+   the engine's dependencies.
 3. **Python 3.10+** (the TUI).
 
-> Model note: use `qwen3.6` or `gemma4:31b`. CynCo auto-detects each model's
+> Model note: use `qwen3.8:27b` (what CynCo runs), `qwen3.6:27b` or
+> `gemma4:31b`. A bare `qwen3.6` is `qwen3.6:latest` in Ollama's library, which
+> is the 35B-A3B MoE, not the 27B. CynCo auto-detects each model's
 > capabilities (tool use, thinking, context size) on startup.
 
 ---

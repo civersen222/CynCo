@@ -35,9 +35,10 @@ describe('config', () => {
     // fresh-clone condition, and a fresh clone now resolves the profile that
     // ships at engine/profiles/templates/default.yaml. This line used to assert
     // undefined, which is the exact state main.ts exits 1 on.
-    expect(c.model).toBe('qwen3.6')
+    expect(c.model).toBe('qwen3.8:27b')
     expect(c.tier).toBe('auto')
-    expect(c.temperature).toBe(0.7)
+    // The shipped profile's 1.0 (the Qwen3.8 card's sampler), not config.ts's 0.7.
+    expect(c.temperature).toBe(1.0)
     expect(c.maxOutputTokens).toBe(16384)
     expect(c.timeout).toBe(300000)
   })
@@ -321,9 +322,9 @@ runtime:
     // value main.ts prints "No model specified" and exits 1 on, which is what
     // every command in the README's Quick Start did.
     const c = loadConfig()
-    expect(c.model).toBe('qwen3.6')
+    expect(c.model).toBe('qwen3.8:27b')
 
-    // And the provider that can serve that tag. `qwen3.6` is an Ollama tag —
+    // And the provider that can serve that tag. `qwen3.8:27b` is an Ollama tag —
     // `ollama pull` puts it in Ollama's store, and the llama.cpp direct provider
     // knows nothing about tags, only about a GGUF path. Resolving a model while
     // pointing at a provider that cannot answer for it is not a working default,
