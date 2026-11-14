@@ -43,6 +43,38 @@ import { runSync, runAsync, faultSummary } from './cynco-spawn.mjs'
 const OUTPUT_TAIL_CHARS = 2000
 
 /**
+ * F237: every line of a check's output that reports a failure, read from the
+ * WHOLE output. On 2026-11-14 the t5 wave's gate printed its PASS lines, its
+ * two FAIL lines and `GATE: MISS (2 fails)`; the driver printed only the last
+ * 2,000 characters ("[verify] output tail"), which held PASS lines alone, and
+ * the operator had to re-run the gate to learn what failed. The ledger row's
+ * `outputTail` had the same hole.
+ *
+ * The shapes: a sealed gate's `<id>: FAIL …` and its `GATE: MISS` terminator,
+ * a line ending `: FAIL`, vitest's `FAIL  <file>` and `× <test>`, pytest's
+ * `FAILED <node>`. Case-sensitive on purpose: a count like `failed=0` is not a
+ * failure.
+ */
+export const FAIL_LINE = /:\s*FAIL\b|^\s*FAIL(?:ED)?\b|^GATE:\s*MISS\b|^\s*[×✗]\s/
+/** A runaway suite can fail thousands of lines; the report and the ledger keep the first this many. */
+export const FAIL_LINES_MAX = 60
+
+/** `{ lines, more }`: the failing lines in order (at most `max`) and how many beyond that. */
+export function failingLines(output, max = FAIL_LINES_MAX) {
+  const all = String(output ?? '').split(/\r?\n/).filter(l => FAIL_LINE.test(l)).map(l => l.trimEnd())
+  return { lines: all.slice(0, max), more: Math.max(0, all.length - max) }
+}
+
+/** What the driver prints for a check that did not pass: every failing line first, then the tail as before. */
+export function failReport(output, outputTail) {
+  const { lines, more } = failingLines(output)
+  const head = lines.length
+    ? `[verify] failing lines (${lines.length + more}${more ? `, the first ${lines.length} shown` : ''}):\n${lines.map(l => `  ${l}`).join('\n')}`
+    : '[verify] no line of the output names a failure (FAIL, FAILED, GATE: MISS, ×) — the tail below is all there is'
+  return `${head}\n[verify] output tail:\n${outputTail ?? ''}`
+}
+
+/**
  * Phase 7 ruling 3: a FAILED marker check is fed back to the model once, as a
  * driver note, and the mission continues — but only when the clock left can
  * pay for a fix and a second whole-suite check. Under an hour, the first check

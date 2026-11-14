@@ -153,6 +153,8 @@ import { bootstrapProvider } from './bootstrapProvider.js'
 // exit — owner's decision 2026-11-08 (engine/power/siblingEngine.ts). The
 // phone engine itself and one-shot children never do this.
 let siblingRelease: (() => Promise<void>) | null = null
+// F236: the same answer decides whether the bridge may walk to another port (below).
+let inPhoneEnginesSeatHere = false
 {
   const { lazySettings } = await import('./llama/lazyLoad.js')
   const { siblingDecision, inPhoneEnginesSeat, takeOverFromHeadless, defaultServicesRunner, defaultServicesRunnerSync } = await import('./power/siblingEngine.js')
@@ -160,6 +162,7 @@ let siblingRelease: (() => Promise<void>) | null = null
   const { homedir } = await import('os')
   const { join } = await import('path')
   const inPhoneSeat = inPhoneEnginesSeat({ wsPort: process.env.LOCALCODE_WS_PORT, cyncoHome: cyncoHome(), defaultHome: join(homedir(), '.cynco') })
+  inPhoneEnginesSeatHere = inPhoneSeat
   // A second engine beside the phone engine (another port, a scratch home) leaves it running (F224).
   if (!inPhoneSeat && !lazySettings().lazy && !process.argv.includes('--run-task')) console.log('[power] not in the phone engine\'s seat (another port or home): the phone engine is left running')
   if (siblingDecision({ lazy: lazySettings().lazy, runTask: process.argv.includes('--run-task'), platform: process.platform, inPhoneSeat }) === 'handoff') {
@@ -361,16 +364,30 @@ console.log(`[tokens] Management token (paste to change config): ${tokens.tokenF
 
 // ─── WS Server + Conversation Loop ────────────────────────────
 
-const wsServer = new LocalCodeWSServer({
-  port,
-  tokens,
-  onCommand: (cmd) => {
-    console.log(`[localcode] WS command received: ${JSON.stringify(cmd).slice(0, 200)}`)
-    handleCommand(cmd).catch(err => {
-      console.error('[localcode] Command handler error:', err)
-    })
-  },
-})
+// F236: an engine in the phone engine's seat binds 9160 or nothing. When the
+// port stays held it says so on a `[ws]` line and exits non-zero: the phone
+// engine's task retries (restart on failure), dispatch reads the line, and no
+// second engine sits on 9162 serving nobody while the seat is someone else's.
+let wsServer: InstanceType<typeof LocalCodeWSServer>
+try {
+  wsServer = new LocalCodeWSServer({
+    port,
+    tokens,
+    walk: !inPhoneEnginesSeatHere,
+    onCommand: (cmd) => {
+      console.log(`[localcode] WS command received: ${JSON.stringify(cmd).slice(0, 200)}`)
+      handleCommand(cmd).catch(err => {
+        console.error('[localcode] Command handler error:', err)
+      })
+    },
+  })
+} catch (e) {
+  const { SeatTakenError } = await import('./bridge/server.js')
+  if (!(e instanceof SeatTakenError)) throw e
+  console.error(e.message)
+  console.error('[localcode] not starting a second engine beside the one in the seat — exiting (F236)')
+  process.exit(1)
+}
 
 // Initialize audit logger
 import { AuditLogger } from './audit/auditLogger.js'

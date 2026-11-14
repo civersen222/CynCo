@@ -238,6 +238,8 @@ export async function bootstrapProvider(
         processManager,
         ...(ensureReady ? { ensureReady } : {}),
         uncertaintyTrace,
+        // F235: a server that went silent mid-request is not trusted again — stopped (lazy) or restarted (eager).
+        onStreamStall: () => { void processManager.recoverFromStall(lazy.lazy) },
       })
 
       // Wakefulness (slice 2b): while a one-shot owns the GPU, a lazy engine

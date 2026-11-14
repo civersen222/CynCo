@@ -66,12 +66,11 @@ describe('dispatch-mission.sh', () => {
     expect(sh).toMatch(/PHONE_ENGINE_TASK='CynCo headless engine'/)
     expect(sh).toMatch(/if \[ "\$\(phone_engine_task_state\)" = "Running" \]; then\s+PHONE_ENGINE_WAS_RUNNING=1/)
   })
-  it('hands the phone engine back at mission end before falling back to the bare idle engine', () => {
-    const start = sh.indexOf('cynco-services.ps1 start engine >>')
-    const bare = sh.indexOf('bun engine/main.ts > "$IDLE_LOG"')
-    expect(start).toBeGreaterThan(0)
-    expect(start).toBeLessThan(bare)
-    expect(sh).toMatch(/if \[ -n "\$PHONE_ENGINE_WAS_RUNNING" \]; then\s+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\/cynco-services\.ps1 start engine/)
+  it('hands the phone engine back at mission end; the bare idle engine is only the decision\'s other answer', () => {
+    // Since F236 the decision is scripts/cynco-mission-end.mjs (its own tests):
+    // the phone engine's task whenever it is registered and enabled.
+    expect(sh).toMatch(/phone\)\s+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\/cynco-services\.ps1 start engine/)
+    expect(sh).toMatch(/idle\)\s+boot_idle_engine/)
   })
   it('requires the repository and hands the campaign id to the driver that writes the ledger row', () => {
     expect(sh).toMatch(/MISSION_CWD=\$\{3:\?missing cwd/)

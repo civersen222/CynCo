@@ -513,6 +513,62 @@ export function missionCommitted(log, marker, baselineSha) {
 export const QUIET_MS = parseInt(process.env.CYNCO_QUIET_MS ?? '60000', 10)
 
 /**
+ * F235: a turn that goes silent in the MIDDLE. On 2026-11-14 the t5 wave had
+ * worked for 80 minutes (223 tool calls, two commits) when the model finished
+ * its thinking, sent one token of its answer and stopped. /api/run kept saying
+ * the turn was open, so `waitExitReason` kept answering "still working", and
+ * `[gov] status=healthy stuck=0` printed every 30 s for 73 minutes: governance
+ * frames are not progress, and "stuck" counts repetition, not silence. The run
+ * would have waited out its ten-hour clock.
+ *
+ * Progress is a frame only a working turn emits: the model's own output
+ * (`stream.token`, `stream.thinking`), a tool starting or finishing, a
+ * sub-agent's work, the turn ending. Governance status, alerts and
+ * `session.ready` replays are not.
+ *
+ * The silence allowed depends on what the turn is doing. While a tool runs,
+ * the tool's own cap plus a margin (a long Bash emits nothing until it ends;
+ * `bashMaxTimeoutMs()` is the cap the engine itself enforces, F142). Otherwise
+ * the model is processing a prompt or generating, and 30 minutes is past the
+ * engine's own cut (`STREAM_FIRST_BYTE_MS`, 20 minutes, engine/llama/provider.ts),
+ * so the engine acts first and says why; this is the backstop for everything
+ * the engine cannot see (another provider, a hang outside the model call).
+ */
+export const PROGRESS_FRAMES = new Set(['stream.token', 'stream.thinking', 'tool.start', 'tool.complete', 'message.complete',
+  'subagent.spawned', 'subagent.tool', 'subagent.complete', 'subagent.killed'])
+export const MODEL_SILENCE_MS = 30 * 60_000
+export const TOOL_SILENCE_MARGIN_MS = 10 * 60_000
+
+/** The silence a turn may keep before the driver calls it stalled (F235). */
+export function turnSilenceLimitMs({ toolsOpen, toolCapMs }) {
+  return toolsOpen > 0 ? toolCapMs + TOOL_SILENCE_MARGIN_MS : MODEL_SILENCE_MS
+}
+
+/**
+ * When the turn last showed progress, and how many tools it has open. `observe`
+ * takes every frame (non-progress frames change nothing); `reset` is for the
+ * driver's own user.message (a probe or marker note), which starts a new turn
+ * whose prompt processing is not silence carried over from the last one.
+ */
+export function createProgressClock(now = () => Date.now()) {
+  let lastAt = now()
+  let open = 0
+  return {
+    observe(frame) {
+      const t = frame?.type
+      if (!PROGRESS_FRAMES.has(t)) return
+      lastAt = now()
+      if (t === 'tool.start') open++
+      else if (t === 'tool.complete') open = Math.max(0, open - 1)
+      else if (t === 'message.complete') open = 0
+    },
+    reset() { lastAt = now(); open = 0 },
+    msSinceProgress: () => now() - lastAt,
+    toolsOpen: () => open,
+  }
+}
+
+/**
  * Has the driver seen everything it is going to see?
  *
  * Quiescence used to be consulted only for a mission that had already
@@ -571,7 +627,8 @@ export function waitIsOver(state, quietMs = QUIET_MS) {
  * which of the two it was.
  */
 export function waitExitReason(
-  { landed, sawMessageComplete, msSinceActivity, engineError, engineProcessing = null, workBegun = true, engineGone = false },
+  { landed, sawMessageComplete, msSinceActivity, engineError, engineProcessing = null, workBegun = true, engineGone = false,
+    msSinceProgress = 0, silenceLimitMs = Infinity },
   quietMs = QUIET_MS,
 ) {
   if (engineError) return 'engine_error'
@@ -586,6 +643,11 @@ export function waitExitReason(
   // the endpoint still falls through to the heuristic rather than being called
   // dead.
   if (engineGone) return 'engine_gone'
+  // F235: open (or unanswered) and silent past what the turn is doing allows.
+  // Ahead of `engineProcessing === true`, which used to wait here without limit
+  // on a turn whose model had stopped mid-reply. A turn the engine says it
+  // closed is `engine_closed_the_turn` below, however long it was silent.
+  if (workBegun && engineProcessing !== false && msSinceProgress >= silenceLimitMs) return 'turn_silent'
   if (engineProcessing === true) return null
   if (engineProcessing === false && workBegun) return 'engine_closed_the_turn'
   if (!sawMessageComplete) return null

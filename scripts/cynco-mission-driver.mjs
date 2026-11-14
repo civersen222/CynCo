@@ -70,10 +70,11 @@
 import { basename, join, resolve } from 'node:path'
 import { appendFileSync, readFileSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS } from './cynco-ledger.mjs'
+import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS, createProgressClock, turnSilenceLimitMs } from './cynco-ledger.mjs'
+import { bashMaxTimeoutMs } from '../engine/tools/impl/bash.js'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
 import { chatModelServerPids } from './cynco-llama-sweep.mjs'
-import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal } from './cynco-verify.mjs'
+import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal, failReport, failingLines } from './cynco-verify.mjs'
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
@@ -335,6 +336,15 @@ let workBegun = false
 // the old behaviour was three hours.
 const SILENCE_S = parseInt(process.env.CYNCO_SILENCE_S ?? '300', 10)
 let silentAfterDispatch = false
+// F235: silence in the MIDDLE of a turn. CYNCO_SILENCE_S above only covers the
+// time before any work; QUIET_MS only ends a run after a completed message. A
+// turn that stopped mid-reply (2026-11-14: one token of the answer, then 73
+// minutes of nothing while /api/run said "processing") fell between them.
+// Every frame is observed; only progress frames move the clock (cynco-ledger.mjs).
+// The tool cap is the engine's own (bashMaxTimeoutMs, F142): dispatch-mission.sh
+// hands the driver the same CYNCO_BASH_TIMEOUT_MS it hands the engine.
+const progress = createProgressClock()
+const TOOL_CAP_MS = bashMaxTimeoutMs()
 // F41, widened by F59. Every mission now waits for the engine to say what it is
 // before anything is sent to it. Wave 9b proved that a driver holding a two-path
 // seal and an engine that had never heard of sealing look, from here, exactly
@@ -370,6 +380,7 @@ function dispatchMission() {
   if (dispatched) return
   dispatched = true
   clearTimeout(readyGateTimer)
+  progress.reset()
   // P4.2 (STATE doc Phase 4(a)): the check script IS the contract — the engine
   // creates a one-assertion DoD so taskError/errorTrend measure this mission.
   //
@@ -405,6 +416,7 @@ function onMissionMessage(ev) {
   try {
     const m = JSON.parse(ev.data)
     collector.ingest(m)
+    progress.observe(m)
     if (m.type === 'session.ready' && !dispatched) {
       // F59 first: it applies to every mission, and an engine that cannot say
       // this word is misconfigured in a way that costs the run whether or not
@@ -597,7 +609,9 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
   }
   try {
     const g = await fetch(GOV_URL, { headers: { Authorization: `Bearer ${inferenceToken}` } }).then(r => r.json())
-    console.log(`[gov] status=${g.status} stuck=${g.stuckTurns} toolOK=${g.toolSuccessRate}`)
+    // `silent` is the turn's own silence (F235): "healthy stuck=0" printed for
+    // 73 minutes of a stalled model, because neither number measures it.
+    console.log(`[gov] status=${g.status} stuck=${g.stuckTurns} toolOK=${g.toolSuccessRate} silent=${Math.round(progress.msSinceProgress() / 1000)}s${progress.toolsOpen() ? ` (${progress.toolsOpen()} tool open)` : ''}`)
   } catch { console.log('[gov] unreachable') }
   // Never let a git hiccup kill the loop — the ledger write at the end must run
   try {
@@ -621,7 +635,9 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
   // before the check runs, or the check measures a state that no longer
   // exists. A run that stops without committing is simply over, and waiting
   // out its budget only buys a wrong label; see waitIsOver().
-  exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun, engineGone: wsClosed && runStateSeen && engineProcessing === null })
+  const silenceLimitMs = turnSilenceLimitMs({ toolsOpen: progress.toolsOpen(), toolCapMs: TOOL_CAP_MS })
+  exitReason = waitExitReason({ landed, sawMessageComplete, msSinceActivity: Date.now() - lastActivityAt, engineError, engineProcessing, workBegun, engineGone: wsClosed && runStateSeen && engineProcessing === null,
+    msSinceProgress: progress.msSinceProgress(), silenceLimitMs })
   if (exitReason) {
     // Stage 1 (S3*): the probe runs where the exit decision resolves — the same
     // place GVS5H runs its verifier, between worker turns. The engine ignores
@@ -646,6 +662,7 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
           ws.send(JSON.stringify({ type: 'user.message', text: probeMessage({ sha: probedSha, ...pr }), cwd: CWD, readOnlyPaths, unattended: true }))
           sawMessageComplete = false
           lastActivityAt = Date.now()
+          progress.reset()
           exitReason = null
           continue
         } catch (e) {
@@ -683,21 +700,25 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
         console.log(`[verify] marker check running past the wave clock by ${over}s`)
       }
       if (attempt.r.verified === true) console.log('[verify] marker check PASSED')
-      if (attempt.r.verified === false) console.log(`[verify] output tail:\n${attempt.r.outputTail}`)
+      if (attempt.r.verified === false) console.log(failReport(attempt.r.output, attempt.r.outputTail))
       if (round.retried) {
         verifyRetries = 1
         completesAtNote = messageCompletes
-        markerFirstAttempt = { exitCode: attempt.r.exitCode, timedOut: attempt.r.timedOut, durationMs: attempt.r.durationMs, gradedSha: attempt.headBefore,
+        markerFirstAttempt = { exitCode: attempt.r.exitCode, timedOut: attempt.r.timedOut, durationMs: attempt.r.durationMs, gradedSha: attempt.headBefore, failLines: failingLines(attempt.r.output).lines,
           heldOutRestored: attempt.tampered.length, outputTail: attempt.r.outputTail, patchPath: attempt.patchPath }
         sawMessageComplete = false
         lastActivityAt = Date.now()
+        progress.reset()
         exitReason = null
         continue
       }
       noteFailed = round.noteFailed
       markerVerdict = attempt
     }
-    if (exitReason === 'engine_error') console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
+    if (exitReason === 'turn_silent') console.log(`[driver] TURN SILENT — no model output, tool activity or turn end for ${Math.round(progress.msSinceProgress() / 1000)}s `
+      + `(limit ${Math.round(silenceLimitMs / 1000)}s ${progress.toolsOpen() ? `with ${progress.toolsOpen()} tool open` : 'while the model had the turn'}) and the engine `
+      + `${engineProcessing === true ? 'still says the turn is open' : 'did not answer /api/run'}. A stall, not a finish (F235): the turn is aborted below and the mission ends here instead of at its wall clock.`)
+    else if (exitReason === 'engine_error') console.log('[driver] leaving the wait loop on the engine error above — the git poll ran first, so a commit made before the crash is already recorded')
     else if (exitReason === 'engine_gone') console.log('[driver] the engine is GONE — the socket closed and /api/run, which answered earlier in this run, no longer answers. Not silence, absence.')
     else if (exitReason === 'engine_closed_the_turn') console.log(`[driver] the engine reports the turn is closed — ${landed ? 'proceeding to verification' : 'nothing committed; the run is over'}`)
     else console.log(`[driver] run quiet for ${Math.round((Date.now() - lastActivityAt) / 1000)}s after a completed message — ${landed ? 'proceeding to verification' : 'nothing committed; the run has stopped, not stalled'}`)
@@ -780,7 +801,9 @@ let verify = null
 // concerned — the harness stopped the run — so it takes the same advisory path.
 // The ledger's own `engineError` field stays null, because no error was reported;
 // the engine simply stopped answering, and `exitReason` is where that is said.
-const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError: engineError ?? (exitReason === 'engine_gone' || null), landed, quiet, runStillOpen })
+// F235: so is `turn_silent` — the server stopped mid-turn; the model did not
+// deliver and then stop, so the last commit may be work in progress.
+const gate = gateDisposition({ neverDispatched: silentAfterDispatch, engineError: engineError ?? ((exitReason === 'engine_gone' || exitReason === 'turn_silent') || null), landed, quiet, runStillOpen })
 /**
  * One run of the check against the commit, shared by the marker check between
  * turns (Phase 7 ruling 3) and the verify after the wait. `quarantine` is the
@@ -891,7 +914,9 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
     // engine closed a further turn after the note. `overrunS` (M9): seconds the
     // in-loop check ran past the wave clock, 0 when it did not.
     verify = { command: MARKER.command, exitCode: r.exitCode, timedOut: r.timedOut, spawnFailed: r.spawnFailed, harnessFault: r.harnessFault, durationMs: r.durationMs, outputTail: r.outputTail, gradedSha: headBefore, headAfterCheck: headAfter, heldOutRestored: tampered.length + (markerFirstAttempt?.heldOutRestored ?? 0) + (!reuse && markerVerdict ? markerVerdict.tampered.length : 0), dirtyAtVerify,
-      retried: verifyRetries > 0, firstAttempt: markerFirstAttempt, noteFailed, patches: [...verifyPatches], noteAcknowledged: acknowledged, overrunS: markerOverrunS }
+      retried: verifyRetries > 0, firstAttempt: markerFirstAttempt, noteFailed, patches: [...verifyPatches], noteAcknowledged: acknowledged, overrunS: markerOverrunS,
+      // F237: what failed, from the whole output — `outputTail` alone can hold none of it.
+      failLines: failingLines(r.output).lines }
     if (acknowledged === false) console.log('[verify] the note was delivered but no turn closed after it — the engine never acted on it (verify.noteAcknowledged: false)')
     if (verifyRetries > 0 && r.verified === true) console.log('[verify] marker check PASSED (on the retry)')
     if (r.harnessFault) {
@@ -909,7 +934,7 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
     const verdict = r.verified === null ? 'UNMEASURED' : r.verified ? 'PASS' : 'FAIL'
     console.log(`[verify] ${gate.label ? verdict : `${verdict} (advisory — verified stays null)`} ` +
       `(exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
-    if (r.verified !== true) console.log(`[verify] output tail:\n${r.outputTail}`)
+    if (r.verified !== true) console.log(failReport(r.output, r.outputTail))
     if (gate.label && r.verified === null) {
       console.log(`[verify] verified stays null — the check did not finish. ` +
         `Re-run it by hand, or raise ${MARKER.source === 'env' ? 'CYNCO_MARKER_CHECK_TIMEOUT_MS' : 'CYNCO_CHECK_TIMEOUT_MS'}, then patch the record.`)
@@ -1005,7 +1030,9 @@ try {
 }
 
 // Append the labeled mission record to the outcome ledger
-const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError, neverDispatched: silentAfterDispatch })
+// F235: a turn that went silent and committed nothing is the harness's failure
+// (`engine_error`), not a model that chose to stop (`stopped_without_commit`).
+const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError: engineError ?? (exitReason === 'turn_silent' ? exitReason : null), neverDispatched: silentAfterDispatch })
 // Read HEAD one last time, AFTER the snapshot above and after the check script
 // has run, so `baselineSha..finalSha` is exactly the commits this mission made.
 // Not taken from the 30s poll: the poll can miss a commit made in its last

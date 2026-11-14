@@ -44,6 +44,12 @@ decisions still recorded here).
   "verify": {               // what produced `verified`; null when no check-cmd was given
     "command": "python3 -m pytest -q", "exitCode": 0,
     "timedOut": false, "spawnFailed": false, "durationMs": 70303, "outputTail": "...",
+    // F237 (2026-11-14): `failLines` is every line of the WHOLE output that
+    // reports a failure (`<id>: FAIL`, `GATE: MISS`, vitest's `FAIL`/`×`,
+    // pytest's `FAILED`; at most 60), because the 2,000-character `outputTail`
+    // of a long gate held only its PASS lines. Absent on rows written before it;
+    // `firstAttempt` carries its own.
+    "failLines": [],
     // Phase 7 ruling 3 (the marker check): true when this result is the SECOND
     // check — the first FAILED after the engine closed the turn with the marker
     // landed, its last 40 model-readable output lines (never a line naming
@@ -348,7 +354,11 @@ decisions still recorded here).
   // Rows before 2026-10-27 have no field.
   "engineCapabilities": ["sealed-gates", "s5-earned-only", "house-conduct"],
   // F57. How the drive loop resolved. "timeout" is the only value assigned by
-  // fallback; "never_dispatched" means no turn ever ran.
+  // fallback; "never_dispatched" means no turn ever ran. "turn_silent" (F235,
+  // 2026-11-14): the turn was open or unanswered and produced no model output,
+  // tool activity or turn end for 30 minutes (or the Bash cap plus 10 minutes
+  // while a tool ran) — a stall, so the outcome is "engine_error" when nothing
+  // landed and the gate labels nothing when something did.
   "exitReason": "engine_closed_the_turn",
   "markerSeen": true,        // commit-marker substring found in `git log`
   "engineError": null,       // non-null when the engine process died (outcome "engine_error")

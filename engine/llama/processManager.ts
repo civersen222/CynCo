@@ -370,6 +370,8 @@ export class ProcessManager {
   private spawnFailure: Error | null = null
   private lastSlotSave = 0
   private slotSaveInFlight: Promise<unknown> | null = null
+  /** F235: the stall recovery in flight; a second cut joins it rather than restarting twice. */
+  private stallRecovery: Promise<void> | null = null
   private now: () => number = () => Date.now()
   private fetchImpl: typeof fetch
 
@@ -596,6 +598,32 @@ export class ProcessManager {
     await this.stop()
     await this.startProcess()
     await this.restoreSlot()
+  }
+
+  /**
+   * F235: the provider cut a stream this server had stopped answering. The
+   * server held its only slot while silent (2026-11-14: 73 minutes, no
+   * "release"), so it is not trusted with the next request. A lazy engine
+   * stops it, and the next request loads it fresh; an eager one restarts it
+   * and restores the last slot snapshot (no save first: a save waits for the
+   * very slot that wedged). Both stops are deliberate, so neither spends the
+   * crash-restart budget. Never throws; a second cut while one runs joins it.
+   */
+  recoverFromStall(lazy: boolean): Promise<void> {
+    if (this.stallRecovery) return this.stallRecovery
+    this.stallRecovery = (async () => {
+      console.log(`[llama-cpp] a stream stalled — ${lazy ? 'stopping llama-server; the next request loads it fresh' : 'restarting llama-server'} (F235)`)
+      try {
+        await this.stop()
+        if (!lazy) {
+          await this.startProcess()
+          await this.restoreSlot()
+        }
+      } catch (e) {
+        console.error(`[llama-cpp] recovery after a stalled stream failed: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    })().finally(() => { this.stallRecovery = null })
+    return this.stallRecovery
   }
 
   private async slotAction(action: 'save' | 'restore'): Promise<{ ok: boolean; detail: string }> {
