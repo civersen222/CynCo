@@ -14,12 +14,13 @@
 // Runs under bun (it reaches into engine/*.ts through .js specifiers).
 import { resolve, join, basename, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync, readdirSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync, readdirSync, mkdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { cyncoHome } from '../engine/paths.js'
 import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
+import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
 import { CampaignState } from './cynco-campaign-state.mjs'
 import { calibrate, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { generateBrief, sidecarFor, workOrderFor, pacingDigestIncluded } from './cynco-brief.mjs'
@@ -50,8 +51,9 @@ import { runnerRowsFromCampaigns, runnerWaves } from './cynco-runner-rows.mjs'
 // that imported it from the runner keeps working against the same function.
 export { applyProposalDecision } from './cynco-proposals.mjs'
 
-const BRIEFS_DIR = 'docs/civkings-redesign-briefs'
-const LOG = `${BRIEFS_DIR}/campaign-log.md`
+// Where the briefs, the campaign log and the roadmap live is the spec's own
+// home (scripts/cynco-campaign-home.mjs): `campaignHome(spec)` everywhere
+// below, today's CivKings folder when the spec names none.
 const ENGINE_URL = 'http://127.0.0.1:9161/'
 const ENGINE_PROBE_TIMEOUT_MS = 3_000
 /** The cap on one `git rev-parse` read (the wave's HEAD-vs-base check). */
@@ -107,8 +109,11 @@ export function decide({ grade, state, spec, commitsLanded, row }) {
     const sweepSaid = grade.sweep
       ? `sweep ${grade.sweep.killed}/${grade.sweep.total}${survived.length ? `, ${survived.length} survivor(s)` : ' no survivors'}`
       : 'sweep unmeasured'
-    if (claimed.length) return { kind: 'pass-with-survivors', survivors: claimed, why: `sealed gate PASS, suite gate PASS, ${sweepSaid} — ${claimed.length} inside a claimed file: ${claimed.join(', ')}` }
-    return { kind: 'pass', why: `sealed gate PASS, suite gate PASS, ${sweepSaid}${survived.length ? ' (none inside a claimed file)' : ''}` }
+    // A repository with no pytest suite was never run against one; say so
+    // rather than print a PASS nothing measured (runSuiteGate's `skipped`).
+    const suiteSaid = grade.suite.skipped ? 'suite gate not run (no pytest suite)' : 'suite gate PASS'
+    if (claimed.length) return { kind: 'pass-with-survivors', survivors: claimed, why: `sealed gate PASS, ${suiteSaid}, ${sweepSaid} — ${claimed.length} inside a claimed file: ${claimed.join(', ')}` }
+    return { kind: 'pass', why: `sealed gate PASS, ${suiteSaid}, ${sweepSaid}${survived.length ? ' (none inside a claimed file)' : ''}` }
   }
   const ids = grade.gate.fails.map(f => f.id)
   const same = Array.isArray(state.lastFails) && ids.length === state.lastFails.length && ids.every((x, i) => x === state.lastFails[i])
@@ -164,7 +169,13 @@ export function suiteGateCommand(spec) {
   for (const [k, v] of [['suiteBaseline', baseline], ['repo', repo]]) {
     if (/\s/.test(v)) throw new Error(`campaign spec ${k} "${v}" contains whitespace — it cannot travel in the suite gate's env prefix`)
   }
-  return `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${repo} python "${fwd(SUITE_GATE())}"`
+  // The pytest target is the spec's home (`gilded/tests` when absent, which is
+  // also the suite gate's own default, so a CivKings command is unchanged). A
+  // repository with no pytest suite (null) has no suite gate to run.
+  const { suiteTarget } = campaignHome(spec)
+  if (suiteTarget === null) throw new Error('campaign spec suiteTarget is null — there is no pytest suite gate to run, so the spec must name its markerCheck')
+  const target = suiteTarget === CIVKINGS_HOME.suiteTarget ? '' : `CHK_SUITE_TARGET=${fwd(suiteTarget)} `
+  return `CHK_SUITE_BASELINE=${baseline} CYNCO_GATE_REPO=${repo} ${target}python "${fwd(SUITE_GATE())}"`
 }
 
 /**
@@ -185,7 +196,7 @@ export function suiteGateRefusal(spec) {
 }
 
 /** The keys the suite gate reads, which the engine (and so the model's Bash) must never hold. */
-export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO']
+export const SUITE_GATE_ENV_KEYS = ['CHK_SUITE_BASELINE', 'CYNCO_GATE_REPO', 'CHK_SUITE_TARGET']
 
 /**
  * The wave's dispatch-mission.sh argv and environment.
@@ -260,9 +271,19 @@ export function runDispatch(args, env, hooks = {}) {
 
 const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).stdout ?? ''
 const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
+/**
+ * A file as a commit pathspec: `[path]` when it lives inside this checkout,
+ * `[]` when it does not. The verdict commit lands in the localcode checkout
+ * (F167); a campaign whose briefs and log live under ~/.cynco (any home that
+ * is not CivKings' docs folder) keeps them there, uncommitted, like its state.
+ */
+export const fileInCheckout = (path) => {
+  const rel = repoRel(resolve(path))
+  return rel === '' || rel.startsWith('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') ? [] : [rel]
+}
 
 export const defaultIo = {
-  writeBrief: (path, text, sidecar) => { writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
+  writeBrief: (path, text, sidecar) => { mkdirSync(resolve(path, '..'), { recursive: true }); writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
     // The env and the marker check (Phase 7 ruling 3) are built by waveDispatch.
     const { args, env } = waveDispatch(spec, { briefFile, invariants, timeoutS, pidFile, driverLog })
@@ -370,7 +391,9 @@ export const defaultIo = {
   // Capped (ECONOMICS_TIMEOUT_MS) and null when the script did not run — the
   // same reader `--scoreboard` uses; it was an uncapped spawnSync before Phase 5.
   economics: (hooks) => scoreboardEconomics(hooks),
-  appendLog: (text) => appendFileSync(LOG, '\n' + text),
+  // The campaign's own log (campaignHome(spec).campaignLog). The gate author
+  // appends to it too and names no path: the CivKings log, where its campaigns live.
+  appendLog: (text, logPath = campaignHome({}).campaignLog) => { mkdirSync(resolve(logPath, '..'), { recursive: true }); appendFileSync(logPath, '\n' + text) },
   exportTriples: () => exportTriples(),
   analyseDenials: (summary) => analyseDenials(summary),
   exportGateLines: () => exportGateLines(),
@@ -484,19 +507,18 @@ export function moveRoadmapLine(roadmapPath, id, to, from) {
 }
 
 /** The roadmap file as a commit pathspec — only when it lives inside the repo. */
-export const roadmapFileIn = (roadmapPath) => {
-  const rel = repoRel(resolve(roadmapPath))
-  return rel.startsWith('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') ? [] : [rel]
-}
+export const roadmapFileIn = (roadmapPath) => fileInCheckout(roadmapPath)
 
 /**
  * `opts.roadmapPath`: where the roadmap moves above are written. `main` passes
- * its `deps.roadmapPath`; the default io defaults to the checked-in
- * ROADMAP_PATH, and an injected io without one moves nothing — a test's fake
- * wave must never rewrite the live roadmap.
+ * its `deps.roadmapPath`; the default io defaults to the spec's own roadmap
+ * (campaignHome: the checked-in CivKings one when the spec names none, nothing
+ * for a campaign that has none), and an injected io without one moves nothing —
+ * a test's fake wave must never rewrite the live roadmap.
  */
 export async function runWave(spec, state, io = defaultIo, opts = {}) {
-  const roadmapPath = opts.roadmapPath ?? io.roadmapPath ?? (io === defaultIo ? ROADMAP_PATH : null)
+  const home = campaignHome(spec)
+  const roadmapPath = opts.roadmapPath ?? io.roadmapPath ?? (io === defaultIo ? home.roadmap : null)
   const s = state.state
   // M4: `--approve-proposal` runs as a SECOND process while this one sleeps
   // out a wall clock. Its decision only reaches this object on the next save
@@ -572,14 +594,14 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     adopted = true
     row = io.readRow(missionId)
     if (!row) throw new Error(`adopted row ${missionId} is not in the ledger — adopt a missionId that exists`)
-    briefFile = resolve(row.briefFile ?? join(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`))
+    briefFile = resolve(row.briefFile ?? join(home.briefsDir, `${spec.id}-wave${wave}.txt`))
     dispatchedAt = row.dispatchedAt ?? null
     delete s.adoptedRow
     progressNote = 'adopted wave — the runner did not wait on it'
     // The brief was authored outside the runner, so its sidecar may not exist;
     // commitVerdict hands `files` straight to `git add`, where one missing
     // pathspec stages nothing at all.
-    waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))].filter(f => existsSync(f))
+    waveFiles = [...fileInCheckout(briefFile), ...fileInCheckout(sidecarPath(briefFile))].filter(f => existsSync(f))
     workOrder = null
     console.log(`[campaign] ADOPT ${missionId} — grading a wave that already ran (brief ${repoRel(briefFile)}); GENERATE/DISPATCH/WAIT skipped`)
   } else {
@@ -631,11 +653,14 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     // written by a model that just read the repo. A brief naming the sealed
     // gate would be refused by sealedPaths mid-run, after the wall clock has
     // already started. Refuse to WRITE it instead.
-    const leak = /heldout|gate_c\d|perturb_/.exec(text)
+    // The CivKings spellings, and this spec's own instrument file names (a
+    // campaign on another repository names its gates its own way).
+    const instruments = [spec.gate, spec.perturb, spec.positive].filter(Boolean).map(p => basename(String(p).replace(/\\/g, '/')))
+    const leak = /heldout|gate_c\d|perturb_/.exec(text) ?? (instruments.find(f => text.includes(f)) ? [instruments.find(f => text.includes(f))] : null)
     if (leak) return stopWave(spec, state, io, { wave, base, why: `the generated brief names the sealed instrument "${leak[0]}" — refusing to write it (the S4 ideation section is the likely source)` })
-    briefFile = resolve(BRIEFS_DIR, `${spec.id}-wave${wave}.txt`)
+    briefFile = resolve(home.briefsDir, `${spec.id}-wave${wave}.txt`)
     io.writeBrief(briefFile, text, sidecarFor(spec))
-    waveFiles = [repoRel(briefFile), repoRel(sidecarPath(briefFile))]
+    waveFiles = [...fileInCheckout(briefFile), ...fileInCheckout(sidecarPath(briefFile))]
 
     // S3: dispatch with the terms.
     const stamp = basename(briefFile).replace(/\.[^.]*$/, '')
@@ -997,7 +1022,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     progress: tracker || adopted ? rec : null,
     // Phase 6 Task 4: R1.no-progress, named with its verdict on the ladder line.
     runnerLadder: rec.ruleVerdicts?.runners ?? null })
-  io.appendLog(entry)
+  io.appendLog(entry, home.campaignLog)
   // Phase 5 Task 1 / final review I1: a pass finishes the roadmap line — read
   // off the FINAL decision (the identity check could still turn it into a
   // fault), and moved HERE, just before the commit (spec §3), after every step
@@ -1007,7 +1032,7 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     && moveRoadmapLine(roadmapPath, spec.id, 'done', ['running', 'sealed'])) roadmapFiles = [...new Set([...roadmapFiles, ...roadmapPathspec(roadmapPath)])]
   // Ruling 5: commitVerdict matches these against `git status --porcelain`,
   // which speaks repo-relative forward slashes and nothing else.
-  const files = [...new Set([LOG, ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
+  const files = [...new Set([...fileInCheckout(home.campaignLog), ...waveFiles, ...roadmapFiles, ...ledgerShardsTouched()])]
   // F167: the runner runs from the campaign worktree (ensureCampaignCheckout at
   // startup), so this commit lands on the branch the tree is on; if someone
   // moved HEAD since, commitVerdict refuses rather than check anything out.
@@ -1228,13 +1253,29 @@ function ledgerShardsTouched() {
  * human's change to an order and must still stop the runner.
  */
 export function dirtyOutsideCampaign(porcelainLines, spec) {
-  const brief = new RegExp(`^${BRIEFS_DIR}/${spec.id}-wave\\d+\\.(txt|contract\\.json)$`)
+  // The briefs folder as git names it (checkout-relative); a folder outside
+  // this checkout never shows in `git status`, so it has nothing to exempt.
+  const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const dir = fileInCheckout(campaignHome(spec).briefsDir)[0] ?? null
+  const brief = dir === null ? null : new RegExp(`^${esc(dir)}/${esc(spec.id)}-wave\\d+\\.(txt|contract\\.json)$`)
   return porcelainLines.filter(l => {
     const p = l.slice(3).trim().replace(/\\/g, '/')
     if (p.startsWith('benchmark/cynco-ledger/')) return false
-    if (l.startsWith('??') && brief.test(p)) return false
+    if (l.startsWith('??') && brief?.test(p)) return false
     return true
   })
+}
+
+/**
+ * The spec this invocation runs, by absolute forward-slash path, on the state:
+ * the dashboard reads the campaign's budget, repository, roadmap and approve
+ * command from it. It reaches state.json with the next save; a state.json
+ * written before this has none, and the dashboard then looks in the CivKings
+ * briefs folder (`legacySpecPath`).
+ */
+export function recordSpecPath(s, specPath) {
+  s.specPath = resolve(specPath).replace(/\\/g, '/')
+  return s.specPath
 }
 
 /** Has the campaign already spent every wave it was budgeted? */
@@ -1371,7 +1412,7 @@ const defaultCheckoutGit = (repoRoot) => (args) => {
  * right whichever worktree the operator stands in), and a dirty spec or roadmap
  * is named first (T3 N1). `specPath` defaults to argv's first `.campaign.json`.
  */
-export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], specPath = null, io } = {}) {
+export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], specPath = null, roadmapPath = ROADMAP_PATH, io } = {}) {
   const git = io?.git ?? defaultCheckoutGit(repoRoot)
   const branch = `campaign/${id}`
   const current = git(['branch', '--show-current']).stdout.trim()
@@ -1381,7 +1422,10 @@ export function ensureCampaignCheckout({ repoRoot = '.', id, argv = [], specPath
   const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'])
   const commonDir = common.status === 0 ? common.stdout.trim().replace(/\\/g, '/') : ''
   const worktreesRoot = /\/\.git$/.test(commonDir) ? `${commonDir.slice(0, -'/.git'.length)}/.claude/worktrees` : '.claude/worktrees'
-  const sealFiles = [specPath ?? argv.find(a => /\.campaign\.json$/.test(String(a))), ROADMAP_PATH].filter(Boolean).map(p => String(p).replace(/\\/g, '/'))
+  // Only files inside this checkout: a spec or roadmap under ~/.cynco is not
+  // git's to report, and naming it would make `git status` fail outright.
+  const sealFiles = [specPath ?? argv.find(a => /\.campaign\.json$/.test(String(a))), roadmapPath].filter(Boolean)
+    .flatMap(p => { const f = String(p).replace(/\\/g, '/'); return /^([A-Za-z]:|\/)/.test(f) ? fileInCheckout(f) : [f] })
   const st = git(['status', '--porcelain', '--', ...sealFiles])
   const dirtySeal = st.status === 0 ? st.stdout.split(/\r?\n/).filter(Boolean).map(l => l.slice(3).trim()) : []
   // `git worktree list --porcelain`: blocks of `worktree <path>` … `branch refs/heads/<b>`.
@@ -1516,6 +1560,11 @@ export async function main(argv, deps = {}) {
   const verbOnly = ['--autopoiesis', '--scoreboard', '--approve-proposal', '--reject-proposal', '--sync'].some(f => flag(f) !== -1)
   if (!verbOnly && !needGitBash()) return 2
   const spec = loadCampaignSpec(specPath)
+  // The spec's home: its briefs folder, log, roadmap and pytest target
+  // (scripts/cynco-campaign-home.mjs). A test's `deps.roadmapPath` still wins,
+  // so the suite never moves a live roadmap line.
+  const home = campaignHome(spec)
+  const specRoadmap = deps.roadmapPath ?? home.roadmap
   // F167: the runner (waves, --dry-run, --adopt-inflight) reads and commits the
   // campaign's files in its working copy, so it runs only from the campaign's
   // own worktree. The verbs above the lock write nothing to the repo (state
@@ -1523,7 +1572,7 @@ export async function main(argv, deps = {}) {
   // checkout) and run anywhere. Asked before the identity check, which already
   // reads repo files.
   if (!verbOnly) {
-    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, specPath, io: deps.git ? { git: deps.git } : undefined })
+    const co = ensureCampaignCheckout({ repoRoot: '.', id: spec.id, argv, specPath, roadmapPath: specRoadmap, io: deps.git ? { git: deps.git } : undefined })
     if (!co.ok) { console.error(co.message); return 2 }
     // Final review M4: a suite gate the env prefix cannot carry is refused
     // here, once, rather than faulting every wave at dispatch.
@@ -1589,6 +1638,7 @@ export async function main(argv, deps = {}) {
   const identity = checkIdentity(spec)
   if (!identity.ok) { console.error('[campaign] IDENTITY VIOLATION:\n  ' + identity.problems.join('\n  ')); return 2 }
   const state = new CampaignState(join(cyncoHome(), 'campaigns', spec.id)).load()
+  recordSpecPath(state.state, specPath)
   // The operator's verbs come BEFORE the lock. A campaign runs for days and
   // its runner holds runner.lock the whole time; a proposal decision that had
   // to wait for the wave to end would arrive after the wave that needed it.
@@ -1616,6 +1666,11 @@ export async function main(argv, deps = {}) {
   const lock = takeLock(state.dir)
   if (!lock.ok) { console.error(`[campaign] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
   process.on('exit', () => releaseLock(state.dir))
+  // Where this campaign lives, said once: the evidence a run used the spec's
+  // home and not CivKings' (`default` marks a key the spec left out).
+  const said = (k, v) => `${k} ${v ?? 'none'}${home.defaulted.includes(k) ? ' (default)' : ''}`
+  console.log(`[campaign] ${spec.id} home: repo ${home.repo} · ${said('briefsDir', home.briefsDir)} · ${said('campaignLog', home.campaignLog)} · `
+    + `${said('heldoutFamily', home.heldoutFamily)} · ${said('roadmap', specRoadmap)} · ${said('suiteTarget', home.suiteTarget)}`)
   // --resume is the default and always has been: the state directory IS the
   // resume point. The flag is accepted so an operator can say so out loud.
   // A wave this runner dispatched and never graded is still on the GPU as far
@@ -1640,6 +1695,9 @@ export async function main(argv, deps = {}) {
   if (!dryRun) {
     const dirty = dirtyOutsideCampaign((spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).stdout ?? '').split('\n').filter(Boolean), spec)
     if (dirty.length) { console.error(`[campaign] working tree is dirty outside the ledger (${dirty.length} path(s)) — commit or stash first; the runner will not commit over your work:\n  ${dirty.join('\n  ')}`); return 2 }
+    // The spec path reaches state.json now, not at the first verdict: the
+    // dashboard names this campaign's repository from the moment it runs.
+    state.save()
   }
 
   // CALIBRATE whenever the instruments changed (or never ran).
@@ -1673,7 +1731,7 @@ export async function main(argv, deps = {}) {
     return 1
   }
   while (true) {
-    const rec = await runWave(spec, state, defaultIo, { roadmapPath })
+    const rec = await runWave(spec, state, defaultIo, { roadmapPath: specRoadmap })
     console.log(`[campaign] wave ${rec.wave}: ${rec.decision.kind} — ${rec.decision.why}`)
     if (rec.decision.kind !== 'next') { await notify(`${spec.id.toUpperCase()} STOPPED: ${rec.decision.kind} — ${rec.decision.why}`); return rec.decision.kind === 'pass' || rec.decision.kind === 'pass-with-survivors' ? 0 : 1 }
   }

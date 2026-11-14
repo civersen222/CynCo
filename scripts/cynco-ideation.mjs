@@ -20,7 +20,9 @@ export const IDEATION_MAX_AUTHORITY = 0.5
 
 export function ideationPrompt({ spec, fails, prior, briefText }) {
   const context = [
-    `You are the advisory S4 seat for CivKings campaign ${spec.id}. You read the code; you do not edit it.`,
+    // The campaign's own repository, not a fixed "CivKings": ideation is on by
+    // default for every campaign spec, whatever repository it works in.
+    `You are the advisory S4 seat for campaign ${spec.id} on the repository ${spec.repo}. You read the code; you do not edit it.`,
     prior ? `Last wave: ${prior.exitReason}, ${prior.commits?.length ?? 0} commits, ${prior.toolStats?.maxCallsWithoutSourceEdit ?? '?'} calls without a source edit.` : 'First wave of the campaign.',
     'The sealed gate still fails these lines (verbatim; you cannot run the gate):',
     ...fails.map(f => `  ${f.line}`),

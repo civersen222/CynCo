@@ -3,7 +3,7 @@
 // Usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]
 //   task-file:     path to a text file containing the full mission brief
 //   commit-marker: substring expected in `git log --oneline` when the mission lands
-//   cwd:           target repo for the mission (default: C:\Users\civer\civkings)
+//   cwd:           target repo for the mission (required)
 //   timeout-s:     max wait (default 600)
 //   check-cmd:     shell command run in cwd AFTER the mission ends (Phase 2b);
 //                  exit 0 => verified:true, nonzero => verified:false,
@@ -88,11 +88,13 @@ import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAut
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
-if (!taskFile || !marker) {
-  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]')
+// The repository is named, never assumed: a default of the CivKings repo sent
+// any mission that forgot its cwd to work in the game's tree.
+if (!taskFile || !marker || !cwdArg) {
+  console.error('usage: bun scripts/cynco-mission-driver.mjs <task-file> <commit-marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]')
   process.exit(2)
 }
-const CWD = cwdArg ?? 'C:\\Users\\civer\\civkings'
+const CWD = cwdArg
 // Checked before anything is DERIVED from it. A workspace root that matches
 // nothing makes every gate path look like it lives outside the workspace, so
 // the repository itself joins the sealed set and the mission is refused its own
@@ -100,7 +102,7 @@ const CWD = cwdArg ?? 'C:\\Users\\civer\\civkings'
 const cwdError = workspaceError(CWD)
 if (cwdError) {
   console.error(`[driver] ${cwdError} — nothing was dispatched`)
-  console.error('[driver] spell the path with forward slashes: C:/Users/civer/civkings')
+  console.error('[driver] spell the path with forward slashes, e.g. C:/Users/civer/casino')
   process.exit(2)
 }
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)

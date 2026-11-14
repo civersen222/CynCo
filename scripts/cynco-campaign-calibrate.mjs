@@ -2,9 +2,10 @@
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import { parseGateOutput, parsePerturbHeader, compareCalibration } from './cynco-gate-parse.mjs'
+import { parseGateOutput, parsePerturbHeader, compareCalibration, gateInterpreter } from './cynco-gate-parse.mjs'
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
+import { campaignHome } from './cynco-campaign-home.mjs'
 
 export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
@@ -79,9 +80,9 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [named(e.message, 'perturb')] } }
 
   const env = { CYNCO_GATE_REPO: baseDir }
-  const baseRun = io.run('python', [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const baseRun = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const base = parseGateOutput(baseRun.stdout + '\n' + baseRun.stderr)
-  const pertRun = io.run('python', [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const pertRun = io.run(gateInterpreter(spec.perturb), [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const perturbed = parseGateOutput(pertRun.stdout + '\n' + pertRun.stderr)
 
   // Rule 14, mechanical: the positive shim makes every graded fact true, so a
@@ -89,7 +90,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // can never hold) is caught here rather than after a wave of GPU hours.
   let positiveRun = null, positive = null
   if (spec.positive) {
-    positiveRun = io.run('python', [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+    positiveRun = io.run(gateInterpreter(spec.positive), [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
     positive = parseGateOutput(positiveRun.stdout + '\n' + positiveRun.stderr)
   }
 
@@ -143,11 +144,14 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // The suite baseline is the standing-failure set measured AT THE BASE: it is
   // only honest if the gate calibrated clean, and it is never overwritten once
   // written (a later measurement would launder regressions into "standing").
+  // The pytest target is the spec's home (`gilded/tests` when absent); a
+  // repository with no pytest suite (`suiteTarget: null`) has no baseline to take.
   let suiteBaselineCreated = false
-  if (ok && !io.exists(spec.suiteBaseline)) {
-    const py = io.run('python', ['-m', 'pytest', 'gilded/tests', '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const { suiteTarget } = campaignHome(spec)
+  if (ok && suiteTarget !== null && !io.exists(spec.suiteBaseline)) {
+    const py = io.run('python', ['-m', 'pytest', suiteTarget, '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
     const ids = (py.stdout + py.stderr).split('\n').filter(l => l.startsWith('FAILED ')).map(l => l.slice(7).split(/\s+-\s+/)[0].trim())
-    io.writeFile(spec.suiteBaseline, `# standing failures of gilded/tests at ${spec.base}, measured ${new Date().toISOString().slice(0, 10)} by cynco-campaign calibrate\n${ids.join('\n')}\n`)
+    io.writeFile(spec.suiteBaseline, `# standing failures of ${suiteTarget} at ${spec.base}, measured ${new Date().toISOString().slice(0, 10)} by cynco-campaign calibrate\n${ids.join('\n')}\n`)
     suiteBaselineCreated = true
   }
 

@@ -233,7 +233,9 @@ describe('the repo HEAD must be the wave base before dispatch (T7-M1)', () => {
   it('the default io carries the real read; main hands runWave the default io', () => {
     expect(typeof defaultIo.repoHead).toBe('function')
     const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
-    expect(src).toMatch(/await runWave\(spec, state, defaultIo, \{ roadmapPath \}\)/)
+    // The roadmap is the spec's own (campaignHome), a test's deps.roadmapPath first.
+    expect(src).toMatch(/await runWave\(spec, state, defaultIo, \{ roadmapPath: specRoadmap \}\)/)
+    expect(src).toMatch(/const specRoadmap = deps\.roadmapPath \?\? home\.roadmap/)
   })
 
   it('defaultIo.repoHead resolves HEAD and an abbreviated sha in a real temp repo; garbage is null', () => {

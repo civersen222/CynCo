@@ -716,7 +716,7 @@ Status: the hand-off was seen live on 2026-11-12 for an app started from a norma
 
 CynCo's proving ground is the unattended mission: one long-horizon brief, no user round-trips, graded at a sealed gate.
 
-`scripts/dispatch-mission.sh <brief> <marker> [cwd] [timeout-s] [check-cmd] [probe-cmd]` boots a fresh engine. `scripts/cynco-mission-driver.mjs` then drives the run until a marker commit lands, a timeout closes it, or the engine goes quiet. In a mission, S5 acts only on rules that have earned authority (see [Governance](#governance-vsm-s1s5)). The harness around it:
+`scripts/dispatch-mission.sh <brief> <marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]` boots a fresh engine in the repository `<cwd>` names (any repository; there is no default). `scripts/cynco-mission-driver.mjs` then drives the run until a marker commit lands, a timeout closes it, or the engine goes quiet. In a mission, S5 acts only on rules that have earned authority (see [Governance](#governance-vsm-s1s5)). A dispatch first stops every live engine; the always-on phone engine is stopped through its scheduled task and started again when the mission is over (F234). Set `CYNCO_CAMPAIGN_ID=<name>` on a hand-run dispatch and its ledger row is recorded under that name, so a series of missions with no campaign runner behind it groups in the dashboard. Every mission in the ledger, newest first, is the **Missions** panel on the dashboard's Governance tab (the live one on top while it runs). The harness around it:
 
 - **Outcome ledger.** Every mission appends one labeled row to `benchmark/cynco-ledger/missions.NNNN.jsonl`. A row carries:
   - the outcome and the check-cmd verdict;
@@ -750,7 +750,19 @@ The runner does the whole loop:
 - It runs a mutation sweep over the wave's diff, and writes the verdict.
 - It retrains the outcome learner, and stops on PASS.
 
-Two regulators watch in shadow (`R1.no-progress`, `R2.stalled`). `--author` has the machine draft the next campaign's sealed gate, and `--approve-proposal gate/<id>` seals what it staged. A campaign runs from its own worktree on branch `campaign/<id>` (F167).
+Two regulators watch in shadow (`R1.no-progress`, `R2.stalled`). `--author` has the machine draft the next campaign's sealed gate (CivKings gates only: its brief teaches that game's code), and `--approve-proposal gate/<id>` seals what it staged. A campaign runs from its own worktree on branch `campaign/<id>` (F167).
+
+A campaign works in any repository. Its spec names the repository (`repo`) and, optionally, the rest of its home; each key left out takes the CivKings value, so the CivKings specs need none of them (`scripts/cynco-campaign-home.mjs`):
+
+| Key | What it is | When absent |
+|---|---|---|
+| `briefsDir` | where each wave's brief is written | `docs/civkings-redesign-briefs` |
+| `campaignLog` | the markdown log every verdict is appended to | `<briefsDir>/campaign-log.md` |
+| `heldoutFamily` | the folder under `~/.cynco/heldout/` its sealed gates live in (checked when declared) | `civkings-redesign` |
+| `roadmap` | the roadmap whose line the runner moves; `null` for none | `<briefsDir>/roadmap.json` when it exists |
+| `suiteTarget` | what the pytest suite gate runs; `null` for a repository with no pytest suite, which must then name its own `markerCheck` | `gilded/tests` |
+
+Briefs and a log outside the localcode checkout stay where they are and are not committed. A gate ending in `.mjs`, `.cjs` or `.js` runs under node, any other under python. The runner records the spec's absolute path in the campaign's `state.json`, and the dashboard's Campaign panel reads each campaign's repository, family, budget, roadmap line and approve command from it.
 
 The record of every wave is [docs/civkings-redesign-briefs/campaign-log.md](docs/civkings-redesign-briefs/campaign-log.md). The scoreboard (`scripts/cynco-scoreboard.mjs`) reports pass rate per GPU-hour, waves per campaign, gate lines fixed per landed wave, human interventions per wave, and per-rule precision. `scripts/cynco-signal-validation.mjs` asks whether a rule fires more often on missions that fail, and `scripts/cynco-rule-verdicts.mjs` writes the verdict file S5's authority reads.
 

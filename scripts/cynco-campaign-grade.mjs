@@ -2,8 +2,9 @@
 import { spawnSync } from 'node:child_process'
 import { join, resolve } from 'node:path'
 import { cyncoHome } from '../engine/paths.js'
-import { parseGateOutput } from './cynco-gate-parse.mjs'
+import { parseGateOutput, gateInterpreter } from './cynco-gate-parse.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
+import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 
 export const GATE_TIMEOUT_MS = 7_200_000
@@ -101,7 +102,7 @@ export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_M
   // a read of the tree, so it is retried once on an impossible ETIMEDOUT like
   // calibrate's reads are; and a spawn that still did not run is named as the
   // fault it is — never parsed as an empty gate, which would read as 0 lines.
-  const r = io.run('python', [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry })
+  const r = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry })
   const parsed = parseGateOutput((r.stdout ?? '') + '\n' + (r.stderr ?? ''))
   let harnessFault = null
   if (r.fault) harnessFault = `gate did not run (${faultSummary(r.fault)})`
@@ -111,10 +112,23 @@ export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_M
   return { ...parsed, exit: r.status, durationMs: Date.now() - t0, harnessFault, fault: r.fault ?? null, outputTail: ((r.stdout ?? '') + (r.stderr ?? '')).slice(-4000) }
 }
 
-function runSuiteGate(spec, io) {
+/**
+ * The suite gate's reading. Its pytest target is the spec's home
+ * (`suiteTarget`, `gilded/tests` when absent, which is the gate's own default
+ * and so is not passed). A repository with no pytest suite (`suiteTarget:
+ * null`) has no suite gate: the reading says so in `skipped` and blocks
+ * nothing, and the spec's own `markerCheck` (required then) is its regression
+ * check at the marker.
+ */
+export function runSuiteGate(spec, io) {
+  const { suiteTarget } = campaignHome(spec)
+  if (suiteTarget === null) {
+    return { exit: 0, skipped: 'no pytest suite in this repository (spec suiteTarget null)', regressions: [], repairs: [], harnessFault: null, fault: null, outputTail: '' }
+  }
+  const target = suiteTarget === CIVKINGS_HOME.suiteTarget ? {} : { CHK_SUITE_TARGET: suiteTarget }
   // Review I2: a read, like the gate — retried once on an impossible timeout,
   // and a spawn that did not run is a fault, not a suite reading.
-  const r = io.run('python', [SUITE_GATE()], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const r = io.run('python', [SUITE_GATE()], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo, ...target }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   const pick = (label) => { const m = new RegExp(`${label} \\d+ [^\\n]*\\n((?:\\s+[-+] \\S+\\n?)+)`).exec(out); return m ? m[1].split('\n').map(s => s.trim().replace(/^[-+] /, '')).filter(Boolean) : [] }
   let harnessFault = null
