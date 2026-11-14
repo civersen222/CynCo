@@ -18,6 +18,41 @@ export type WSServerOptions = {
    */
   tokens: TokenSet
   onCommand?: (command: TUICommand) => void
+  /**
+   * F236: may the bridge take the next port when its own is held? Yes (the
+   * default) for a second engine beside the live one. No for an engine in the
+   * phone engine's seat (port 9160, the default home: `inPhoneEnginesSeat`):
+   * 9162 is a port the phone, the doorman and dispatch never look at, so a
+   * seat engine that walked there served nobody and left the seat to whatever
+   * held it (2026-11-14: the phone engine on 9162 behind a bare stand-in).
+   */
+  walk?: boolean
+}
+
+/** How long a seat engine keeps asking for its own port before it refuses: a holder that just exited closes its listener in well under this. */
+export const SEAT_RETRY_MS = 10_000
+/** The pause between a seat engine's attempts. */
+export const SEAT_PAUSE_MS = 250
+
+/**
+ * The ports to try, in order, and the pause after each failed attempt (F236).
+ * A walking engine tries its port, +1 and +2 once each; a seat engine tries its
+ * own port again and again for SEAT_RETRY_MS. Pure.
+ */
+export function bridgePortPlan(port: number, walk: boolean): { ports: number[]; pauseMs: number } {
+  if (port === 0) return { ports: [0], pauseMs: 0 }
+  if (walk) return { ports: [port, port + 1, port + 2], pauseMs: 0 }
+  return { ports: Array.from({ length: SEAT_RETRY_MS / SEAT_PAUSE_MS + 1 }, () => port), pauseMs: SEAT_PAUSE_MS }
+}
+
+/** The phone engine's seat is held by another process; this engine refuses rather than walk (F236). */
+export class SeatTakenError extends Error {
+  constructor(readonly port: number, cause: unknown) {
+    super(`[ws] Port ${port} in use — this engine is in the phone engine's seat and does not walk to another port, ` +
+      `where the phone and dispatch would never find it. Another engine holds it (scripts\\cynco-services.ps1 status names the phone engine; ` +
+      `a mission or desk engine says so in its own log). Last error: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'SeatTakenError'
+  }
 }
 
 export class LocalCodeWSServer {
@@ -29,9 +64,11 @@ export class LocalCodeWSServer {
   private onCommand: ((command: TUICommand) => void) | undefined
   private lastSessionReady: EngineEvent | null = null
   private tokens: TokenSet
+  private readonly walk: boolean
 
   constructor(options: WSServerOptions) {
     this._port = options.port
+    this.walk = options.walk ?? true
     // Bind loopback only by default — the bridge carries full conversation
     // and tool traffic and must not be exposed on the network. Note this is a
     // floor, not the defence: a browser on this machine is already inside
@@ -49,8 +86,11 @@ export class LocalCodeWSServer {
 
   private start() {
     // Try the requested port, then fall back to +1, +2 if it's stuck in TIME_WAIT/CLOSE_WAIT.
-    // Port 0 means "OS, pick one" and never needs the walk.
-    const portsToTry = this._port === 0 ? [0] : [this._port, this._port + 1, this._port + 2]
+    // Port 0 means "OS, pick one" and never needs the walk. A seat engine
+    // (`walk: false`, F236) asks for its own port again for SEAT_RETRY_MS and
+    // then refuses with SeatTakenError.
+    const plan = bridgePortPlan(this._port, this.walk)
+    const portsToTry = plan.ports
     let lastError: any
     for (const port of portsToTry) {
       try {
@@ -128,8 +168,11 @@ export class LocalCodeWSServer {
         return
       } catch (e) {
         lastError = e
+        // Synchronous like Bun.serve itself: the engine's start waits on this bind.
+        if (plan.pauseMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, plan.pauseMs)
       }
     }
+    if (!this.walk && this._port !== 0) throw new SeatTakenError(this._port, lastError)
     throw lastError
   }
 
