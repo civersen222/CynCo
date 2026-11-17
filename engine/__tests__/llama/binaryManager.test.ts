@@ -4,11 +4,13 @@ import {
   resolveBinary,
   getVersionInfo,
   downloadBinary,
+  extractArchive,
   pickReleaseAssets,
   LLAMA_SERVER_BINARY,
   LLAMA_CPP_BUILD,
   LLAMA_CPP_RELEASE_URL,
 } from '../../llama/binaryManager.js'
+import { execFileSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -109,6 +111,82 @@ describe('downloadBinary', () => {
     await expect(downloadBinary(tmpDir, () => {}, fetchStub)).rejects.toThrow(/403/)
     expect(fs.readdirSync(tmpDir)).toEqual([])
   })
+
+  /** A real archive of `files` (relative path -> content), made with the system's own tool. */
+  function buildArchive(dir: string, name: string, files: Record<string, string>): Buffer {
+    const src = path.join(dir, `${name}-src`)
+    for (const [rel, content] of Object.entries(files)) {
+      const full = path.join(src, rel)
+      fs.mkdirSync(path.dirname(full), { recursive: true })
+      fs.writeFileSync(full, content)
+    }
+    const out = path.join(dir, name)
+    if (name.endsWith('.zip')) {
+      execFileSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', 'Compress-Archive -Path (Join-Path $env:FIXTURE_SRC "*") -DestinationPath $env:FIXTURE_OUT'],
+        { env: { ...process.env, FIXTURE_SRC: src, FIXTURE_OUT: out }, stdio: 'pipe' },
+      )
+    } else {
+      execFileSync('tar', ['czf', out, '-C', src, '.'], { stdio: 'pipe' })
+    }
+    return fs.readFileSync(out)
+  }
+
+  // The unpack step used to paste the archive's path into a PowerShell or tar
+  // command line, between single quotes: a home folder with an apostrophe in
+  // its name ended the quote, and whatever followed it was run (CodeQL
+  // js/command-line-injection on PR #255). A whole install, into such a folder,
+  // from real archives served by a stand-in for GitHub.
+  it('installs the build into a folder whose name a command line would trip on', async () => {
+    if (process.platform !== 'win32' && process.platform !== 'linux') return
+    const fixtures = path.join(tmpDir, 'fixtures')
+    fs.mkdirSync(fixtures)
+    const binDir = path.join(tmpDir, "it's a bin dir")
+    const picked = pickReleaseAssets(asAssets(B9529_ASSET_NAMES), process.platform)
+    const bodies = new Map<string, Buffer>()
+    if (process.platform === 'win32') {
+      bodies.set(picked.server.browser_download_url, buildArchive(fixtures, picked.server.name, {
+        'build/bin/llama-server.exe': 'stand-in server',
+        'build/bin/ggml-base.dll': 'stand-in library',
+      }))
+      bodies.set(picked.runtime!.browser_download_url, buildArchive(fixtures, picked.runtime!.name, {
+        'cudart64_12.dll': 'stand-in runtime',
+      }))
+    } else {
+      bodies.set(picked.server.browser_download_url, buildArchive(fixtures, picked.server.name, {
+        'build/bin/llama-server': 'stand-in server',
+      }))
+    }
+    const fetchStub = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u === LLAMA_CPP_RELEASE_URL) {
+        return new Response(JSON.stringify({ tag_name: LLAMA_CPP_BUILD, assets: asAssets(B9529_ASSET_NAMES) }), { status: 200 })
+      }
+      const body = bodies.get(u)
+      return body ? new Response(new Uint8Array(body), { status: 200 }) : new Response('not found', { status: 404 })
+    }) as typeof fetch
+
+    const lines: string[] = []
+    const installed = await downloadBinary(binDir, (m) => lines.push(m), fetchStub)
+
+    expect(installed).toBe(path.join(binDir, LLAMA_SERVER_BINARY))
+    expect(fs.readFileSync(installed, 'utf-8')).toBe('stand-in server')
+    if (process.platform === 'win32') {
+      expect(fs.readFileSync(path.join(binDir, 'ggml-base.dll'), 'utf-8')).toBe('stand-in library')
+      expect(fs.readFileSync(path.join(binDir, 'cudart64_12.dll'), 'utf-8')).toBe('stand-in runtime')
+      expect(lines.join('\n')).not.toContain('CUDA runtime download failed')
+    }
+    expect(getVersionInfo(binDir)?.version).toBe(LLAMA_CPP_BUILD)
+    // Neither archive and neither scratch folder is left behind.
+    expect(fs.readdirSync(binDir).filter(f => /\.(zip|gz)$/.test(f) || f.startsWith('_'))).toEqual([])
+  }, 120_000)
+
+  it('an archive that cannot be unpacked fails the install with the tool\'s own words', () => {
+    const notAnArchive = path.join(tmpDir, process.platform === 'win32' ? 'broken.zip' : 'broken.tar.gz')
+    fs.writeFileSync(notAnArchive, 'this is not an archive')
+    expect(() => extractArchive(notAnArchive, path.join(tmpDir, 'out'))).toThrow(/Command failed/)
+  }, 60_000)
 })
 
 describe('resolveBinary', () => {

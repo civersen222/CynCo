@@ -1,4 +1,5 @@
 // engine/llama/binaryManager.ts
+import { execFileSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
 
@@ -141,7 +142,44 @@ export function pickReleaseAssets(
     )
   }
   const runtime = wanted.runtime ? assets.find(a => a.name === wanted.runtime) ?? null : null
-  return { server, runtime }
+  // The names handed back are this file's own constants, not the release's text:
+  // they become file names on disk.
+  return {
+    server: { name: wanted.server, browser_download_url: server.browser_download_url },
+    runtime: runtime && wanted.runtime ? { name: wanted.runtime, browser_download_url: runtime.browser_download_url } : null,
+  }
+}
+
+/**
+ * The whole PowerShell text of an unpack. The two paths reach it through the
+ * environment. `Stop` because Expand-Archive reports an archive it cannot read
+ * as an error that does not end the command: without it PowerShell exits 0 and
+ * a broken download reads as an unpacked one.
+ */
+const EXPAND_ARCHIVE_PS = "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:UNPACK_ARCHIVE -DestinationPath $env:UNPACK_DEST -Force"
+const UNPACK_TIMEOUT_MS = 300_000
+
+/**
+ * Unpack an archive into a folder, with no path ever part of a command line: on
+ * Windows the paths are environment values that a fixed PowerShell text reads,
+ * elsewhere they are `tar` arguments, and no shell reads either. The old form
+ * pasted them between single quotes into a command string, so a home folder
+ * with an apostrophe in its name ended the quote and the rest of the path was
+ * run as PowerShell (CodeQL js/command-line-injection, PR #255). Throws with
+ * the tool's own output when the archive cannot be unpacked.
+ */
+export function extractArchive(archivePath: string, destDir: string, platform: NodeJS.Platform = process.platform): void {
+  if (platform === 'win32') {
+    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', EXPAND_ARCHIVE_PS], {
+      env: { ...process.env, UNPACK_ARCHIVE: archivePath, UNPACK_DEST: destDir },
+      timeout: UNPACK_TIMEOUT_MS,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return
+  }
+  fs.mkdirSync(destDir, { recursive: true })
+  execFileSync('tar', ['xzf', archivePath, '-C', destDir], { timeout: UNPACK_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] })
 }
 
 /**
@@ -193,13 +231,8 @@ export async function downloadBinary(
   // Extract using system tools
   const destPath = path.join(binDir, LLAMA_SERVER_BINARY)
   if (process.platform === 'win32') {
-    // Use PowerShell to extract on Windows
-    const { execSync } = require('child_process')
     const extractDir = path.join(binDir, '_extract')
-    execSync(
-      `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${extractDir}' -Force"`,
-      { timeout: 60000 },
-    )
+    extractArchive(zipPath, extractDir)
     // Find llama-server.exe in extracted contents (may be nested)
     const found = findFileRecursive(extractDir, LLAMA_SERVER_BINARY)
     if (!found) {
@@ -216,8 +249,7 @@ export async function downloadBinary(
     // Cleanup
     fs.rmSync(extractDir, { recursive: true, force: true })
   } else {
-    const { execSync } = require('child_process')
-    execSync(`tar xzf '${zipPath}' -C '${binDir}'`, { timeout: 60000 })
+    extractArchive(zipPath, binDir)
     const found = findFileRecursive(binDir, LLAMA_SERVER_BINARY)
     if (found && found !== destPath) {
       fs.renameSync(found, destPath)
@@ -238,12 +270,8 @@ export async function downloadBinary(
           const cudartBuf = await cudartResp.arrayBuffer()
           const cudartZip = path.join(binDir, cudartAsset.name)
           fs.writeFileSync(cudartZip, Buffer.from(cudartBuf))
-          const { execSync } = require('child_process')
           const cudartExtract = path.join(binDir, '_cudart')
-          execSync(
-            `powershell -NoProfile -Command "Expand-Archive -Path '${cudartZip}' -DestinationPath '${cudartExtract}' -Force"`,
-            { timeout: 60000 },
-          )
+          extractArchive(cudartZip, cudartExtract)
           // Copy all DLLs from cudart archive
           for (const f of fs.readdirSync(cudartExtract)) {
             if (f.endsWith('.dll')) {
