@@ -1,5 +1,8 @@
 # Dead Code Audit — Regenerated 2026-07-12 (Phase 0b)
 
+> Moved here on 2026-11-17 from the repository root, where it was `DEAD_CODE_AUDIT.md`; documents
+> dated before that name it by the old path.
+
 Grep evidence pass run 2026-07-12 against `engine/`, `tui/`, `scripts/`, `benchmark/`, and
 root config files. All `src/src/localcode/*` paths in the original audit predated the
 `src/` → `engine/` reorganization; that directory is now empty and gitignored (see evidence

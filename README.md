@@ -40,7 +40,7 @@ LocalCode is the engine (Bun + TypeScript in `engine/`, a Textual TUI in `tui/`)
 - When another local-LLM app of yours holds the GPU, CynCo takes it for the turn and gives it back after ([Your other local-LLM apps](#your-other-local-llm-apps)).
 
 **Governs and measures itself.** A Viable System Model layer (S1–S5) runs alongside the loop ([Governance](#governance-vsm-s1s5)).
-- 21 S5 policy rules, a four-tier stuck-loop escape, variety control, an algedonic channel and a homeostat.
+- 20 S5 policy rules, a four-tier stuck-loop escape, variety control, an algedonic channel and a homeostat.
 - A rule's authority to act is earned on the outcome ledger, not assumed.
 - Every turn's cost is recorded from the server's own timings.
 - The [Brain](#the-brain) tab shows thinking, per-token entropy and, with setup, the concepts mid-network.
@@ -57,7 +57,8 @@ What is measured and what is not, kept apart. The project's own terms are in [AG
   - Each campaign was graded by a held-out gate that had to fail cleanly on the base commit and on a cheat stub before dispatch.
   - Record: [docs/civkings-redesign-briefs/campaign-log.md](docs/civkings-redesign-briefs/campaign-log.md).
 - **Supervision economics, measured.** C1–C5 are the [paper](docs/supervision-economics-paper.md): $1 of frontier supervision oversaw ~$1.39 of displaced generation (honest band $1.0–1.4), and that generation ran locally ~349× cheaper than API prices.
-  - The running total after C11 wave 2: $2,995.57 of supervision against ~$5,920.56 of API-priced generation, which ran locally for ~$25.05 of power. That is $1 per ~$1.98 ([campaign log](docs/civkings-redesign-briefs/campaign-log.md); the paper's measurement caveats apply).
+  - After C11 wave 2 the script printed $2,995.57 of supervision against ~$5,920.56 of API-priced generation (which ran locally for ~$25.05 of power), "$1 per ~$1.98" ([campaign log](docs/civkings-redesign-briefs/campaign-log.md)). **That line is not a measurement** (F239, found 2026-11-17). The generation side is sound. The supervision side was the sum over the Claude Code transcripts still on disk in one folder; transcripts age out and worktree sessions were never read, so it had fallen from $4,295.55 two waves earlier. The paper's C1–C5 figure was taken on 2026-08-28, before either effect.
+  - What can be read today: of the 93 missions, 14 were dispatched on days a transcript still covers (2026-09-17 on). They would have cost ~$762.20 on the API, and the supervising spend up to the day of the last of them was $565.70: $1 per ~$1.35. `node scripts/supervision-economics.mjs` prints what each side covers and takes its verdict over the days both can be read.
 - **Serving, measured on the RTX 5090:**
   - 94–119 tok/s single-stream generation.
   - 16 of 16 streamed tool calls delivered, none dropped.
@@ -76,13 +77,13 @@ CynCo is one system that uses several models, each for one job. Every name below
 |---|---|---|---|
 | **The agent**: coding, project chats, missions | **Qwen3.8-27B**, NVFP4 GGUF with its MTP head (`Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf`, 19.7 GB) | llama-server on the main GPU, started and managed by the engine | a profile's `model_file`, or `LOCALCODE_MODEL_PATH` |
 | The agent, on the Quick Start path | `qwen3.8:27b` from Ollama's library (18 GB) | Ollama | the shipped profile, `engine/profiles/templates/default.yaml` |
-| Embeddings for the code index | `jina-code-embeddings-0.5b` when the server has it, else `nomic-embed-text` | any embedding server ([Semantic Code Index](#semantic-code-index)); on the CynCo PC, CynCo's own `llama-server --embeddings` on `127.0.0.1:9165`, CPU only | `LOCALCODE_EMBED_MODEL` |
+| Embeddings for the code index | `nomic-embed-text` (`jina-code-embeddings-0.5b` is opt-in) | any embedding server ([Semantic Code Index](#semantic-code-index)); on the CynCo PC, CynCo's own `llama-server --embeddings` on `127.0.0.1:9165`, CPU only | `LOCALCODE_EMBED_MODEL` |
 | Embeddings for project knowledge | `nomic-embed-text` | the same server | `LOCALCODE_PROJECTS_EMBED_MODEL` |
 | Looking at photos *(optional)* | `qwen3-vl:8b-instruct` | Ollama on the image box | `LOCALCODE_VISION_URL`, `LOCALCODE_VISION_MODEL` |
 | Painting pictures *(optional)* | an SDXL checkpoint; Juggernaut first when none is named | ComfyUI on the image box | `LOCALCODE_COMFYUI_URL`, `LOCALCODE_COMFYUI_CHECKPOINT` |
 | Editing photos, tracing sheets *(optional)* | Qwen-Image-Edit-2509 (`Q4_K_S` GGUF, 4-step Lightning LoRA) | ComfyUI on the image box | `LOCALCODE_COMFYUI_WORKFLOW_EDIT`, `LOCALCODE_COMFYUI_WORKFLOW_OUTLINE` |
 | Answering while the main GPU is busy *(optional)* | `qwen3:14b` | Ollama on the image box | `LOCALCODE_FALLBACK_URL`, `LOCALCODE_FALLBACK_MODEL` |
-| The Brain tab's concept lens *(optional)* | a Jacobian lens precomputed for Qwen3.6-27B | the jlens sidecar (Python, port 9163) | `LOCALCODE_JLENS=on`; the lens repo is `JLENS_MODEL_REPO` |
+| The Brain tab's concept lens *(optional)* | a Jacobian lens precomputed for Qwen3.6-27B | the jlens sidecar (Python, port 9163) | `LOCALCODE_JLENS=on`; the lens repo is `JLENS_MODEL_REPO`. The Brain tab prints which model the lens is for: until it is recomputed for Qwen3.8, read its concept readouts as approximate |
 | S5 governance decisions | the 21 hand-written rules; a fine-tuned S5 model once one exists | in the engine; a model through Ollama | `LOCALCODE_S5_MODEL` |
 | Training a personal adapter *(not yet run)* | base `unsloth/Qwen2.5-Coder-14B-Instruct` (QLoRA via Unsloth) | the main GPU | `--base` (default in `engine/training/trainingArgs.ts`) |
 | Training the S5 model *(not yet run)* | base `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` | the main GPU | `--model` of `scripts/fine_tune_s5.py` |
@@ -138,15 +139,13 @@ Its model card asks for the thinking-mode sampler (temperature 1.0, top_p 0.95, 
 
 ### Embedding model
 
-Semantic indexing needs a *separate* embedding model, because the chat model does not serve embeddings. The code index asks for `jina-code-embeddings-0.5b` (code-specialized). If the server does not have it, the index falls back to `nomic-embed-text`. Project knowledge uses `nomic-embed-text` directly.
-
-Ollama's library has no `jina-code-embeddings-0.5b`, so on Ollama pull the fallback:
+Semantic indexing needs a *separate* embedding model, because the chat model does not serve embeddings. The code index and project knowledge both use `nomic-embed-text`. On Ollama, pull it:
 
 ```bash
 ollama pull nomic-embed-text
 ```
 
-Against Ollama, the engine also tries once, in the background, to pull the model it asked for, which for the default can't succeed. To use the jina model, serve its GGUF on an OpenAI-shaped server (`llama-server --embeddings`) and set `LOCALCODE_EMBED_MODEL` to the name that server knows it by.
+`jina-code-embeddings-0.5b` (code-specialized) is opt-in, because Ollama's library does not have it: serve its GGUF on an OpenAI-shaped server (`llama-server --embeddings`) and set `LOCALCODE_EMBED_MODEL` to the name that server knows it by. A model that is asked for and missing falls back to `nomic-embed-text`; against Ollama the engine also tries once, in the background, to pull the one it was asked for.
 
 Switching embedding models requires a re-index. If no embedding server answers, you get keyword search and the engine says so. [Semantic Code Index](#semantic-code-index) explains how it finds a server.
 
@@ -248,6 +247,7 @@ The engine starts and manages llama-server itself:
 - Context checkpoints for prefix-cache rollback. Qwen3.6 and 3.8 are hybrid Gated DeltaNet models, so warm turns only prefill new tokens instead of reprocessing the whole prompt.
 - A capped reasoning budget (256 tokens unless the profile says otherwise).
 - Accurate tok/s from the server's own eval timing.
+- A streamed reply that goes silent is cut: nothing for twenty minutes before its first byte, or ten minutes between bytes, ends the turn with an error instead of holding it open. The Ollama provider runs under the same clock.
 
 The engine also keeps its prompt strictly append-only across turns to preserve the cache, which a regression test enforces. Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s), instead of reprocessing the full prompt (~17 s). Each turn pays only for its new content.
 
@@ -260,7 +260,7 @@ Every turn's cost is recorded to the `measurements` table, with the source the n
 
 Prefill tokens are `timings.prompt_n`, the tokens the server actually evaluated. They are not `prompt_tokens`, which is the size of the whole prompt; conflating the two makes a cached 60K prefix look identical to a cold one. A turn whose server reported no timings is stored as `NULL`, not zero: it is unmeasured, not free. `/spend` sums the session and reports how many turns it covers, so a partial total reads as a floor rather than a claim.
 
-**Other servers.** Besides `ollama` and `llama-cpp`, `LOCALCODE_PROVIDER` accepts `lmstudio`, `vllm` and `openai-compat`, for any server that speaks the OpenAI chat API (`LOCALCODE_BASE_URL`, `LOCALCODE_API_KEY`). The llama.cpp path is the measured one.
+**Other servers.** CynCo has two providers, `llama-cpp` and `ollama`. Another server that speaks the OpenAI chat API can be reached with the `ollama` provider and `LOCALCODE_BASE_URL` pointed at it (the Ollama client uses `/v1/chat/completions`; its model listing and pull will not work there). The names `lmstudio`, `vllm` and `openai-compat` were accepted until 2026-11-17 and did exactly that without saying so; they are refused at start now, with this instruction. The llama.cpp path is the measured one.
 
 ---
 
@@ -285,7 +285,7 @@ Neither is needed, and each feature that uses one says so when it is not configu
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  S5 Policy Engine: 21 rules (C1-C7, W1-W9, I1-I5), merged    │
+│  S5 Policy Engine: 20 rules (C2-C7, W1-W9, I1-I5), merged    │
 │  into one decision a turn, applied only with authority       │
 └──────────────────────────┬───────────────────────────────────┘
                            │ decides
@@ -359,7 +359,7 @@ Results are scored by keyword relevance, recency, source authority and cross-sou
 ### Sub-Agents
 Six typed personas, each with domain vocabulary injected (the PRISM system): **scout**, **oracle**, **kraken**, **spark**, **architect** and **researcher**. The main loop or the `SubAgent` tool dispatches them as bounded, forked conversation loops; `CollectAgent` takes their results back.
 
-What they can do today is narrower than the persona names suggest. Every sub-agent gets the read-only tool set, whatever its persona: Read, Glob, Grep, CodeIndex, Ls, ImageView and Git. The `specialist` and `full` trust tiers that would add a persona's own tools are not built yet (`engine/agents/trustTier.ts`). So sub-agents scout, read and report, and the main loop does the editing. The researcher persona has no web tools either.
+What they can do today is narrower than the persona names suggest. Every sub-agent gets the read-only tool set, whatever its persona: Read, Glob, Grep, CodeIndex, Ls, ImageView and Git. The **researcher** also gets `WebSearch` and `WebFetch` (since 2026-11-17), and only where the run that started it could have used them without asking: a mission pinned to a tool list without them, or a trust profile that asks before a fetch, leaves the researcher without them too. What a researcher writes after reading the web comes back to the main loop marked as untrusted data, as a fetched page is. No sub-agent writes, edits or runs a command: the `full` trust tier that would is not built (`engine/agents/trustTier.ts`). So sub-agents scout, read, research and report, and the main loop does the editing.
 
 The S2 coordinator queues agents when it reads the GPU as busy, and kills stuck agents through algedonic signals. Its GPU reading is Ollama's `/api/ps` at the chat URL: the share of the first loaded model that sits in VRAM. It reads 0 when the server lists no model and 0.5 when the call fails, so on a provider that is not Ollama the reading says nothing about the GPU.
 
@@ -381,10 +381,10 @@ Alongside them run a variety engine (Ashby's requisite variety), a homeostat, an
 
 This is the project's rule for experimental policy: observe, then advise, then enforce once it is measured.
 
-**The 21 rules** (plus an opt-in 22nd). Their ids carry a tier, Critical, Warning or Info, but the code does not act on the tier: whatever fires is merged and applied together when it has authority. The tiers count 7/10/4 while the ids read C1–C7, W1–W9 and I1–I5, because `I4` (heterarchy authority) declares `tier: 'warning'`.
+**The 20 rules** (plus an opt-in 21st). Their ids carry a tier, Critical, Warning or Info, but the code does not act on the tier: whatever fires is merged and applied together when it has authority. The tiers count 6/10/4 while the ids read C2–C7, W1–W9 and I1–I5, because `I4` (heterarchy authority) declares `tier: 'warning'`. There is no C1: it was a kill switch that waited for a governance status the report never gave, and it was removed on 2026-11-17 (F233). The other rules kept their ids, because the ledger refers to rules by id.
 
 *Critical:*
-- **C1**, kill switch: it restricts to read-only tools when governance reports `halted`. The governance report never produces that status, so C1 does not fire (F233). The kill switch that does act is the algedonic channel's. After five consecutive tool failures it halts the loop and asks for `/reset`.
+- The kill switch is not an S5 rule. It is the algedonic channel's: after five consecutive tool failures it halts the loop and asks for `/reset`.
 - **C2**, tool exclusion: when a specific tool fails 3+ times.
 - **C3**, context overflow compaction: at 90% utilization.
 - **C4**, doom-loop breaking: 3+ consecutive failing calls to the same tool, matched by tool name, not by input.
@@ -392,11 +392,11 @@ This is the project's rule for experimental policy: observe, then advise, then e
 - **C6**, variety critical: restrict to the top-5 tools by success rate.
 - **C7**, **stuck loop escape**: when stuck 5+ turns, restrict to tools not used recently, regardless of their success rate.
 
-*Warning:* model switch on rising latency (W2, which cannot fire: see [A second main model](#a-second-main-model-not-wired)); a revert recommendation on 5+ stuck turns (W3, recommended and never executed); drift-based compaction and tool restriction; homeostatic instability rebalancing; S3/S4 imbalance correction. A fired warning rule also sends a `governance.recommendation`, which the TUI prints as a line in the chat.
+*Warning:* model switch on rising latency (W2, which cannot fire: see [A second main model](#a-second-main-model-not-wired)); a revert recommendation on 5+ stuck turns (W3: advice, never executed); drift-based compaction and tool restriction; homeostatic instability rebalancing; S3/S4 imbalance correction. A fired warning rule also sends a `governance.recommendation`. The TUI prints it as a line in the chat. The dashboard lists it on the Governance tab with what S5 would do and the words "not applied", and a revert recommendation also appears as a line in the dashboard chat (so on the phone too). Nothing acts on a recommendation: there is no button and no timer, and a revert stays the owner's to do.
 
 *Info:* variety balance shifts, homeostatic adjustments and performance metrics, logged for training.
 
-A 22nd rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALCODE_S5_PROACTIVE_TOOLS=true`. It is append-only: it surfaces tools and never restricts them. It is off by default.
+A 21st rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALCODE_S5_PROACTIVE_TOOLS=true`. It is append-only: it surfaces tools and never restricts them. It is off by default.
 
 **Stuck-loop escalation (4 tiers), run by the loop itself:**
 1. **Turn 3+:** a governance signal is appended to the conversation saying "change your approach". It is appended rather than written into the system prompt, which keeps the prompt cache valid.
@@ -404,7 +404,7 @@ A 22nd rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALC
 3. **Turn 10+:** a synthetic user message makes the model reflect on what is blocking it.
 4. **Turn 15+:** a hard halt returns control to the user.
 
-After each decision, S5 compares the governance metrics before and after and writes the measured outcome into the decision journal. That is the training data below. Per-rule weights are also written to `~/.cynco/training/s5-weights.json`, but nothing reads them back yet (F233).
+After each decision, S5 compares the governance metrics before and after and writes the measured outcome into the decision journal. That is the training data below. (Until 2026-11-17 per-rule weights were also written to `~/.cynco/training/s5-weights.json`. Nothing ever read them, so the engine no longer writes the file; one left from before can be deleted.)
 
 ### Contract Enforcement
 A request opens a Definition-of-Done contract, and the model cannot stop until its assertions pass:
@@ -549,7 +549,7 @@ The engine mints `~/.cynco/tokens.json` at startup. The file is owner-only: on W
 |---|---|---|
 | `bridge` | The TUI command channel on the bridge port. This drives the agent, and the agent has Bash. | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
 | `inference` | Every dashboard read route, plus the dashboard WebSocket. That covers session transcripts, thinking tokens, governance, and the Chat tab's own send path. It also opens the day-to-day writes: project uploads and edits, moving or pausing a mission, and reading the apps list. | Injected into the dashboard page at request time. |
-| `management` | Anything that changes engine or governance configuration: `POST /config/*`, `/api/brain/layer`, phone pairing and devices (`/api/phone*`), and switching an app (`/api/apps*` other than GET). | Printed once at engine startup and pasted by hand. Never handed to a page. |
+| `management` | Anything that changes engine or governance configuration: `POST /config/*`, `/api/brain/layer`, the paired devices, a new pairing code and revocation (`/api/phone*`; reading the current code is the one exception, `GET /api/phone/code`, which the page on this PC may do with the token it holds and a phone may not), and switching an app (`/api/apps*` other than GET). | Printed once at engine startup and pasted by hand. Never handed to a page. |
 | `inference`, held by a paired device (`device-…`) | The same read routes, socket, Chat send path and day-to-day writes as the page, and nothing else. Off this machine only a device record authenticates, so management is refused there whatever is presented. | Minted when a phone pairs with the single-use code. Kept in that browser's local storage. Revoked from Config → Phone access. |
 
 The split is not ceremony. The inference token is delivered to a browser, so it is the secret most likely to escape. Flipping `ablation` or `contractEnforcement` silently corrupts the measurements the research rests on, so that costs a deliberate paste. A management token also reads, because the `admin` holder carries both scopes.
@@ -577,7 +577,7 @@ The dashboard is the phone client: the same page and the same engine, over your 
 
 1. Install Tailscale on the CynCo box and on the phone ([docs/liveness-setup.md](docs/liveness-setup.md) §2). `tailscale ip -4` gives the box's address.
 2. Start the engine with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,<that address>`.
-   - On the desk, **Config → Phone access** (management token) shows the phone URL and a six-digit pairing code.
+   - On the desk, **Config → Phone access** shows the phone URL and a six-digit pairing code. Open the page at `http://127.0.0.1:9161`: at any other address it is the phone layout, which has no such panel. The list of paired devices under it, a new code and revoking ask for the management token.
    - The engine's log prints both too. That is `.cynco-engine.log` in the project folder when the TUI launched it.
 3. On the phone, open the phone URL, type the code once and name the device. Bookmark that exact address: a different spelling is a different origin, and pairs again.
    - The engine appends a `device-…` record to `~/.cynco/tokens.json` (`inference` scope), and the browser keeps its secret in local storage.
@@ -585,7 +585,7 @@ The dashboard is the phone client: the same page and the same engine, over your 
 
 What a paired phone can do is what the desk page can do: chat, watch tool activity, answer approval cards and AskUser questions, and press **Stop**. It cannot change configuration: management is refused off this machine whatever token is presented, and the phone is never asked for the management token. A paired phone is therefore equivalent to a terminal on this machine, Bash approvals included. Revoke a lost phone under Config → Phone access, and its page returns to pairing at once.
 
-**What the phone sees.** A remote page lands in Projects and shows four tabs: Chat, Projects, **Away** and Missions. Away lists what the missions did while you were out: time, mission, trigger, ok or FAILED, and a summary, from every mission's `runs.jsonl` via `GET /api/away`.
+**What the phone sees.** A remote page lands in Projects and shows four tabs: Chat, Projects, **Away** and Missions. Under the Away list is the mission history: every run in the outcome ledger, newest first, with the campaign filter (the same panel the desk has on its Governance tab). And when the model is being waited for, the chat says so on the desk and the phone alike: how long it has sent nothing, and after how long the engine ends the request. Away lists what the missions did while you were out: time, mission, trigger, ok or FAILED, and a summary, from every mission's `runs.jsonl` via `GET /api/away`.
 
 The layout is one column, with the send box pinned to the bottom. A page whose socket dropped, for example a phone locked mid-answer, is sent what it missed, in order, once. The headless phone engine runs with `LOCALCODE_BRAIN=off` (no jlens sidecar, no activation tap). The desk page is unchanged.
 
@@ -684,7 +684,7 @@ The PC with the big GPU does not have to stay on. CynCo keeps it awake only whil
 - **Awake only while busy** *(default on, Windows)*. The engine tracks every open turn, one-shot, in-flight model request and queued picture. While any is open it holds the machine awake (`scripts/hold-awake.ps1`), and it lets go when the last one closes. Nothing in CynCo ever puts the machine to sleep.
 - **A cold GPU until a message needs it** *(opt-in: `LOCALCODE_LLAMA_LAZY=true`)*.
   - The model loads before the first request, not at boot.
-  - With `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` it unloads after that long with nothing open, taking a slot snapshot first so the conversation comes back warm.
+  - With `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` it unloads after that long with nothing open, taking a slot snapshot first so the conversation comes back warm. "Nothing open" includes the model server itself: if it answered a request that was not CynCo's in that time (one of your other apps, which CynCo's server answers while CynCo holds the GPU), the model stays loaded and the wait starts again.
   - While the daemon's one-shot owns the GPU (`~/.cynco/gpu-busy.json`), a lazy load waits and says so, instead of killing that server.
   - The headless phone engine runs this way.
 - **One engine in the phone engine's seat.** A desk engine stops the headless phone engine before loading its model, and starts it again on exit. A second engine on another bridge port or `CYNCO_HOME` leaves it alone (F224).
@@ -869,7 +869,7 @@ The only label was the one `engine/s5/exportTrainingData.ts` joined out of `gove
 Each S5 decision now carries three things it did not before:
 
 - **`decisionId`**: a UUID, journaled inside the decision, and the join key for the outcome. The pre-existing `entryTimestamp` key cannot work here: `makeJournalEntry` reads the clock itself, so the writer never learns the line's timestamp.
-- **`ruleIds`**: which of the 21 rules fired.
+- **`ruleIds`**: which of the 20 rules fired.
 - **`rejected`**: rules that fired and were *overridden* by `combineDecisions`. The merge is lossy on purpose (`model` takes the first non-null, `tools` intersects), and these losers are the only negative examples the rule engine produces. A rule returning `null` is not among them: its condition was simply false, so it proposed nothing.
 
 `S5Orchestrator.evaluateLastDecision()` writes the per-decision outcome, keyed on `decisionId`, from the measured change in `stuckTurns` and `toolSuccessRate`. When governance reports neither number, the outcome is written as **`unknown`**, not defaulted into a verdict.
@@ -915,20 +915,15 @@ Three layers, in order of precedence:
 
 Nothing has to be configured to start. With no environment and no profile of your own, the shipped profile supplies the model and provider the Quick Start installs. Setting a variable overrides the profile for that one field and nothing else.
 
-**The exception: llama-server launch knobs.** For these, a profile's `runtime:` value beats the environment variable, which applies only when the profile does not name the key (`engine/bootstrapProvider.ts`):
-- `batch_size`, `gpu_layers` and `flash_attn`;
-- `cache_ram`, `ctx_checkpoints` and `checkpoint_min_step`;
-- `ubatch_size` and `reasoning_budget`.
-
-`spec_type`, `spec_draft_n` and `context_length` follow the usual order.
+**The llama-server launch knobs follow the same order.** A `LOCALCODE_*` variable beats a profile's `runtime:` value for `batch_size`, `gpu_layers`, `flash_attn`, `cache_ram`, `ctx_checkpoints`, `checkpoint_min_step`, `ubatch_size` and `reasoning_budget`, as it does for `spec_type`, `spec_draft_n` and `context_length` (`launchKnobs` in `engine/bootstrapProvider.ts`). Until 2026-11-17 the profile won for those eight.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `LOCALCODE_MODEL` | from profile (`qwen3.8:27b`) | Model name. Not required: the profile supplies it. |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | The Ollama (or OpenAI-compatible) server URL. |
-| `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama`, `llama-cpp`, `lmstudio`, `vllm` or `openai-compat`. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
+| `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama` or `llama-cpp`; any other name is refused at start. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_MODEL_PATH` | — | The GGUF for the llama-cpp provider (or a profile's `model_file`). |
-| `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing. Falls back to `nomic-embed-text`, the one to pull on Ollama. |
+| `LOCALCODE_EMBED_MODEL` | `nomic-embed-text` | Model for code indexing. Another model that the server does not have falls back to this one. |
 | `LOCALCODE_TEMPERATURE` | `1.0` from the shipped profile (built-in `0.7`) | Sampling temperature. |
 | `LOCALCODE_CONTEXT_LENGTH` | `65536` from the shipped profile; with no profile value, `131072` on llama-cpp and auto-detected on Ollama | Override the context window. It wins over a profile's `context_length`. `LOCALCODE_CACHE_RAM` is derived from whichever value ends up in force. |
 | `LOCALCODE_ALL_TOOLS` | `false` | Surface every tool up front, instead of loading extended tools on demand via `load_tools`. |
@@ -951,7 +946,7 @@ Nothing has to be configured to start. With no environment and no profile of you
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints, for prefix-cache rollback on hybrid DeltaNet models. `64` killed llama-server with `bad allocation` against a fixed 8192 MiB cache (F91). `LOCALCODE_CACHE_RAM` is now derived from this value, so raising it raises the budget with it. Pinning `LOCALCODE_CACHE_RAM` too re-creates F91 by hand. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
 | `LOCALCODE_UBATCH_SIZE` | `2048` | llama-server's physical prefill batch size. |
-| `LOCALCODE_REASONING_BUDGET` | `256` | llama-server's reasoning token budget. Tuned on Qwen3.6, where more than 256 hurt tool-call accuracy and uncapped thinking wasted minutes. Qwen3.8's card asks for large budgets, so the profiles here set `reasoning_budget: 4096` (a profile value beats this variable). |
+| `LOCALCODE_REASONING_BUDGET` | `256` | llama-server's reasoning token budget. Tuned on Qwen3.6, where more than 256 hurt tool-call accuracy and uncapped thinking wasted minutes. Qwen3.8's card asks for large budgets, so the profiles here set `reasoning_budget: 4096` (this variable beats a profile value). |
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | Where projects-mode project folders live (see [Projects](#projects)). |
 | `LOCALCODE_PROJECTS_EMBED_MODEL` | `nomic-embed-text` | Prose embedding model for project knowledge, artifacts and chats. Changing it rebuilds each project's store on its next write (journaled `index.rebuilt`). |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | Share of the context window given to a project chat's per-turn `[Project knowledge]` block (clamped to 0.02–0.5). |
@@ -987,7 +982,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_API_KEY` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_APPROVE_ALL` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | `base_url` | `engine/config.ts`, `engine/engine/callModel.ts` |
-| `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/config.ts` |
+| `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_BEST_OF_N` | `false` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_BEST_OF_N_COUNT` | `2` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_BEST_OF_N_TEMP` | `0.8` | — | `engine/bridge/conversationLoop.ts` |
@@ -995,8 +990,8 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_BRAIN` | *not derived* | — | `engine/brain/brainSwitch.ts` |
 | `LOCALCODE_BRAIN_LAYER` | `40` | — | `engine/main.ts` |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | — | `engine/bridge/server.ts` |
-| `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/llama/processManager.ts` |
-| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
+| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_COMFYUI_CFG` | `6` | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_CHECKPOINT` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_SIZE` | `1024x1024` | — | `engine/imagegen/config.ts` |
@@ -1008,7 +1003,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_COMFYUI_WORKFLOW_OUTLINE` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_WORKFLOW_VARY` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
-| `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | — | `engine/dashboard/server.ts` |
 | `LOCALCODE_DASHBOARD_PROXY_PORT` | *not derived* | — | `engine/dashboard/server.ts` |
 | `LOCALCODE_EMBED_API` | *not derived* | — | `engine/index/embedClient.ts` |
@@ -1018,8 +1013,8 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_EXPERTISE` | `advanced` | `expertise` | `engine/config.ts` |
 | `LOCALCODE_FALLBACK_MODEL` | *not derived* | — | `engine/llama/busyFallback.ts` |
 | `LOCALCODE_FALLBACK_URL` | *not derived* | — | `engine/llama/busyFallback.ts` |
-| `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/config.ts` |
-| `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/config.ts` |
+| `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
+| `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_GRAMMAR_ENABLED` | `false` | — | `engine/dashboard/server.ts`, `engine/engine/callModel.ts` |
 | `LOCALCODE_HOUSE_CONDUCT` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_HYBRID_SEARCH` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/index/indexer.ts` |
@@ -1051,7 +1046,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | — | `engine/projects/layout.ts` |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | — | `engine/projects/retrieval.ts` |
 | `LOCALCODE_PROVIDER` | `llama-cpp` | `provider` | `engine/config.ts` |
-| `LOCALCODE_REASONING_BUDGET` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_REASONING_BUDGET` | `256` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_RECALL_EMBED_TIMEOUT_MS` | `4000` | — | `engine/index/embedClient.ts` |
 | `LOCALCODE_RECALL_HALFLIFE_HOURS` | `72` | — | `engine/memory/learningStore.ts` |
 | `LOCALCODE_RECALL_PROMOTED_BONUS` | `0.15` | — | `engine/memory/learningStore.ts` |
@@ -1076,7 +1071,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_TIMEOUT` | `300000` | `timeout` | `engine/config.ts` |
 | `LOCALCODE_TOOL_TEMPERATURE` | *not derived* | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_TRAJECTORY_ENABLED` | `true` | — | `engine/dashboard/server.ts`, `engine/main.ts` |
-| `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_VARIETY_CONTROL` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_VISION_MODEL` | *not derived* | — | `engine/vision/settings.ts` |
 | `LOCALCODE_VISION_URL` | *not derived* | — | `engine/vision/settings.ts` |

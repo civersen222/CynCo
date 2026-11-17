@@ -1,5 +1,5 @@
 """Sidecar HTTP service. POST /readout {"layer": int, "h": [float]*d, "k": int?}
--> {"top": [{"token": str, "p": float}]}. GET /health -> {"ok": true, "layers": [...]}.
+-> {"top": [{"token": str, "p": float}]}. GET /health -> {"ok": true, "layers": [...], "model": str}.
 Start:  python -m jlens_service.server   (port env JLENS_PORT, default 9163)
 
 torch and the Readout are imported where they are used, so the module (the
@@ -40,7 +40,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             layers = sorted(READOUT.J.keys()) if READOUT else config.layers()
-            self._send(200, {"ok": True, "layers": layers})
+            # `model`: the model this lens was computed for. The engine passes it to the
+            # Brain tab, which labels its readouts with it (a lens for another model than
+            # the one being served does not mean what it shows).
+            self._send(200, {"ok": True, "layers": layers, "model": config.MODEL_REPO})
         else:
             self._send(404, {"error": "not found"})
 

@@ -74,6 +74,115 @@ describe('IdleUnloader', () => {
   })
 })
 
+// An app CynCo took the GPU from is answered by CynCo's server meanwhile (local-LLM apps
+// record, decision 3). Its requests never pass through the engine, so the registry is idle while
+// a game is in play, and until 2026-11-17 the model was unloaded under it (NOW.md, item f of the
+// apps work; the kernel of work-order mission D2).
+describe('IdleUnloader: a model server answering someone else is not idle', () => {
+  type Use = { processing: boolean; tasks: string } | null
+  function make(uses: Array<Use | Promise<Use>>) {
+    const registry = new ActivityRegistry()
+    const ft = fakeTimers()
+    const unloads: number[] = []
+    const log: string[] = []
+    let asked = 0
+    const u = new IdleUnloader({
+      registry, isRunning: () => true, unload: async () => { unloads.push(1) }, idleMs: 60_000,
+      setTimer: ft.setTimer, clearTimer: ft.clearTimer, log: l => log.push(l),
+      serverUse: async () => uses[Math.min(asked++, uses.length - 1)],
+    })
+    return { registry, ft, unloads, log, u, asked: () => asked }
+  }
+  /** Lets the unloader's awaits run: its decision is made after it has asked the server. */
+  const settle = () => new Promise<void>(r => setTimeout(r, 0))
+  const quiet = (tasks: string): Use => ({ processing: false, tasks })
+
+  it('a server nobody asked anything of since the timer was armed is unloaded', async () => {
+    const { ft, unloads, u } = make([quiet('0:41'), quiet('0:41')])
+    u.start(); ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(1)
+  })
+
+  it('a server that ran a task for someone else in that time keeps its model, and the wait starts again', async () => {
+    const { ft, unloads, log, u } = make([
+      quiet('0:41'), // armed
+      quiet('0:57'), // fired: a task ran that the registry never saw
+      quiet('0:57'), // armed again
+      quiet('0:57'), // fired: nothing since
+    ])
+    u.start(); ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(0)
+    expect(log.join('\n')).toContain('answered a request that was not CynCo\'s')
+    expect(ft.pending()).toBe(1)
+    ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(1)
+  })
+
+  it('a server generating at this moment is not unloaded, whatever the task ids say', async () => {
+    const { ft, unloads, u } = make([quiet('0:41'), { processing: true, tasks: '0:41' }, quiet('0:41')])
+    u.start(); ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(0)
+    expect(ft.pending()).toBe(1)
+  })
+
+  it('a server that cannot be read is unloaded as before: an unreadable server must not hold the card', async () => {
+    const atFire = make([quiet('0:41'), null])
+    atFire.u.start(); atFire.ft.advance(60_000); await settle()
+    expect(atFire.unloads.length).toBe(1)
+    expect(atFire.log.some(l => l.includes('did not say what it has been doing'))).toBe(true) // said, not silent
+
+    const atArm = make([null, quiet('0:41')])
+    atArm.u.start(); atArm.ft.advance(60_000); await settle()
+    expect(atArm.unloads.length).toBe(1)
+  })
+
+  it('a read that throws is a server that cannot be read', async () => {
+    const registry = new ActivityRegistry()
+    const ft = fakeTimers()
+    const unloads: number[] = []
+    const u = new IdleUnloader({
+      registry, isRunning: () => true, unload: async () => { unloads.push(1) }, idleMs: 60_000,
+      setTimer: ft.setTimer, clearTimer: ft.clearTimer,
+      serverUse: async () => { throw new Error('ECONNREFUSED') },
+    })
+    u.start(); ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(1)
+  })
+
+  it('CynCo\'s own request moves the task id and is not "someone else": the comparison starts when the registry goes idle', async () => {
+    const { registry, ft, unloads, u } = make([
+      quiet('0:1'), // armed at start
+      quiet('0:9'), // armed again when CynCo's request ended: 0:9 is its own task
+      quiet('0:9'), // fired
+    ])
+    u.start()
+    const end = registry.begin('request')
+    end()
+    ft.advance(60_000); await settle()
+    expect(unloads.length).toBe(1)
+  })
+
+  it('a turn that begins while the server is being asked wins: nothing is unloaded under it', async () => {
+    let answer!: (u: Use) => void
+    const slow = new Promise<Use>(r => { answer = r })
+    const { registry, ft, unloads, u } = make([quiet('0:41'), slow])
+    u.start(); ft.advance(60_000)
+    const end = registry.begin('turn') // the fire is still waiting for the server's answer
+    answer(quiet('0:41')); await settle()
+    expect(unloads.length).toBe(0)
+    end()
+  })
+
+  it('without a way to ask the server it decides at once, as it always did', () => {
+    const registry = new ActivityRegistry()
+    const ft = fakeTimers()
+    const unloads: number[] = []
+    const u = new IdleUnloader({ registry, isRunning: () => true, unload: async () => { unloads.push(1) }, idleMs: 60_000, setTimer: ft.setTimer, clearTimer: ft.clearTimer })
+    u.start(); ft.advance(60_000)
+    expect(unloads.length).toBe(1)
+  })
+})
+
 describe('createLazyEnsureReady', () => {
   it('runs ensureRunningLazy once for concurrent callers and again after it settles', async () => {
     let calls = 0

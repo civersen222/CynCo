@@ -100,11 +100,6 @@ body {
 .health-badge.healthy { background: #2d4a3e; color: #4ec9b0; }
 .health-badge.warning { background: #4a3a2d; color: #dcdcaa; }
 .health-badge.critical { background: #4a2d2d; color: #f44747; }
-.health-badge.halted { background: #4a2d2d; color: #f44747; animation: pulse-red 1s infinite; }
-@keyframes pulse-red {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
 .gov-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 8px; font-size: 12px; }
 .gov-stats .label { color: #808080; }
 .gov-stats .value { color: #d4d4d4; }
@@ -369,6 +364,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .brain-label.offline::after { content:' offline'; }
 /* Config → Phone access */
 .phone-note { color:#a0a0a0; font-size:12px; margin:6px 0 10px; line-height:1.5; }
+.chat-model-wait { color:#dcdcaa; font-size:12px; padding:4px 10px; }
 .phone-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
 .phone-row { display:flex; gap:10px; align-items:center; padding:5px 0; border-bottom:1px solid #2a2a2a; font-size:12px; flex-wrap:wrap; }
 .phone-k { color:#808080; min-width:130px; }
@@ -977,6 +973,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     </div>
     <div class="chat-messages" id="chatMessages"></div>
     <div id="chatCitations"></div>
+    <div id="chatModelWait" class="chat-model-wait" hidden></div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!chatEnterInsertsNewline()){event.preventDefault();sendChatMessage()}"></textarea>
@@ -1197,6 +1194,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
       Brain <span id="brain-tier-badge" class="badge">entropy-only</span>
     </div>
     <div id="brainOffNotice" class="muted" hidden></div>
+    <div id="brain-lens-model" class="muted" style="font-size:12px;"></div>
     <div id="brain-tail" class="scroll-tail"></div>
     <canvas id="brain-sparkline" height="60" style="width:100%;display:block;margin:8px 0;"></canvas>
     <div id="brain-tooltip" class="tooltip" hidden></div>
@@ -1325,9 +1323,10 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 <div class="controls-section" id="phonePanel">
   <div class="control-panel">
     <div class="control-panel-title teal">Phone access</div>
-    <p class="phone-note">A phone on your Tailscale tailnet opens the phone URL, pairs once with a single-use code, and then holds a token of its own: it can chat and read, never change configuration. Showing the code needs the management token (printed when the engine started).</p>
+    <p class="phone-note">A phone on your Tailscale tailnet opens the phone URL, pairs once with a single-use code, and then holds a token of its own: it can chat and read, never change configuration. The code is shown here, on this PC only. Seeing the paired devices, making a new code and revoking need the management token (printed when the engine started).</p>
+    <div id="phoneCode"></div>
     <div class="phone-actions">
-      <button class="chat-send" id="phoneShow" onclick="loadPhoneAccess()">Show pairing code &amp; devices</button>
+      <button class="chat-send" id="phoneShow" onclick="loadPhoneAccess()">Show paired devices</button>
       <button class="chat-send" id="phoneRotate" onclick="rotatePairingCode()" style="display:none">New code</button>
     </div>
     <div id="phoneBody"></div>
@@ -1873,6 +1872,17 @@ function handleEvent(event) {
       break;
     }
 
+    case 'governance.recommendation': {
+      // S5 would do this and did not. Shown in the Governance tab's S5 list, and in the
+      // chat when it is a revert; the page offers no way to act on one (recommendationEntry).
+      var rec = recommendationEntry(event);
+      state.s5Decisions.unshift({ ts: new Date(), decision: rec.decision, agentId: 'S5', reason: rec.reason });
+      if (state.s5Decisions.length > MAX_DECISIONS) state.s5Decisions.pop();
+      renderS5();
+      if (rec.chatLine !== null) appendChatMsg('system', rec.chatLine);
+      break;
+    }
+
     case 'config.current':
       state.config = event.config;
       syncConfigToSliders(event.config);
@@ -1883,12 +1893,14 @@ function handleEvent(event) {
       break;
 
     case 'stream.thinking':
+      clearModelWait();
       brainViz.setActive(true);
       appendChatThinking(event.text || '');
       brainOnThinking(event.text || '');
       break;
 
     case 'stream.token':
+      clearModelWait();
       brainViz.setActive(true);
       brainMaybeCloseThinking();
       // Chat tab: stream assistant text
@@ -2149,7 +2161,6 @@ function renderGovernance() {
   var cls = 'healthy';
   if (health.includes('warning') || health.includes('amber')) cls = 'warning';
   else if (health.includes('critical') || health.includes('red')) cls = 'critical';
-  else if (health.includes('halt')) cls = 'halted';
 
   badgeEl.innerHTML = '<span class="health-badge ' + cls + '">' + escHtml(gov.health) + '</span>';
 
@@ -2269,6 +2280,34 @@ function renderGovernance() {
   } else {
     routeEl.textContent = '—';
   }
+}
+
+/**
+ * S5's recommendation in words (`governance.recommendation`): what it would do, why, and that
+ * nothing did it. Display only, by the owner's decision of 2026-11-17: a recommendation is
+ * advice, and executing a revert is authority to change files that nobody gave. A revert also
+ * gets a chat line, because it is the one recommendation about the owner's files.
+ */
+function recommendationEntry(event) {
+  var action = event.action || {};
+  var signal = event.signal || '?';
+  var parts = [];
+  if (action.revert) parts.push('revert the last change');
+  if (action.model) parts.push('switch model to ' + action.model);
+  if (action.tools && action.tools.length) parts.push('restrict tools to ' + [].concat(action.tools).join(', '));
+  if (action.contextAction && action.contextAction !== 'none') parts.push('context: ' + action.contextAction);
+  var reason = String(event.description || '');
+  var chatLine = null;
+  if (action.revert) {
+    var said = reason.trim();
+    if (said && said.charAt(said.length - 1) !== '.') said += '.';
+    chatLine = 'S5 recommends a revert (' + signal + '): ' + said + ' Nothing was reverted: this is advice, and acting on it is yours.';
+  }
+  return {
+    decision: 'recommends (' + signal + '): ' + (parts.length ? parts.join(', ') : 'no action named') + ' · not applied',
+    reason: reason,
+    chatLine: chatLine,
+  };
 }
 
 function renderS5() {
@@ -3065,6 +3104,11 @@ function showConnProject(p) {
 function fetchSessionState() {
   // Hydrate full dashboard state from REST — handles reload, late connect, reconnect
   var seq = projectsState.connectSeq;
+  // This runs again on every reconnect. Each read below happens every time; each repeating timer
+  // is started by the first run only. Started every time and never cleared, N reconnects left
+  // N+1 copies of all five polls running (F234 follow-up e).
+  var firstRun = !fetchSessionState.timersStarted;
+  fetchSessionState.timersStarted = true;
   fetch('/api/session')
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -3113,13 +3157,16 @@ function fetchSessionState() {
     }).catch(function() {});
   }
   pollGovernance();
-  setInterval(pollGovernance, 3000);
+  if (firstRun) setInterval(pollGovernance, 3000);
+
+  // The model being waited for: asked every five seconds while a turn is open (pollModelWait).
+  if (firstRun) setInterval(function() { pollModelWait(); }, 5000);
 
   // F143: while a tool call is in flight the engine streams nothing, so
   // without this the feed freezes and the brain's watchdog declares idle
   // three minutes into a legitimate 20-minute test run. Tick the elapsed
   // time and keep the working indicator armed until tool.complete lands.
-  setInterval(function() {
+  if (firstRun) setInterval(function() {
     var running = false;
     for (var i = 0; i < state.toolFeed.length; i++) {
       if (state.toolFeed[i].status === 'running') { running = true; break; }
@@ -3167,7 +3214,7 @@ function fetchSessionState() {
     }).catch(function() {});
   }
   pollMission();
-  setInterval(pollMission, 10000);
+  if (firstRun) setInterval(pollMission, 10000);
 
   // Campaign panel (Phase 2c-ii): every campaign under ~/.cynco/campaigns,
   // independent of Mission mode — the panel is useful between waves too, when
@@ -3476,7 +3523,7 @@ function fetchSessionState() {
     }).catch(function(e) { console.warn('campaign poll failed', e); });
   }
   pollCampaign();
-  setInterval(pollCampaign, 10000);
+  if (firstRun) setInterval(pollCampaign, 10000);
 
   fetchPredictions();
   fetchContracts();
@@ -3495,7 +3542,7 @@ function fetchSessionState() {
 
   // Hydrate + poll training data every 30 seconds
   fetchTrainingData();
-  setInterval(fetchTrainingData, 30000);
+  if (firstRun) setInterval(fetchTrainingData, 30000);
 }
 
 function fetchParams() {
@@ -3691,7 +3738,16 @@ function wireMissionHistory() {
     var a = ev.target && ev.target.closest ? ev.target.closest('.mh-campaign') : null;
     if (!a) return;
     ev.preventDefault();
-    focusCampaign(a.getAttribute('data-campaign'));
+    var campaign = a.getAttribute('data-campaign');
+    // The phone has no Campaign panel to open (it is on the Governance tab): there the link
+    // narrows this list to the campaign, which is the same id the filter above it uses.
+    if (window.__CYNCO_REMOTE) {
+      missionHistory.campaign = campaign;
+      missionHistory.offset = 0;
+      pollMissionHistory();
+      return;
+    }
+    focusCampaign(campaign);
   });
   pollMissionHistory();
   setInterval(pollMissionHistory, 30000);
@@ -3967,9 +4023,25 @@ function remoteRouteOnce(state) {
   state.routed = true;
   return true;
 }
+/**
+ * The outcome ledger on the phone (work order D4g). Its panel lives on the Governance tab, which
+ * the phone does not have. The one panel is moved under Away, not copied: its controls are found
+ * by id and its poll already runs. It is renamed there, because the phone's Missions tab is the
+ * schedules. True when it moved.
+ */
+function moveMissionHistoryForRemote(doc) {
+  var panel = doc.getElementById('panelMissionHistory');
+  var away = doc.querySelector('#tab-away .grid');
+  if (!panel || !away || panel.parentNode === away) return false;
+  away.appendChild(panel);
+  var title = panel.querySelector('.panel-title');
+  if (title) title.textContent = 'Mission history (every run in the outcome ledger)';
+  return true;
+}
 function applyRemoteLayout() {
   if (!window.__CYNCO_REMOTE) return;
   document.body.classList.add('remote');
+  moveMissionHistoryForRemote(document);
   var keep = remoteTabSet(true);
   var btns = document.querySelectorAll('.tab-bar > .tab-btn');
   for (var i = 0; i < btns.length; i++) {
@@ -4344,6 +4416,8 @@ function switchTab(name) {
   if (name === 'away') loadAway();
   if (name === 'missions') startMissionsPoll();
   else stopMissionsPoll();
+  if (name === 'config') startPairingCodePoll();
+  else stopPairingCodePoll();
   if (name === 'projects' && !projectsState.routing) {
     // A chat hash would re-open the chat and bounce back to the Chat tab, so
     // the Projects tab lands on that chat's project instead.
@@ -4436,6 +4510,56 @@ function respondApproval(requestId, approved) {
 }
 
 // ── Run control for a page that may be a phone (docs/decisions/2026-10-22-phone-access.md) ──
+
+// ── The model is silent (work order D4f) ──
+// The engine waits up to twenty minutes for a first token and ten between tokens before it
+// cuts a request (F235). The chat showed nothing for all of that. /api/session carries
+// `modelSilence` (the request in flight, how long its server has sent nothing, the limit),
+// and while a turn is open the page asks every five seconds and says it under the chat.
+
+/**
+ * The line, or null when there is nothing worth saying: no request in flight, or a silence
+ * under fifteen seconds, which reading a long prompt takes on every turn. `agoMs` is how long
+ * ago the page was told, so the count moves between two answers.
+ */
+function modelWaitLine(silence, agoMs) {
+  if (!silence || typeof silence.silentMs !== 'number' || typeof silence.limitMs !== 'number') return null;
+  var ms = silence.silentMs + (agoMs > 0 ? agoMs : 0);
+  if (ms < 15000) return null;
+  function span(t) {
+    var s = Math.floor(t / 1000), m = Math.floor(s / 60);
+    return m > 0 ? m + 'm' + (s % 60 ? ' ' + (s % 60) + 's' : '') : s + 's';
+  }
+  var named = silence.server && silence.server !== 'llama-server' ? silence.server : null;
+  var end = ' The engine ends the request after ' + span(silence.limitMs) + ' of silence.';
+  if (silence.phase === 'first-byte') {
+    return 'Waiting for ' + (named ? named + "'s" : "the model's") + ' first token: ' + span(ms) + ' so far.' + end;
+  }
+  return (named || 'The model') + ' has sent nothing for ' + span(ms) + '.' + end;
+}
+
+var modelWait = { silence: null, at: 0 };
+function renderModelWait() {
+  var el = document.getElementById('chatModelWait');
+  if (!el) return;
+  var line = modelWait.silence ? modelWaitLine(modelWait.silence, Date.now() - modelWait.at) : null;
+  el.hidden = line === null;
+  el.textContent = line === null ? '' : line;
+}
+/** The model spoke, or the turn is over: the line comes down at once, not at the next answer. */
+function clearModelWait() {
+  if (modelWait.silence === null) return;
+  modelWait.silence = null;
+  renderModelWait();
+}
+function pollModelWait() {
+  if (!chatTurnRunning()) { clearModelWait(); return; }
+  fetch('/api/session').then(function(r) { return r.json(); }).then(function(d) {
+    modelWait.silence = d && d.modelSilence ? d.modelSilence : null;
+    modelWait.at = Date.now();
+    renderModelWait();
+  }).catch(function() {});
+}
 
 /** The Stop button follows the working indicator: shown while a turn runs or the engine waits on a card. */
 function showChatStop(on) {
@@ -4578,8 +4702,65 @@ function renderApps(data, error) {
 }
 
 // ── Config → Phone access: the pairing code, the phone URL, the paired devices ──
-// Management scope (the fetch wrapper asks for the token on 403), so the code —
-// which mints credentials — is never shown to a page holding only the read token.
+// Two reads. The code and where the phone connects are the read token's, on this PC
+// and nowhere else (GET /api/phone/code): the code grants what this page already
+// holds, and the owner should not need the engine log to pair a phone. The devices,
+// a new code and a revocation are management (the fetch wrapper asks for the token
+// on 403).
+
+function loadPairingCode() {
+  // The panel is hidden on a phone and the engine refuses one; asking would only be a refusal.
+  if (window.__CYNCO_REMOTE) return;
+  fetch('/api/phone/code')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) { renderPairingCode(data, null); })
+    .catch(function(err) { renderPairingCode(null, err.message); });
+}
+
+// A code is single-use: the engine replaces it when a phone pairs. A page left on the
+// Config tab would go on showing the used one, and typing it counts as a wrong code.
+var pairingCodeTimer = null;
+function startPairingCodePoll() {
+  stopPairingCodePoll();
+  if (window.__CYNCO_REMOTE) return;
+  loadPairingCode();
+  pairingCodeTimer = setInterval(loadPairingCode, 10000);
+}
+function stopPairingCodePoll() {
+  if (pairingCodeTimer) { clearInterval(pairingCodeTimer); pairingCodeTimer = null; }
+}
+
+/** The code and the addresses in words, one row each. Both reads carry these four fields. */
+function pairingRows(data) {
+  var rows = [{ k: 'Pairing code', v: data.lockedForMs > 0
+    ? 'locked for ' + Math.ceil(data.lockedForMs / 60000) + ' min after wrong codes'
+    : String(data.code) + '   (single-use)' }];
+  var extras = (data.listeners || []).filter(function(l) { return !l.primary; });
+  if (!extras.length) rows.push({ k: 'Phone URL', v: 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.' });
+  for (var i = 0; i < extras.length; i++) {
+    rows.push({ k: 'Phone URL', v: 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)') });
+  }
+  // The listener `tailscale serve` forwards to for the https name (README, Phone access → HTTPS).
+  if (data.proxy) {
+    rows.push({ k: 'HTTPS proxy target', v: 'http://' + data.proxy.host + ':' + data.proxy.port +
+      (data.proxy.bound ? '   (tailscale serve points here; every client on it must be paired)' : '   (not bound: is another process on that port?)') });
+  }
+  return rows;
+}
+
+/** Set with textContent, as everything in this panel is. */
+function renderPairingCode(data, error) {
+  var box = document.getElementById('phoneCode');
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+  var rows = data ? pairingRows(data) : [{ k: 'Pairing code', v: 'unavailable: ' + (error || 'no answer') }];
+  for (var i = 0; i < rows.length; i++) {
+    var r = document.createElement('div'); r.className = 'phone-row';
+    var k = document.createElement('span'); k.className = 'phone-k'; k.textContent = rows[i].k;
+    var v = document.createElement('span'); v.className = 'phone-v'; v.textContent = rows[i].v;
+    r.appendChild(k); r.appendChild(v); box.appendChild(r);
+  }
+}
 
 function loadPhoneAccess() {
   fetch('/api/phone')
@@ -4624,19 +4805,8 @@ function renderPhoneAccess(data, error) {
     return;
   }
   if (rotate) rotate.style.display = '';
-  row('Pairing code', data.lockedForMs > 0
-    ? 'locked for ' + Math.ceil(data.lockedForMs / 60000) + ' min after wrong codes'
-    : String(data.code) + '   (single-use)');
-  var extras = (data.listeners || []).filter(function(l) { return !l.primary; });
-  if (!extras.length) row('Phone URL', 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.');
-  for (var i = 0; i < extras.length; i++) {
-    row('Phone URL', 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)'));
-  }
-  // The listener `tailscale serve` forwards to for the https name (README, Phone access → HTTPS).
-  if (data.proxy) {
-    row('HTTPS proxy target', 'http://' + data.proxy.host + ':' + data.proxy.port +
-      (data.proxy.bound ? '   (tailscale serve points here; every client on it must be paired)' : '   (not bound: is another process on that port?)'));
-  }
+  // The management read carries the code too: after "New code" this is what shows the new one.
+  renderPairingCode(data, null);
   row('Last phone request', data.lastRemoteRequestAt
     ? new Date(data.lastRemoteRequestAt).toLocaleString()
     : 'none yet. If the phone cannot connect: Tailscale on the phone, then Windows Firewall for bun.exe.');
@@ -6856,10 +7026,22 @@ function brainTierReason(msg, tier) {
   return why.length ? 'entropy only — ' + why.join('; ') : 'entropy only';
 }
 
+/**
+ * Which model the lens was computed for, as the sidecar reports it (brain.tier `lensModel`).
+ * The page holds no model name: a lens recomputed for another model relabels this by itself.
+ */
+function brainLensLabel(msg) {
+  if (!msg || msg.lens !== true) return '';
+  if (!msg.lensModel) return 'lens: the sidecar does not report which model it was computed for';
+  return 'lens computed for ' + msg.lensModel + ' · a readout means what it says only while that is the model being served';
+}
+
 function brainOnTier(msg) {
   var tier = msg.tier || 'entropy-only';
   var badge = document.getElementById('brain-tier-badge');
   if (badge) badge.textContent = tier;
+  var lensEl = document.getElementById('brain-lens-model');
+  if (lensEl) lensEl.textContent = brainLensLabel(msg);
   var status = document.getElementById('brain-workspace-status');
   if (status) status.textContent = brainTierReason(msg, tier);
   brainFillLayers(msg.layers, msg.layer);

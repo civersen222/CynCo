@@ -80,7 +80,6 @@ const fail = (tool: string, n: number) =>
 
 /** One input per rule that makes exactly that rule's condition true. */
 const WITNESSES: Record<string, Partial<S5Input>> = {
-  C1: { governanceStatus: 'halted' },
   C2: { recentToolResults: [...fail('Edit', 3), { tool: 'Read', success: true }] },
   C3: { contextUsagePercent: 0.95 },
   C4: { recentToolResults: fail('Bash', 3) },

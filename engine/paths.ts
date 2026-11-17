@@ -34,6 +34,22 @@ export function cyncoHome(): string {
 }
 
 /**
+ * Whether this engine may adopt the pre-rename state folder, `~/.localcode`, as its home.
+ *
+ * Only an engine on the default home may, and only when that home is not there yet: the
+ * one-time move to `~/.cynco`. A home redirected with `CYNCO_HOME` is how a second engine, a
+ * test engine or a campaign is kept out of the live state, and it is somebody's scratch space.
+ * On 2026-11-17 a scratch engine whose `CYNCO_HOME` named a folder that did not exist yet was
+ * handed the owner's `~/.localcode` by this move, and the start-up session clean-up then
+ * deleted the 53 journals in it that were older than thirty days (F241). `env` is the seam.
+ */
+export function shouldAdoptLegacyHome(opts: { legacyExists: boolean; homeExists: boolean; env?: Record<string, string | undefined> }): boolean {
+  const override = (opts.env ?? process.env).CYNCO_HOME
+  if (override !== undefined && override !== '') return false
+  return opts.legacyExists && !opts.homeExists
+}
+
+/**
  * Where the liveness daemon's missions live: `CYNCO_MISSIONS_DIR` (empty =
  * unset) or `<cyncoHome()>/missions`. The daemon loads `<id>/mission.json`
  * from here and the dashboard's `/api/away` tails `<id>/runs.jsonl`; both

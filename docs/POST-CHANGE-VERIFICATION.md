@@ -1,6 +1,6 @@
 # Post-Change Verification (mandatory)
 
-> Canonical copy. `CYNCO.md` mirrors this section for agent context, but this
+> Canonical copy. `CONVENTIONS.md` points here for agent context; this
 > file is the source of truth.
 
 After EVERY change set (feature, fix, refactor), before moving on:

@@ -1,5 +1,7 @@
 /**
- * Shared harness for gated live-wiring tests (CYNCO_INTEGRATION=1).
+ * Shared harness for the live-wiring tests: a real ConversationLoop driven by a scripted model.
+ * No live service is involved; "live" is the loop. Most of them run in the ordinary suite; the
+ * ones still behind CYNCO_INTEGRATION=1 are listed in docs/NOW.md with why.
  *
  * Extracted from the four Phase 1 live tests (algedonicLive, predictionsLive,
  * s4Live, snapshotLive), which each carried an identical copy. NOT named

@@ -28,7 +28,8 @@ if (process.platform === 'win32') {
   }
 }
 
-import { loadConfig } from './config.js'
+import { loadConfig, ConfigRefusal } from './config.js'
+import { modelSilence } from './providers/streamWatchdog.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand, MCPServerInfo } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
@@ -49,7 +50,9 @@ import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
-import { cyncoHome, missionsDir } from './paths.js'
+import { cyncoHome, missionsDir, shouldAdoptLegacyHome } from './paths.js'
+import { emitLogLine } from './emitLog.js'
+import { readMcpServers } from './mcpDiscovery.js'
 import { defaultControlPath } from './daemon/control.js'
 import { liveAppsDeps } from './dashboard/appsApi.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './daemon/ntfyChannel.js'
@@ -62,53 +65,45 @@ import { ImageService } from './imagegen/service.js'
 import { makeLookClient } from './vision/lookClient.js'
 import { imageMime } from './vision/lookRunner.js'
 
-// ─── MCP Discovery (standalone — standalone implementation) ──────
+// ─── MCP Discovery ──────
+// The user-level and project-level config files, read by engine/mcpDiscovery.ts. Nothing connects
+// to a server named there: it is reported as `configured`.
 
 async function discoverMcpServers(): Promise<MCPServerInfo[]> {
-  const fs = require('fs')
   const path = require('path')
   const os = require('os')
-  const servers: MCPServerInfo[] = []
-
-  // Check user-level and project-level MCP config files
-  const configPaths = [
+  return readMcpServers([
     path.join(cyncoHome(), 'mcp_servers.json'),
     path.join(os.homedir(), '.config', 'synco', 'mcp_servers.json'),
     path.join(process.cwd(), '.mcp', 'servers.json'),
     path.join(process.cwd(), '.cynco', 'mcp_servers.json'),
-  ]
-
-  for (const configPath of configPaths) {
-    try {
-      if (!fs.existsSync(configPath)) continue
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
-      const mcpServers = raw.mcpServers ?? raw.servers ?? raw
-      if (typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
-        for (const [name, config] of Object.entries(mcpServers)) {
-          if (!servers.some(s => s.name === name)) {
-            const disabled = (config as any).disabled === true
-            servers.push({ name, status: disabled ? 'disabled' : 'connected' })
-          }
-        }
-      }
-    } catch {}
-  }
-
-  return servers
+  ])
 }
 
 // ─── Bootstrap ─────────────────────────────────────────────────
 
-const config = loadConfig()
+// A configuration the engine will not start with is said in one line, not as a stack (Refuse, don't crash).
+function loadConfigOrRefuse() {
+  try {
+    return loadConfig()
+  } catch (e) {
+    if (!(e instanceof ConfigRefusal)) throw e
+    console.error(`[localcode] ${e.message}`)
+    process.exit(1)
+  }
+}
+const config = loadConfigOrRefuse()
 
-// Migrate ~/.localcode → ~/.cynco if needed
+// Migrate ~/.localcode → ~/.cynco if needed. Never onto a redirected home (F241): an engine
+// started with CYNCO_HOME is a second engine, a test or a campaign, and must not be handed the
+// user's legacy state, which the session clean-up below would then prune.
 try {
   const os = require('os')
   const path = require('path')
   const fs = require('fs')
   const oldDir = path.join(os.homedir(), '.localcode')
   const newDir = cyncoHome()
-  if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
+  if (shouldAdoptLegacyHome({ legacyExists: fs.existsSync(oldDir), homeExists: fs.existsSync(newDir) })) {
     fs.renameSync(oldDir, newDir)
     console.log(`[cynco] Migrated state ~/.localcode → ~/.cynco`)
   }
@@ -449,7 +444,8 @@ const loop = new ConversationLoop({
   config,
   provider,
   emit: (event) => {
-    console.log(`[localcode] Emitting: ${event.type}`)
+    const line = emitLogLine(event.type)
+    if (line) console.log(line)
     wsServer.emit(event)
     dashboardServer?.broadcast(event)
     waitPush?.onEvent(event)
@@ -542,6 +538,8 @@ try {
       getS4Reflector: () => loop.getGovernance().getReflector(),
       // F57: the one fact a harness outside this process cannot infer.
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
+      // A chat that shows nothing while the model is waited for can say so, and for how long (D4f).
+      getModelSilence: () => modelSilence(),
       // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
       getAwayRuns: () => {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')
@@ -705,8 +703,6 @@ async function cleanShutdown(signal: string) {
   } catch (e) {
     console.error(`[shutdown] governance outcome/flush failed: ${e instanceof Error ? e.message : String(e)}`)
   }
-  // Save S5 rule weights
-  try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
   // No auto-backfill on shutdown. It called RewardLabeler.backfillAll(), which
   // guessed every component it could not see and manufactured all 147 saturated
   // 1.0 labels; tasks are now labeled live from observations as each one ends.
@@ -801,10 +797,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
     case 'approval.response':
       loop.handleApprovalResponse(command.requestId, command.approved)
-      // Track governance recommendation dismissals for S5 weight tuning
-      if (!command.approved && s5Orchestrator) {
-        try { s5Orchestrator.recordDismissal([command.requestId]) } catch {}
-      }
       break
 
     case 'ask.answer':
@@ -1424,8 +1416,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
       }
       // S5 Identity Continuity: mark the session cleanly ended (crash-vs-clean resume).
       try { loop.getJournal?.()?.appendSessionEnd?.() } catch (e) { console.log(`[session] appendSessionEnd failed: ${e instanceof Error ? e.message : String(e)}`) }
-      // Save S5 rule weights
-      try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
       // Audit: write session outcome on clean shutdown
       AuditLogger.writeSessionOutcome()
       break

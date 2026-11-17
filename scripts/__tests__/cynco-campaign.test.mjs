@@ -106,6 +106,24 @@ afterEach(() => {
   expect(walked, 'fell through to the real ledger walk — spread faultIo() or inertTriples into this io').toEqual([])
 })
 
+// The same for the home (F240). Every VERDICT writes rule-verdicts.json, the outcome datasets
+// and the gate-line exports under `<datasetsHome>/datasets`. An io that names no home falls
+// through to defaultIo.datasetsHome(), which is cyncoHome(): a temp dir under vitest, because
+// the suite's setup points CYNCO_HOME at one, and THE REAL HOME under anything else (another
+// runner, or a shell that already has CYNCO_HOME). On 2026-11-06 a run of this file outside that
+// setup replaced the live rule-verdicts.json with one computed from this file's empty ledger
+// (campaign "c8", 0 missions) and emptied four outcome datasets. Where a unit test writes must
+// not depend on who started it, so for this file the default is a temp home of its own.
+// The real default, kept so the test of the default io still checks it.
+const realDatasetsHome = defaultIo.datasetsHome
+const TEST_HOME = mkdtempSync(join(tmpdir(), 'ds-campaign-test-'))
+defaultIo.datasetsHome = () => TEST_HOME
+// The two gate-line exports do not go through datasetsHome: their defaults read
+// `<cyncoHome>/campaigns` and write `<cyncoHome>/datasets/gate-*.jsonl` themselves. An io here
+// that leaves them out (one that does not spread inertTriples) gets the inert ones.
+defaultIo.exportGateLines = () => ({ rows: [], summary: null })
+defaultIo.exportGateOutcomes = () => ({ rows: [], outPath: null })
+
 // Final review M5 (T7-M3): the fault path computes a board too, and without
 // these seams it falls through to defaultIo — the ~160 MB shard walk and the
 // REAL home's rule-verdicts.json. A literal fault io spreads this in.
@@ -2218,7 +2236,10 @@ describe('the rule verdicts at VERDICT', () => {
     // the real reader, not the tripwire this file installs over it
     expect(typeof realReadLedgerRows).toBe('function')
     expect(String(realReadLedgerRows)).toMatch(/readLedger\b/)
-    expect(defaultIo.datasetsHome()).toBe(process.env.CYNCO_HOME)
+    expect(realDatasetsHome()).toBe(process.env.CYNCO_HOME)
+    // …and in this file the default was replaced: nothing here writes under the runner's home (F240).
+    expect(defaultIo.datasetsHome()).toBe(TEST_HOME)
+    expect(TEST_HOME).not.toBe(process.env.CYNCO_HOME)
   })
 })
 

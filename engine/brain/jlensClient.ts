@@ -10,11 +10,12 @@ export class JlensClient {
     private fetchFn: typeof fetch = fetch,
   ) {}
 
-  async health(): Promise<{ ok: boolean; layers: number[] } | null> {
+  /** `model` is the model the sidecar's lens was computed for; a sidecar older than 2026-11-17 does not send it. */
+  async health(): Promise<{ ok: boolean; layers: number[]; model?: string } | null> {
     try {
       const r = await this.fetchFn(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(2000) })
       if (!r.ok) return null
-      return await r.json() as { ok: boolean; layers: number[] }
+      return await r.json() as { ok: boolean; layers: number[]; model?: string }
     } catch (err) {
       console.log(`[brain] jlens health check failed: ${err}`)
       return null

@@ -82,9 +82,11 @@ export interface S2State {
 
 // ─── Default tool sets per tier ───────────────────────────────────────────────
 
-const READONLY_TOOLS: string[] = ['Read', 'Glob', 'Grep', 'CodeIndex', 'Ls', 'ImageView', 'Git']
+// The one list of each: `trustTier.ts` builds what a runner offers from these, so the config
+// a sub-agent is started with and the tools it can call do not drift apart.
+export const READONLY_TOOLS: string[] = ['Read', 'Glob', 'Grep', 'CodeIndex', 'Ls', 'ImageView', 'Git']
 
-const SPECIALIST_TOOLS: string[] = [...READONLY_TOOLS, 'WebSearch', 'WebFetch']
+export const SPECIALIST_TOOLS: string[] = [...READONLY_TOOLS, 'WebSearch', 'WebFetch']
 
 // Defaults for iterations and token budget indexed by trust tier
 const TIER_DEFAULTS: Record<TrustTier, { maxIterations: number; maxTokenBudget: number }> = {

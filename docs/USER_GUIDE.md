@@ -27,10 +27,9 @@ There are two ways to work:
 1. **A model backend**, one of:
    - **Ollama** (simplest): install from [ollama.com](https://ollama.com), then
      pull a model. Recommended: `ollama pull qwen3.8:27b`, the model the shipped
-     profile runs. For semantic code search also `ollama pull nomic-embed-text`:
-     the code index asks for `jina-code-embeddings-0.5b` first, which Ollama's
-     library does not have, and falls back to `nomic-embed-text`, then to
-     keyword search, saying so in the chat and on `context.status`.
+     profile runs. For semantic code search also `ollama pull nomic-embed-text`,
+     the code index's embedding model; without it search falls back to
+     keywords, saying so in the chat and on `context.status`.
    - **llama.cpp** (`llama-server`) with a local GGUF file — see MAXIMIZING.md.
 2. **Bun** (the engine runtime), then `bun install` in the repository root for
    the engine's dependencies.
@@ -279,8 +278,8 @@ The security boundary and troubleshooting: README → Local tokens → Phone acc
   9160 was busy; restart cleanly. On Windows, kill stray engine processes rather
   than reconnecting to an old one.
 - **Slow first response** — the project is being indexed; subsequent queries are
-  faster. Semantic search wants `jina-code-embeddings-0.5b` (fallback
-  `nomic-embed-text`); with neither installed, search runs on keywords only.
+  faster. Semantic search wants `nomic-embed-text`; without it, search runs
+  on keywords only.
 - **Agent seems stuck** — give it time; long Read/search sequences are normal
   work, not a hang. Governance will nudge or restrict tools if it truly loops.
 - **Can't read the engine console** — the TUI owns the terminal; check log files

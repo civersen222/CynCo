@@ -1,11 +1,27 @@
-import { describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { execFileSync } from 'node:child_process'
+import * as fs from 'node:fs'
 import * as os from 'node:os'
-const SKIP_ENV = !process.env.CYNCO_INTEGRATION
+import * as path from 'node:path'
 import { buildArgv, gitTool, tokenizeArgs } from '../../tools/impl/git.js'
 
 // Non-repo cwd: guards fire before spawn, but if a guard ever regresses the
 // command runs against an empty temp dir instead of this repository.
 const NON_REPO_CWD = os.tmpdir()
+
+// A repository of the test's own, on a branch, with one commit. `git status` and `git log` used
+// to run against the checkout the suite happens to be in, and "runs git status" asserted the
+// word "branch": true on a developer's branch, false on CI's detached merge commit ("HEAD
+// detached at pull/256/merge"), which is how it failed the first time it ever ran there
+// (2026-11-17, the day it left the CYNCO_INTEGRATION gate).
+let OWN_REPO = ''
+beforeAll(() => {
+  OWN_REPO = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-git-tool-'))
+  const git = (...args: string[]) => execFileSync('git', ['-C', OWN_REPO, ...args], { stdio: 'pipe' })
+  git('init', '-q')
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'first')
+})
+afterAll(() => { fs.rmSync(OWN_REPO, { recursive: true, force: true, maxRetries: 5 }) })
 
 // ---------------------------------------------------------------------------
 // tokenizeArgs unit tests (Issue 3 + Issue 4)
@@ -43,15 +59,16 @@ describe('Git tool', () => {
     expect(gitTool.tier).toBe('approval')
   })
 
-  it.skipIf(SKIP_ENV)('runs git status', async () => {
-    const result = await gitTool.execute({ subcommand: 'status' }, process.cwd())
+  it('runs git status', async () => {
+    const result = await gitTool.execute({ subcommand: 'status' }, OWN_REPO)
     expect(result.isError).toBe(false)
     expect(result.output).toContain('branch')
   })
 
-  it.skipIf(SKIP_ENV)('runs git log', async () => {
-    const result = await gitTool.execute({ subcommand: 'log', args: '--oneline -5' }, process.cwd())
+  it('runs git log', async () => {
+    const result = await gitTool.execute({ subcommand: 'log', args: '--oneline -5' }, OWN_REPO)
     expect(result.isError).toBe(false)
+    expect(result.output).toContain('first')
   })
 
   it('rejects dangerous commands', async () => {

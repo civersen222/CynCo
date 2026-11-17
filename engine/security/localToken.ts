@@ -19,7 +19,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { mkdirSync, readFileSync, writeFileSync, chmodSync, renameSync, readdirSync, unlinkSync } from 'fs'
+import { mkdirSync, readFileSync, writeFileSync, chmodSync, renameSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
 import { cyncoHome } from '../paths.js'
@@ -156,6 +156,35 @@ function restrictToOwner(path: string): void {
     execFileSync('icacls', [path, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' })
   } catch (e) {
     console.warn(`[tokens] icacls failed on ${path}: ${e instanceof Error ? e.message : String(e)} — the file may be readable by other local accounts`)
+  }
+}
+
+/**
+ * Keep the home folder to its owner. It holds the token file, the session
+ * journals and the audit log, and on POSIX it is made by whichever code first
+ * writes into it, under the process's umask: usually 0755, listable and
+ * readable by every local account (the 2026-10-30 review's S8). Group and
+ * other access is taken away; a folder that is already as tight or tighter is
+ * left alone.
+ *
+ * Nothing is done on Windows, on purpose. The home is under the user's
+ * profile, whose access list already keeps other accounts out, and replacing
+ * the inherited list on a folder that holds the models, the binaries and the
+ * scheduled tasks' state (`icacls /inheritance:r`, as `restrictToOwner` does
+ * for the one token file) is an untested way to lock something out of it.
+ *
+ * Never throws: a home that cannot be tightened is said in the log and the
+ * engine starts.
+ */
+export function restrictHomeToOwner(dir: string, platform: NodeJS.Platform = process.platform): 'tightened' | 'left' | 'windows-profile' | 'failed' {
+  if (platform === 'win32') return 'windows-profile'
+  try {
+    if ((statSync(dir).mode & 0o077) === 0) return 'left'
+    chmodSync(dir, 0o700)
+    return 'tightened'
+  } catch (e) {
+    console.warn(`[tokens] could not restrict ${dir} to its owner: ${e instanceof Error ? e.message : String(e)}; it may be readable by other local accounts`)
+    return 'failed'
   }
 }
 
@@ -462,7 +491,8 @@ function sweepStragglers(base: string): void {
 
 export function loadOrCreateTokens(dir?: string): TokenSet {
   const base = dir ?? cyncoHome()
-  mkdirSync(base, { recursive: true })
+  mkdirSync(base, { recursive: true, mode: 0o700 })
+  restrictHomeToOwner(base)
   const path = join(base, TOKEN_FILENAME)
   sweepStragglers(base)
 

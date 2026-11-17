@@ -9,7 +9,7 @@
  */
 
 import type { TierSetting } from '../config.js'
-import type { ProviderType } from '../providers/factory.js'
+import type { ProviderType } from '../providers/names.js'
 
 /** Tool allow/deny scoping. Both fields are optional. */
 export type ToolScoping = {

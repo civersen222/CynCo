@@ -123,6 +123,9 @@ describe('the proxy listener: loopback, and every client on it is remote', () =>
     expect((await post(token!)).status).toBe(403)
     expect((await post(t.tokens.tokenFor('management')!)).status).toBe(401)
     expect((await fetch(t.viaProxy + '/api/phone', { headers: { Authorization: `Bearer ${t.tokens.tokenFor('management')}` } })).status).toBe(401)
+    // The pairing code is for a page on this machine. Nobody on the proxy listener is one, loopback peer or not.
+    expect((await fetch(t.viaProxy + '/api/phone/code', { headers: { Authorization: `Bearer ${t.tokens.tokenFor('inference')}` } })).status).toBe(401)
+    expect((await fetch(t.viaProxy + '/api/phone/code', { headers: { Authorization: `Bearer ${token}` } })).status).toBe(403)
     // The same admin secret on the desk listener is the desk.
     expect((await fetch(t.desk + '/api/phone', { headers: { Authorization: `Bearer ${t.tokens.tokenFor('management')}` } })).status).toBe(200)
   })

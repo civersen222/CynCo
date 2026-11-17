@@ -355,7 +355,7 @@ class ContextSidebar(Static):
         if self._mcp_servers:
             for s in self._mcp_servers:
                 status = s.get("status", "unknown")
-                color = {"connected": "green", "failed": "red", "disabled": "dim", "pending": "yellow"}.get(status, "white")
+                color = {"connected": "green", "configured": "white", "failed": "red", "disabled": "dim", "pending": "yellow"}.get(status, "white")
                 parts.append(f"  \u2022 {s.get('name', '?')} [{color}]{status.title()}[/{color}]")
         else:
             parts.append("  [dim]No MCP servers configured[/dim]")

@@ -279,6 +279,69 @@ describe('what a remote client may do', () => {
   })
 })
 
+/**
+ * The owner's complaint (NOW.md) and decision (decision sheet of 2026-11-17, row 9): to pair a
+ * phone the code had to be dug out of the engine log, because the panel that shows it asks for
+ * the management token and a headless engine prints that only in its log. The code grants a
+ * device token of inference scope; a page on this machine already holds the inference token. So
+ * that page may read the code, and nobody else may: a paired phone that could read it could pair
+ * more devices.
+ */
+describe('the pairing code for a page on this machine (GET /api/phone/code)', () => {
+  it('the desk page reads the code and where the phone connects, with the token it already holds', async () => {
+    const t = await start()
+    const r = await t.get('/api/phone/code', t.tokens.tokenFor('inference'))
+    expect(r.status).toBe(200)
+    expect(r.headers.get('cache-control')).toBe('no-store')
+    const body = await r.json()
+    expect(Object.keys(body).sort()).toEqual(['code', 'listeners', 'lockedForMs', 'proxy'])
+    expect(body.code).toBe(t.server.pairingCode())
+    expect(body.lockedForMs).toBe(0)
+    expect(body.listeners).toEqual([{ host: '127.0.0.1', port: t.port, bound: true, primary: true }])
+  })
+
+  it('it is the code after a rotation, and the code it shows pairs a phone', async () => {
+    const t = await start()
+    const first = (await (await t.get('/api/phone/code', t.tokens.tokenFor('inference'))).json()).code
+    expect((await t.pair('Pixel')).status).toBe(200) // a code is single-use: pairing rotates it
+    t.asDesk()
+    const second = (await (await t.get('/api/phone/code', t.tokens.tokenFor('inference'))).json()).code
+    expect(second).not.toBe(first)
+    expect(second).toBe(t.server.pairingCode())
+  })
+
+  it('a paired phone is refused: a device that could read the code could pair more devices', async () => {
+    const t = await start()
+    const { token } = await t.pair('Pixel')
+    t.asPhone()
+    const r = await t.get('/api/phone/code', token)
+    expect(r.status).toBe(403)
+    expect(JSON.stringify(await r.json())).not.toContain(t.server.pairingCode())
+  })
+
+  it('off this machine the shared token and no token are answered as on any gated route', async () => {
+    const t = await start()
+    t.asPhone()
+    expect((await t.get('/api/phone/code', t.tokens.tokenFor('inference'))).status).toBe(401)
+    expect((await t.get('/api/phone/code', t.tokens.tokenFor('management'))).status).toBe(401)
+    expect((await t.get('/api/phone/code')).status).toBe(401)
+  })
+
+  it('on the desk it still takes a token, and it is a read: nothing else answers there', async () => {
+    const t = await start()
+    expect((await t.get('/api/phone/code')).status).toBe(401)
+    expect((await t.post('/api/phone/code', {}, t.tokens.tokenFor('inference'))).status).toBe(403)
+  })
+
+  it('everything else about phones stays management: the devices, a new code, a revocation', async () => {
+    const t = await start()
+    const inference = t.tokens.tokenFor('inference')
+    expect((await t.get('/api/phone', inference)).status).toBe(403)
+    expect((await t.post('/api/phone/rotate', {}, inference)).status).toBe(403)
+    expect((await t.post('/api/phone/revoke-all', {}, inference)).status).toBe(403)
+  })
+})
+
 describe('the phone panel and revocation (management, on the desk)', () => {
   it('/api/phone tells the desk the code, the listeners, the devices and when a phone last got through', async () => {
     const t = await start()
@@ -558,5 +621,64 @@ describe('the address the wait push links to: where a paired device last opened 
     t.asPhone()
     expect(await handshake(`ws://127.0.0.1:${t.port}/ws?token=${token}`, { Origin: `http://127.0.0.1:${t.port}` })).toBe(101)
     expect(t.server.phoneOrigin).toBe(`http://127.0.0.1:${t.port}`)
+  })
+})
+
+describe('the pairing code on the desk page (page functions, lifted by text)', () => {
+  const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../dashboard/index.html'), 'utf-8')
+  function extractFunction(name: string): string {
+    const startAt = html.indexOf('function ' + name + '(')
+    if (startAt < 0) throw new Error('function ' + name + ' not found in index.html')
+    let depth = 0
+    for (let i = html.indexOf('{', startAt); i < html.length; i++) {
+      if (html[i] === '{') depth++
+      else if (html[i] === '}') { depth--; if (depth === 0) return html.slice(startAt, i + 1) }
+    }
+    throw new Error('unbalanced braces for ' + name)
+  }
+  const pairingRows = new Function(`${extractFunction('pairingRows')}; return pairingRows;`)() as (data: any) => Array<{ k: string; v: string }>
+  const desk = { host: '127.0.0.1', port: 9161, bound: true, primary: true }
+
+  it('says the code and the address the phone opens', () => {
+    expect(pairingRows({ code: '482913', lockedForMs: 0, listeners: [desk, { host: '100.64.0.7', port: 9161, bound: true, primary: false }], proxy: null })).toEqual([
+      { k: 'Pairing code', v: '482913   (single-use)' },
+      { k: 'Phone URL', v: 'http://100.64.0.7:9161' },
+    ])
+  })
+
+  it('says a lockout instead of the code, a listener that did not bind, and the https proxy target', () => {
+    const rows = pairingRows({
+      code: '482913', lockedForMs: 90_000,
+      listeners: [desk, { host: '100.64.0.7', port: 9161, bound: false, primary: false }],
+      proxy: { host: '127.0.0.1', port: 9165, bound: true },
+    })
+    expect(rows[0]).toEqual({ k: 'Pairing code', v: 'locked for 2 min after wrong codes' })
+    expect(rows[1].v).toBe('http://100.64.0.7:9161   (not bound: is Tailscale up?)')
+    expect(rows[2].k).toBe('HTTPS proxy target')
+    expect(rows[2].v).toContain('http://127.0.0.1:9165')
+    expect(JSON.stringify(rows)).not.toContain('482913')
+  })
+
+  it('says what to set when no phone address is configured', () => {
+    const rows = pairingRows({ code: '482913', lockedForMs: 0, listeners: [desk], proxy: null })
+    expect(rows).toHaveLength(2)
+    expect(rows[1].k).toBe('Phone URL')
+    expect(rows[1].v).toContain('LOCALCODE_DASHBOARD_HOST')
+  })
+
+  it('the Config tab reads it with the token the page holds and keeps it current; a phone page never asks', () => {
+    const load = extractFunction('loadPairingCode')
+    expect(load).toContain("fetch('/api/phone/code')")
+    // The remote check comes before the request: on a phone the wrapper would treat the refusal as its own.
+    expect(load.indexOf('window.__CYNCO_REMOTE')).toBeGreaterThan(-1)
+    expect(load.indexOf('window.__CYNCO_REMOTE')).toBeLessThan(load.indexOf('fetch('))
+    const tab = extractFunction('switchTab')
+    expect(tab).toContain("name === 'config'")
+    expect(tab).toContain('startPairingCodePoll()')
+    expect(tab).toContain('stopPairingCodePoll()')
+    // A used code is replaced, so a page left on the Config tab must not go on showing the old one.
+    expect(extractFunction('startPairingCodePoll')).toContain('setInterval(loadPairingCode')
+    // The devices, a new code and a revocation stay the management read.
+    expect(extractFunction('loadPhoneAccess')).toContain("fetch('/api/phone')")
   })
 })

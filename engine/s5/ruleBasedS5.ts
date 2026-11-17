@@ -53,22 +53,13 @@ function getTopToolsBySuccess(results: { tool: string; success: boolean }[], n: 
   return tools.slice(0, n)
 }
 
-// ─── Critical Rules (C1–C6) ─────────────────────────────────
-
-const C1: S5Rule = {
-  id: 'C1',
-  tier: 'critical',
-  name: 'Kill switch — governance halted',
-  evaluate(input) {
-    if (input.governanceStatus === 'halted') {
-      return {
-        tools: [...READ_ONLY_TOOLS],
-        reasoning: 'governance halted — restricting to read-only tools',
-      }
-    }
-    return null
-  },
-}
+// ─── Critical Rules (C2–C7) ─────────────────────────────────
+//
+// There is no C1. It was a kill switch that waited for the governance report to say `halted`,
+// a status the report never gave, so it never fired; it was removed on the owner's decision of
+// 2026-11-17 (F233 b). The kill switch that acts is the algedonic channel's
+// (`vsm/algedonicIntegration.ts`). The other ids are kept as they were: the ledger and
+// `rule-verdicts.json` refer to rules by id.
 
 const C2: S5Rule = {
   id: 'C2',
@@ -209,6 +200,11 @@ const W1: S5Rule = {
   },
 }
 
+// W2 is a HYPOTHESIS, not a working rule (owner's decision of 2026-11-17, row 18). It needs two
+// models in `availableModels`, and both S5 call sites pass one (`[this.config.model]`): no setting
+// names a second main model, so it cannot fire in production. `modelSwitchClaim.test.ts` passes
+// because it hands the rule two. Kept until a second model is really on the box; switching would
+// then cost a model reload and the KV cache each time, which nobody has measured.
 const W2: S5Rule = {
   id: 'W2',
   tier: 'warning',
@@ -446,7 +442,7 @@ const I5: S5Rule = {
 
 export const ALL_RULES: S5Rule[] = [
   // Critical (auto-enforce)
-  C1, C2, C3, C4, C5, C6, C7,
+  C2, C3, C4, C5, C6, C7,
   // Warning (surface to TUI)
   W1, W2, W3, W4, W5, W6, W7, W8, W9,
   // Info (journal only)

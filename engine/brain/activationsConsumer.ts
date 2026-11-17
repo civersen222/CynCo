@@ -141,6 +141,9 @@ export class ActivationsConsumer {
         type: 'brain.tier', tier,
         tap: tapUp, lens: lensUp, tapConfigured: this.opts.tapConfigured ?? true,
         layers: lens?.layers ?? [], layer: this.layer,
+        // The model the lens was computed for, in the sidecar's own words, so the Brain tab
+        // can label its readouts. Null when the sidecar is down or does not say; never a guess.
+        lensModel: typeof lens?.model === 'string' && lens.model !== '' ? lens.model : null,
       })
     }
 

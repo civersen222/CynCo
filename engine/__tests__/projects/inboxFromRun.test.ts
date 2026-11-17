@@ -4,8 +4,8 @@
  *
  * The call site is two small additions in engine/daemon/oneShot.ts; they are
  * pinned by text here, and the whole path — a task file, the real
- * conversation loop with a scripted model, the draft on disk — runs when
- * CYNCO_INTEGRATION is set, as the daemon's own loop tests do.
+ * conversation loop with a scripted model, the draft on disk — runs in the
+ * ordinary suite (it needs no live service; ungated 2026-11-17).
  */
 import { describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
@@ -19,7 +19,6 @@ import type { Provider, CompletionRequest, ModelCapabilities } from '../../provi
 import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
 
-const SKIP = !process.env.CYNCO_INTEGRATION
 const here = dirname(fileURLToPath(import.meta.url))
 const oneShot = readFileSync(join(here, '../../daemon/oneShot.ts'), 'utf-8').replace(/\r\n/g, '\n')
 
@@ -66,7 +65,7 @@ describe('a one-shot whose working folder is a project (real conversation loop, 
   })
   const ANSWER = '# Planting plan\n\nTulips by the fence, daffodils under the maple.\n\n```json\n{"summary": "A plan for both beds.", "recommendations": []}\n```'
 
-  it.skipIf(SKIP)('files its answer as a draft in that project, and still writes its outcome', async () => {
+  it('files its answer as a draft in that project, and still writes its outcome', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cynco-inbox-run-'))
     const scratch = mkdtempSync(join(tmpdir(), 'cynco-inbox-run-task-'))
     const savedHome = process.env.LOCALCODE_PROJECTS_HOME
@@ -95,7 +94,7 @@ describe('a one-shot whose working folder is a project (real conversation loop, 
     }
   }, 30000)
 
-  it.skipIf(SKIP)('a one-shot anywhere else files nothing', async () => {
+  it('a one-shot anywhere else files nothing', async () => {
     const home = mkdtempSync(join(tmpdir(), 'cynco-inbox-run-'))
     const elsewhere = mkdtempSync(join(tmpdir(), 'cynco-inbox-run-elsewhere-'))
     const savedHome = process.env.LOCALCODE_PROJECTS_HOME

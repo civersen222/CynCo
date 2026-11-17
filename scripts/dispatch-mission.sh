@@ -165,9 +165,11 @@ LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
   bun scripts/build-code-index.ts "$MISSION_CWD" \
   || echo "[dispatch] warning: code-index build failed — CodeIndex will fall back to regex" >&2
 
-# LOCALCODE_EMBED_MODEL: the engine's built-in default embed model is not in
-# the ollama registry (its pull 404s every session), so CodeIndex vector search
-# silently degraded to regex fallback on every mission. Pin the installed model.
+# LOCALCODE_EMBED_MODEL: until 2026-11-17 the engine's built-in default embed
+# model was one the ollama registry does not have (its pull 404'd every session),
+# so CodeIndex vector search silently degraded to regex fallback on every
+# mission. The default is the installed model now; the pin stays, so a mission
+# does not depend on it.
 #
 # LOCALCODE_MISSION_*: the dashboard's Mission panel (/api/mission) reads these
 # to show commits since baseline, marker sighting and budget consumption — the

@@ -4,15 +4,16 @@
 // The guard engine/__tests__/guards/packageDocs.test.ts checks that the symbol a doc names
 // is on (or within LINE_SLACK of) the line it cites. Any edit that adds lines above a cited
 // symbol breaks every pin below it. This script takes the guard's own list of misplaced refs,
-// finds each symbol's current line (nearest occurrence to the old pin, same identifier rules
-// as the guard), and rewrites the pin in the doc. Run from the repo root:
+// leaves alone the ones in the guard's baseline, finds each other symbol's current line (its
+// definition; the occurrence nearest the old pin only when the file defines no such name) and
+// rewrites the pin in the doc. Run from the repo root:
 //
 //   bun scripts/fix-doc-line-pins.mjs          # rewrite the docs
 //   bun scripts/fix-doc-line-pins.mjs --dry    # only report
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { pathToFileURL } from 'url'
-import { misplacedRefs, identifierOf, onLine } from '../engine/__tests__/guards/packageDocSymbolScan.mjs'
+import { misplacedRefs, identifierOf, BASELINE_PATH } from '../engine/__tests__/guards/packageDocSymbolScan.mjs'
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 
@@ -42,12 +43,71 @@ export function rewritePins(text, map) {
   })
 }
 
+/**
+ * How strong a claim one line makes to being where `ident` is defined: 3 an exported
+ * declaration, 2 any other declaration, 1 a class member (a modifier before the name, or a
+ * bare `name(...) {` that opens a body and is not a call taking a callback), 0 a use.
+ */
+function definitionRank(text, ident) {
+  const id = escapeRe(ident)
+  const decl = `(?:async\\s+)?(?:function\\*?|const|let|var|class|abstract\\s+class|type|interface|enum)\\s+${id}(?![\\w$])`
+  if (new RegExp(`^\\s*export\\s+(?:default\\s+)?(?:declare\\s+)?${decl}`).test(text)) return 3
+  if (new RegExp(`^\\s*(?:declare\\s+)?${decl}`).test(text)) return 2
+  const modifier = '(?:public|private|protected|static|readonly|async|override|abstract|get|set)'
+  if (new RegExp(`^\\s*(?:${modifier}\\s+)+\\*?${id}(?![\\w$])`).test(text)) return 1
+  if (new RegExp(`^\\s*${id}\\s*[(<].*\\{\\s*$`).test(text) && !/=>\s*\{\s*$/.test(text)) return 1
+  return 0
+}
+
+/**
+ * The line a pin for `ident` should name, in a file given as its lines; null when the name
+ * is nowhere in it. The definition wins over any use, and among lines of equal standing the
+ * one nearest the old pin wins. Nearest-occurrence alone was wrong after a large shift: with
+ * 44 lines gone from bash.ts it moved a pin from 139 to a use at 148, past the definition
+ * at 95 (2026-11-11).
+ */
+export function choosePinLine(lines, ident, old) {
+  const word = new RegExp(`(^|[^\\w$])${escapeRe(ident)}([^\\w$]|$)`)
+  let best = null
+  let bestRank = -1
+  for (let n = 1; n <= lines.length; n++) {
+    const text = lines[n - 1]
+    if (!word.test(text)) continue
+    const rank = definitionRank(text, ident)
+    if (rank > bestRank || (rank === bestRank && Math.abs(n - old) < Math.abs(best - old))) {
+      best = n
+      bestRank = rank
+    }
+  }
+  return best
+}
+
+/**
+ * A ref in the guard's baseline is one the guard already allows to be off. Moving it puts
+ * it on another line that may be just as wrong (three were, 2026-11-11) and makes the
+ * ratchet read it as fixed. It is reported and left where it is.
+ */
+export function splitBaselined(refs, baseline) {
+  const allowed = new Set(baseline)
+  return { todo: refs.filter((r) => !allowed.has(r)), skipped: refs.filter((r) => allowed.has(r)) }
+}
+
+function readBaseline() {
+  try {
+    return JSON.parse(readFileSync(BASELINE_PATH, 'utf-8'))
+  } catch (e) {
+    console.log(`no baseline read from ${BASELINE_PATH} (${e instanceof Error ? e.message : String(e)}); every misplaced ref is treated as new`)
+    return []
+  }
+}
+
 function main() {
   const ROOT = process.cwd()
   const ENGINE = join(ROOT, 'engine')
   const dry = process.argv.includes('--dry')
 
-  const refs = misplacedRefs()
+  const { todo: refs, skipped } = splitBaselined(misplacedRefs(), readBaseline())
+  for (const ref of skipped) console.log(`left alone (in the guard's baseline): ${ref}`)
   if (refs.length === 0) { console.log('no misplaced refs'); return 0 }
 
   const edits = new Map() // docPath -> Map<"file:old", new>
@@ -61,14 +121,7 @@ function main() {
     const target = file.includes('/') ? join(ROOT, file) : join(pkgDir, file)
     if (!existsSync(target)) { console.log(`missing file for ${ref}`); unresolved++; continue }
     const lines = readFileSync(target, 'utf-8').split('\n')
-    const ident = identifierOf(sym)
-    let best = null
-    for (let n = 1; n <= lines.length; n++) {
-      if (!onLine(lines, n, ident)) continue
-      // onLine tolerates slack; pick the line where the identifier itself appears
-      if (!lines[n - 1].includes(ident)) continue
-      if (best === null || Math.abs(n - old) < Math.abs(best - old)) best = n
-    }
+    const best = choosePinLine(lines, identifierOf(sym), old)
     if (best === null) { console.log(`symbol not found: ${ref}`); unresolved++; continue }
     const docPath = join(pkgDir, 'CLAUDE.md')
     if (!edits.has(docPath)) edits.set(docPath, new Map())

@@ -113,7 +113,7 @@ export function warnEmbedUnavailable(baseUrl: string, detail?: string): void {
   )
   console.log(
     `[embed] Fix: run an embedding server and point LOCALCODE_EMBED_BASE_URL at it ` +
-    `(Ollama: \`ollama pull nomic-embed-text\`; llama.cpp: start llama-server with --embeddings). ` + // the fallback model: Ollama's library has no jina-code-embeddings-0.5b
+    `(Ollama: \`ollama pull nomic-embed-text\`; llama.cpp: start llama-server with --embeddings). ` + // the default model; jina-code-embeddings-0.5b
     `LOCALCODE_EMBED_API=ollama|openai pins the wire format.`
   )
 }
@@ -124,10 +124,23 @@ export function resetEmbedWarning(): void {
   outage = null
 }
 
+/**
+ * The model the code index embeds with when nothing names one. It is the model
+ * Ollama's library has and the one CynCo's own embedding server serves
+ * (`scripts/run-embed-server.cmd`), so a fresh install finds it.
+ *
+ * Until 2026-11-17 the default was `jina-code-embeddings-0.5b`, which Ollama's
+ * library does not have: every session on Ollama asked for it, was told it was
+ * missing, fell back to this one and fired one background pull that could not
+ * succeed (F233 i). The jina model is opt-in now: serve it and set
+ * `LOCALCODE_EMBED_MODEL`. A model asked for and missing still falls back here.
+ */
+export const DEFAULT_EMBED_MODEL = 'nomic-embed-text'
+
 export class EmbedClient {
   private baseUrl: string
   private model: string
-  private fallbackModel = 'nomic-embed-text'
+  private fallbackModel = DEFAULT_EMBED_MODEL
   private pullAttempted = false
   /** The wire format that last answered. Null until one has. */
   private dialect: EmbedDialect | null = null
@@ -137,7 +150,7 @@ export class EmbedClient {
   // would leave the pin enforced in two places — `dialectOrder` is the one that
   // actually stops the probe when the pinned dialect *fails*, so it holds the
   // rule alone.
-  constructor(baseUrl = 'http://localhost:11434', model = 'jina-code-embeddings-0.5b', opts: { pinModel?: boolean } = {}) {
+  constructor(baseUrl = 'http://localhost:11434', model = DEFAULT_EMBED_MODEL, opts: { pinModel?: boolean } = {}) {
     this.baseUrl = process.env.LOCALCODE_EMBED_BASE_URL ?? baseUrl
     this.model = opts.pinModel ? model : (process.env.LOCALCODE_EMBED_MODEL ?? model)
   }

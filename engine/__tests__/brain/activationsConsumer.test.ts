@@ -69,8 +69,24 @@ describe('ActivationsConsumer', () => {
     expect(tier).toBe('live')
     expect(broadcast).toHaveBeenCalledWith({
       type: 'brain.tier', tier: 'live', tap: true, lens: true, tapConfigured: true,
-      layers: [24, 40, 56], layer: 40,
+      layers: [24, 40, 56], layer: 40, lensModel: null,
     })
+  })
+
+  // The Brain tab labels the lens with the model it was computed for (2026-11-17, F233 j). The
+  // name is the sidecar's; a sidecar that does not say, or is down, is null and never a guess.
+  it('brain.tier carries the model the sidecar says its lens is for', async () => {
+    const fetched = { cursor: 0, n_embd: 4, entries: [] }
+    const broadcast = vi.fn()
+    const c = new ActivationsConsumer({
+      activationsUrl: 'http://x',
+      fetchFn: (async () => new Response(JSON.stringify(fetched), { status: 200 })) as any,
+      jlens: { readout: vi.fn(), health: async () => ({ ok: true, layers: [40], model: 'Qwen/Qwen3.6-27B' }) } as any,
+      broadcast, layer: 40, stride: 1,
+    })
+    await c.start()
+    c.stop()
+    expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'brain.tier', lens: true, lensModel: 'Qwen/Qwen3.6-27B' }))
   })
 
   it('start() reports entropy-only when tapConfigured=false even if the route responds (patched binary, taps disabled)', async () => {
@@ -90,7 +106,7 @@ describe('ActivationsConsumer', () => {
     expect(fetchFn).not.toHaveBeenCalled()   // no probe, no polling loop
     expect(broadcast).toHaveBeenCalledWith({
       type: 'brain.tier', tier: 'entropy-only', tap: false, lens: true, tapConfigured: false,
-      layers: [24, 40], layer: 40,
+      layers: [24, 40], layer: 40, lensModel: null,
     })
   })
 
@@ -107,7 +123,7 @@ describe('ActivationsConsumer', () => {
     expect(tier).toBe('entropy-only')
     expect(broadcast).toHaveBeenCalledWith({
       type: 'brain.tier', tier: 'entropy-only', tap: false, lens: false, tapConfigured: true,
-      layers: [], layer: 40,
+      layers: [], layer: 40, lensModel: null,
     })
   })
 

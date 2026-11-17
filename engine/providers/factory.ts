@@ -1,29 +1,22 @@
 import type { Provider } from '../provider.js'
 import { OllamaProvider } from '../ollama/client.js'
-import { OpenAICompatProvider } from './openaiCompat.js'
 import { LlamaCppProvider } from '../llama/provider.js'
+import { PROVIDER_TYPES, providerFromName, type ProviderType } from './names.js'
 
-export type ProviderType = 'ollama' | 'lmstudio' | 'llamacpp' | 'llama-cpp' | 'vllm' | 'openai-compat'
+export { PROVIDER_TYPES, providerFromName, type ProviderType }
 
-export function createProvider(type: ProviderType, baseUrl: string, apiKey?: string, contextLength?: number): Provider {
+export function createProvider(type: ProviderType, baseUrl: string, _apiKey?: string, contextLength?: number): Provider {
   switch (type) {
     case 'ollama':
       return new OllamaProvider({ baseUrl, contextLength })
-    case 'lmstudio':
-      return new OpenAICompatProvider({ name: 'lmstudio', baseUrl, apiKey: apiKey ?? '' })
-    case 'llamacpp':
-      return new OpenAICompatProvider({ name: 'llamacpp', baseUrl, apiKey: apiKey ?? '' })
     case 'llama-cpp':
       return new LlamaCppProvider({
         primaryUrl: baseUrl || 'http://127.0.0.1:8081',
         modelName: 'unknown',
         modelsDir: '',
       })
-    case 'vllm':
-      return new OpenAICompatProvider({ name: 'vllm', baseUrl, apiKey: apiKey ?? '' })
-    case 'openai-compat':
-      return new OpenAICompatProvider({ name: 'custom', baseUrl, apiKey: apiKey ?? '' })
     default:
-      return new OllamaProvider({ baseUrl })
+      // Unreachable through the type. A name forced past it is not turned into an Ollama client any more.
+      throw new Error(`createProvider: "${String(type)}" is not a provider CynCo has (${PROVIDER_TYPES.join(', ')})`)
   }
 }

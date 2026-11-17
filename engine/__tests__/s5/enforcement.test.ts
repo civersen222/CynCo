@@ -117,8 +117,8 @@ describe('S5 Enforcement: Tool Filtering', () => {
       contextAction: 'none',
       spawnAgent: null,
       priority: 'balanced',
-      reasoning: 'halted — read-only mode',
-      ruleIds: ['C1'],
+      reasoning: 'variety critical — read-only mode',
+      ruleIds: ['C6'],
     }
 
     const result = applyS5ToolFilter([...FULL_TOOLS], decision)
@@ -160,7 +160,7 @@ describe('S5 Enforcement: Tool Filtering', () => {
       spawnAgent: null,
       priority: 'balanced',
       reasoning: 'restrict to read-only',
-      ruleIds: ['C1'],
+      ruleIds: ['C6'],
     }
 
     const result = applyWorkflowThenS5([...FULL_TOOLS], workflowAllowed, decision)
@@ -171,15 +171,15 @@ describe('S5 Enforcement: Tool Filtering', () => {
     expect(names).not.toContain('Ls') // Ls was not in workflow
   })
 
-  it('S5 halted -> only read tools survive full pipeline', async () => {
+  it('a rule that restricts to read-only -> only read tools survive full pipeline', async () => {
     const orchestrator = new S5Orchestrator(new RuleBasedS5())
     const decision = await orchestrator.makeDecision(makeInput({
-      governance: makeGovernance({ status: 'halted' }),
+      // C6 with no tool results to rank falls back to the read-only set.
+      varietyBalance: 'critical',
     }))
 
-    // C1 rule should fire and restrict to read-only
     expect(decision.tools).toBeDefined()
-    expect(decision.ruleIds).toContain('C1')
+    expect(decision.ruleIds).toContain('C6')
 
     // Apply enforcement
     const result = applyS5ToolFilter([...FULL_TOOLS], decision)
@@ -317,8 +317,8 @@ describe('S5 Enforcement: Governance Recommendation', () => {
       contextAction: 'none',
       spawnAgent: null,
       priority: 's3',
-      reasoning: 'System halted. Read-only mode.',
-      ruleIds: ['C1'],
+      reasoning: 'Variety critical. Read-only mode.',
+      ruleIds: ['C6'],
     }
 
     const warningRuleIds = (decision.ruleIds ?? []).filter(id => id.startsWith('W'))

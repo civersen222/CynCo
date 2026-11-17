@@ -5571,6 +5571,8 @@ export class ConversationLoop {
             model: this.config.model!,
             // Stop ends a sub-agent with the turn that started it (F210).
             ...(this.abortController ? { signal: this.abortController.signal } : {}),
+            // A researcher's web tools never exceed this run's own (agents/trustTier.ts).
+            parent: { pin: this.allowedTools, runsUnasked: name => this.executor.runsUnasked(name) },
             s2: {
               updateAgentTurn: (id: string, turn: number, tokens: number) => {
                 try { this.s2.updateAgentTurn(id, turn, tokens) } catch {}

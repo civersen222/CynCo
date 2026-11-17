@@ -5,7 +5,7 @@ export type S5Input = {
   activeWorkflow: string | null
   currentPhase: string | null
   contextUsagePercent: number
-  governanceStatus: 'healthy' | 'warning' | 'critical' | 'halted'
+  governanceStatus: 'healthy' | 'warning' | 'critical'
   s3s4Balance: 'balanced' | 's3_dominant' | 's4_dominant' | 'critical'
   modelLatencyTrend: 'stable' | 'rising' | 'falling'
   availableModels: string[]

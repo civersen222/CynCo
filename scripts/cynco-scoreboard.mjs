@@ -391,8 +391,10 @@ export function pooledScoreboard(campaignScoreboards, opts = {}) {
   const hi = perWave(sum(Object.values(human)), waves)
   if (hi.reason) unmeasured.push(`humanInterventionsPerWave: ${hi.reason}`)
 
-  // The economics total is one whole-history figure; every board carries the
-  // same one, so the first measured board's is it.
+  // The economics figure is one number for all campaigns, over the days the
+  // economics script could read on both sides (F239: it was called
+  // "whole-history" and never was); every board carries the same one, so the
+  // first measured board's is it.
   const dollars = included.map(b => b.supervisionDollars).find(isNum) ?? null
   const sup = dollars === null
     ? { value: null, reason: included.length ? reasonOf(included[0], 'supervisionDollarsPerWave') : 'no waves spent' }
@@ -468,7 +470,7 @@ function pooledLines(p) {
   if (isNum(p.gpuHours)) lines.push(`  gpuHours ${p.gpuHours.toFixed(2)} over ${p.waves} wave(s); lines fixed ${gl.fixed} over ${gl.landedWaves} landed wave(s); `
     + `human acts: notes ${hi.notes}, human decisions ${hi.humanDecisions}, refusals ${hi.refusals}, reseals ${hi.reseals}, adoptions ${hi.adopted}`)
   lines.push(isNum(p.supervisionDollarsPerWave)
-    ? `  supervisionDollarsPerWave ${p.supervisionDollarsPerWave.toFixed(2)} ($${p.supervisionDollars.toFixed(2)} whole-history SUPERVISING ÷ ${p.waves} runner-driven wave(s))`
+    ? `  supervisionDollarsPerWave ${p.supervisionDollarsPerWave.toFixed(2)} ($${p.supervisionDollars.toFixed(2)} SUPERVISING over the days the economics script could read ÷ ${p.waves} runner-driven wave(s))`
     : `  supervisionDollarsPerWave null (${reasonOf(p, 'supervisionDollarsPerWave')})`)
   for (const e of p.excluded) lines.push(`Excluded: ${e}`)
   for (const u of p.unmeasured) lines.push(`  unmeasured: ${u}`)
@@ -499,7 +501,7 @@ export function scoreboardLines(sb, { detail = false } = {}) {
   // The learner's best M1.* row on the frozen holdout — not a rule, not counted above.
   if (rp) lines.push(`  learner ${rp.learner ? bestText(rp.learner).replace(/^ \(best /, '').replace(/\)$/, '') : 'none (no M1.* row in rule-verdicts.json)'}`)
   lines.push(isNum(sb.supervisionDollarsPerWave)
-    ? `  supervisionDollarsPerWave ${sb.supervisionDollarsPerWave.toFixed(2)} ($${sb.supervisionDollars.toFixed(2)} whole-history SUPERVISING ÷ ${sb.waves} wave(s) — the economics script does not split by campaign)`
+    ? `  supervisionDollarsPerWave ${sb.supervisionDollarsPerWave.toFixed(2)} ($${sb.supervisionDollars.toFixed(2)} SUPERVISING over the days the economics script could read ÷ ${sb.waves} wave(s) — it does not split by campaign)`
     : `  supervisionDollarsPerWave null (${reasonOf(sb, 'supervisionDollarsPerWave')})`)
   for (const u of sb.unmeasured ?? []) lines.push(`  unmeasured: ${u}`)
   return lines
