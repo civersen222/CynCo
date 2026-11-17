@@ -79,6 +79,7 @@ export type ImageServiceDeps = {
   /** Test seams; the env clamps apply only to env values. */
   pollMs?: number
   timeoutMs?: number
+  shutdownBoundMs?: number // how long `shutdown` waits for its own work; a test of what shutdown does, not of the bound, sets one that cannot win
 }
 
 export const PROJECT_ONLY_REASON = 'pictures are generated in project chats only'
@@ -212,6 +213,7 @@ export class ImageService implements ImageAnnotator {
   private readonly fetchFn: typeof fetch
   private readonly pollMs: number
   private readonly timeoutMs: number
+  private readonly shutdownBoundMs: number
   private readonly beforeTransform: (() => Promise<void>) | null
   private readonly askAboutPhoto: ImageServiceDeps['askAboutPhoto'] | null
   private readonly activity: Pick<ActivityRegistry, 'begin'>
@@ -270,6 +272,7 @@ export class ImageService implements ImageAnnotator {
     this.config = config
     this.client = config.ok ? new ComfyClient(config.cfg.url, this.fetchFn) : null
     this.pollMs = deps.pollMs ?? POLL_MS
+    this.shutdownBoundMs = deps.shutdownBoundMs ?? SHUTDOWN_BOUND_MS
     this.timeoutMs = deps.timeoutMs ?? (config.ok ? config.cfg.timeoutMs : 300_000)
     this.beforeTransform = deps.beforeTransform ?? null
     this.askAboutPhoto = deps.askAboutPhoto ?? null
@@ -1171,7 +1174,7 @@ export class ImageService implements ImageAnnotator {
     // Side by side: a slow POST or a hung /interrupt must not hold the commits past the bound.
     const work = Promise.all([cancel(), commits(), ...aside])
     let timer: ReturnType<typeof setTimeout> | undefined
-    const bound = new Promise<void>(resolve => { timer = setTimeout(() => { this.log('[imagegen] shutdown passed its 3 s bound; leaving the rest'); resolve() }, SHUTDOWN_BOUND_MS) })
+    const bound = new Promise<void>(resolve => { timer = setTimeout(() => { this.log(`[imagegen] shutdown passed its ${this.shutdownBoundMs / 1000} s bound; leaving the rest`); resolve() }, this.shutdownBoundMs) })
     await Promise.race([work.catch(e => this.log(`[imagegen] shutdown work threw: ${errText(e)}`)), bound])
     clearTimeout(timer)
   }

@@ -1595,9 +1595,15 @@ describe('ImageService: nothing of ours is left on ComfyUI', () => {
     expect(cancels()).toEqual([])
   })
 
+  // The next two are about what shutdown does with a POST still in flight, not about its bound. With
+  // the real 3 s bound they raced it: under a full suite on Windows the delayed answer, the two cancel
+  // requests and the commit once took longer, the bound won, and the sidecar kept the id that was sent
+  // (2026-11-11). The bound has its own test above; here it is set where it cannot win.
+  const NO_BOUND = { shutdownBoundMs: 120_000 }
+
   it('shutdown during the POST waits for its answer, so the prompt is cancelled once it is there to cancel', async () => {
     mock = await startMockComfy({ pendingPolls: 0, delay: { '/prompt': 200 } })
-    const svc = start()
+    const svc = start(NO_BOUND)
     const s = spec(['alien'])
     svc.annotate(s, at()).start()
     await until(() => posts().length === 1, 'the POST')
@@ -1613,7 +1619,7 @@ describe('ImageService: nothing of ours is left on ComfyUI', () => {
 
   it('shutdown during the POST to an older ComfyUI cancels the id the server answered with, not the one sent', async () => {
     mock = await startMockComfy({ neverFinish: true, ignoreClientId: true, delay: { '/prompt': 200 } })
-    const svc = start()
+    const svc = start(NO_BOUND)
     const s = spec(['alien'])
     svc.annotate(s, at()).start()
     await until(() => posts().length === 1, 'the POST')

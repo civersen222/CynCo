@@ -176,10 +176,17 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
       test: 'from pkg.rules import fee\ndef test_high():\n    assert fee(200) == 10\n',
     })
     try {
-      const a = parseJson(sweep(repo).out)
-      const b = parseJson(sweep(repo).out)
-      expect(a).not.toBeNull()
-      expect(b).toEqual(a)
+      // Failed once under a full suite on Windows (2026-11-12) with nothing kept to say which
+      // mutant changed sides or why. Each repo and each sweep tree is its own mkdtemp, and the
+      // test takes ten seconds alone, so it is neither shared files nor the time limit. Both
+      // runs' own lines (killed / LIVE / SKIP per mutant) ride on the assertions for next time.
+      const first = sweep(repo)
+      const second = sweep(repo)
+      const a = parseJson(first.out)
+      const b = parseJson(second.out)
+      const both = `first run (exit ${first.status}):\n${first.out}\nsecond run (exit ${second.status}):\n${second.out}`
+      expect(a, both).not.toBeNull()
+      expect(b, both).toEqual(a)
     } finally { rmSync(repo.dir, { recursive: true, force: true }) }
   }, 180_000)
 
