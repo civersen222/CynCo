@@ -259,7 +259,7 @@ Every turn's cost is recorded to the `measurements` table, with the source the n
 
 Prefill tokens are `timings.prompt_n`, the tokens the server actually evaluated. They are not `prompt_tokens`, which is the size of the whole prompt; conflating the two makes a cached 60K prefix look identical to a cold one. A turn whose server reported no timings is stored as `NULL`, not zero: it is unmeasured, not free. `/spend` sums the session and reports how many turns it covers, so a partial total reads as a floor rather than a claim.
 
-**Other servers.** Besides `ollama` and `llama-cpp`, `LOCALCODE_PROVIDER` accepts `lmstudio`, `vllm` and `openai-compat`, for any server that speaks the OpenAI chat API (`LOCALCODE_BASE_URL`, `LOCALCODE_API_KEY`). The llama.cpp path is the measured one.
+**Other servers.** CynCo has two providers, `llama-cpp` and `ollama`. Another server that speaks the OpenAI chat API can be reached with the `ollama` provider and `LOCALCODE_BASE_URL` pointed at it (the Ollama client uses `/v1/chat/completions`; its model listing and pull will not work there). The names `lmstudio`, `vllm` and `openai-compat` were accepted until 2026-11-17 and did exactly that without saying so; they are refused at start now, with this instruction. The llama.cpp path is the measured one.
 
 ---
 
@@ -920,7 +920,7 @@ Nothing has to be configured to start. With no environment and no profile of you
 |----------|---------|---------|
 | `LOCALCODE_MODEL` | from profile (`qwen3.8:27b`) | Model name. Not required: the profile supplies it. |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | The Ollama (or OpenAI-compatible) server URL. |
-| `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama`, `llama-cpp`, `lmstudio`, `vllm` or `openai-compat`. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
+| `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama` or `llama-cpp`; any other name is refused at start. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_MODEL_PATH` | — | The GGUF for the llama-cpp provider (or a profile's `model_file`). |
 | `LOCALCODE_EMBED_MODEL` | `nomic-embed-text` | Model for code indexing. Another model that the server does not have falls back to this one. |
 | `LOCALCODE_TEMPERATURE` | `1.0` from the shipped profile (built-in `0.7`) | Sampling temperature. |

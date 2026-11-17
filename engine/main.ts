@@ -28,7 +28,7 @@ if (process.platform === 'win32') {
   }
 }
 
-import { loadConfig } from './config.js'
+import { loadConfig, ConfigRefusal } from './config.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand, MCPServerInfo } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
@@ -81,7 +81,17 @@ async function discoverMcpServers(): Promise<MCPServerInfo[]> {
 
 // ─── Bootstrap ─────────────────────────────────────────────────
 
-const config = loadConfig()
+// A configuration the engine will not start with is said in one line, not as a stack (Refuse, don't crash).
+function loadConfigOrRefuse() {
+  try {
+    return loadConfig()
+  } catch (e) {
+    if (!(e instanceof ConfigRefusal)) throw e
+    console.error(`[localcode] ${e.message}`)
+    process.exit(1)
+  }
+}
+const config = loadConfigOrRefuse()
 
 // Migrate ~/.localcode → ~/.cynco if needed
 try {

@@ -10,7 +10,19 @@
 
 import type { ResolvedProfile, ToolScoping } from './profiles/types.js'
 import { resolveProfile } from './profiles/resolver.js'
-import type { ProviderType } from './providers/factory.js'
+import { providerFromName, type ProviderType } from './providers/names.js'
+
+/**
+ * A configuration the engine will not start with, and why. `loadConfig` throws it for the one
+ * setting that used to degrade without a word (an unsupported provider name); `main.ts` prints
+ * the message and exits instead of showing a stack.
+ */
+export class ConfigRefusal extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfigRefusal'
+  }
+}
 
 /**
  * Detect whether we're running in local model mode.
@@ -224,7 +236,12 @@ export function loadConfig(): LocalCodeConfig {
   // started the llama.cpp direct provider and looked for a GGUF nothing had
   // downloaded. The built-in stays 'llama-cpp' so an existing setup relying on
   // it is untouched; the shipped default profile names 'ollama'.
-  const provider = (process.env.LOCALCODE_PROVIDER ?? profile?.provider ?? 'llama-cpp') as ProviderType
+  //
+  // The name is checked, not cast. A name CynCo has no provider for used to run the Ollama
+  // client and say nothing (`providers/names.ts`); it is refused here, where env and profile meet.
+  const asked = providerFromName(String(process.env.LOCALCODE_PROVIDER ?? profile?.provider ?? 'llama-cpp'))
+  if (!asked.ok) throw new ConfigRefusal(asked.reason)
+  const provider: ProviderType = asked.provider
 
   // --- apiKey ---
   const apiKey = process.env.LOCALCODE_API_KEY ?? ''

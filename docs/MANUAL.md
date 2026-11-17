@@ -101,7 +101,7 @@ data, and write the audit log before exit.
 | `--export-training <path>` | Export the S5 journal (`~/.cynco/training/s5-decisions.jsonl`), joined to session outcomes from `governance.db` and filtered to viable sessions → JSONL |
 | `--run-ablation <path>` | Governed vs ungoverned A/B over a case file |
 | `LOCALCODE_MODEL` | **Required.** Model name (e.g. `qwen3.6`, `gemma4:31b`) |
-| `LOCALCODE_PROVIDER` | `ollama` (default), `llama-cpp`, `lmstudio`, `openai-compat`, `vllm` |
+| `LOCALCODE_PROVIDER` | `ollama` (default) or `llama-cpp`; any other name is refused at start |
 | `LOCALCODE_BASE_URL` | Backend URL (default `http://localhost:11434`) |
 | `LOCALCODE_WS_PORT` | Bridge port (default 9160) |
 | `LOCALCODE_BRIDGE_HOST` | Bridge bind host (default `127.0.0.1`) |
@@ -127,7 +127,6 @@ The provider abstraction lives in `engine/provider.ts` (interface) and
 |---|---|---|
 | `ollama` | `OllamaProvider` (`engine/ollama/client.ts`) | `POST /api/chat` (native, streaming) |
 | `llama-cpp` | `LlamaCppProvider` | `POST /completion` on a managed `llama-server` |
-| `lmstudio` / `openai-compat` / `vllm` | `OpenAICompatProvider` | `POST /v1/chat/completions` |
 
 **Capability probing** (`engine/ollama/probe.ts`) maps a model family to a
 capability table (tool use: `native`/`simulated`/`none`; thinking; vision;

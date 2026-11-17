@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach, beforeEach, mock } from 'bun:test'
-import { loadConfig, isS5EnforcementEnabled, isAllToolsEnabled } from '../config.js'
+import { loadConfig, isS5EnforcementEnabled, isAllToolsEnabled, ConfigRefusal } from '../config.js'
 
 describe('config', () => {
   const fs = require('node:fs') as typeof import('node:fs')
@@ -355,6 +355,24 @@ runtime:
     // fix added a layer beneath env rather than moving the floor.
     writeGlobalProfile('default', 'name: default\nmodel: m\n')
     expect(loadConfig().provider).toBe('llama-cpp')
+  })
+
+  // Until 2026-11-17 the name was cast, not checked, and every name but llama-cpp ran the
+  // Ollama client: `provider: vllm` in a profile started an Ollama client and said nothing.
+  it('a provider CynCo does not have is refused, from the environment and from a profile', () => {
+    writeGlobalProfile('default', 'name: default\nmodel: m\nprovider: ollama\n')
+    process.env.LOCALCODE_PROVIDER = 'lmstudio'
+    expect(() => loadConfig()).toThrow(ConfigRefusal)
+    expect(() => loadConfig()).toThrow(/provider "lmstudio" is not one of CynCo's/)
+    delete process.env.LOCALCODE_PROVIDER
+
+    writeGlobalProfile('default', 'name: default\nmodel: m\nprovider: llamacpp\n')
+    expect(() => loadConfig()).toThrow(/spelled "llama-cpp"/)
+
+    // The environment still outranks the profile: a good name there is enough.
+    process.env.LOCALCODE_PROVIDER = 'ollama'
+    expect(loadConfig().provider).toBe('ollama')
+    delete process.env.LOCALCODE_PROVIDER
   })
 
   it('env LOCALCODE_MODEL overrides the auto-default profile model', () => {
