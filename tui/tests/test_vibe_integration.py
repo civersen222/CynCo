@@ -271,3 +271,48 @@ def test_escalation_dialogs_are_serialized(monkeypatch):
     assert active["max"] == 1, "two escalation dialogs were on screen at once"
     assert shown == ["r1", "r2"]
     assert [c.request_id for c in sent] == ["r1", "r2"]
+
+
+class TestGuidedModeReachesTheVibeLoop:
+    """The guided screen asks which kind of session this is; the answer has to arrive.
+
+    Until 2026-11-17 `_go_vibe(mode)` built `VibeLoopScreen()` without it, so the mode was
+    guessed again from the first message and "explain" could never be started (F233 l).
+    """
+
+    def test_go_vibe_hands_the_mode_to_the_screen(self):
+        from localcode_tui.screens.guided import GuidedScreen
+
+        switched = []
+
+        class FakeApp:
+            def switch_screen(self, screen):
+                switched.append(screen)
+
+        class FakeSelf:
+            app = FakeApp()
+
+        for mode in ("continue", "fix", "explain"):
+            GuidedScreen._go_vibe(FakeSelf(), mode)
+        assert [s._requested_mode for s in switched] == ["continue", "fix", "explain"]
+
+    def test_a_chosen_mode_wins_over_what_the_text_looks_like(self):
+        from localcode_tui.screens.vibe_loop import start_mode
+
+        assert start_mode("there is a bug in the parser", "explain") == "explain"
+        assert start_mode("explain how the parser works", "explain") == "explain"
+        assert start_mode("anything at all", "continue") == "continue"
+
+    def test_with_no_choice_the_mode_is_read_off_the_text_as_before(self):
+        from localcode_tui.screens.vibe_loop import start_mode
+
+        assert start_mode("fix the crash on startup") == "fix"
+        assert start_mode("pick up where we left off") == "continue"
+        assert start_mode("build me a todo app") == "new"
+
+    def test_something_that_is_not_a_mode_is_not_a_choice(self):
+        from localcode_tui.screens.vibe_loop import VibeLoopScreen, start_mode
+
+        assert VibeLoopScreen(mode="banana")._requested_mode is None
+        assert VibeLoopScreen()._requested_mode is None
+        assert start_mode("build me a todo app", "banana") == "new"

@@ -30,6 +30,30 @@ def _make_project_entry(name: str, file_count: int, languages: list, summary: st
     return entry
 
 
+# The four modes the engine's vibe controller knows (engine/bridge/protocol.ts, `vibe.start`).
+VIBE_MODES = ("new", "continue", "fix", "explain")
+
+
+def start_mode(text: str, requested: str | None = None) -> str:
+    """The mode a vibe session starts in.
+
+    A mode the caller chose wins: the guided screen asks "continue, fix or learn" and then
+    used to throw the answer away, so the choice was guessed again from the first thing the
+    user typed, and "explain" (read-only on the engine side) could never be reached at all.
+    With no choice, the mode is read off the text as before.
+    """
+    if requested in VIBE_MODES:
+        return requested
+    lower = text.lower()
+    continue_signals = ["continue", "finish", "existing", "current", "resume", "pick up", "what's here", "work on"]
+    fix_signals = ["fix", "bug", "broken", "error", "crash", "wrong", "not working"]
+    if any(sig in lower for sig in fix_signals):
+        return "fix"
+    if any(sig in lower for sig in continue_signals):
+        return "continue"
+    return "new"
+
+
 class VibeLoopScreen(Screen):
     """Main vibe loop screen — the user never leaves this."""
 
@@ -96,9 +120,12 @@ class VibeLoopScreen(Screen):
         ("ctrl+y", "copy", "Copy diff"),
     ]
 
-    def __init__(self, phases: list | None = None, *args, **kwargs):
+    def __init__(self, phases: list | None = None, *args, mode: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self._state = "idle"
+        # The mode the caller chose (the guided screen's three buttons), or None to read it
+        # off what the user types. Anything that is not a mode is treated as not chosen.
+        self._requested_mode = mode if mode in VIBE_MODES else None
         self._current_question_id = ""
         self._phases = phases or []
         self._phase_idx = 0
@@ -263,16 +290,7 @@ class VibeLoopScreen(Screen):
             if text.lower().strip() == 'resume' and self._phases and self._phase_idx < len(self._phases):
                 self._execute_current_phase()
                 return
-            # Detect mode from user's text
-            lower = text.lower()
-            continue_signals = ["continue", "finish", "existing", "current", "resume", "pick up", "what's here", "work on"]
-            fix_signals = ["fix", "bug", "broken", "error", "crash", "wrong", "not working"]
-            if any(s in lower for s in fix_signals):
-                mode = "fix"
-            elif any(s in lower for s in continue_signals):
-                mode = "continue"
-            else:
-                mode = "new"
+            mode = start_mode(text, self._requested_mode)
             from ..protocol import VibeStartCommand
             cmd = VibeStartCommand(mode=mode, description=text)
             self.app.send_command(cmd)

@@ -56,7 +56,7 @@ class GuidedScreen(Screen):
     def _go_vibe(self, mode: str) -> None:
         """Switch to the vibe loop screen with the given mode."""
         from .vibe_loop import VibeLoopScreen
-        screen = VibeLoopScreen()
+        screen = VibeLoopScreen(mode=mode)
         self.app.switch_screen(screen)
 
     def action_go_workspace(self) -> None:
