@@ -14,7 +14,8 @@ re-checked each redirect hop, but it never looked a name up. A public name that 
 
 ## What was decided
 
-1. **No new range.** A name is held to exactly the ranges a literal address already was:
+1. **No new range, at first.** (Three were added the same day, with the owner's yes: see the
+   end of this record.) A name is held to exactly the ranges a literal address already was:
    0/8, loopback, 10/8, 172.16/12, 192.168/16, link-local 169.254/16, carrier-grade NAT
    100.64/10 (the tailnet), multicast and reserved; IPv6 loopback, unique-local, link-local
    and IPv4-mapped forms of the above. The tool has always described itself as "Only allows
@@ -44,9 +45,6 @@ re-checked each redirect hop, but it never looked a name up. A public name that 
 
 ## What it does not cover
 
-- NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`) and site-local (`fec0::/10`) IPv6 forms of a
-  private address. They were not refused as literals either, and they are new ranges: the
-  owner's to add (`docs/NOW.md`).
 - `tls.serverName` is Bun's option. The engine runs under Bun; under another runtime the
   pinned HTTPS request would fail closed, not open.
 - `WebSearch` and the research engines make their own requests to fixed public hosts and
@@ -61,6 +59,16 @@ refusing this machine's own name through the real resolver. With the one refusin
 out, five of them fail. Run once against the real network under Bun: `https://example.com/`
 and a redirecting GitHub URL are fetched, `http://localtest.me:9161/` is refused with
 "localtest.me resolves to 127.0.0.1 (loopback)".
+
+## Added the same day: three IPv6 forms
+
+The owner took row 17 of `docs/reviews/2026-11-17-owner-decisions.md` as recommended. Refused
+now, as a literal host and as the address a name resolves to: NAT64 (`64:ff9b::/96` and the
+local-use `64:ff9b:1::/48`) and 6to4 (`2002::/16`) when the IPv4 address they carry is in a
+refused range, and site-local (`fec0::/10`). `64:ff9b::7f00:1` was a way to write 127.0.0.1
+that nothing refused. A NAT64 or 6to4 form of a public address still passes. The IPv6 check
+now reads the address as its eight groups instead of matching its text, so a resolver's
+long spelling of loopback (`0:0:0:0:0:0:0:1`) is loopback too.
 
 ## How it is undone
 

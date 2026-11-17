@@ -396,3 +396,64 @@ describe('webFetchTool wiring', () => {
     expect(result.output).toMatch(new RegExp(`^URL blocked: Blocked: \\S+ resolves to `))
   })
 })
+
+/**
+ * Three IPv6 spellings of a private IPv4 address that the literal check let through, and so
+ * the lookup check did too (decision sheet of 2026-11-17, row 17): NAT64 and 6to4 carry an
+ * IPv4 address inside an IPv6 one, and site-local is the old private IPv6 range.
+ */
+describe('IPv6 forms that carry or are a private address', () => {
+  const refused: Array<[string, string]> = [
+    ['64:ff9b::7f00:1', 'NAT64 loopback'],                    // 127.0.0.1
+    ['64:ff9b::127.0.0.1', 'NAT64 loopback'],                 // the same, dotted
+    ['64:ff9b::c0a8:2f', 'NAT64 private (192.168/16)'],       // 192.168.0.47
+    ['64:ff9b:1::a00:5', 'NAT64 private (10/8)'],             // local-use NAT64 prefix, 10.0.0.5
+    ['2002:7f00:1::', '6to4 loopback'],                       // 127.0.0.1
+    ['2002:6465:c065::1', '6to4 carrier-grade NAT (100.64/10)'], // 100.101.192.101, a tailnet address
+    ['2002:a9fe:a9fe::', '6to4 link-local (169.254/16)'],     // 169.254.169.254
+    ['fec0::1', 'IPv6 site-local'],
+    ['feff:1::2', 'IPv6 site-local'],
+  ]
+  const allowed = [
+    '64:ff9b::5db8:d822',  // NAT64 of 93.184.216.34, a public address
+    '2002:5db8:d822::1',   // 6to4 of the same
+    '2606:2800:220:1::1',
+    '2001:db8::1',
+  ]
+
+  test('as a literal host in a URL', () => {
+    for (const [address, why] of refused) {
+      expect(validateUrl(`http://[${address}]/`), address).toEqual({ ok: false, reason: `Blocked: ${why}` })
+    }
+    for (const address of allowed) expect(validateUrl(`http://[${address}]/`), address).toEqual({ ok: true })
+  })
+
+  test('as the address a name resolves to, in any case', () => {
+    for (const [address, why] of refused) {
+      expect(blockedAddress(address), address).toBe(why)
+      expect(blockedAddress(address.toUpperCase()), address).toBe(why)
+    }
+    for (const address of allowed) expect(blockedAddress(address), address).toBe('')
+  })
+
+  test('what was refused before still is, with the same words', () => {
+    expect(blockedAddress('::1')).toBe('IPv6 loopback')
+    expect(blockedAddress('fd00::1')).toBe('IPv6 unique-local')
+    expect(blockedAddress('fe80::1')).toBe('IPv6 link-local')
+    expect(blockedAddress('::ffff:10.0.0.5')).toBe('IPv4-mapped private (10/8)')
+  })
+
+  // A URL's host arrives in one spelling (WHATWG's); a resolver's answer arrives in whatever
+  // spelling the resolver used, and the old text match knew only the short one.
+  test('an address is the same address however it is spelled', () => {
+    expect(blockedAddress('0:0:0:0:0:0:0:1')).toBe('IPv6 loopback')
+    expect(blockedAddress('0000:0000:0000:0000:0000:0000:0000:0001')).toBe('IPv6 loopback')
+    expect(blockedAddress('FE80:0:0:0:0:0:0:1')).toBe('IPv6 link-local')
+    expect(blockedAddress('0:0:0:0:0:ffff:7f00:1')).toBe('IPv4-mapped loopback')
+  })
+
+  test('something that is not an IPv6 address is not waved through', () => {
+    expect(blockedAddress('64:ff9b::zz')).toBe('not an address')
+    expect(blockedAddress('1:2:3:4:5:6:7:8:9')).toBe('not an address')
+  })
+})
