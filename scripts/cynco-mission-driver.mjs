@@ -40,6 +40,14 @@
 //                  like check-cmd. Never a perf-measuring command: it shares
 //                  the machine with the run it is probing.
 //
+// A stalled model stream (F235) is re-prompted ONCE: when the engine cuts a
+// request its model server stopped answering, its `session.error` carries a
+// `stall` field, and at the next poll that finds the turn closed the driver
+// sends one user message telling the model to carry on (scripts/cynco-stall.mjs).
+// The mission's clock is not moved. A second stall, a re-prompt that cannot be
+// sent, and every other engine error end the mission as before. The ledger row
+// says what happened in `stalls` ({ reprompts, events }).
+//
 // Optional sidecar: <task-file with .contract.json instead of its extension>.
 // What the brief AUTHORIZES, which the brief text cannot say in a way any
 // mechanism reads. Finding (ai): assessTestsUnmodified vetoes the whole reward
@@ -77,6 +85,7 @@ import { chatModelServerPids } from './cynco-llama-sweep.mjs'
 import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal, failReport, failingLines } from './cynco-verify.mjs'
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
+import { createStallRecovery, stallRepromptRound } from './cynco-stall.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
 import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
 import { invariantsFromEnv } from './cynco-invariants.mjs'
@@ -318,6 +327,13 @@ let lastActivityAt = Date.now()
 // next 3351 seconds. Null until the engine says otherwise; the string it says is
 // kept, because "a crash happened" and "which crash" are different facts.
 let engineError = null
+// F235, the re-prompt (owner's decision 2026-11-17, row 11): a stalled model
+// stream no longer ends the mission the first time. The engine marks that
+// `session.error` with a `stall` field; the first one is held here instead of
+// in `engineError`, and the wait loop re-prompts once when the engine has
+// closed the turn. A second stall, and every error without the field, is
+// terminal as before. All of it is decided in cynco-stall.mjs.
+const stallRecovery = createStallRecovery()
 // F32: dispatched, accepted by nobody. The bridge refused the frame — correctly,
 // on a real schema skew — and said so only in its own stdout. From here that is
 // indistinguishable from an engine still thinking, so this script waited, and
@@ -430,7 +446,7 @@ function onMissionMessage(ev) {
       console.log(`[driver] engine declares [${(m.capabilities ?? []).join(', ')}] — dispatching mission`)
       dispatchMission()
     }
-    if (WORK_BEGUN.has(m.type)) workBegun = true
+    if (WORK_BEGUN.has(m.type)) { workBegun = true; stallRecovery.onTurnActivity() }
     if (m.type === 's5.decision' && m.enforced === true && m.authority !== 'earned' && !enforcedWarned) {
       // Kept as a second, independent detector. F59 moved the decision to
       // dispatch time, where it reads the engine's own declaration; this reads
@@ -456,11 +472,20 @@ function onMissionMessage(ev) {
       // never dispatched, which is what it is.
       console.log(`[driver] dispatch REFUSED — the engine is busy with another turn: ${String(m.error)}`)
     } else if (m.type === 'session.error' && !engineError) {
-      // Terminal for this mission: conversationLoop only emits this after the
-      // model loop has thrown and unwound. Recorded, not thrown away, so the
-      // ledger can tell a repeated llama-server exit from a one-off.
-      engineError = String(m.error ?? 'session.error with no message')
-      console.log(`[driver] ENGINE ERROR — the run is over, not stalled: ${engineError}`)
+      // conversationLoop only emits this after the model loop has thrown and
+      // unwound. A first stalled stream (the frame's own `stall` field, never
+      // its text) is held for one re-prompt; everything else is terminal for
+      // this mission. Recorded, not thrown away, so the ledger can tell a
+      // repeated llama-server exit from a one-off.
+      const held = stallRecovery.onSessionError(m)
+      if (held.resume) {
+        console.log(`[stall] STREAM STALLED (${held.stall.phase}) — the engine cut a request its model server stopped answering: ${String(m.error ?? '')}`)
+        console.log('[stall] not the end of the mission: one re-prompt follows once the engine reports the turn closed')
+      } else {
+        if (held.stall) console.log(`[stall] a stalled stream again (${held.stall.phase}), and ${held.why} — it ends the mission, as a stall did before the re-prompt existed`)
+        engineError = String(m.error ?? 'session.error with no message')
+        console.log(`[driver] ENGINE ERROR — the run is over, not stalled: ${engineError}`)
+      }
     }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
@@ -630,6 +655,31 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
   const engineProcessing = await engineRunState()
   if (engineProcessing !== null) runStateSeen = true
   else console.log('[driver] /api/run UNANSWERED — falling back to the silence heuristic; the exit will be recorded as inferred, not observed')
+  // F235, the re-prompt. Here and nowhere earlier: the engine emits
+  // `session.error` before it has unwound the turn, and a user.message that
+  // meets an open unattended turn is queued as an operator note and dropped
+  // when the turn ends. So the re-prompt waits for /api/run to say the turn is
+  // closed; while it is open or unanswered the exit rule below keeps its own
+  // bounds (turn_silent, engine_gone, the clock). The mission's clock and its
+  // budgets are untouched: `start` is not moved.
+  if (!engineError && stallRecovery.active()) {
+    const round = await stallRepromptRound({
+      recovery: stallRecovery,
+      engineProcessing,
+      getWs: () => ws,
+      reconnect: reconnectMissionSocket,
+      frameFor: (text) => JSON.stringify({ type: 'user.message', text, cwd: CWD, readOnlyPaths, unattended: true }),
+    })
+    if (round.reprompted) {
+      sawMessageComplete = false
+      lastActivityAt = Date.now()
+      progress.reset()
+      continue
+    }
+    // The re-prompt could not be sent, or the engine closed the turn without
+    // running one: the stall stands, and ends the mission as it always did.
+    if (round.error) engineError = round.error
+  }
   // Quiescence ends the wait whether or not anything landed. A run that lands
   // and then keeps working — amending the commit, fixing a name — must finish
   // before the check runs, or the check measures a state that no longer
@@ -732,6 +782,11 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
 // before the gate runs — and if the engine will not close it, the record has to
 // say so instead of implying a quiet workspace.
 let runStillOpen = false
+// A stall still unanswered when the wait ended (the engine never closed the
+// stalled turn, or the clock ran out first) is what ended this mission: the
+// row carries the engine's own words for it, and the gate and the outcome
+// treat it as they treat every engine error.
+if (!engineError && stallRecovery.standing()) engineError = stallRecovery.standing()
 if (!silentAfterDispatch) {
   if (await engineRunState() === true) {
     console.log('[driver] engine still has the turn OPEN — sending abort')
@@ -1056,6 +1111,9 @@ try {
     verifyRetries: MARKER.command ? verifyRetries : null,
     // Stage 1 (S3*): what the in-loop probe saw and did. null when no probe-cmd.
     probe: probeState,
+    // F235, the re-prompt: every stalled stream the engine reported and what
+    // became of each. `reprompts: 0, events: []` on a mission that never stalled.
+    stalls: stallRecovery.record(),
     history,
     // -> `commitRange`. The pair that makes this row sweepable later; see the
     // field's comment in cynco-ledger.mjs for the 150 rows that had no pair.

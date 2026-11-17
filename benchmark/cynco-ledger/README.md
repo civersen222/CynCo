@@ -379,6 +379,29 @@ decisions still recorded here).
   "probe": { "command": "python -m pytest test_x.py -q", "runs": 2, "fails": 1,
     "overrides": 1, "lastExit": 0, "lastVerified": true,
     "exhausted": false, "blockedBySocket": 0 },
+  // F235, the re-prompt (2026-11-17): the stalled model streams the engine
+  // reported during the mission and what the driver did about each
+  // (scripts/cynco-stall.mjs). The engine cuts a streamed request its model
+  // server stopped answering and marks that `session.error` with a `stall`
+  // field; the driver re-prompts ONCE, when the engine has closed the turn,
+  // and the mission carries on under the same clock. `reprompts` counts
+  // re-prompts confirmed sent (0|1); each event's `at` is when the stall was
+  // reported and `repromptedAt` when the re-prompt went out. `reprompt` is
+  // "sent" (`resumed` true once a turn ran after it; false when the engine
+  // closed the turn without running one, and the stall then ended the
+  // mission), "spent" (the one re-prompt was already used: this stall ended
+  // the mission and its text is `engineError`), "failed" (it could not be
+  // sent; `why` says how) or "waiting" (the mission ended before the engine
+  // closed the stalled turn). A resumed mission's `outcome`, `exitReason` and
+  // `verified` are decided afterwards by the same rules as any mission's, so
+  // `stalls.events[].resumed` is the only field that tells a graded wave that
+  // was resumed from one that never stalled. `{ "reprompts": 0, "events": [] }`
+  // = never stalled; a row written before 2026-11-17 has no field at all.
+  "stalls": { "reprompts": 1, "events": [
+    { "at": "2026-11-17T10:00:00.000Z", "phase": "mid-stream", "silentMs": 600000,
+      "error": "llama-server stopped sending mid-reply: nothing for 600s; the request was cancelled (F235)",
+      "reprompt": "sent", "repromptedAt": "2026-11-17T10:00:30.000Z",
+      "resumed": true, "why": null } ] },
   // Grader-probe scan of tool.start inputs. null when no frame carried an
   // inspectable input (engine too old) — a measured `probes: 0` is a different
   // fact from an unmeasured one and must not collapse into it.

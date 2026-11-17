@@ -96,6 +96,7 @@ import { commitPressureNotice, commitPressureDue } from './commitPressure.js'
 import { buildSideQueryBody, readSideQueryContent } from './sideQuery.js'
 import { isMalformedInput } from '../engine/toolCallRepair.js'
 import { extractSimulatedToolCalls } from '../ollama/simulated.js'
+import { stallOf } from '../providers/streamWatchdog.js'
 import { ThinkingRecorder } from '../memory/thinkingRecorder.js'
 import { UncertaintyTracker, type EntropyDigest } from '../memory/uncertaintyTracker.js'
 // Trajectory recording and Best-of-N were reached through lazy require('*.js').
@@ -2679,7 +2680,10 @@ export class ConversationLoop {
         const msg = err instanceof Error ? err.message : String(err)
         console.error(`[loop] ERROR: ${msg}`)
         this.taskEndedInEngineError = true
-        this.emit({ type: 'session.error', error: msg })
+        // A cut stream says so in a field of its own (F235): the mission driver
+        // re-prompts once after a stall and must never do so after a crash.
+        const stall = stallOf(err)
+        this.emit(stall ? { type: 'session.error', error: msg, stall } : { type: 'session.error', error: msg })
       }
     }
     // An aborted loop returns at its signal check without a terminal frame.

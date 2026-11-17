@@ -71,6 +71,27 @@ export async function sendConfirmed(ws, frame, confirmMs = NOTE_CONFIRM_MS) {
 }
 
 /**
+ * Get `frame` onto an OPEN mission socket: when the current one is not open,
+ * reconnect to the engine first (`reconnect()` resolves a new socket already
+ * attached as the mission socket), then send and confirm. `{ ok: true }` or
+ * `{ ok: false, reason }`; never throws for a socket problem. Shared by the
+ * marker-check note and the re-prompt after a stalled stream (cynco-stall.mjs);
+ * `tag` is the caller's log prefix.
+ */
+export async function deliverFrame({ getWs, reconnect, frame, confirmMs = NOTE_CONFIRM_MS, log = console.log, tag = '[driver]' }) {
+  let ws = getWs()
+  if (!ws || ws.readyState !== OPEN) {
+    log(`${tag} the mission socket is not open (readyState ${ws?.readyState ?? 'none'}) — reconnecting to the engine before the note`)
+    try {
+      ws = await reconnect()
+    } catch (e) {
+      return { ok: false, reason: `reconnect failed: ${e?.message ?? e}` }
+    }
+  }
+  return sendConfirmed(ws, frame, confirmMs)
+}
+
+/**
  * One marker-check round.
  *
  *   getWs()        the current mission socket
@@ -97,18 +118,7 @@ export async function markerCheckRound({ getWs, reconnect, check, remainingS, mi
     return { attempt, left, retried: false, noteFailed: refusal }
   }
   log(`[verify] marker check FAILED — retrying once (${left}s left)`)
-  let ws = getWs()
-  if (!ws || ws.readyState !== OPEN) {
-    log(`[verify] the mission socket is not open (readyState ${ws?.readyState ?? 'none'}) — reconnecting to the engine before the note`)
-    try {
-      ws = await reconnect()
-    } catch (e) {
-      const noteFailed = `reconnect failed: ${e?.message ?? e}`
-      log(`[verify] note NOT sent — ${noteFailed}; the FAIL stands`)
-      return { attempt, left, retried: false, noteFailed }
-    }
-  }
-  const sent = await sendConfirmed(ws, frameFor(noteFor(attempt)), confirmMs)
+  const sent = await deliverFrame({ getWs, reconnect, frame: frameFor(noteFor(attempt)), confirmMs, log, tag: '[verify]' })
   if (!sent.ok) {
     log(`[verify] note NOT sent — ${sent.reason}; the FAIL stands`)
     return { attempt, left, retried: false, noteFailed: sent.reason }

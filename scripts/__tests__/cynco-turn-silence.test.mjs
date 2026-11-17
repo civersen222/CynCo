@@ -129,7 +129,8 @@ describe('the driver is wired to it', () => {
   const driver = readFileSync('scripts/cynco-mission-driver.mjs', 'utf-8')
   it('observes every frame, resets on each message it sends itself, and passes the limit to the exit rule', () => {
     expect(driver).toMatch(/collector\.ingest\(m\)\s+progress\.observe\(m\)/)
-    expect(driver.match(/progress\.reset\(\)/g)).toHaveLength(3)
+    // The dispatch, a probe injection, the marker-check note and the re-prompt after a stalled stream.
+    expect(driver.match(/progress\.reset\(\)/g)).toHaveLength(4)
     expect(driver).toMatch(/const TOOL_CAP_MS = bashMaxTimeoutMs\(\)/)
     expect(driver).toMatch(/msSinceProgress: progress\.msSinceProgress\(\), silenceLimitMs \}\)/)
   })

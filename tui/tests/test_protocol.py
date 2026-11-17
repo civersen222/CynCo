@@ -76,6 +76,18 @@ class TestParseEvent:
         assert isinstance(event, SessionErrorEvent)
         assert event.error == "connection failed"
 
+    def test_parse_session_error_with_a_stall_field(self):
+        # F235: the engine marks the error of a cut model stream with a `stall`
+        # field, which the mission driver reads. The TUI shows the text as it
+        # always did; a field it has no use for must not stop the frame parsing.
+        event = parse_event({
+            "type": "session.error",
+            "error": "llama-server stopped sending mid-reply: nothing for 600s",
+            "stall": {"phase": "mid-stream", "silentMs": 600000},
+        })
+        assert isinstance(event, SessionErrorEvent)
+        assert event.error == "llama-server stopped sending mid-reply: nothing for 600s"
+
     def test_parse_stream_token(self):
         event = parse_event({"type": "stream.token", "text": "hello", "messageId": "m1"})
         assert isinstance(event, StreamTokenEvent)
