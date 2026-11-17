@@ -9,6 +9,10 @@ describe('JlensClient', () => {
     const c = new JlensClient('http://x', okFetch({ ok: true, layers: [24, 32] }))
     expect(await c.health()).toEqual({ ok: true, layers: [24, 32] })
   })
+  it('health passes on the model the sidecar says its lens was computed for', async () => {
+    const c = new JlensClient('http://x', okFetch({ ok: true, layers: [24, 32], model: 'Qwen/Qwen3.6-27B' }))
+    expect((await c.health())?.model).toBe('Qwen/Qwen3.6-27B')
+  })
   it('health null on network failure (degradation, no throw)', async () => {
     const c = new JlensClient('http://x', (async () => { throw new Error('down') }) as any)
     expect(await c.health()).toBeNull()

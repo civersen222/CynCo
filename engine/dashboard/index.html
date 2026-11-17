@@ -1192,6 +1192,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
       Brain <span id="brain-tier-badge" class="badge">entropy-only</span>
     </div>
     <div id="brainOffNotice" class="muted" hidden></div>
+    <div id="brain-lens-model" class="muted" style="font-size:12px;"></div>
     <div id="brain-tail" class="scroll-tail"></div>
     <canvas id="brain-sparkline" height="60" style="width:100%;display:block;margin:8px 0;"></canvas>
     <div id="brain-tooltip" class="tooltip" hidden></div>
@@ -6943,10 +6944,22 @@ function brainTierReason(msg, tier) {
   return why.length ? 'entropy only — ' + why.join('; ') : 'entropy only';
 }
 
+/**
+ * Which model the lens was computed for, as the sidecar reports it (brain.tier `lensModel`).
+ * The page holds no model name: a lens recomputed for another model relabels this by itself.
+ */
+function brainLensLabel(msg) {
+  if (!msg || msg.lens !== true) return '';
+  if (!msg.lensModel) return 'lens: the sidecar does not report which model it was computed for';
+  return 'lens computed for ' + msg.lensModel + ' · a readout means what it says only while that is the model being served';
+}
+
 function brainOnTier(msg) {
   var tier = msg.tier || 'entropy-only';
   var badge = document.getElementById('brain-tier-badge');
   if (badge) badge.textContent = tier;
+  var lensEl = document.getElementById('brain-lens-model');
+  if (lensEl) lensEl.textContent = brainLensLabel(msg);
   var status = document.getElementById('brain-workspace-status');
   if (status) status.textContent = brainTierReason(msg, tier);
   brainFillLayers(msg.layers, msg.layer);

@@ -58,6 +58,8 @@ def test_health(live_server):
     assert status == 200
     assert body["ok"] is True
     assert "layers" in body
+    # The model the lens was computed for, so the Brain tab can say it (2026-11-17, F233 j).
+    assert body["model"] == server_mod.config.MODEL_REPO
 
 
 def test_readout_happy_path(live_server):

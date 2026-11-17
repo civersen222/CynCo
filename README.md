@@ -82,7 +82,7 @@ CynCo is one system that uses several models, each for one job. Every name below
 | Painting pictures *(optional)* | an SDXL checkpoint; Juggernaut first when none is named | ComfyUI on the image box | `LOCALCODE_COMFYUI_URL`, `LOCALCODE_COMFYUI_CHECKPOINT` |
 | Editing photos, tracing sheets *(optional)* | Qwen-Image-Edit-2509 (`Q4_K_S` GGUF, 4-step Lightning LoRA) | ComfyUI on the image box | `LOCALCODE_COMFYUI_WORKFLOW_EDIT`, `LOCALCODE_COMFYUI_WORKFLOW_OUTLINE` |
 | Answering while the main GPU is busy *(optional)* | `qwen3:14b` | Ollama on the image box | `LOCALCODE_FALLBACK_URL`, `LOCALCODE_FALLBACK_MODEL` |
-| The Brain tab's concept lens *(optional)* | a Jacobian lens precomputed for Qwen3.6-27B | the jlens sidecar (Python, port 9163) | `LOCALCODE_JLENS=on`; the lens repo is `JLENS_MODEL_REPO` |
+| The Brain tab's concept lens *(optional)* | a Jacobian lens precomputed for Qwen3.6-27B | the jlens sidecar (Python, port 9163) | `LOCALCODE_JLENS=on`; the lens repo is `JLENS_MODEL_REPO`. The Brain tab prints which model the lens is for: until it is recomputed for Qwen3.8, read its concept readouts as approximate |
 | S5 governance decisions | the 21 hand-written rules; a fine-tuned S5 model once one exists | in the engine; a model through Ollama | `LOCALCODE_S5_MODEL` |
 | Training a personal adapter *(not yet run)* | base `unsloth/Qwen2.5-Coder-14B-Instruct` (QLoRA via Unsloth) | the main GPU | `--base` (default in `engine/training/trainingArgs.ts`) |
 | Training the S5 model *(not yet run)* | base `unsloth/Qwen2.5-3B-Instruct-bnb-4bit` | the main GPU | `--model` of `scripts/fine_tune_s5.py` |
