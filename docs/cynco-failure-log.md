@@ -4593,3 +4593,17 @@ Pinned by `engine/__tests__/llama/streamStall.test.ts` (a real HTTP server silen
 **Not done, and whose it is:** the live files are not regenerated: that rewrites the owner's home, so it waits for a yes (`docs/NOW.md`, F233 g). Nothing acts differently meanwhile, because no rule reads PREDICTIVE in either file. The engine suite still writes sessions, decisions and tool scores under a home the shell already has; that is in NOW.md too.
 
 **Rule:** a test names where it writes. A redirect applied from outside is a second line of defence, and a default that points at live state is never the first.
+
+## F241 — A scratch second engine took the owner's `~/.localcode` as its home, and its start-up clean-up deleted the 53 session journals in it (2026-11-17, while checking this batch in a browser; my doing)
+
+**Where:** the start-up migration in `engine/main.ts`: `if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) fs.renameSync(oldDir, newDir)`, with `oldDir` = `~/.localcode` and `newDir` = `cyncoHome()`. Then `JSONLStore.gcOldSessions(30)` a few lines later, which unlinks every `sessions/*.jsonl` older than thirty days under the same home.
+
+**How:** to look at the dashboard changes of the second work-order batch I started a second engine the way `AGENTS.md` describes: another bridge port, lazy, its own model port, and `CYNCO_HOME` pointing at a scratch folder. I had not created that folder. The engine's log began `[cynco] Migrated state ~/.localcode → ~/.cynco` and, further down, `[session] GC removed 53 session file(s) older than 30d`. The owner's `C:\Users\civer\.localcode` was a folder from April 2026, from before the rename to `~/.cynco` (`config.yml` 2026-04-22, `continuity/` 2026-04-23, `decisions/` 2026-04-28). The rename moved it into the scratch folder, the engine ran on it as its home, and the clean-up deleted all 53 journals in its `sessions/`, every one of them older than thirty days.
+
+**What was done at once:** the engine was stopped as soon as its first screen of log was read (which is why `AGENTS.md` says to read it). The folder was moved back to `C:\Users\civer\.localcode`. `~/.cynco`, the live home, was never touched. Not recoverable: the 53 journals (`unlinkSync`). Added by that run and left in the folder for the owner to keep or delete: `tokens.json` (freshly generated, for a home nothing uses), `audit-log/` (two files), and possibly the empty `slot-cache/`, `training/` and `trajectories/`; `governance/governance.db` was opened and written.
+
+**Why:** the migration was written for one case, the first start after the rename, and asks only whether the home exists. A home redirected with `CYNCO_HOME` is how a second engine, a test engine or a campaign is kept out of the live state (F58, F161, F224), and such a home often does not exist yet. For any of them, on a PC that still has `~/.localcode`, "the home does not exist" was true and the legacy folder was handed over. The session clean-up then treated it as an ordinary home.
+
+**Fix:** `shouldAdoptLegacyHome` (`engine/paths.ts`): the rename happens only for the default home. With `CYNCO_HOME` set it never does, whether or not that folder exists. Pinned by `engine/__tests__/legacyHome.test.ts`, which also pins that `main.ts` asks it.
+
+**Rule:** a redirected home is scratch space, and nothing that belongs to the user is moved into it. And: create the scratch folder before starting anything that is given its name.

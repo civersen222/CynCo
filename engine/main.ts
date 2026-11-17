@@ -50,7 +50,7 @@ import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer
 import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
-import { cyncoHome, missionsDir } from './paths.js'
+import { cyncoHome, missionsDir, shouldAdoptLegacyHome } from './paths.js'
 import { emitLogLine } from './emitLog.js'
 import { readMcpServers } from './mcpDiscovery.js'
 import { defaultControlPath } from './daemon/control.js'
@@ -94,14 +94,16 @@ function loadConfigOrRefuse() {
 }
 const config = loadConfigOrRefuse()
 
-// Migrate ~/.localcode → ~/.cynco if needed
+// Migrate ~/.localcode → ~/.cynco if needed. Never onto a redirected home (F241): an engine
+// started with CYNCO_HOME is a second engine, a test or a campaign, and must not be handed the
+// user's legacy state, which the session clean-up below would then prune.
 try {
   const os = require('os')
   const path = require('path')
   const fs = require('fs')
   const oldDir = path.join(os.homedir(), '.localcode')
   const newDir = cyncoHome()
-  if (fs.existsSync(oldDir) && !fs.existsSync(newDir)) {
+  if (shouldAdoptLegacyHome({ legacyExists: fs.existsSync(oldDir), homeExists: fs.existsSync(newDir) })) {
     fs.renameSync(oldDir, newDir)
     console.log(`[cynco] Migrated state ~/.localcode → ~/.cynco`)
   }
