@@ -91,3 +91,16 @@ describe('splitBaselined (a ref the guard already allows is reported, never move
     })
   })
 })
+
+describe('choosePinLine reads a name literally, whatever characters it has', () => {
+  it('a name with a dollar sign is that name, not a pattern', () => {
+    const lines = fileWith(20, { 4: 'const xstate = 2', 9: 'export const $state = 1', 15: '  use($state)' })
+    expect(choosePinLine(lines, '$state', 1)).toBe(9)
+  })
+
+  it('pattern characters in a name match themselves only', () => {
+    const lines = fileWith(12, { 3: 'export const aXb = 1', 8: 'const x = table[a.b]' })
+    expect(choosePinLine(lines, 'a.b', 1)).toBe(8)
+    expect(choosePinLine(lines, 'a\b', 1)).toBeNull()
+  })
+})

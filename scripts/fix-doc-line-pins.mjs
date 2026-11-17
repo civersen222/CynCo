@@ -43,15 +43,13 @@ export function rewritePins(text, map) {
   })
 }
 
-const escapeIdent = (s) => s.replace(/\$/g, '\\$')
-
 /**
  * How strong a claim one line makes to being where `ident` is defined: 3 an exported
  * declaration, 2 any other declaration, 1 a class member (a modifier before the name, or a
  * bare `name(...) {` that opens a body and is not a call taking a callback), 0 a use.
  */
 function definitionRank(text, ident) {
-  const id = escapeIdent(ident)
+  const id = escapeRe(ident)
   const decl = `(?:async\\s+)?(?:function\\*?|const|let|var|class|abstract\\s+class|type|interface|enum)\\s+${id}(?![\\w$])`
   if (new RegExp(`^\\s*export\\s+(?:default\\s+)?(?:declare\\s+)?${decl}`).test(text)) return 3
   if (new RegExp(`^\\s*(?:declare\\s+)?${decl}`).test(text)) return 2
@@ -69,7 +67,7 @@ function definitionRank(text, ident) {
  * at 95 (2026-11-11).
  */
 export function choosePinLine(lines, ident, old) {
-  const word = new RegExp(`(^|[^\\w$])${escapeIdent(ident)}([^\\w$]|$)`)
+  const word = new RegExp(`(^|[^\\w$])${escapeRe(ident)}([^\\w$]|$)`)
   let best = null
   let bestRank = -1
   for (let n = 1; n <= lines.length; n++) {

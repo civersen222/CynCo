@@ -19,7 +19,8 @@ const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.
 
 function scripts(): string {
   const out: string[] = []
-  const re = /<script([^>]*)>([\s\S]*?)<\/script\s*>/gi
+  // The end tag is matched the way a browser reads it: `</script` then anything up to `>`.
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(html)) !== null) out.push(m[2])
   return out.join('\n')
