@@ -548,7 +548,7 @@ The engine mints `~/.cynco/tokens.json` at startup. The file is owner-only: on W
 |---|---|---|
 | `bridge` | The TUI command channel on the bridge port. This drives the agent, and the agent has Bash. | Read from the token file. The TUI, the mission driver and the probes all do this, so launching any of them takes no arguments. |
 | `inference` | Every dashboard read route, plus the dashboard WebSocket. That covers session transcripts, thinking tokens, governance, and the Chat tab's own send path. It also opens the day-to-day writes: project uploads and edits, moving or pausing a mission, and reading the apps list. | Injected into the dashboard page at request time. |
-| `management` | Anything that changes engine or governance configuration: `POST /config/*`, `/api/brain/layer`, phone pairing and devices (`/api/phone*`), and switching an app (`/api/apps*` other than GET). | Printed once at engine startup and pasted by hand. Never handed to a page. |
+| `management` | Anything that changes engine or governance configuration: `POST /config/*`, `/api/brain/layer`, the paired devices, a new pairing code and revocation (`/api/phone*`; reading the current code is the one exception, `GET /api/phone/code`, which the page on this PC may do with the token it holds and a phone may not), and switching an app (`/api/apps*` other than GET). | Printed once at engine startup and pasted by hand. Never handed to a page. |
 | `inference`, held by a paired device (`device-…`) | The same read routes, socket, Chat send path and day-to-day writes as the page, and nothing else. Off this machine only a device record authenticates, so management is refused there whatever is presented. | Minted when a phone pairs with the single-use code. Kept in that browser's local storage. Revoked from Config → Phone access. |
 
 The split is not ceremony. The inference token is delivered to a browser, so it is the secret most likely to escape. Flipping `ablation` or `contractEnforcement` silently corrupts the measurements the research rests on, so that costs a deliberate paste. A management token also reads, because the `admin` holder carries both scopes.
@@ -576,7 +576,7 @@ The dashboard is the phone client: the same page and the same engine, over your 
 
 1. Install Tailscale on the CynCo box and on the phone ([docs/liveness-setup.md](docs/liveness-setup.md) §2). `tailscale ip -4` gives the box's address.
 2. Start the engine with `LOCALCODE_DASHBOARD_HOST=127.0.0.1,<that address>`.
-   - On the desk, **Config → Phone access** (management token) shows the phone URL and a six-digit pairing code.
+   - On the desk, **Config → Phone access** shows the phone URL and a six-digit pairing code. Open the page at `http://127.0.0.1:9161`: at any other address it is the phone layout, which has no such panel. The list of paired devices under it, a new code and revoking ask for the management token.
    - The engine's log prints both too. That is `.cynco-engine.log` in the project folder when the TUI launched it.
 3. On the phone, open the phone URL, type the code once and name the device. Bookmark that exact address: a different spelling is a different origin, and pairs again.
    - The engine appends a `device-…` record to `~/.cynco/tokens.json` (`inference` scope), and the browser keeps its secret in local storage.

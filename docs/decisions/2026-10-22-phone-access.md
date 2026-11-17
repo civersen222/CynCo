@@ -65,7 +65,9 @@ the management token.
 **Revocation.** `GET /api/phone` (management) lists the code, the listeners, the devices and when
 a remote request last arrived; `POST /api/phone/revoke` removes the record and closes that
 device's sockets with code 4001; the device's page then meets a 401, drops its stored token and
-returns to `/pair`. The Config tab's "Phone access" panel is the desk's view of this.
+returns to `/pair`. The Config tab's "Phone access" panel is the desk's view of this. (Since
+2026-11-17 the code alone is also read without the management token, by a local page only: the
+amendment of that date below.)
 
 **The engine tells the truth about a turn.** `processing` stays true until an aborted turn has
 unwound (a Bash child still running, a stream that has not yielded its next event); Stop also
@@ -126,6 +128,28 @@ request. End to end: an engine against a stub model, the desk page on loopback a
 from the desk via the Tailscale address (pair, prompt, stream, Stop, revoke). The owner's own
 phone, Windows Firewall for `bun.exe` on the Tailscale interface, and iOS/Android keyboard
 behaviour are manual checks that remain.
+
+**Amendment 2026-11-17: the desk page reads the pairing code.** The owner could not find the code
+on the desk (2026-11-11: "What you're describing on the desk dashboard doesn't exist from what I
+can see") and took it from the engine log: the panel asked for the management token, and a
+headless engine prints that only in its log. Decided by the owner on 2026-11-17 (decision sheet,
+row 9): `GET /api/phone/code` answers the code, the lockout, the listeners and the proxy target to
+a client that is **local and holds the inference token**, and to nobody else.
+
+- *Why this is not a wider door.* The code grants one thing, a device token of inference scope.
+  The desk page already holds the inference token. So the route gives a local page nothing it
+  could not already do, and a local process cannot pair with the code either: `POST /api/pair`
+  is not offered to a local client at all.
+- *Who is refused.* A paired phone holds the inference scope and is still refused (403): a device
+  that could read the code could pair more devices, which is the one thing the code must not
+  become. Off this machine the shared tokens are unknown as on every route (401). The proxy
+  listener treats every peer as remote, so nothing reaches the code through `tailscale serve`.
+- *What stays management.* The device list, a new code (`rotate`), `revoke` and `revoke-all`.
+- *The page.* Config → Phone access shows the code and the phone URL when the tab opens and reads
+  them again every ten seconds while it is open, because a code is single-use: a page left open
+  would otherwise show a used one, and typing a used code counts toward the lockout.
+- Guards: `phoneAccess.test.ts` ("the pairing code for a page on this machine", "the pairing code
+  on the desk page") and one assertion in `httpsProxy.test.ts`.
 
 **Amendment 2026-11-11: HTTPS and an installable page.** "HTTPS, an installable page" under "Not
 covered" is built as far as code can take it (`engine/dashboard/installable.ts`, the proxy listener

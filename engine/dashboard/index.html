@@ -1325,9 +1325,10 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 <div class="controls-section" id="phonePanel">
   <div class="control-panel">
     <div class="control-panel-title teal">Phone access</div>
-    <p class="phone-note">A phone on your Tailscale tailnet opens the phone URL, pairs once with a single-use code, and then holds a token of its own: it can chat and read, never change configuration. Showing the code needs the management token (printed when the engine started).</p>
+    <p class="phone-note">A phone on your Tailscale tailnet opens the phone URL, pairs once with a single-use code, and then holds a token of its own: it can chat and read, never change configuration. The code is shown here, on this PC only. Seeing the paired devices, making a new code and revoking need the management token (printed when the engine started).</p>
+    <div id="phoneCode"></div>
     <div class="phone-actions">
-      <button class="chat-send" id="phoneShow" onclick="loadPhoneAccess()">Show pairing code &amp; devices</button>
+      <button class="chat-send" id="phoneShow" onclick="loadPhoneAccess()">Show paired devices</button>
       <button class="chat-send" id="phoneRotate" onclick="rotatePairingCode()" style="display:none">New code</button>
     </div>
     <div id="phoneBody"></div>
@@ -4349,6 +4350,8 @@ function switchTab(name) {
   if (name === 'away') loadAway();
   if (name === 'missions') startMissionsPoll();
   else stopMissionsPoll();
+  if (name === 'config') startPairingCodePoll();
+  else stopPairingCodePoll();
   if (name === 'projects' && !projectsState.routing) {
     // A chat hash would re-open the chat and bounce back to the Chat tab, so
     // the Projects tab lands on that chat's project instead.
@@ -4583,8 +4586,65 @@ function renderApps(data, error) {
 }
 
 // ── Config → Phone access: the pairing code, the phone URL, the paired devices ──
-// Management scope (the fetch wrapper asks for the token on 403), so the code —
-// which mints credentials — is never shown to a page holding only the read token.
+// Two reads. The code and where the phone connects are the read token's, on this PC
+// and nowhere else (GET /api/phone/code): the code grants what this page already
+// holds, and the owner should not need the engine log to pair a phone. The devices,
+// a new code and a revocation are management (the fetch wrapper asks for the token
+// on 403).
+
+function loadPairingCode() {
+  // The panel is hidden on a phone and the engine refuses one; asking would only be a refusal.
+  if (window.__CYNCO_REMOTE) return;
+  fetch('/api/phone/code')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) { renderPairingCode(data, null); })
+    .catch(function(err) { renderPairingCode(null, err.message); });
+}
+
+// A code is single-use: the engine replaces it when a phone pairs. A page left on the
+// Config tab would go on showing the used one, and typing it counts as a wrong code.
+var pairingCodeTimer = null;
+function startPairingCodePoll() {
+  stopPairingCodePoll();
+  if (window.__CYNCO_REMOTE) return;
+  loadPairingCode();
+  pairingCodeTimer = setInterval(loadPairingCode, 10000);
+}
+function stopPairingCodePoll() {
+  if (pairingCodeTimer) { clearInterval(pairingCodeTimer); pairingCodeTimer = null; }
+}
+
+/** The code and the addresses in words, one row each. Both reads carry these four fields. */
+function pairingRows(data) {
+  var rows = [{ k: 'Pairing code', v: data.lockedForMs > 0
+    ? 'locked for ' + Math.ceil(data.lockedForMs / 60000) + ' min after wrong codes'
+    : String(data.code) + '   (single-use)' }];
+  var extras = (data.listeners || []).filter(function(l) { return !l.primary; });
+  if (!extras.length) rows.push({ k: 'Phone URL', v: 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.' });
+  for (var i = 0; i < extras.length; i++) {
+    rows.push({ k: 'Phone URL', v: 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)') });
+  }
+  // The listener `tailscale serve` forwards to for the https name (README, Phone access → HTTPS).
+  if (data.proxy) {
+    rows.push({ k: 'HTTPS proxy target', v: 'http://' + data.proxy.host + ':' + data.proxy.port +
+      (data.proxy.bound ? '   (tailscale serve points here; every client on it must be paired)' : '   (not bound: is another process on that port?)') });
+  }
+  return rows;
+}
+
+/** Set with textContent, as everything in this panel is. */
+function renderPairingCode(data, error) {
+  var box = document.getElementById('phoneCode');
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+  var rows = data ? pairingRows(data) : [{ k: 'Pairing code', v: 'unavailable: ' + (error || 'no answer') }];
+  for (var i = 0; i < rows.length; i++) {
+    var r = document.createElement('div'); r.className = 'phone-row';
+    var k = document.createElement('span'); k.className = 'phone-k'; k.textContent = rows[i].k;
+    var v = document.createElement('span'); v.className = 'phone-v'; v.textContent = rows[i].v;
+    r.appendChild(k); r.appendChild(v); box.appendChild(r);
+  }
+}
 
 function loadPhoneAccess() {
   fetch('/api/phone')
@@ -4629,19 +4689,8 @@ function renderPhoneAccess(data, error) {
     return;
   }
   if (rotate) rotate.style.display = '';
-  row('Pairing code', data.lockedForMs > 0
-    ? 'locked for ' + Math.ceil(data.lockedForMs / 60000) + ' min after wrong codes'
-    : String(data.code) + '   (single-use)');
-  var extras = (data.listeners || []).filter(function(l) { return !l.primary; });
-  if (!extras.length) row('Phone URL', 'none. Set LOCALCODE_DASHBOARD_HOST=127.0.0.1,<your Tailscale IP> and restart the engine.');
-  for (var i = 0; i < extras.length; i++) {
-    row('Phone URL', 'http://' + extras[i].host + ':' + extras[i].port + (extras[i].bound ? '' : '   (not bound: is Tailscale up?)'));
-  }
-  // The listener `tailscale serve` forwards to for the https name (README, Phone access → HTTPS).
-  if (data.proxy) {
-    row('HTTPS proxy target', 'http://' + data.proxy.host + ':' + data.proxy.port +
-      (data.proxy.bound ? '   (tailscale serve points here; every client on it must be paired)' : '   (not bound: is another process on that port?)'));
-  }
+  // The management read carries the code too: after "New code" this is what shows the new one.
+  renderPairingCode(data, null);
   row('Last phone request', data.lastRemoteRequestAt
     ? new Date(data.lastRemoteRequestAt).toLocaleString()
     : 'none yet. If the phone cannot connect: Tailscale on the phone, then Windows Firewall for bun.exe.');

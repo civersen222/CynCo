@@ -776,10 +776,32 @@ export class DashboardServer {
           return await this.handleApps(req, method, pathname)
         }
 
-        // Phone administration (the Config tab's panel): the pairing code, the
-        // listeners, the paired devices, and revocation. Management scope for
-        // the read as well as the write — the code mints credentials — which
-        // with the remote rule in `authenticate` makes it desk-only.
+        // The pairing code and where a phone connects, for a page on this machine
+        // (owner's decision of 2026-11-17, row 9). The code grants a device token
+        // of inference scope and the desk page already holds the inference token,
+        // so reading it there asks for nothing more; before this the owner had to
+        // dig the management token out of the engine log to pair a phone. Two
+        // checks, in this order: the token (so a stranger gets the same 401 as on
+        // any gated route), then the address. A paired phone is known and still
+        // refused: a device that could read the code could pair more devices. The
+        // proxy listener is remote for every peer, so nothing there reads it.
+        if (method === 'GET' && pathname === '/api/phone/code') {
+          const denied = this.requireScope(req, 'inference', kind)
+          if (denied) return denied
+          if (kind !== 'local') return jsonResponse({ error: 'the pairing code is shown on the CynCo PC only' }, 403)
+          return jsonResponse({
+            code: this.pairing.code,
+            lockedForMs: this.pairing.lockedForMs(),
+            listeners: this.listeners(),
+            proxy: this.proxyListener(),
+          }, 200, { 'Cache-Control': 'no-store' })
+        }
+
+        // Phone administration (the Config tab's panel): the paired devices, a
+        // new code, and revocation. Management scope for the read as well as the
+        // write (the device list names every phone and when it was last seen),
+        // which with the remote rule in `authenticate` makes it desk-only. The
+        // code alone is the route above.
         if (pathname === '/api/phone' || pathname.startsWith('/api/phone/')) {
           const denied = this.requireScope(req, 'management', kind)
           if (denied) return denied
