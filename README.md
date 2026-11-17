@@ -248,6 +248,7 @@ The engine starts and manages llama-server itself:
 - Context checkpoints for prefix-cache rollback. Qwen3.6 and 3.8 are hybrid Gated DeltaNet models, so warm turns only prefill new tokens instead of reprocessing the whole prompt.
 - A capped reasoning budget (256 tokens unless the profile says otherwise).
 - Accurate tok/s from the server's own eval timing.
+- A streamed reply that goes silent is cut: nothing for twenty minutes before its first byte, or ten minutes between bytes, ends the turn with an error instead of holding it open. The Ollama provider runs under the same clock.
 
 The engine also keeps its prompt strictly append-only across turns to preserve the cache, which a regression test enforces. Measured live at 45K tokens of context: warm turns restore a checkpoint with ~0.998 prefix reuse and prefill only the ~500-900 genuinely new tokens (~0.6-0.9 s), instead of reprocessing the full prompt (~17 s). Each turn pays only for its new content.
 

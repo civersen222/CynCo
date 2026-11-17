@@ -11,6 +11,7 @@ import type { Provider, CompletionRequest, ModelCapabilities, ModelInfo, PullPro
 import { toOpenAIMessages, toOpenAITools, fromOpenAIResponse, fromOpenAIStreamChunk, parseSSELine, mapFinishReason } from './format.js'
 import { resolveCapabilities } from './probe.js'
 import { GenerationError, ModelNotFoundError } from './errors.js'
+import { StreamWatchdog, STREAM_FIRST_BYTE_MS, STREAM_IDLE_MS } from '../providers/streamWatchdog.js'
 
 type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -19,11 +20,16 @@ export class OllamaProvider implements Provider {
   private baseUrl: string
   private fetchFn: FetchFn
   private contextLength: number
+  private readonly streamFirstByteMs: number
+  private readonly streamIdleMs: number
 
-  constructor({ baseUrl, fetchFn, contextLength }: { baseUrl: string; fetchFn?: FetchFn; contextLength?: number }) {
+  /** `streamFirstByteMs` / `streamIdleMs`: the stall limits (F235); tests set them in milliseconds. */
+  constructor({ baseUrl, fetchFn, contextLength, streamFirstByteMs, streamIdleMs }: { baseUrl: string; fetchFn?: FetchFn; contextLength?: number; streamFirstByteMs?: number; streamIdleMs?: number }) {
     this.baseUrl = baseUrl.replace(/\/$/, '') // strip trailing slash
     this.fetchFn = fetchFn ?? globalThis.fetch
     this.contextLength = contextLength ?? 0
+    this.streamFirstByteMs = streamFirstByteMs ?? STREAM_FIRST_BYTE_MS
+    this.streamIdleMs = streamIdleMs ?? STREAM_IDLE_MS
   }
 
   async healthCheck(): Promise<boolean> {
@@ -60,9 +66,29 @@ export class OllamaProvider implements Provider {
     return fromOpenAIResponse(oai as any)
   }
 
+  /**
+   * Every streamed request runs under the stall clock the llama.cpp path uses
+   * (F235, `providers/streamWatchdog.ts`): a server that sends nothing for
+   * twenty minutes before its first byte, or ten between bytes, is cut and the
+   * turn ends with a `StreamStalledError`. A Stop (the caller's signal) and
+   * every other failure pass through unchanged. Until 2026-11-17 this read had
+   * no clock of its own.
+   */
   async *stream(request: CompletionRequest): AsyncIterable<StreamEvent> {
+    const watch = new StreamWatchdog(request.signal, this.streamFirstByteMs, this.streamIdleMs, { server: 'Ollama', logTag: 'ollama' })
+    try {
+      yield* this.streamWatched(request, watch)
+    } catch (err) {
+      throw watch.stalled ?? err
+    } finally {
+      watch.dispose()
+    }
+  }
+
+  private async *streamWatched(request: CompletionRequest, watch: StreamWatchdog): AsyncIterable<StreamEvent> {
     const body = this.buildRequestBody(request, true)
-    const resp = await this.postChat(body, request.signal)
+    watch.waitFirstByte()
+    const resp = await this.postChat(body, watch.signal)
 
     // Errors must THROW, not silently end the stream — the llama path's
     // 2026-06-12 lesson, repeated here (GLM review O1). Ollama answers a model
@@ -87,10 +113,17 @@ export class OllamaProvider implements Provider {
 
     const decoder = new TextDecoder()
     let buffer = ''
+    // Until the first chunk the first-byte clock (armed before the request) runs;
+    // from then on each read waits under the idle clock, re-armed as it starts,
+    // so the time the caller spends on the events yielded below never counts
+    // as the server's silence.
+    let gotData = false
 
     while (true) {
+      if (gotData) watch.sawData()
       const { done, value } = await reader.read()
       if (done) break
+      gotData = true
 
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split('\n')

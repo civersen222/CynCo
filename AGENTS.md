@@ -11,6 +11,7 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 | S5 orchestrator | [`engine/s5/CLAUDE.md`](engine/s5/CLAUDE.md) | Rule-based + model S5, advisory vs enforce (`LOCALCODE_S5_ENFORCE`), decision evaluation, training export |
 | llama.cpp serving | [`engine/llama/CLAUDE.md`](engine/llama/CLAUDE.md) | `ProcessManager` (spawn/health/pre-spawn refusal/backoff), GGUF header, checkpoint cost + live calibration, slot KV snapshots, `LlamaCppProvider` |
 | Ollama provider | [`engine/ollama/CLAUDE.md`](engine/ollama/CLAUDE.md) | The Ollama provider, capability probe, request/stream formatting |
+| Shared by the providers | [`engine/providers/CLAUDE.md`](engine/providers/CLAUDE.md) | The provider factory, a generic OpenAI-compatible provider, and the stall clock every streamed request runs under (F235) |
 | Brain telemetry | [`engine/brain/CLAUDE.md`](engine/brain/CLAUDE.md) | Entropy trace, jlens sidecar (9163), activation tap; `brain.*` reaches the dashboard only |
 | Code index | [`engine/index/CLAUDE.md`](engine/index/CLAUDE.md) | SQLite store, embeddings, hybrid rank, symbol lookup, repo map, `closeAllIndexers` |
 | Retrieval | [`engine/retrieval/CLAUDE.md`](engine/retrieval/CLAUDE.md) | Tree-sitter chunking (`CHUNKER_VERSION`) used by the index |
