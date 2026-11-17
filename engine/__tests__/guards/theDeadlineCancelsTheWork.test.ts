@@ -135,11 +135,15 @@ async function consoleDuring(fn: () => Promise<unknown>, graceMs: number): Promi
   }
   return lines
 }
+
+// The model the stand-in server below does not have. It was the client's default until 2026-11-17;
+// asked for by name it still takes the path these tests are about: a refusal, the fallback, one pull.
+const MISSING_MODEL = 'jina-code-embeddings-0.5b'
 
 describe('a deadline cancels the request it gave up on', () => {
   it('aborts the in-flight embed instead of leaving it running', async () => {
     const { aborted } = slowModelMissingServer(400)
-    const out = await new EmbedClient().embedWithDeadline('hello', 10)
+    const out = await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 10)
     expect(out, 'the caller still falls back to lexical recall').toBeUndefined()
     await sleep(50)
     expect(aborted, 'the request the caller stopped waiting for must be cancelled')
@@ -152,7 +156,7 @@ describe('a deadline cancels the request it gave up on', () => {
     // ends at the "no embedding endpoint answered" warning — a verdict on a
     // server that was never allowed to answer.
     const { seen } = slowModelMissingServer(400)
-    await new EmbedClient().embedWithDeadline('hello', 10)
+    await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 10)
     await sleep(200)
     expect(seen, 'the client kept probing after its caller had gone')
       .toEqual(['http://localhost:11434/api/embed'])
@@ -164,7 +168,7 @@ describe('a deadline cancels the request it gave up on', () => {
     // legitimate — and then the caller gives up. The second request has to be
     // cancellable for the same reason the first one was.
     const { seen, aborted } = slowModelMissingServer(10)
-    await new EmbedClient().embedWithDeadline('hello', 25)
+    await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 25)
     await sleep(200)
     expect(seen.filter(u => u.endsWith('/api/embed')),
       'the fallback model should have been tried while the caller still waited').toHaveLength(2)
@@ -174,7 +178,7 @@ describe('a deadline cancels the request it gave up on', () => {
 
   it('never starts the background model pull after the caller has gone', async () => {
     const { seen } = slowModelMissingServer(20)
-    await new EmbedClient().embedWithDeadline('hello', 5)
+    await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 5)
     await sleep(300)
     expect(seen.filter(u => u.endsWith('/api/pull')),
       'a pull whose completion log outlives every reader is work nobody can use')
@@ -184,7 +188,7 @@ describe('a deadline cancels the request it gave up on', () => {
   it('writes nothing to the console after the deadline has passed', async () => {
     const lines = await consoleDuring(async () => {
       slowModelMissingServer(20)
-      await new EmbedClient().embedWithDeadline('hello', 5)
+      await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 5)
     }, 300)
     expect(lines, 'this console traffic is what vitest reported as EnvironmentTeardownError')
       .toEqual([])
@@ -193,7 +197,7 @@ describe('a deadline cancels the request it gave up on', () => {
   it('does not report the server as unreachable when it was merely cancelled', async () => {
     const lines = await consoleDuring(async () => {
       slowModelMissingServer(400)
-      await new EmbedClient().embedWithDeadline('hello', 5)
+      await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 5)
     }, 200)
     expect(lines.filter(l => l.includes('No embedding endpoint answered')),
       'a cancelled request learned nothing about the server').toEqual([])
@@ -203,14 +207,14 @@ describe('a deadline cancels the request it gave up on', () => {
 describe('the cancellation is scoped to callers who cancelled', () => {
   it('a call that beats its deadline still returns the vector', async () => {
     slowModelMissingServer(0)
-    const out = await new EmbedClient().embedWithDeadline('hello', 2000)
+    const out = await new EmbedClient(undefined, MISSING_MODEL).embedWithDeadline('hello', 2000)
     expect(out, 'a client that refused everything would satisfy every case above').toEqual([0.4])
   })
 
   it('a caller with no deadline still falls back and still says so', async () => {
     const lines = await consoleDuring(async () => {
       const { seen } = slowModelMissingServer(0)
-      const out = await new EmbedClient().embedBatch(['hello'])
+      const out = await new EmbedClient(undefined, MISSING_MODEL).embedBatch(['hello'])
       expect(out).toEqual([[0.4]])
       await sleep(50)
       expect(seen.some(u => u.endsWith('/api/pull')),

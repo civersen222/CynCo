@@ -76,7 +76,7 @@ CynCo is one system that uses several models, each for one job. Every name below
 |---|---|---|---|
 | **The agent**: coding, project chats, missions | **Qwen3.8-27B**, NVFP4 GGUF with its MTP head (`Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf`, 19.7 GB) | llama-server on the main GPU, started and managed by the engine | a profile's `model_file`, or `LOCALCODE_MODEL_PATH` |
 | The agent, on the Quick Start path | `qwen3.8:27b` from Ollama's library (18 GB) | Ollama | the shipped profile, `engine/profiles/templates/default.yaml` |
-| Embeddings for the code index | `jina-code-embeddings-0.5b` when the server has it, else `nomic-embed-text` | any embedding server ([Semantic Code Index](#semantic-code-index)); on the CynCo PC, CynCo's own `llama-server --embeddings` on `127.0.0.1:9165`, CPU only | `LOCALCODE_EMBED_MODEL` |
+| Embeddings for the code index | `nomic-embed-text` (`jina-code-embeddings-0.5b` is opt-in) | any embedding server ([Semantic Code Index](#semantic-code-index)); on the CynCo PC, CynCo's own `llama-server --embeddings` on `127.0.0.1:9165`, CPU only | `LOCALCODE_EMBED_MODEL` |
 | Embeddings for project knowledge | `nomic-embed-text` | the same server | `LOCALCODE_PROJECTS_EMBED_MODEL` |
 | Looking at photos *(optional)* | `qwen3-vl:8b-instruct` | Ollama on the image box | `LOCALCODE_VISION_URL`, `LOCALCODE_VISION_MODEL` |
 | Painting pictures *(optional)* | an SDXL checkpoint; Juggernaut first when none is named | ComfyUI on the image box | `LOCALCODE_COMFYUI_URL`, `LOCALCODE_COMFYUI_CHECKPOINT` |
@@ -138,15 +138,13 @@ Its model card asks for the thinking-mode sampler (temperature 1.0, top_p 0.95, 
 
 ### Embedding model
 
-Semantic indexing needs a *separate* embedding model, because the chat model does not serve embeddings. The code index asks for `jina-code-embeddings-0.5b` (code-specialized). If the server does not have it, the index falls back to `nomic-embed-text`. Project knowledge uses `nomic-embed-text` directly.
-
-Ollama's library has no `jina-code-embeddings-0.5b`, so on Ollama pull the fallback:
+Semantic indexing needs a *separate* embedding model, because the chat model does not serve embeddings. The code index and project knowledge both use `nomic-embed-text`. On Ollama, pull it:
 
 ```bash
 ollama pull nomic-embed-text
 ```
 
-Against Ollama, the engine also tries once, in the background, to pull the model it asked for, which for the default can't succeed. To use the jina model, serve its GGUF on an OpenAI-shaped server (`llama-server --embeddings`) and set `LOCALCODE_EMBED_MODEL` to the name that server knows it by.
+`jina-code-embeddings-0.5b` (code-specialized) is opt-in, because Ollama's library does not have it: serve its GGUF on an OpenAI-shaped server (`llama-server --embeddings`) and set `LOCALCODE_EMBED_MODEL` to the name that server knows it by. A model that is asked for and missing falls back to `nomic-embed-text`; against Ollama the engine also tries once, in the background, to pull the one it was asked for.
 
 Switching embedding models requires a re-index. If no embedding server answers, you get keyword search and the engine says so. [Semantic Code Index](#semantic-code-index) explains how it finds a server.
 
@@ -929,7 +927,7 @@ Nothing has to be configured to start. With no environment and no profile of you
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | The Ollama (or OpenAI-compatible) server URL. |
 | `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama`, `llama-cpp`, `lmstudio`, `vllm` or `openai-compat`. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_MODEL_PATH` | — | The GGUF for the llama-cpp provider (or a profile's `model_file`). |
-| `LOCALCODE_EMBED_MODEL` | `jina-code-embeddings-0.5b` | Model for code indexing. Falls back to `nomic-embed-text`, the one to pull on Ollama. |
+| `LOCALCODE_EMBED_MODEL` | `nomic-embed-text` | Model for code indexing. Another model that the server does not have falls back to this one. |
 | `LOCALCODE_TEMPERATURE` | `1.0` from the shipped profile (built-in `0.7`) | Sampling temperature. |
 | `LOCALCODE_CONTEXT_LENGTH` | `65536` from the shipped profile; with no profile value, `131072` on llama-cpp and auto-detected on Ollama | Override the context window. It wins over a profile's `context_length`. `LOCALCODE_CACHE_RAM` is derived from whichever value ends up in force. |
 | `LOCALCODE_ALL_TOOLS` | `false` | Surface every tool up front, instead of loading extended tools on demand via `load_tools`. |

@@ -40,14 +40,14 @@ describe('ProjectIndexer embedding model', () => {
   })
 
   it('queries with the model that built the index', () => {
-    const indexer = new ProjectIndexer(projectWithMeta('nomic-embed-text'))
-    expect(indexer['embedClient'].modelName).toBe('nomic-embed-text')
+    const indexer = new ProjectIndexer(projectWithMeta('jina-code-embeddings-0.5b'))
+    expect(indexer['embedClient'].modelName).toBe('jina-code-embeddings-0.5b')
     indexer.close()
   })
 
   it('leaves a freshly created index on the configured default', () => {
     const indexer = new ProjectIndexer(projectWithMeta())
-    expect(indexer['embedClient'].modelName).toBe('jina-code-embeddings-0.5b')
+    expect(indexer['embedClient'].modelName).toBe('nomic-embed-text')
     indexer.close()
   })
 })

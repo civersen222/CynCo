@@ -160,7 +160,8 @@ describe('the embedding client speaks both wire formats', () => {
         : url.endsWith('/api/embed')
           ? new Response(JSON.stringify({ embeddings: [[0.4]] }), { status: 200 })
           : new Response('should not be asked', { status: 500 }))
-    const client = new EmbedClient()
+    // The jina model is asked for by name: it is opt-in, and this is what opting in without having it looks like.
+    const client = new EmbedClient(undefined, 'jina-code-embeddings-0.5b')
     expect(await client.embedBatch(['a'])).toEqual([[0.4]])
     expect(client.modelName).toBe('nomic-embed-text')
     expect(seen.some(u => u.endsWith('/v1/embeddings'))).toBe(false)
