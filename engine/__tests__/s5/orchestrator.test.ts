@@ -3,6 +3,9 @@ import { S5Orchestrator } from '../../s5/orchestrator.js'
 import { RuleBasedS5 } from '../../s5/ruleBasedS5.js'
 import type { GovernanceReport } from '../../vsm/types.js'
 import type { OrchestratorInput } from '../../s5/orchestrator.js'
+import { mkdtempSync, readdirSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 function makeGovernance(overrides: Partial<GovernanceReport> = {}): GovernanceReport {
   return {
@@ -90,5 +93,35 @@ describe('S5Orchestrator', () => {
     const decision = await orchestrator.makeDecision(makeOrchestratorInput())
     expect(decision.model).toBe('llama3:8b')
     expect(decision.reasoning).toBe('mock decision')
+  })
+})
+
+// Until 2026-11-17 the orchestrator kept per-rule weights: moved by each measured outcome and
+// by every denied approval (keyed by the approval's request id, not a rule), written to
+// `training/s5-weights.json` at session end, and read by nothing. Removed on the owner's
+// decision (row 20, F233 c). What a decision's outcome was is in the decision journal.
+describe('the orchestrator keeps no rule weights', () => {
+  it('constructing one, deciding and judging the decision write nothing under the home', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cynco-s5-home-'))
+    const before = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try {
+      const orchestrator = new S5Orchestrator(new RuleBasedS5())
+      const decision = await orchestrator.makeDecision(makeOrchestratorInput({ contextUsagePercent: 0.95 }))
+      expect(decision.ruleIds).toContain('C3')
+      const judged = orchestrator.evaluateLastDecision({ stuckTurns: 0, toolSuccessRate: 1 })
+      expect(judged?.outcome).toBe('negative') // measured, and nothing improved: still an outcome
+      expect(readdirSync(home)).toEqual([])
+    } finally {
+      if (before === undefined) delete process.env.CYNCO_HOME
+      else process.env.CYNCO_HOME = before
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('has no weight methods left to call', () => {
+    const orchestrator = new S5Orchestrator(new RuleBasedS5()) as unknown as Record<string, unknown>
+    expect(orchestrator.saveWeights).toBeUndefined()
+    expect(orchestrator.recordDismissal).toBeUndefined()
   })
 })

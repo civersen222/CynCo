@@ -698,8 +698,6 @@ async function cleanShutdown(signal: string) {
   } catch (e) {
     console.error(`[shutdown] governance outcome/flush failed: ${e instanceof Error ? e.message : String(e)}`)
   }
-  // Save S5 rule weights
-  try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
   // No auto-backfill on shutdown. It called RewardLabeler.backfillAll(), which
   // guessed every component it could not see and manufactured all 147 saturated
   // 1.0 labels; tasks are now labeled live from observations as each one ends.
@@ -794,10 +792,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
 
     case 'approval.response':
       loop.handleApprovalResponse(command.requestId, command.approved)
-      // Track governance recommendation dismissals for S5 weight tuning
-      if (!command.approved && s5Orchestrator) {
-        try { s5Orchestrator.recordDismissal([command.requestId]) } catch {}
-      }
       break
 
     case 'ask.answer':
@@ -1417,8 +1411,6 @@ async function handleCommand(command: TUICommand): Promise<void> {
       }
       // S5 Identity Continuity: mark the session cleanly ended (crash-vs-clean resume).
       try { loop.getJournal?.()?.appendSessionEnd?.() } catch (e) { console.log(`[session] appendSessionEnd failed: ${e instanceof Error ? e.message : String(e)}`) }
-      // Save S5 rule weights
-      try { s5Orchestrator.saveWeights() } catch (e) { console.log(`[s5] saveWeights failed: ${e instanceof Error ? e.message : String(e)}`) }
       // Audit: write session outcome on clean shutdown
       AuditLogger.writeSessionOutcome()
       break

@@ -236,9 +236,9 @@ layer's contribution **measurable** rather than asserted.
 Key methods: `handleUserMessage`, `callModel`, `executeBatch`, `executeOneTool`,
 `getGovernance`, `getMessages`, `buildHandoff`, `resume`, `setCwd`,
 `startWorkflow`. The S5 decision orchestrator lives in `engine/s5/orchestrator.ts`
-(`RuleBasedS5` default, `ModelS5` when a LoRA is configured), with rule weights
-persisted to `~/.cynco/training/rule-weights.json` and down-weighted when the
-user rejects S5 advice.
+(`RuleBasedS5` default, `ModelS5` when a LoRA is configured). It writes each
+decision's measured outcome to the decision journal; it keeps no rule weights
+(README, "Governance (VSM S1–S5)").
 
 ---
 
@@ -332,7 +332,6 @@ broker, enforces output limits, and records outcomes for governance.
 | `.cynco/profiles/` | Project-local profiles (override global) |
 | `~/.cynco/continuity/<hash>/` | Session handoffs + project ledger |
 | `~/.cynco/decisions/*.jsonl` | S5 decision journal (one file per day) |
-| `~/.cynco/training/rule-weights.json` | S5 rule weights |
 | `~/.cynco/tool-scores.json` | Per-tool success scores |
 | `~/.cynco/governance.db` | VSM outcomes / per-turn metrics (SQLite) |
 | `~/.cynco/models/`, `~/.cynco/bin/` | GGUF models / `llama-server` (llama-cpp) |

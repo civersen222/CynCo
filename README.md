@@ -403,7 +403,7 @@ A 21st rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALC
 3. **Turn 10+:** a synthetic user message makes the model reflect on what is blocking it.
 4. **Turn 15+:** a hard halt returns control to the user.
 
-After each decision, S5 compares the governance metrics before and after and writes the measured outcome into the decision journal. That is the training data below. Per-rule weights are also written to `~/.cynco/training/s5-weights.json`, but nothing reads them back yet (F233).
+After each decision, S5 compares the governance metrics before and after and writes the measured outcome into the decision journal. That is the training data below. (Until 2026-11-17 per-rule weights were also written to `~/.cynco/training/s5-weights.json`. Nothing ever read them, so the engine no longer writes the file; one left from before can be deleted.)
 
 ### Contract Enforcement
 A request opens a Definition-of-Done contract, and the model cannot stop until its assertions pass:

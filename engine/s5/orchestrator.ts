@@ -3,8 +3,6 @@ import type { S5Input, S5Decision, S5Interface, DecisionLogEntry, TaskClass } fr
 import type { DifficultyLevel } from '../vsm/difficultyClassifier.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
-import { RuleWeightManager } from './ruleWeights.js'
-import { cyncoHome } from '../paths.js'
 import { RuleAuthority } from './ruleAuthority.js'
 
 const MAX_HISTORY = 100
@@ -44,7 +42,6 @@ export type OrchestratorInput = {
 export class S5Orchestrator {
   private s5: S5Interface
   private history: DecisionLogEntry[] = []
-  private ruleWeights: RuleWeightManager | null = null
   // Phase 4: legacy until the loop hands over the session's verdict reading —
   // an orchestrator nobody configured behaves exactly as before.
   private ruleAuthority: RuleAuthority = RuleAuthority.legacy()
@@ -57,14 +54,6 @@ export class S5Orchestrator {
 
   constructor(s5: S5Interface) {
     this.s5 = s5
-    try {
-      const os = require('os')
-      const path = require('path')
-      const dir = path.join(cyncoHome(), 'training')
-      this.ruleWeights = new RuleWeightManager(dir)
-    } catch {
-      // Non-fatal — weights just won't persist
-    }
   }
 
   async makeDecision(input: OrchestratorInput): Promise<S5Decision> {
@@ -222,14 +211,6 @@ export class S5Orchestrator {
       ? 'unknown'
       : (stuckImproved || successImproved) ? 'positive' : 'negative'
 
-    // Adjust rule weights based on outcome — but never on an unmeasured one, which
-    // would move the weights on no information.
-    if (this.ruleWeights && outcome !== 'unknown') {
-      for (const ruleId of ruleIds) {
-        this.ruleWeights.recordOutcome(ruleId, outcome)
-      }
-    }
-
     // Backfill the journal so the decision carries its own result. Keyed on
     // decisionId: exact, and unlike the entry timestamp it is known to both sides.
     // Unknown outcomes are written too — the exporter needs to tell "measured and
@@ -248,19 +229,5 @@ export class S5Orchestrator {
 
     this.lastDecision = null
     return { decisionId, ruleIds, outcome }
-  }
-
-  /** Record user dismissal of a governance recommendation. */
-  recordDismissal(ruleIds: string[]): void {
-    if (this.ruleWeights) {
-      for (const ruleId of ruleIds) {
-        this.ruleWeights.recordOutcome(ruleId, 'dismissed')
-      }
-    }
-  }
-
-  /** Save rule weights at session end. */
-  saveWeights(): void {
-    this.ruleWeights?.save()
   }
 }
