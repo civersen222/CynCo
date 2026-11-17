@@ -1,4 +1,6 @@
-export type HealthStatus = 'healthy' | 'warning' | 'critical' | 'halted'
+// What `getReport` can say. `halted` was in this type until 2026-11-17 and nothing ever
+// produced it: a halt is the algedonic channel's, and it ends the turn (`stopReason: 'halted'`).
+export type HealthStatus = 'healthy' | 'warning' | 'critical'
 
 export type AxiomHealth = {
   holding: number

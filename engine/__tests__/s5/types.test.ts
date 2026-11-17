@@ -41,18 +41,18 @@ describe('S5 extended types', () => {
 
   it('S5Rule has id, tier, and evaluate', () => {
     const rule: S5Rule = {
-      id: 'C1',
+      id: 'C9',
       tier: 'critical',
-      name: 'Kill switch active',
+      name: 'Governance critical',
       evaluate: (input: S5Input) => {
-        if (input.governanceStatus === 'halted') {
-          return { tools: ['Read', 'Glob', 'Grep', 'Ls'], reasoning: 'Halted — read-only mode' }
+        if (input.governanceStatus === 'critical') {
+          return { tools: ['Read', 'Glob', 'Grep', 'Ls'], reasoning: 'Critical — read-only mode' }
         }
         return null
       },
     }
     expect(rule.tier).toBe('critical')
-    expect(rule.id).toBe('C1')
+    expect(rule.id).toBe('C9')
   })
 
   it('RuleTier values are critical, warning, info', () => {

@@ -39,7 +39,7 @@ function baseInput(overrides: Partial<S5Input> = {}): S5Input {
   }
 }
 
-describe('RuleBasedS5 — Hardened 21-rule engine', () => {
+describe('RuleBasedS5 — Hardened 20-rule engine', () => {
   const s5 = new RuleBasedS5()
 
   it('has correct type shape — name and decide()', () => {
@@ -47,24 +47,27 @@ describe('RuleBasedS5 — Hardened 21-rule engine', () => {
     expect(typeof s5.decide).toBe('function')
   })
 
-  it('exports ALL_RULES with 21 rules (7 critical + 10 warning + 4 info)', () => {
+  it('exports ALL_RULES with 20 rules (6 critical + 10 warning + 4 info)', () => {
     expect(Array.isArray(ALL_RULES)).toBe(true)
-    expect(ALL_RULES.length).toBe(21)
+    expect(ALL_RULES.length).toBe(20)
     const criticals = ALL_RULES.filter(r => r.tier === 'critical')
     const warnings = ALL_RULES.filter(r => r.tier === 'warning')
     const infos = ALL_RULES.filter(r => r.tier === 'info')
-    expect(criticals.length).toBe(7)
+    expect(criticals.length).toBe(6)
     expect(warnings.length).toBe(10)
     expect(infos.length).toBe(4)
   })
 
   // ─── Critical rules ────────────────────────────────────────
 
-  describe('C1: Kill switch (halted)', () => {
-    it('restricts to read-only tools and ruleIds contains C1', async () => {
-      const decision = await s5.decide(baseInput({ governanceStatus: 'halted' }))
-      expect(decision.tools).toEqual(['Read', 'Glob', 'Grep', 'Ls'])
-      expect(decision.ruleIds).toContain('C1')
+  // C1 was a kill switch that waited for the governance report to say `halted`. The report
+  // never said it (its status is healthy, warning or critical), so C1 never fired: removed on
+  // the owner's decision of 2026-11-17 (row 19, F233 b). The kill switch that acts is the
+  // algedonic channel's. The ids of the other rules are unchanged: the ledger refers to them.
+  describe('C1 is gone and the other ids kept theirs', () => {
+    it('no rule is called C1, and the critical rules are C2 to C7', () => {
+      expect(ALL_RULES.map(r => r.id)).not.toContain('C1')
+      expect(ALL_RULES.filter(r => r.id.startsWith('C')).map(r => r.id)).toEqual(['C2', 'C3', 'C4', 'C5', 'C6', 'C7'])
     })
   })
 
@@ -212,7 +215,7 @@ describe('RuleBasedS5 — Hardened 21-rule engine', () => {
       expect(typeof healthyDecision.decisionId).toBe('string')
       expect(healthyDecision.decisionId!.length).toBeGreaterThan(0)
 
-      const criticalDecision = await s5.decide(baseInput({ governanceStatus: 'halted' }))
+      const criticalDecision = await s5.decide(baseInput({ contextUsagePercent: 0.95 }))
       expect(Array.isArray(criticalDecision.ruleIds)).toBe(true)
       expect(typeof criticalDecision.decisionId).toBe('string')
       expect(criticalDecision.decisionId!.length).toBeGreaterThan(0)
@@ -222,7 +225,7 @@ describe('RuleBasedS5 — Hardened 21-rule engine', () => {
       const cases: Partial<S5Input>[] = [
         {},
         { contextUsagePercent: 0.95 },
-        { governanceStatus: 'halted' },
+        { varietyBalance: 'critical' },
         { s3s4Balance: 's4_dominant', turnCount: 8 },
       ]
       for (const override of cases) {

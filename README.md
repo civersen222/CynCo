@@ -40,7 +40,7 @@ LocalCode is the engine (Bun + TypeScript in `engine/`, a Textual TUI in `tui/`)
 - When another local-LLM app of yours holds the GPU, CynCo takes it for the turn and gives it back after ([Your other local-LLM apps](#your-other-local-llm-apps)).
 
 **Governs and measures itself.** A Viable System Model layer (S1–S5) runs alongside the loop ([Governance](#governance-vsm-s1s5)).
-- 21 S5 policy rules, a four-tier stuck-loop escape, variety control, an algedonic channel and a homeostat.
+- 20 S5 policy rules, a four-tier stuck-loop escape, variety control, an algedonic channel and a homeostat.
 - A rule's authority to act is earned on the outcome ledger, not assumed.
 - Every turn's cost is recorded from the server's own timings.
 - The [Brain](#the-brain) tab shows thinking, per-token entropy and, with setup, the concepts mid-network.
@@ -284,7 +284,7 @@ Neither is needed, and each feature that uses one says so when it is not configu
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  S5 Policy Engine: 21 rules (C1-C7, W1-W9, I1-I5), merged    │
+│  S5 Policy Engine: 20 rules (C2-C7, W1-W9, I1-I5), merged    │
 │  into one decision a turn, applied only with authority       │
 └──────────────────────────┬───────────────────────────────────┘
                            │ decides
@@ -380,10 +380,10 @@ Alongside them run a variety engine (Ashby's requisite variety), a homeostat, an
 
 This is the project's rule for experimental policy: observe, then advise, then enforce once it is measured.
 
-**The 21 rules** (plus an opt-in 22nd). Their ids carry a tier, Critical, Warning or Info, but the code does not act on the tier: whatever fires is merged and applied together when it has authority. The tiers count 7/10/4 while the ids read C1–C7, W1–W9 and I1–I5, because `I4` (heterarchy authority) declares `tier: 'warning'`.
+**The 20 rules** (plus an opt-in 21st). Their ids carry a tier, Critical, Warning or Info, but the code does not act on the tier: whatever fires is merged and applied together when it has authority. The tiers count 6/10/4 while the ids read C2–C7, W1–W9 and I1–I5, because `I4` (heterarchy authority) declares `tier: 'warning'`. There is no C1: it was a kill switch that waited for a governance status the report never gave, and it was removed on 2026-11-17 (F233). The other rules kept their ids, because the ledger refers to rules by id.
 
 *Critical:*
-- **C1**, kill switch: it restricts to read-only tools when governance reports `halted`. The governance report never produces that status, so C1 does not fire (F233). The kill switch that does act is the algedonic channel's. After five consecutive tool failures it halts the loop and asks for `/reset`.
+- The kill switch is not an S5 rule. It is the algedonic channel's: after five consecutive tool failures it halts the loop and asks for `/reset`.
 - **C2**, tool exclusion: when a specific tool fails 3+ times.
 - **C3**, context overflow compaction: at 90% utilization.
 - **C4**, doom-loop breaking: 3+ consecutive failing calls to the same tool, matched by tool name, not by input.
@@ -395,7 +395,7 @@ This is the project's rule for experimental policy: observe, then advise, then e
 
 *Info:* variety balance shifts, homeostatic adjustments and performance metrics, logged for training.
 
-A 22nd rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALCODE_S5_PROACTIVE_TOOLS=true`. It is append-only: it surfaces tools and never restricts them. It is off by default.
+A 21st rule, `P1` in `engine/s5/proactiveSurfacing.ts`, exists only when `LOCALCODE_S5_PROACTIVE_TOOLS=true`. It is append-only: it surfaces tools and never restricts them. It is off by default.
 
 **Stuck-loop escalation (4 tiers), run by the loop itself:**
 1. **Turn 3+:** a governance signal is appended to the conversation saying "change your approach". It is appended rather than written into the system prompt, which keeps the prompt cache valid.
@@ -868,7 +868,7 @@ The only label was the one `engine/s5/exportTrainingData.ts` joined out of `gove
 Each S5 decision now carries three things it did not before:
 
 - **`decisionId`**: a UUID, journaled inside the decision, and the join key for the outcome. The pre-existing `entryTimestamp` key cannot work here: `makeJournalEntry` reads the clock itself, so the writer never learns the line's timestamp.
-- **`ruleIds`**: which of the 21 rules fired.
+- **`ruleIds`**: which of the 20 rules fired.
 - **`rejected`**: rules that fired and were *overridden* by `combineDecisions`. The merge is lossy on purpose (`model` takes the first non-null, `tools` intersects), and these losers are the only negative examples the rule engine produces. A rule returning `null` is not among them: its condition was simply false, so it proposed nothing.
 
 `S5Orchestrator.evaluateLastDecision()` writes the per-decision outcome, keyed on `decisionId`, from the measured change in `stuckTurns` and `toolSuccessRate`. When governance reports neither number, the outcome is written as **`unknown`**, not defaulted into a verdict.

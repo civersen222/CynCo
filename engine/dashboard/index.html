@@ -100,11 +100,6 @@ body {
 .health-badge.healthy { background: #2d4a3e; color: #4ec9b0; }
 .health-badge.warning { background: #4a3a2d; color: #dcdcaa; }
 .health-badge.critical { background: #4a2d2d; color: #f44747; }
-.health-badge.halted { background: #4a2d2d; color: #f44747; animation: pulse-red 1s infinite; }
-@keyframes pulse-red {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
 .gov-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; margin-top: 8px; font-size: 12px; }
 .gov-stats .label { color: #808080; }
 .gov-stats .value { color: #d4d4d4; }
@@ -2150,7 +2145,6 @@ function renderGovernance() {
   var cls = 'healthy';
   if (health.includes('warning') || health.includes('amber')) cls = 'warning';
   else if (health.includes('critical') || health.includes('red')) cls = 'critical';
-  else if (health.includes('halt')) cls = 'halted';
 
   badgeEl.innerHTML = '<span class="health-badge ' + cls + '">' + escHtml(gov.health) + '</span>';
 
