@@ -144,6 +144,16 @@ export class ToolExecutor {
     this.approveAll = value
   }
 
+  /**
+   * Whether a call to this tool would run here without a question to the user. It is what a
+   * sub-agent, which approves its own calls, may be handed (`agents/trustTier.ts`). A project
+   * chat grades each call by its input, so nothing can be promised ahead of the call: false.
+   */
+  runsUnasked(toolName: string): boolean {
+    if (this.grader) return false
+    return shouldAutoApprove(toolName, this.trustProfile, this.approveAll)
+  }
+
   setCwd(cwd: string): void {
     this.cwd = cwd
   }

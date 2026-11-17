@@ -17,7 +17,8 @@ import type { EngineEvent } from '../bridge/protocol.js'
 import type { Message, ContentBlock, ToolUseBlock, ToolDefinition } from '../types.js'
 import { asSystemPrompt } from '../types.js'
 import type { SubAgentConfig, SubAgentStatus, SubAgentResult } from './types.js'
-import { getToolsForTier } from './trustTier.js'
+import { getToolsForTier, type ParentToolAuthority } from './trustTier.js'
+import { wrapUntrusted } from '../tools/untrusted.js'
 import { toToolDefs } from '../engine/messageConvert.js'
 import { AGENT_PERSONAS, buildAgentPrompt } from './prism.js'
 import { getVocabulary, formatVocabularyPrompt } from './vocabulary.js'
@@ -47,7 +48,16 @@ export type SubAgentOptions = {
    * killed: its model call is cancelled and its running tool is told (F210).
    */
   signal?: AbortSignal
+  /**
+   * What the run that starts this agent may itself do unasked. The tools a tier adds to the
+   * read-only set (the researcher's web tools) are offered only where this vouches for them;
+   * absent, none are.
+   */
+  parent?: ParentToolAuthority
 }
+
+/** The tools whose results come from outside this machine. An agent that ran one hands back data. */
+const WEB_TOOLS = new Set(['WebSearch', 'WebFetch'])
 
 // ─── SubAgent ───────────────────────────────────────────────────
 
@@ -68,6 +78,7 @@ export class SubAgent {
   private abortController = new AbortController()
   private _status: SubAgentStatus
   private s2: SubAgentOptions['s2'] | null
+  private parent: ParentToolAuthority | undefined
 
   constructor(opts: SubAgentOptions) {
     this.config = opts.config
@@ -76,11 +87,14 @@ export class SubAgent {
     this.cwd = opts.cwd
     this.model = opts.model
     this.s2 = opts.s2 ?? null
+    this.parent = opts.parent
 
     // Own governance instance — alerts are logged but not escalated in Phase 1
     this.governance = new CyberneticsGovernance()
 
-    // Own tool executor — approveAll since Phase 1 scouts are read-only
+    // Own tool executor. It approves its own calls: a sub-agent has nobody to ask. That is
+    // sound because of what it is given: the read-only set, and for the researcher the web
+    // tools only where the parent run could have used them unasked (`getToolsForTier`).
     this.toolExecutor = new ToolExecutor({
       cwd: this.cwd,
       requestApproval: async () => true,
@@ -122,6 +136,8 @@ export class SubAgent {
     // Track governance metrics
     let toolCalls = 0
     let toolErrors = 0
+    /** A web tool ran and answered: what this agent writes from then on is derived from web pages. */
+    let readTheWeb = false
     const stuckTurns = 0
     const compactions = 0
 
@@ -167,7 +183,7 @@ export class SubAgent {
       })
 
       // 5. Get tools via trust tier
-      const allowedTools = getToolsForTier(this.config.trustTier, this.config.persona)
+      const allowedTools = getToolsForTier(this.config.trustTier, this.config.persona, this.parent)
       const allowedToolNames = new Set(allowedTools.map(t => t.name))
       const toolDefs = toToolDefs(allowedTools)
 
@@ -384,6 +400,7 @@ export class SubAgent {
           const startTime = Date.now()
           const result = await this.toolExecutor.execute(toolUse.name, toolUse.input, abortController.signal)
           const latencyMs = Date.now() - startTime
+          if (!result.isError && WEB_TOOLS.has(toolUse.name)) readTheWeb = true
 
           if (result.isError) {
             toolErrors++
@@ -446,7 +463,12 @@ export class SubAgent {
       const result: SubAgentResult = {
         agentId: this.config.id,
         success: !this.aborted && producedOutput,
-        output: collectedText || '(no output)',
+        // What an agent wrote after reading web pages is made of those pages. The parent is told
+        // so in the same two lines a fetched page carries (tools/untrusted.ts), or a page could
+        // put an instruction to the parent in the researcher's mouth.
+        output: readTheWeb && producedOutput
+          ? wrapUntrusted(`sub-agent ${this.config.id}, which read web pages`, collectedText)
+          : collectedText || '(no output)',
         turns: this._status.currentTurn,
         tokensUsed: this._status.tokensUsed,
         governanceMetrics: {

@@ -56,6 +56,33 @@ describe('ToolExecutor', () => {
   })
 })
 
+// What a sub-agent, which approves its own calls, may be handed (agents/trustTier.ts): only a
+// tool this executor would have run without putting a question to the user.
+describe('runsUnasked', () => {
+  const quiet = () => Promise.resolve(true)
+
+  it('an auto-tier tool runs unasked, an approval-tier tool does not', () => {
+    const executor = new ToolExecutor({ cwd: process.cwd(), requestApproval: quiet })
+    expect(executor.runsUnasked('WebFetch')).toBe(true)
+    expect(executor.runsUnasked('WebSearch')).toBe(true)
+    expect(executor.runsUnasked('Bash')).toBe(false)
+    expect(executor.runsUnasked('NoSuchTool')).toBe(false)
+  })
+
+  it('a tool the trust profile denies, or sets to approval, does not', () => {
+    const denied = new ToolExecutor({ cwd: process.cwd(), requestApproval: quiet, trustProfile: { deny: ['WebFetch'] } })
+    expect(denied.runsUnasked('WebFetch')).toBe(false)
+    expect(denied.runsUnasked('WebSearch')).toBe(true)
+    const asks = new ToolExecutor({ cwd: process.cwd(), requestApproval: quiet, trustProfile: { trust: { WebSearch: 'approval' } } })
+    expect(asks.runsUnasked('WebSearch')).toBe(false)
+  })
+
+  it('in a project chat one grade decides each call, so nothing is promised ahead of the call', () => {
+    const executor = new ToolExecutor({ cwd: process.cwd(), requestApproval: quiet, grader: () => ({ level: 'safe', reason: '' }) })
+    expect(executor.runsUnasked('WebFetch')).toBe(false)
+  })
+})
+
 describe('a task cannot rewrite its own specification', () => {
   // Gilded L4.6b: ten minutes in, the run replaced the brief it had been given
   // with a plausible reconstruction of its own, inventing a symbol that exists
