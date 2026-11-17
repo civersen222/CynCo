@@ -157,7 +157,7 @@ export function pickReleaseAssets(
  * a broken download reads as an unpacked one.
  */
 const EXPAND_ARCHIVE_PS = "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:UNPACK_ARCHIVE -DestinationPath $env:UNPACK_DEST -Force"
-const UNPACK_TIMEOUT_MS = 300_000
+const UNPACK_TIMEOUT_MS = 60_000 // measured 2026-11-17 on the CynCo PC: about 5 s for each Windows archive (249 MB, 373 MB)
 
 /**
  * Unpack an archive into a folder, with no path ever part of a command line: on

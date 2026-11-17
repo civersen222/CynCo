@@ -140,10 +140,10 @@ report of that day. The next item is the owner's to name.
   upstream's DNS-rebinding protection and CORS fix in `llama-server`; neither is urgent while the
   server binds 127.0.0.1 with one slot. v1.0.0 removes `--defrag-thold`, which CynCo never passes.
   (b) **The downloaded archive is not checked against the release's sha256** (GitHub's release JSON
-  carries a `digest` per asset); pin it beside `LLAMA_CPP_BUILD`. (c) **The real download has not been
-  run since the pin** (622 MB; needs the owner's yes; the install itself is run by the test from
-  stand-in archives), and the Linux choice (Vulkan x64) has never been run on a GPU. (d) `~/.cynco/bin/version.json` on the CynCo PC says `b9009`; the binary there
-  reports 9529 (replaced by hand on 2026-06-05).
+  carries a `digest` per asset); pin it beside `LLAMA_CPP_BUILD`. (c) **The Linux choice (Vulkan x64)
+  has never been run on a GPU.** The Windows download was run for real on 2026-11-17 (F238): 127 s,
+  and all 34 files byte-identical to `~/.cynco/bin`. (d) `~/.cynco/bin/version.json` on the CynCo PC
+  says `b9009`; the files there are the b9529 CUDA 12.4 archives' (replaced by hand on 2026-06-05).
 - Left by "CynCo is down" (2026-11-16, F225 seen again). (a) **The loop-block line cannot say whose
   fault a block was.** On an idle engine it logged 39 blocks in two days with nothing above them.
   Have `engine/loopWatch.ts` add the process's own CPU time over the late interval
