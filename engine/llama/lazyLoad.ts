@@ -119,6 +119,12 @@ function untilAborted(p: Promise<void>, signal: AbortSignal | undefined, onLeave
   })
 }
 
+/**
+ * What the model server has been doing, as it says itself: whether a slot is generating now,
+ * and a token that changes whenever a slot runs a new task (`ProcessManager.slotUse`).
+ */
+export type ServerUse = { processing: boolean; tasks: string }
+
 export type IdleUnloaderDeps = {
   registry: ActivityRegistry
   isRunning: () => boolean
@@ -127,10 +133,24 @@ export type IdleUnloaderDeps = {
   setTimer?: typeof setTimeout
   clearTimer?: typeof clearTimeout
   log?: (line: string) => void
+  /**
+   * Asks the model server what it has been doing; null when it cannot be read.
+   *
+   * The registry counts CynCo's own work. An app CynCo took the GPU from is answered by CynCo's
+   * server meanwhile (local-LLM apps record, decision 3), and its requests never pass through
+   * the engine: with only the registry to go by, the model was unloaded under a game in play.
+   * Given this, the unloader asks the server when the timer is armed and again when it fires,
+   * and keeps the model when a task ran in between or one is running now. A server that cannot
+   * be read is unloaded as before, so that an unreadable server never holds the card. Absent,
+   * the registry alone decides, at once.
+   */
+  serverUse?: () => Promise<ServerUse | null>
 }
 
 export class IdleUnloader {
   private timer: ReturnType<typeof setTimeout> | null = null
+  /** Counts the waits begun or ended, so a decision still asking the server knows its wait is over. */
+  private waits = 0
   private unsubscribe: (() => void)[] = []
   private readonly setTimer: typeof setTimeout
   private readonly clearTimer: typeof clearTimeout
@@ -155,15 +175,44 @@ export class IdleUnloader {
 
   private arm(): void {
     this.cancel()
+    const wait = this.waits
+    // What the server had done when CynCo's own work ended: the last task then is CynCo's own.
+    const before = this.askServer()
     this.timer = this.setTimer(() => {
       this.timer = null
       if (this.deps.registry.count() !== 0 || !this.deps.isRunning()) return
-      this.deps.log?.(`[llama-cpp] idle for ${Math.round(this.deps.idleMs / 60000)} min — unloading the model (lazy load brings it back on the next message)`)
-      this.deps.unload().catch(e => this.deps.log?.(`[llama-cpp] idle unload failed: ${e instanceof Error ? e.message : String(e)}`))
+      if (before === null) { this.unload(); return }
+      void this.decide(wait, before)
     }, this.deps.idleMs)
   }
 
+  /** The timer fired with the registry idle: unload, unless the server answered someone else meanwhile. */
+  private async decide(wait: number, before: Promise<ServerUse | null>): Promise<void> {
+    const [was, now] = await Promise.all([before, this.askServer()])
+    // CynCo's own work began, or began and ended, while the server was being asked: that wait is over.
+    if (wait !== this.waits || this.deps.registry.count() !== 0 || !this.deps.isRunning()) return
+    if (now === null) this.deps.log?.("[llama-cpp] the model server did not say what it has been doing (/slots) — going by CynCo's own idleness alone")
+    if (now !== null && (now.processing || (was !== null && now.tasks !== was.tasks))) {
+      this.deps.log?.(`[llama-cpp] CynCo has been idle for ${Math.round(this.deps.idleMs / 60000)} min, but its model server answered a request that was not CynCo's in that time (an app on its port) — keeping the model loaded`)
+      this.arm()
+      return
+    }
+    this.unload()
+  }
+
+  private unload(): void {
+    this.deps.log?.(`[llama-cpp] idle for ${Math.round(this.deps.idleMs / 60000)} min — unloading the model (lazy load brings it back on the next message)`)
+    this.deps.unload().catch(e => this.deps.log?.(`[llama-cpp] idle unload failed: ${e instanceof Error ? e.message : String(e)}`))
+  }
+
+  /** The server's own account, or null when there is no way to ask or the asking failed. */
+  private askServer(): Promise<ServerUse | null> | null {
+    if (!this.deps.serverUse) return null
+    return this.deps.serverUse().catch(() => null)
+  }
+
   private cancel(): void {
+    this.waits++
     if (this.timer !== null) { this.clearTimer(this.timer); this.timer = null }
   }
 }

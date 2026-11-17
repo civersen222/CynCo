@@ -683,7 +683,7 @@ The PC with the big GPU does not have to stay on. CynCo keeps it awake only whil
 - **Awake only while busy** *(default on, Windows)*. The engine tracks every open turn, one-shot, in-flight model request and queued picture. While any is open it holds the machine awake (`scripts/hold-awake.ps1`), and it lets go when the last one closes. Nothing in CynCo ever puts the machine to sleep.
 - **A cold GPU until a message needs it** *(opt-in: `LOCALCODE_LLAMA_LAZY=true`)*.
   - The model loads before the first request, not at boot.
-  - With `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` it unloads after that long with nothing open, taking a slot snapshot first so the conversation comes back warm.
+  - With `LOCALCODE_LLAMA_IDLE_UNLOAD_MS` it unloads after that long with nothing open, taking a slot snapshot first so the conversation comes back warm. "Nothing open" includes the model server itself: if it answered a request that was not CynCo's in that time (one of your other apps, which CynCo's server answers while CynCo holds the GPU), the model stays loaded and the wait starts again.
   - While the daemon's one-shot owns the GPU (`~/.cynco/gpu-busy.json`), a lazy load waits and says so, instead of killing that server.
   - The headless phone engine runs this way.
 - **One engine in the phone engine's seat.** A desk engine stops the headless phone engine before loading its model, and starts it again on exit. A second engine on another bridge port or `CYNCO_HOME` leaves it alone (F224).

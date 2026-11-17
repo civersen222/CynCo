@@ -886,6 +886,32 @@ export class ProcessManager {
     }
   }
 
+  /**
+   * What the server has been doing, as it says itself (`GET /slots`): whether a slot is
+   * generating now, and a token that changes whenever a slot runs a new task (each slot's
+   * `id_task`, the last task it ran). The idle unloader compares two readings to learn whether
+   * anyone was answered in between: an app on this port is answered by this server and is no
+   * activity of CynCo's (`IdleUnloader`, `serverUse`).
+   *
+   * Null when the server does not answer, refuses, or answers a slot list without task ids
+   * (another build): unread, which is not the same as idle.
+   */
+  async slotUse(): Promise<{ processing: boolean; tasks: string } | null> {
+    try {
+      const resp = await this.fetchImpl(`http://127.0.0.1:${this.port}/slots`, { signal: AbortSignal.timeout(2000) })
+      if (!resp.ok) return null
+      const slots = await resp.json() as Array<{ id?: unknown; id_task?: unknown; is_processing?: unknown }>
+      if (!Array.isArray(slots) || slots.length === 0) return null
+      if (!slots.every(s => typeof s?.id === 'number' && typeof s?.id_task === 'number')) return null
+      return {
+        processing: slots.some(s => s.is_processing === true),
+        tasks: slots.map(s => `${s.id}:${s.id_task}`).join(','),
+      }
+    } catch {
+      return null
+    }
+  }
+
   /** Public so the lazy path's deps (bootstrapProvider) can pass it through; behaviour unchanged. */
   async isPortOccupied(): Promise<boolean> {
     try {

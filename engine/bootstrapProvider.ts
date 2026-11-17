@@ -309,6 +309,8 @@ export async function bootstrapProvider(
           unload: async () => { await processManager.saveSlot(); await processManager.stop(); await giveGpuBack(sayApps) },
           idleMs: lazy.idleUnloadMs,
           log: (line) => console.log(line),
+          // An app answered by this server meanwhile is using the model, though no work of CynCo's is open.
+          serverUse: () => processManager.slotUse(),
         }).start()
       }
 
