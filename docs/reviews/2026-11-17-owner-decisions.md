@@ -3,7 +3,10 @@
 Everything the 2026-11-17 work order left that is the owner's to decide, on one sheet, so it
 can be gone through in one sitting. Each row says what a yes costs, what a no costs, and what
 is recommended. The evidence for each is in `docs/reviews/2026-11-17-work-order-triage.md`
-and, for the last table, in `docs/NOW.md` under F233. Nothing on this sheet has been built.
+and, for the last table, in `docs/NOW.md` under F233.
+
+**Answered 2026-11-17 by the owner: "As recommended", for the whole sheet.** What became of
+each row is in the table at the end. The rows above are left as they were asked.
 
 Answer a row by its number; a bare "as recommended" for the whole sheet is an answer too.
 
@@ -45,3 +48,47 @@ Answer a row by its number; a bare "as recommended" for the whole sheet is an an
 | 27 | (k) The campaign log's **supervising spend fell** from $4,295.55 to $2,995.57 with no explanation. | An hour or two to find the discontinuity. | The economics stay unexplained. | **Find it before the numbers are used again.** |
 | 28 | (j) The **Brain lens** was computed for Qwen3.6; the model is 3.8. | Recompute it (GPU hours). | Label the Brain tab with the model the lens is for. | **Label now; recompute when Brain work resumes.** |
 | 29 | (l) The **guided screen** drops the mode it was asked for. | Pass the mode through: one line and a test. | Remove the mode argument. | **Wire.** |
+
+## What became of each row (2026-11-17, after "as recommended")
+
+Built in the second batch on `claude/work-order-2026-11-17` unless it says otherwise. "Waits"
+means the recommendation itself was to wait, or needs something only the owner has.
+
+| # | Decided | What was done |
+|---|---|---|
+| 1 | No `--api-key` | Nothing to build. |
+| 2 | Token rotation: yes, later | Not built. In `docs/NOW.md`. |
+| 3 | No regrouping of the loop | Nothing to build. |
+| 4 | Take the unbuilt provider names out | Done: a name CynCo does not have is refused at start (`engine/providers/names.ts`). |
+| 5 | No page split | Nothing to build. |
+| 6 | MCP client: yes, as its own change | **Waits on the owner:** which servers. |
+| 7 | No serve surface; fix the real gap | Done: a model server that answered an app is not unloaded as idle (`IdleUnloader`, `ProcessManager.slotUse`). |
+| 8 | Vitest gate: yes, as its own change | Waits for the next non-Python campaign. |
+| 9 | The local page reads the pairing code | Done: `GET /api/phone/code`, local clients with the inference token only. |
+| 10 | E1, a real mission | **Waits on the owner:** when, and a brief. |
+| 11 | E2, re-prompt after a stall | Waits on E1. |
+| 12 | E4, the marker note A/B | Waits on E1. |
+| 13 | E5, the phone engine during a mission | **Waits on the owner:** whether the phone matters during missions ((c) if so, else (a)). |
+| 14 | E6c, a gate author for other repositories | Waits for a brief. |
+| 15 | Supervised repositories from the ledger and the specs | Done, with row 27 (`scripts/supervision-economics.mjs`). |
+| 16 | A monthly tag, no CHANGELOG | Not yet: after the merge. |
+| 17 | Three more IPv6 forms refused | Done (`engine/tools/impl/webFetch.ts`). |
+| 18 | W2 stays, labelled a hypothesis | Done: labelled where it is defined and in `engine/s5/CLAUDE.md`. |
+| 19 | Remove C1 | Done; the other rule ids are unchanged. |
+| 20 | Stop keeping the rule weights | Done: `engine/s5/ruleWeights.ts` and its callers are gone. |
+| 21 | Show the recommendation, execute nothing | Done: a Governance-tab row, and a chat line for a revert. |
+| 22 | Web tools for the researcher | Done, limited to what the run that started it could use unasked; its hand-back is marked untrusted. |
+| 23 | The environment beats a profile | Done (`launchKnobs`, `engine/bootstrapProvider.ts`). |
+| 24 | Re-run the rule verdicts and look | Looked: neither the script nor the data is short. A test run overwrote the live file on 2026-11-06 (F240); the test is fixed. **Waits on the owner:** regenerating the live `~/.cynco/datasets`. |
+| 25 | Say the training defaults are stale | Done, in `engine/training/CLAUDE.md` and at `DEFAULT_BASE`. |
+| 26 | `nomic-embed-text` is the default embedding model | Done (`DEFAULT_EMBED_MODEL`). |
+| 27 | Find why the supervising spend fell | Found (F239): it was never a running total. The script says what it covers now. **Waits on the owner:** how to keep transcripts from ageing out, and whether the first ledger shard counts. |
+| 28 | Label the Brain tab | Done: the lens's model comes from the sidecar's own `/health`. |
+| 29 | The guided screen passes its mode | Done (`start_mode`, `tui/localcode_tui/screens/vibe_loop.py`). |
+
+Also built from the triage's "next batch", none of them a row here: the model's silence said in
+the chat (D4f) and the mission history on the phone's Away tab (D4g).
+
+**Not yet seen working by a person:** every item above was tested, and none has been looked at
+in a browser, on the phone or with a real app. The one sitting that owes is listed in
+`docs/NOW.md` ("Left by the second work-order batch").

@@ -106,7 +106,9 @@ need no live service (A3), the records table (F1), and the owner sheet (F4, E5, 
 "hold" above that is the owner's).
 
 **Next batch:** app traffic as activity (the kernel of D2), silence on the dashboard (D4f),
-the Missions history on Away (D4g), the economics classifier (E6h).
+the Missions history on Away (D4g), the economics classifier (E6h). *All four were built on
+2026-11-17, with the rows the owner answered "as recommended": the table at the end of
+`docs/reviews/2026-11-17-owner-decisions.md` says what became of each.*
 
 **Not without the owner:** B2, B3, C1 to C8, the MCP client (D1), D2 as a serve surface, the
 vitest gate (D3), the pairing code (D4), E1, E2, E4, E5, E6c, the tag and CHANGELOG.
