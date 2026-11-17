@@ -56,7 +56,7 @@ After the above changes, test CynCo with `gemma4:31b` as an alternative to `qwen
 ## Context
 
 - CynCo is at `C:\Users\civer\localcode`, TypeScript/Bun runtime
-- CYNCO.md has full architecture docs
+- docs/MANUAL.md has the architecture; CONVENTIONS.md (once CYNCO.md) the repository's conventions
 - All config uses `LOCALCODE_*` env vars
 - Tests: `cd engine && bun test` (or specific test files)
 - The user's hardware: RTX 5090 (32GB), secondary PC with RTX 4070 Ti Super (16GB) on WiFi
