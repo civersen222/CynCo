@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, copyFileS
 import { basename, join, resolve } from 'node:path'
 import type { ToolImpl } from '../tools/types.js'
 import type { EmbedClient } from '../index/embedClient.js'
-import { fetchGuarded } from '../tools/impl/webFetch.js'
+import { fetchGuarded, type Resolver } from '../tools/impl/webFetch.js'
 import { appendJournal, isInside, isReservedFileName, projectDir, readProject, realInside, slugify, RESERVED_FILE_NAME } from './layout.js'
 import { commitHistory, ensureHistory } from './history.js'
 import { ingestFile, type IngestEvent } from './ingest.js'
@@ -26,10 +26,18 @@ import { BOX_MAX_PIXELS, cropTiles, tileGrid } from '../vision/tiles.js'
 export type ProjectToolContext = { home: string; slug: string; embed: EmbedClient | null; embedModel: string; emit?: (e: IngestEvent) => void; ask?: (bytes: Uint8Array, mime: string, question: string) => Promise<AskResult> }
 let context: ProjectToolContext | null = null
 let fetchImpl: typeof fetch | null = null
+let resolveImpl: Resolver | null = null
 export function setProjectToolContext(ctx: ProjectToolContext | null): void { context = ctx }
 export function getProjectToolContext(): ProjectToolContext | null { return context }
-/** Test seam for AddToKnowledge by URL. */
-export function setProjectFetch(f: typeof fetch | null): void { fetchImpl = f }
+/**
+ * Test seam for AddToKnowledge by URL: a stand-in network. A stand-in fetch has no DNS behind it, so
+ * it comes with a stand-in lookup too (every name public, unless the test passes its own). With no
+ * stand-in set, the real fetch runs behind the real lookup (`fetchGuarded`'s defaults).
+ */
+export function setProjectFetch(f: typeof fetch | null, resolve: Resolver = async () => ['93.184.216.34']): void {
+  fetchImpl = f
+  resolveImpl = f ? resolve : null
+}
 
 const NOT_IN_PROJECT = (tool: string) => ({ output: `${tool} is only available inside a project chat.`, isError: true })
 
@@ -126,7 +134,7 @@ export const addToKnowledgeTool: ToolImpl = {
     const deps = { home: context.home, embed: context.embed, embedModel: context.embedModel, emit: context.emit }
     if (typeof input.url === 'string' && input.url.trim()) {
       const url = input.url.trim()
-      const got = await fetchGuarded(url, fetchImpl ?? fetch)
+      const got = await fetchGuarded(url, fetchImpl && resolveImpl ? { fetch: fetchImpl, resolve: resolveImpl } : {})
       if (!got.ok) return { output: `URL blocked: ${got.reason}`, isError: true }
       if (!got.response.ok) return { output: `fetch failed: HTTP ${got.response.status}`, isError: true }
       const html = await got.response.text()

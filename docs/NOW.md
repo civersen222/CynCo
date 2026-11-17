@@ -118,7 +118,7 @@ report of that day. The next item is the owner's to name.
   default; in-app Heretic abliteration deliberately not now. Engine gaps verified in our source:
   (4) background Bash with status/kill under the F131 job; (5) search failure semantics —
   tri-state tier outcome, DDG bot-check = Failed, shared deadline, `[Tried: …]` line; (6)
-  resolve-then-pin SSRF in `WebFetch` (a boundary change, owner's yes first); (7) per-repo rules
+  done 2026-11-17 (`docs/decisions/2026-11-17-webfetch-resolves-names.md`): `WebFetch` resolves a name before it connects, with no new range; NAT64, 6to4 and site-local IPv6 forms are still not refused, and adding them is the owner's; (7) per-repo rules
   file (`AGENTS.md`/`CLAUDE.md` of the target repo) into the system prompt; (8) sub-agent wake via
   `SteeringQueue`; (9) cursor-based event buffer for phone reconnect (= Next 3); (10) abort
   threading + Bash child kill with a cancel tombstone (= F201, merged); (11) compaction merge +
