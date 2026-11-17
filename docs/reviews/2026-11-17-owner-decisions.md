@@ -61,14 +61,14 @@ means the recommendation itself was to wait, or needs something only the owner h
 | 3 | No regrouping of the loop | Nothing to build. |
 | 4 | Take the unbuilt provider names out | Done: a name CynCo does not have is refused at start (`engine/providers/names.ts`). |
 | 5 | No page split | Nothing to build. |
-| 6 | MCP client: yes, as its own change | **Waits on the owner:** which servers. |
+| 6 | MCP client: yes, as its own change | Not built, and it no longer waits on a question: no MCP server is configured in any of the four places the engine looks, so a client would have nothing to connect to. It is built when the owner names the first server (`docs/NOW.md`). |
 | 7 | No serve surface; fix the real gap | Done: a model server that answered an app is not unloaded as idle (`IdleUnloader`, `ProcessManager.slotUse`). |
 | 8 | Vitest gate: yes, as its own change | Waits for the next non-Python campaign. |
 | 9 | The local page reads the pairing code | Done: `GET /api/phone/code`, local clients with the inference token only. |
-| 10 | E1, a real mission | **Waits on the owner:** when, and a brief. |
-| 11 | E2, re-prompt after a stall | Waits on E1. |
-| 12 | E4, the marker note A/B | Waits on E1. |
-| 13 | E5, the phone engine during a mission | **Waits on the owner:** whether the phone matters during missions ((c) if so, else (a)). |
+| 10 | E1, a real mission | **Had already happened, twice, before this sheet was written:** Party Night t5 waves 2c and 2d were dispatched on 2026-11-14 after the fixes reached main. Their logs show the `silent=` print, the FAIL report and the end step that hands the dashboard back; the stall cut itself cannot be provoked. No new mission is needed (`docs/NOW.md`). |
+| 11 | E2, re-prompt after a stall | No longer waiting on E1. Not built yet. |
+| 12 | E4, the marker note A/B | No longer waiting on E1. Six missions of GPU, at a time of the owner's choosing. |
+| 13 | E5, the phone engine during a mission | Memo written (`docs/NOW.md`). The row above was wrong to call the phone "dark": the mission engine serves the same phone address, so the phone watches and steers the mission. What it lacks is a conversation of its own. **Pick: (a), as now**, on the owner's "fix these"; (c) only if an own conversation during a mission is wanted. |
 | 14 | E6c, a gate author for other repositories | Waits for a brief. |
 | 15 | Supervised repositories from the ledger and the specs | Done, with row 27 (`scripts/supervision-economics.mjs`). |
 | 16 | A monthly tag, no CHANGELOG | Not yet: after the merge. |
@@ -79,16 +79,14 @@ means the recommendation itself was to wait, or needs something only the owner h
 | 21 | Show the recommendation, execute nothing | Done: a Governance-tab row, and a chat line for a revert. |
 | 22 | Web tools for the researcher | Done, limited to what the run that started it could use unasked; its hand-back is marked untrusted. |
 | 23 | The environment beats a profile | Done (`launchKnobs`, `engine/bootstrapProvider.ts`). |
-| 24 | Re-run the rule verdicts and look | Looked: neither the script nor the data is short. A test run overwrote the live file on 2026-11-06 (F240); the test is fixed. **Waits on the owner:** regenerating the live `~/.cynco/datasets`. |
+| 24 | Re-run the rule verdicts and look | Looked: neither the script nor the data is short. A test run overwrote the live file on 2026-11-06 (F240); the test is fixed. Regenerated on the owner's yes the same day: the live file has its 8 rule rows again. |
 | 25 | Say the training defaults are stale | Done, in `engine/training/CLAUDE.md` and at `DEFAULT_BASE`. |
 | 26 | `nomic-embed-text` is the default embedding model | Done (`DEFAULT_EMBED_MODEL`). |
-| 27 | Find why the supervising spend fell | Found (F239): it was never a running total. The script says what it covers now. **Waits on the owner:** how to keep transcripts from ageing out, and whether the first ledger shard counts. |
+| 27 | Find why the supervising spend fell | Found (F239): it was never a running total. The script says what it covers now. `cleanupPeriodDays` is 3650 in the owner's Claude Code settings since the same day. **Still the owner's:** whether the first ledger shard counts. |
 | 28 | Label the Brain tab | Done: the lens's model comes from the sidecar's own `/health`. |
 | 29 | The guided screen passes its mode | Done (`start_mode`, `tui/localcode_tui/screens/vibe_loop.py`). |
 
 Also built from the triage's "next batch", none of them a row here: the model's silence said in
 the chat (D4f) and the mission history on the phone's Away tab (D4g).
 
-**Not yet seen working by a person:** every item above was tested, and none has been looked at
-in a browser, on the phone or with a real app. The one sitting that owes is listed in
-`docs/NOW.md` ("Left by the second work-order batch").
+**Seen and not seen:** part of this was looked at in a browser on a scratch engine with no model loaded; what needs the model, a real app or the real phone has not been. Both lists are in `docs/NOW.md` ("Left by the second work-order batch").

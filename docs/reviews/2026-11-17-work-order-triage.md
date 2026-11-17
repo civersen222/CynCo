@@ -78,7 +78,7 @@ surgery, cheap security first) is sound. It is unreliable in three ways, and eac
 
 | # | Verdict | What the code says | Where it went |
 |---|---|---|---|
-| E1 first real mission after F235 to F237 | **hold (owner's go)** | The restart it names has happened (the phone engine was started 2026-11-15 on `ca6cbc7a`). The run itself takes the GPU and stops the phone engine for its length. | owner sheet |
+| E1 first real mission after F235 to F237 | **hold (owner's go)** | The restart it names has happened (the phone engine was started 2026-11-15 on `ca6cbc7a`). The run itself takes the GPU and stops the phone engine for its length. **Missed here, found later the same day:** two real missions had already been dispatched after the fixes merged (Party Night t5 waves 2c and 2d, 2026-11-14); no new one is needed. | done before the order was written |
 | E2 a stalled stream resumes once | **hold (after E1)** | The probe path cannot carry it as written: `shouldProbe` fires only for a landed marker, and campaign waves pass no probe command. The driver tells a stall from a crash only by the text "(F235)". | after E1 |
 | E3 Ollama stall clock | **do** (done) | True. `StreamWatchdog` is not exported and takes a real timer; the Ollama stream reads with the caller's signal only. | this batch |
 | E4 marker note leads with FAIL lines | **hold (owner; six missions of GPU)** | As NOW.md says: a measured instrument, "a decision of its own". | owner sheet |
