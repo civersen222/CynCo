@@ -914,12 +914,7 @@ Three layers, in order of precedence:
 
 Nothing has to be configured to start. With no environment and no profile of your own, the shipped profile supplies the model and provider the Quick Start installs. Setting a variable overrides the profile for that one field and nothing else.
 
-**The exception: llama-server launch knobs.** For these, a profile's `runtime:` value beats the environment variable, which applies only when the profile does not name the key (`engine/bootstrapProvider.ts`):
-- `batch_size`, `gpu_layers` and `flash_attn`;
-- `cache_ram`, `ctx_checkpoints` and `checkpoint_min_step`;
-- `ubatch_size` and `reasoning_budget`.
-
-`spec_type`, `spec_draft_n` and `context_length` follow the usual order.
+**The llama-server launch knobs follow the same order.** A `LOCALCODE_*` variable beats a profile's `runtime:` value for `batch_size`, `gpu_layers`, `flash_attn`, `cache_ram`, `ctx_checkpoints`, `checkpoint_min_step`, `ubatch_size` and `reasoning_budget`, as it does for `spec_type`, `spec_draft_n` and `context_length` (`launchKnobs` in `engine/bootstrapProvider.ts`). Until 2026-11-17 the profile won for those eight.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -950,7 +945,7 @@ Nothing has to be configured to start. With no environment and no profile of you
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | Recurrent-state checkpoints, for prefix-cache rollback on hybrid DeltaNet models. `64` killed llama-server with `bad allocation` against a fixed 8192 MiB cache (F91). `LOCALCODE_CACHE_RAM` is now derived from this value, so raising it raises the budget with it. Pinning `LOCALCODE_CACHE_RAM` too re-creates F91 by hand. |
 | `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | Minimum token spacing between checkpoints. |
 | `LOCALCODE_UBATCH_SIZE` | `2048` | llama-server's physical prefill batch size. |
-| `LOCALCODE_REASONING_BUDGET` | `256` | llama-server's reasoning token budget. Tuned on Qwen3.6, where more than 256 hurt tool-call accuracy and uncapped thinking wasted minutes. Qwen3.8's card asks for large budgets, so the profiles here set `reasoning_budget: 4096` (a profile value beats this variable). |
+| `LOCALCODE_REASONING_BUDGET` | `256` | llama-server's reasoning token budget. Tuned on Qwen3.6, where more than 256 hurt tool-call accuracy and uncapped thinking wasted minutes. Qwen3.8's card asks for large budgets, so the profiles here set `reasoning_budget: 4096` (this variable beats a profile value). |
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | Where projects-mode project folders live (see [Projects](#projects)). |
 | `LOCALCODE_PROJECTS_EMBED_MODEL` | `nomic-embed-text` | Prose embedding model for project knowledge, artifacts and chats. Changing it rebuilds each project's store on its next write (journaled `index.rebuilt`). |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | Share of the context window given to a project chat's per-turn `[Project knowledge]` block (clamped to 0.02–0.5). |
@@ -986,7 +981,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_API_KEY` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_APPROVE_ALL` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | `base_url` | `engine/config.ts`, `engine/engine/callModel.ts` |
-| `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/config.ts` |
+| `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_BEST_OF_N` | `false` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_BEST_OF_N_COUNT` | `2` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_BEST_OF_N_TEMP` | `0.8` | — | `engine/bridge/conversationLoop.ts` |
@@ -994,8 +989,8 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_BRAIN` | *not derived* | — | `engine/brain/brainSwitch.ts` |
 | `LOCALCODE_BRAIN_LAYER` | `40` | — | `engine/main.ts` |
 | `LOCALCODE_BRIDGE_HOST` | `127.0.0.1` | — | `engine/bridge/server.ts` |
-| `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/llama/processManager.ts` |
-| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CACHE_RAM` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
+| `LOCALCODE_CHECKPOINT_MIN_STEP` | `256` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_COMFYUI_CFG` | `6` | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_CHECKPOINT` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_SIZE` | `1024x1024` | — | `engine/imagegen/config.ts` |
@@ -1007,7 +1002,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_COMFYUI_WORKFLOW_OUTLINE` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_WORKFLOW_VARY` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
-| `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | — | `engine/dashboard/server.ts` |
 | `LOCALCODE_DASHBOARD_PROXY_PORT` | *not derived* | — | `engine/dashboard/server.ts` |
 | `LOCALCODE_EMBED_API` | *not derived* | — | `engine/index/embedClient.ts` |
@@ -1017,8 +1012,8 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_EXPERTISE` | `advanced` | `expertise` | `engine/config.ts` |
 | `LOCALCODE_FALLBACK_MODEL` | *not derived* | — | `engine/llama/busyFallback.ts` |
 | `LOCALCODE_FALLBACK_URL` | *not derived* | — | `engine/llama/busyFallback.ts` |
-| `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/config.ts` |
-| `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/config.ts` |
+| `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
+| `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_GRAMMAR_ENABLED` | `false` | — | `engine/dashboard/server.ts`, `engine/engine/callModel.ts` |
 | `LOCALCODE_HOUSE_CONDUCT` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_HYBRID_SEARCH` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/index/indexer.ts` |
@@ -1050,7 +1045,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_PROJECTS_HOME` | `~/cynco-projects` | — | `engine/projects/layout.ts` |
 | `LOCALCODE_PROJECTS_RETRIEVAL_SHARE` | `0.15` | — | `engine/projects/retrieval.ts` |
 | `LOCALCODE_PROVIDER` | `llama-cpp` | `provider` | `engine/config.ts` |
-| `LOCALCODE_REASONING_BUDGET` | `256` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_REASONING_BUDGET` | `256` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_RECALL_EMBED_TIMEOUT_MS` | `4000` | — | `engine/index/embedClient.ts` |
 | `LOCALCODE_RECALL_HALFLIFE_HOURS` | `72` | — | `engine/memory/learningStore.ts` |
 | `LOCALCODE_RECALL_PROMOTED_BONUS` | `0.15` | — | `engine/memory/learningStore.ts` |
@@ -1075,7 +1070,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_TIMEOUT` | `300000` | `timeout` | `engine/config.ts` |
 | `LOCALCODE_TOOL_TEMPERATURE` | *not derived* | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_TRAJECTORY_ENABLED` | `true` | — | `engine/dashboard/server.ts`, `engine/main.ts` |
-| `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/llama/processManager.ts` |
+| `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_VARIETY_CONTROL` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_VISION_MODEL` | *not derived* | — | `engine/vision/settings.ts` |
 | `LOCALCODE_VISION_URL` | *not derived* | — | `engine/vision/settings.ts` |

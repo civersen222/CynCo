@@ -13,7 +13,7 @@
  * drives the identical backend the user runs in production.
  */
 import type { Provider } from './provider.js'
-import type { LocalCodeConfig } from './config.js'
+import type { LocalCodeConfig, RuntimeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
 import { cyncoHome } from './paths.js'
 import { isUnattendedMission, uncertaintyTraceEnabled } from './missionEnv.js'
@@ -51,6 +51,35 @@ export function binaryAction(opts: {
   return {
     kind: 'refuse',
     message: `F161: no llama-server under ${opts.binDir} or ${opts.brainBinDir}; an unattended engine does not download — stage the binary or set LOCALCODE_LLAMA_SERVER`,
+  }
+}
+
+/**
+ * The eight llama-server launch knobs that both a profile's `runtime:` block and a
+ * `LOCALCODE_*` variable can name, resolved environment first, like every other setting.
+ *
+ * Until 2026-11-17 the profile won for these eight and only these: an exported variable was
+ * silently ignored whenever the profile named the key, the reverse of the documented order
+ * (F233 f; the owner's decision). The first three already have their variable's value, or the
+ * built-in default, in `config`, so the variable is asked for by name to tell the two apart.
+ * The other five are left unset when their variable is set, because `buildServerArgs` reads
+ * it itself for a field nobody filled. Pure.
+ */
+export function launchKnobs(
+  rt: RuntimeConfig | undefined,
+  config: Pick<LocalCodeConfig, 'batchSize' | 'gpuLayers' | 'flashAttn'>,
+  env: Record<string, string | undefined> = process.env,
+) {
+  const set = (name: string) => (env[name] ?? '') !== ''
+  return {
+    batchSize: set('LOCALCODE_BATCH_SIZE') ? config.batchSize : (rt?.batchSize ?? config.batchSize),
+    gpuLayers: set('LOCALCODE_GPU_LAYERS') ? config.gpuLayers : (rt?.gpuLayers ?? config.gpuLayers),
+    flashAttn: set('LOCALCODE_FLASH_ATTN') ? config.flashAttn : (rt?.flashAttn ?? config.flashAttn),
+    cacheRam: set('LOCALCODE_CACHE_RAM') ? undefined : rt?.cacheRam,
+    reasoningBudget: set('LOCALCODE_REASONING_BUDGET') ? undefined : rt?.reasoningBudget,
+    ctxCheckpoints: set('LOCALCODE_CTX_CHECKPOINTS') ? undefined : rt?.ctxCheckpoints,
+    checkpointMinStep: set('LOCALCODE_CHECKPOINT_MIN_STEP') ? undefined : rt?.checkpointMinStep,
+    ubatchSize: set('LOCALCODE_UBATCH_SIZE') ? undefined : rt?.ubatchSize,
   }
 }
 
@@ -160,19 +189,12 @@ export async function bootstrapProvider(
         // literal here silently overrides processManager's own default and
         // makes changing it there a no-op.
         ctxSize: config.contextLength ?? DEFAULT_CTX_SIZE,
-        batchSize: rt?.batchSize ?? config.batchSize,
-        gpuLayers: rt?.gpuLayers ?? config.gpuLayers,
-        flashAttn: rt?.flashAttn ?? config.flashAttn,
+        ...launchKnobs(rt, config),
         threads: config.threads,
         specType: process.env.LOCALCODE_SPEC_TYPE || rt?.specType || undefined,
         specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N
           ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10)
           : rt?.specDraftN,
-        cacheRam: rt?.cacheRam,
-        reasoningBudget: rt?.reasoningBudget,
-        ctxCheckpoints: rt?.ctxCheckpoints,
-        checkpointMinStep: rt?.checkpointMinStep,
-        ubatchSize: rt?.ubatchSize,
         chatTemplateFile: rt?.chatTemplateFile,
         cacheTypeK: rt?.cacheTypeK,
         cacheTypeV: rt?.cacheTypeV,
