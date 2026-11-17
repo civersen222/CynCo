@@ -51,6 +51,7 @@ import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
 import { cyncoHome, missionsDir } from './paths.js'
 import { emitLogLine } from './emitLog.js'
+import { readMcpServers } from './mcpDiscovery.js'
 import { defaultControlPath } from './daemon/control.js'
 import { liveAppsDeps } from './dashboard/appsApi.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './daemon/ntfyChannel.js'
@@ -63,39 +64,19 @@ import { ImageService } from './imagegen/service.js'
 import { makeLookClient } from './vision/lookClient.js'
 import { imageMime } from './vision/lookRunner.js'
 
-// ─── MCP Discovery (standalone — standalone implementation) ──────
+// ─── MCP Discovery ──────
+// The user-level and project-level config files, read by engine/mcpDiscovery.ts. Nothing connects
+// to a server named there: it is reported as `configured`.
 
 async function discoverMcpServers(): Promise<MCPServerInfo[]> {
-  const fs = require('fs')
   const path = require('path')
   const os = require('os')
-  const servers: MCPServerInfo[] = []
-
-  // Check user-level and project-level MCP config files
-  const configPaths = [
+  return readMcpServers([
     path.join(cyncoHome(), 'mcp_servers.json'),
     path.join(os.homedir(), '.config', 'synco', 'mcp_servers.json'),
     path.join(process.cwd(), '.mcp', 'servers.json'),
     path.join(process.cwd(), '.cynco', 'mcp_servers.json'),
-  ]
-
-  for (const configPath of configPaths) {
-    try {
-      if (!fs.existsSync(configPath)) continue
-      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
-      const mcpServers = raw.mcpServers ?? raw.servers ?? raw
-      if (typeof mcpServers === 'object' && !Array.isArray(mcpServers)) {
-        for (const [name, config] of Object.entries(mcpServers)) {
-          if (!servers.some(s => s.name === name)) {
-            const disabled = (config as any).disabled === true
-            servers.push({ name, status: disabled ? 'disabled' : 'connected' })
-          }
-        }
-      }
-    } catch {}
-  }
-
-  return servers
+  ])
 }
 
 // ─── Bootstrap ─────────────────────────────────────────────────

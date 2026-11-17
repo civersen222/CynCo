@@ -21,7 +21,8 @@ export type LSPServerInfo = {
 
 export type MCPServerInfo = {
   name: string
-  status: 'connected' | 'failed' | 'disabled' | 'pending'
+  /** `configured`: named in a config file. The engine has no MCP client, so it reports nothing else but `disabled` (engine/mcpDiscovery.ts). */
+  status: 'configured' | 'connected' | 'failed' | 'disabled' | 'pending'
 }
 
 export type SessionReadyEvent = {

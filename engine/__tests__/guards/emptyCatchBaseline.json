@@ -16,7 +16,7 @@
   "index/indexer.ts": 1,
   "llama/processManager.ts": 4,
   "lsp/manager.ts": 1,
-  "main.ts": 7,
+  "main.ts": 6,
   "memory/atomicWrite.ts": 1,
   "memory/learningStore.ts": 3,
   "memory/lifecycle.ts": 1,
