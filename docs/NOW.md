@@ -131,6 +131,29 @@ report of that day. The next item is the owner's to name.
   card lands in the 5090 box. Side findings: Bash safety does not refuse `--no-verify`; the
   README's kraken/spark personas cannot write (every sub-agent tier is read-only), so the README
   overstates them; `Git` sits in the read-only sub-agent tool set although it can commit.
+- Left by the llama.cpp v1.0.0 question (2026-11-16, F238). CynCo stays on `b9529`; nothing in v1.0.0
+  forces a move. (a) **Moving to a newer llama.cpp is a project, not a bump**: rebase
+  `docs/research/llamacpp-activation-tap.patch` across about 2,800 commits and rebuild the brain
+  build (MSVC + CUDA 13.3), re-measure `ngram-mod,draft-mtp` (119.6 tok/s on b9529), re-check the
+  logprobs-with-tools refusal and the `created context checkpoint` line the calibrator reads, and
+  accept that ledger rows before and after are not directly comparable. The reasons to do it are
+  upstream's DNS-rebinding protection and CORS fix in `llama-server`; neither is urgent while the
+  server binds 127.0.0.1 with one slot. v1.0.0 removes `--defrag-thold`, which CynCo never passes.
+  (b) **The downloaded archive is not checked against the release's sha256** (GitHub's release JSON
+  carries a `digest` per asset); pin it beside `LLAMA_CPP_BUILD`. (c) **The Linux choice (Vulkan x64)
+  has never been run on a GPU.** The Windows download was run for real on 2026-11-17 (F238): 127 s,
+  and all 34 files byte-identical to `~/.cynco/bin`. (d) `~/.cynco/bin/version.json` on the CynCo PC
+  says `b9009`; the files there are the b9529 CUDA 12.4 archives' (replaced by hand on 2026-06-05).
+- Left by "CynCo is down" (2026-11-16, F225 seen again). (a) **The loop-block line cannot say whose
+  fault a block was.** On an idle engine it logged 39 blocks in two days with nothing above them.
+  Have `engine/loopWatch.ts` add the process's own CPU time over the late interval
+  (`process.cpuUsage()`): near the whole interval means the engine's synchronous work, near zero
+  means the process was waiting on a child or was not being run (the machine). (b) **The desk widget
+  reads a busy engine as `starting...`**: `Test-Http` gives `GET /` (417 KB) two seconds
+  (`scripts/cynco-widget.ps1`). (c) **Nothing on the PC says the phone has left the tailnet.** The
+  Pixel was off it from 2026-11-15 08:03Z for two days; the widget's "remote ok" tests this PC's own
+  tailnet address, which answers whether or not the phone is there. A line in the widget or the
+  watcher's note from `tailscale status` (peer `Online`, `LastSeen`) would have said it.
 
 ## Deferred (decided not now, and why)
 
