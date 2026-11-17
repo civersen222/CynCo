@@ -2,6 +2,22 @@ import { describe, expect, it } from 'vitest'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { EmbedClient } from '../index/embedClient.js'
+import { guardIsOn } from './setup/noLiveServices.js'
+
+describe('what turns the guard off', () => {
+  it('only the switch that asks for the live-server test', () => {
+    expect(guardIsOn({})).toBe(true)
+    expect(guardIsOn({ LOCALCODE_INTEGRATION_TESTS: '1' })).toBe(false)
+  })
+
+  // Until 2026-11-17 CYNCO_INTEGRATION took the guard off for the whole run. The tests it enables
+  // use a scripted model and need no server, so setting it on the owner's PC bought nothing and
+  // put the owner's Ollama, model server and dashboard in reach of every test in the suite.
+  it('not CYNCO_INTEGRATION, which only asks for more tests to run', () => {
+    expect(guardIsOn({ CYNCO_INTEGRATION: '1' })).toBe(true)
+    expect(guardIsOn({ CYNCO_INTEGRATION: '1', LOCALCODE_INTEGRATION_TESTS: '0' })).toBe(true)
+  })
+})
 
 // Captured at file load: vitest.config.ts must have run setup/noLiveServices.ts
 // already, so this is the wrapper every test in the suite starts with (F206).

@@ -10,9 +10,8 @@ import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
 
 // runOneShotTask drives a real ConversationLoop (filesystem, JSONL sessions,
-// index DBs) — gated like the other ConversationLoop integration tests.
-// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/daemon/oneShot.test.ts
-const SKIP = !process.env.CYNCO_INTEGRATION
+// index DBs) under the suite's temporary home; it needs no live service and
+// runs in the ordinary suite (ungated 2026-11-17).
 
 describe('extractOutcome', () => {
   it('parses the last fenced json block', () => {
@@ -328,7 +327,7 @@ describe('runOneShotTask (governed conversation loop)', () => {
     yield { type: 'message_stop' } as any
   }
 
-  it.skipIf(SKIP)('runs the task through the real conversation loop with restricted tools', async () => {
+  it('runs the task through the real conversation loop with restricted tools', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-os-'))
     try {
       const captured: CompletionRequest[] = []

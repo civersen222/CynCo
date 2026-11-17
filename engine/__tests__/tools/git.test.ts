@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test'
 import * as os from 'node:os'
-const SKIP_ENV = !process.env.CYNCO_INTEGRATION
 import { buildArgv, gitTool, tokenizeArgs } from '../../tools/impl/git.js'
 
 // Non-repo cwd: guards fire before spawn, but if a guard ever regresses the
@@ -43,13 +42,13 @@ describe('Git tool', () => {
     expect(gitTool.tier).toBe('approval')
   })
 
-  it.skipIf(SKIP_ENV)('runs git status', async () => {
+  it('runs git status', async () => {
     const result = await gitTool.execute({ subcommand: 'status' }, process.cwd())
     expect(result.isError).toBe(false)
     expect(result.output).toContain('branch')
   })
 
-  it.skipIf(SKIP_ENV)('runs git log', async () => {
+  it('runs git log', async () => {
     const result = await gitTool.execute({ subcommand: 'log', args: '--oneline -5' }, process.cwd())
     expect(result.isError).toBe(false)
   })

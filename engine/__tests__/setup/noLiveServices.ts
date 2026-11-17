@@ -14,10 +14,17 @@
  * (`TypeError: fetch failed`, `cause.code === 'ECONNREFUSED'`), at once and
  * without touching the network. A test that stubs `fetch` replaces this
  * wrapper and is not affected; a test server asks for port 0 and never lands
- * on one of these (`guards/testPortsDoNotCollide.test.ts`). The switches that
- * ask for live-service tests (`LOCALCODE_INTEGRATION_TESTS`,
- * `CYNCO_INTEGRATION`) turn it off. Only `fetch` is covered: it is how the
- * engine reaches every one of these services.
+ * on one of these (`guards/testPortsDoNotCollide.test.ts`). One switch turns
+ * it off: `LOCALCODE_INTEGRATION_TESTS=1`, which asks for the one test that
+ * really talks to a server (`ollama/client.test.ts`). Only `fetch` is covered:
+ * it is how the engine reaches every one of these services.
+ *
+ * `CYNCO_INTEGRATION` used to turn it off as well, for the whole run and every
+ * file in it. Nothing it enables needs a live service: the thirteen files it
+ * gated all drive a real loop with a scripted model, and they give the same
+ * results with this guard on (measured 2026-11-17). So it no longer touches the
+ * guard, and a run with it set on the owner's PC is not a run against the
+ * owner's services.
  */
 export const LIVE_SERVICE_PORTS: Readonly<Record<string, string>> = {
   '8081': 'the model server (llama-server)',
@@ -58,6 +65,11 @@ export function guardFetch(real: typeof fetch): typeof fetch {
   return guarded
 }
 
-if (process.env.LOCALCODE_INTEGRATION_TESTS !== '1' && !process.env.CYNCO_INTEGRATION) {
+/** Is the guard on for a run with this environment? Off only when the live-server test was asked for. */
+export function guardIsOn(env: Record<string, string | undefined>): boolean {
+  return env.LOCALCODE_INTEGRATION_TESTS !== '1'
+}
+
+if (guardIsOn(process.env)) {
   globalThis.fetch = guardFetch(globalThis.fetch)
 }

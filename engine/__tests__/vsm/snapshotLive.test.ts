@@ -7,16 +7,12 @@ import * as path from 'path'
 // @ts-ignore — untyped harness module
 import { createMissionCollector } from '../../../scripts/cynco-ledger.mjs'
 
-// ── Gate ─────────────────────────────────────────────────────────────────────
-// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/snapshotLive.test.ts
-const SKIP = !process.env.CYNCO_INTEGRATION
-
 import type { StreamEvent } from '../../types.js'
 import { defaultConfig, mockProvider, textResponse, toolCall } from '../harness/liveHarness.js'
 
 // ── Gated proving test: after-batch snapshot fires organically ──────────────
 
-describe('snapshot surfacing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+describe('snapshot surfacing — loop level', () => {
   let tempDir = ''
   let targetFile = ''
 
@@ -62,7 +58,7 @@ describe('snapshot surfacing — loop level (gated: CYNCO_INTEGRATION=1)', () =>
     vi.unstubAllGlobals()
   })
 
-  it.skipIf(SKIP)('scripted Write batch fires the after-batch snapshot, lands in the ledger turn record, and undoLastBatch reverts the file', async () => {
+  it('scripted Write batch fires the after-batch snapshot, lands in the ledger turn record, and undoLastBatch reverts the file', async () => {
     // Dynamically import to avoid blowing up the un-gated suite.
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 

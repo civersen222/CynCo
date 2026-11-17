@@ -5,7 +5,6 @@ import * as path from 'path'
 
 // Real ConversationLoop instances touch the filesystem (sessions, snapshots,
 // index DBs), so this follows the house rule for loop-level tests.
-const SKIP = !process.env.CYNCO_INTEGRATION
 
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
@@ -92,7 +91,7 @@ function countNudges(messages: any[]): number {
 }
 
 describe('nudge backstop during a measurement phase', () => {
-  it.skipIf(SKIP)('a Read answers a nudge, so investigation never exhausts the budget', async () => {
+  it('a Read answers a nudge, so investigation never exhausts the budget', async () => {
     // Stage 11I died here. The brief said MEASURE BEFORE YOU CHANGE, so the run
     // opened with Read/Grep/Bash and mutated nothing for many turns. The
     // unproductive-nudge counter was cleared only by Edit/Write/MultiEdit/
@@ -168,7 +167,7 @@ describe('nudge backstop during a measurement phase', () => {
     expect(countNudges(lastMessages)).toBe(5)
   })
 
-  it.skipIf(SKIP)('prose with no tool call still exhausts the budget and ends the run', async () => {
+  it('prose with no tool call still exhausts the budget and ends the run', async () => {
     // The other half: the backstop must survive. A model that answers three
     // nudges with nothing but more prose is finished, and the loop stops asking.
     const script: Array<() => Generator<StreamEvent>> = Array.from(

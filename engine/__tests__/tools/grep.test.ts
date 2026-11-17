@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test'
-const SKIP_ENV = !process.env.CYNCO_INTEGRATION
 import { grepFailure, grepTool } from '../../tools/impl/grep.js'
 import { writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
@@ -13,7 +12,7 @@ describe('Grep tool', () => {
     expect(grepTool.tier).toBe('auto')
   })
 
-  it.skipIf(SKIP_ENV)('finds content matches', async () => {
+  it('finds content matches', async () => {
     mkdirSync(TMP, { recursive: true })
     writeFileSync(join(TMP, 'a.ts'), 'function hello() {}\nfunction world() {}')
     writeFileSync(join(TMP, 'b.ts'), 'const x = 1')

@@ -8,8 +8,8 @@ import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
 
 // Integration tests — create real ConversationLoop instances (filesystem,
-// JSONL sessions, snapshots). Run with CYNCO_INTEGRATION=1.
-const SKIP = !process.env.CYNCO_INTEGRATION
+// JSONL sessions, snapshots) under the suite's temporary home. They need no
+// live service and run in the ordinary suite (ungated 2026-11-17).
 
 const TEST_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-coredefault-'))
 afterAll(() => { fs.rmSync(TEST_CWD, { recursive: true, force: true, maxRetries: 5 }) })
@@ -51,7 +51,7 @@ function* textResponse(text: string): Generator<StreamEvent> {
 }
 
 describe('core-by-default tool loading', () => {
-  it.skipIf(SKIP)('turn 1 offers core tools only; load_tools surfaces an extended tool; system prompt is byte-identical', async () => {
+  it('turn 1 offers core tools only; load_tools surfaces an extended tool; system prompt is byte-identical', async () => {
     const captured: CompletionRequest[] = []
     const responses = [
       () => loadToolsCall(['WebFetch']),

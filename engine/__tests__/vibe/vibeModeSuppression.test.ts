@@ -2,15 +2,13 @@
 // Regression guard: in vibe mode the raw token stream is suppressed
 // (the TUI shows plain-language reports instead), but tool.start /
 // tool.complete intentionally still flow — the TUI renders them as
-// activity lines and drives the worker animation. Gated like other
-// real-loop tests:
-//   CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vibe/vibeModeSuppression.test.ts
+// activity lines and drives the worker animation. A real loop with a
+// scripted model: no live service, so it runs in the ordinary suite.
 import { afterAll, describe, expect, it } from 'bun:test'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-const SKIP = !process.env.CYNCO_INTEGRATION
 
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
@@ -76,7 +74,7 @@ function* readToolUse(): Generator<StreamEvent> {
 }
 
 describe('vibe mode event suppression', () => {
-  it.skipIf(SKIP)('suppresses stream.token but still completes the message', async () => {
+  it('suppresses stream.token but still completes the message', async () => {
     const events: any[] = []
     const loop = new ConversationLoop({
       cwd: TEST_CWD,
@@ -91,7 +89,7 @@ describe('vibe mode event suppression', () => {
     expect(events.some(e => e.type === 'message.complete')).toBe(true)
   })
 
-  it.skipIf(SKIP)('tool.start/tool.complete still flow in vibe mode (TUI activity lines)', async () => {
+  it('tool.start/tool.complete still flow in vibe mode (TUI activity lines)', async () => {
     // Amended spec: tool events intentionally reach the TUI in vibe mode —
     // app.py:228-263 renders them as plain-language activity + worker animation.
     // approveAll: true — without it the loop emits approval.request and waits
@@ -116,7 +114,7 @@ describe('vibe mode event suppression', () => {
     expect(events.some(e => e.type === 'stream.token')).toBe(false)
   })
 
-  it.skipIf(SKIP)('normal mode still streams tokens (control)', async () => {
+  it('normal mode still streams tokens (control)', async () => {
     const events: any[] = []
     const loop = new ConversationLoop({
       cwd: TEST_CWD,
