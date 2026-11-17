@@ -91,12 +91,14 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  * one of them is supervision. Until 2026-11-17 the classifier named one path,
  * the CivKings checkout, so a campaign in any other repository was invisible.
  *
- * `selfRoot` (this repository) is never a supervised root, whatever a row says:
- * a mission that ran inside it would otherwise turn all development into
- * supervision. Compared without regard to case or slash direction.
+ * `selfRoot` (this repository, as an absolute path) is never a supervised root,
+ * whatever a row says: a mission that ran inside it would otherwise turn all
+ * development into supervision. Compared without regard to case or slash
+ * direction, and as text: the paths in a ledger are Windows paths whatever
+ * machine reads them, so nothing here asks the platform to resolve one.
  */
 export function supervisedRoots({ rows = [], specRepos = [], selfRoot }) {
-  const self = fwd(resolve(selfRoot)).toLowerCase()
+  const self = fwd(selfRoot).toLowerCase()
   const seen = new Map()
   for (const raw of [...rows.map(r => r?.cwd), ...specRepos]) {
     if (typeof raw !== 'string' || raw.trim() === '') continue
@@ -394,7 +396,7 @@ function main(argv) {
   const since = i >= 0 ? argv[i + 1] : null
 
   const rows = readLedger(LEDGER_DIR)
-  const roots = supervisedRoots({ rows, specRepos: specRepos(SPEC_ROOT), selfRoot: '.' })
+  const roots = supervisedRoots({ rows, specRepos: specRepos(SPEC_ROOT), selfRoot: resolve('.') })
   const folders = transcriptFolders(PROJECTS_ROOT, PROJECT_SLUG)
   const { byDay, coverage } = readFrontier(folders, classifierFor(roots).classifyMessage)
   const window = verdictWindow({ since, frontierFirstDay: coverage.firstDay })
