@@ -3065,6 +3065,11 @@ function showConnProject(p) {
 function fetchSessionState() {
   // Hydrate full dashboard state from REST — handles reload, late connect, reconnect
   var seq = projectsState.connectSeq;
+  // This runs again on every reconnect. Each read below happens every time; each repeating timer
+  // is started by the first run only. Started every time and never cleared, N reconnects left
+  // N+1 copies of all five polls running (F234 follow-up e).
+  var firstRun = !fetchSessionState.timersStarted;
+  fetchSessionState.timersStarted = true;
   fetch('/api/session')
     .then(function(r) { return r.json(); })
     .then(function(data) {
@@ -3113,13 +3118,13 @@ function fetchSessionState() {
     }).catch(function() {});
   }
   pollGovernance();
-  setInterval(pollGovernance, 3000);
+  if (firstRun) setInterval(pollGovernance, 3000);
 
   // F143: while a tool call is in flight the engine streams nothing, so
   // without this the feed freezes and the brain's watchdog declares idle
   // three minutes into a legitimate 20-minute test run. Tick the elapsed
   // time and keep the working indicator armed until tool.complete lands.
-  setInterval(function() {
+  if (firstRun) setInterval(function() {
     var running = false;
     for (var i = 0; i < state.toolFeed.length; i++) {
       if (state.toolFeed[i].status === 'running') { running = true; break; }
@@ -3167,7 +3172,7 @@ function fetchSessionState() {
     }).catch(function() {});
   }
   pollMission();
-  setInterval(pollMission, 10000);
+  if (firstRun) setInterval(pollMission, 10000);
 
   // Campaign panel (Phase 2c-ii): every campaign under ~/.cynco/campaigns,
   // independent of Mission mode — the panel is useful between waves too, when
@@ -3476,7 +3481,7 @@ function fetchSessionState() {
     }).catch(function(e) { console.warn('campaign poll failed', e); });
   }
   pollCampaign();
-  setInterval(pollCampaign, 10000);
+  if (firstRun) setInterval(pollCampaign, 10000);
 
   fetchPredictions();
   fetchContracts();
@@ -3495,7 +3500,7 @@ function fetchSessionState() {
 
   // Hydrate + poll training data every 30 seconds
   fetchTrainingData();
-  setInterval(fetchTrainingData, 30000);
+  if (firstRun) setInterval(fetchTrainingData, 30000);
 }
 
 function fetchParams() {
