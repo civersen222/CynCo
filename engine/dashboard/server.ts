@@ -2120,7 +2120,7 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
    *  runner-driven campaign that contributed no board.
    *
    *  Order (M3): pooledScoreboard takes the FIRST measured board's
-   *  whole-history `supervisionDollars`. Stored boards each carry the figure
+   *  `supervisionDollars` (one figure for all campaigns; F239). Stored boards each carry the figure
    *  as of their own verdict, so the boards go in newest-first by their
    *  record's `gradedAt` (ties and undated boards by id) — the pooled $ is the
    *  latest figure, never whichever directory readdir listed first.

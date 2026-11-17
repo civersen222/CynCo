@@ -57,7 +57,8 @@ What is measured and what is not, kept apart. The project's own terms are in [AG
   - Each campaign was graded by a held-out gate that had to fail cleanly on the base commit and on a cheat stub before dispatch.
   - Record: [docs/civkings-redesign-briefs/campaign-log.md](docs/civkings-redesign-briefs/campaign-log.md).
 - **Supervision economics, measured.** C1–C5 are the [paper](docs/supervision-economics-paper.md): $1 of frontier supervision oversaw ~$1.39 of displaced generation (honest band $1.0–1.4), and that generation ran locally ~349× cheaper than API prices.
-  - The running total after C11 wave 2: $2,995.57 of supervision against ~$5,920.56 of API-priced generation, which ran locally for ~$25.05 of power. That is $1 per ~$1.98 ([campaign log](docs/civkings-redesign-briefs/campaign-log.md); the paper's measurement caveats apply).
+  - After C11 wave 2 the script printed $2,995.57 of supervision against ~$5,920.56 of API-priced generation (which ran locally for ~$25.05 of power), "$1 per ~$1.98" ([campaign log](docs/civkings-redesign-briefs/campaign-log.md)). **That line is not a measurement** (F239, found 2026-11-17). The generation side is sound. The supervision side was the sum over the Claude Code transcripts still on disk in one folder; transcripts age out and worktree sessions were never read, so it had fallen from $4,295.55 two waves earlier. The paper's C1–C5 figure was taken on 2026-08-28, before either effect.
+  - What can be read today: of the 93 missions, 14 were dispatched on days a transcript still covers (2026-09-17 on). They would have cost ~$762.20 on the API, and the supervising spend up to the day of the last of them was $565.70: $1 per ~$1.35. `node scripts/supervision-economics.mjs` prints what each side covers and takes its verdict over the days both can be read.
 - **Serving, measured on the RTX 5090:**
   - 94–119 tok/s single-stream generation.
   - 16 of 16 streamed tool calls delivered, none dropped.
