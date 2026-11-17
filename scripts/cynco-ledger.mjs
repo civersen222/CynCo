@@ -378,6 +378,14 @@ export function createMissionCollector(now = () => Date.now()) {
         case 'stream.token':
           if (typeof m.text === 'string') this._answerText += m.text
           break
+        case 'session.error':
+          // F235, the re-prompt: a reply the engine cut is in no message (the
+          // loop keeps nothing of it), and a turn can now follow it. What it
+          // had streamed must not be judged as the opening of the next answer:
+          // a cut "I cannot " in front of "The mission is complete." reads as
+          // a refusal that nobody made.
+          if (m.stall) this._answerText = ''
+          break
         case 'message.complete': {
           // The turn's answer: whatever streamed since the last tool call.
           const answer = this._answerText
@@ -880,7 +888,8 @@ export function gradedHeadSuspect({ history, gradedSha, baselineSha }) {
 //         verified?: boolean, verify?: object,  // Phase 2(b) check-script result
 //         mutationSweep?: { command, killed, total, survived: string[] },
 //         baselineSha?: string|null, finalSha?: string|null,  // -> commitRange
-//         graderProbes?: { total, probes, uninspectable, byPattern, samples } }
+//         graderProbes?: { total, probes, uninspectable, byPattern, samples },
+//         stalls?: { reprompts, events } }      // F235: createStallRecovery().record()
 /**
  * Task 4 (2a-iii): fold a mission's per-turn `brain` frames into one summary
  * row so the ledger can carry a candidate signal instead of a per-turn array
@@ -975,6 +984,29 @@ export function buildMissionRecord(collector, meta) {
     // { command, runs, fails, overrides, lastExit, lastVerified, exhausted,
     //   blockedBySocket } — see scripts/cynco-probe.mjs.
     probe: meta.probe ?? null,
+    // F235, the re-prompt (owner's decision 2026-11-17, row 11): the stalled
+    // model streams the engine reported during this mission, and what the
+    // driver did about each (scripts/cynco-stall.mjs).
+    //
+    //   { reprompts: 0|1,
+    //     events: [{ at, phase, silentMs, error,
+    //                reprompt: 'sent' | 'spent' | 'failed' | 'waiting',
+    //                repromptedAt, resumed, why }] }
+    //
+    // `reprompts` counts re-prompts CONFIRMED sent (how many times), each
+    // event's `at` and `repromptedAt` say when, and `resumed: true` says a turn
+    // ran after it: that is the row of a mission that was resumed after a
+    // stall. Its `outcome`, `exitReason` and `verified` say how it ended
+    // afterwards, by the same rules as a mission that never stalled.
+    // `events[].reprompt`: 'sent' (`resumed` false when the engine closed the
+    // turn without running one, and the stall then ended the mission), 'spent'
+    // (the one re-prompt was already used: this stall ended the mission, and
+    // its text is `engineError`), 'failed' (it could not be sent; `why` says
+    // how), 'waiting' (the mission ended before the engine closed the stalled
+    // turn). `{ reprompts: 0, events: [] }` is a mission that never stalled.
+    // null = a caller that passed none; a row written before 2026-11-17 has no
+    // field at all, which is not "never stalled".
+    stalls: meta.stalls ?? null,
     // The second, independent label: did a withheld mutation set make the
     // repo's own tests go red for every stated rule? null means UNMEASURED —
     // a sweep that has not been run is not a sweep that passed, and it is not

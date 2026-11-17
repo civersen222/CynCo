@@ -43,6 +43,16 @@ export class StreamStalledError extends Error {
   }
 }
 
+/**
+ * The stall an error is, or null for anything else. The conversation loop puts this on the
+ * `session.error` frame of a turn that ended on a cut stream (`stall`), so a client can tell a
+ * stall from a crash or a refused spawn without reading the error's text: the mission driver
+ * re-prompts once on that field and on nothing else (`scripts/cynco-stall.mjs`).
+ */
+export function stallOf(err: unknown): { phase: 'first-byte' | 'mid-stream'; silentMs: number } | null {
+  return err instanceof StreamStalledError ? { phase: err.phase, silentMs: err.silentMs } : null
+}
+
 /** What `modelSilence` answers: the request in flight, how long its server has sent nothing, and the limit it runs under. */
 export type ModelSilence = { phase: 'first-byte' | 'mid-stream'; silentMs: number; limitMs: number; server: string }
 

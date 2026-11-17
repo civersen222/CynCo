@@ -51,6 +51,14 @@ export type SessionReadyEvent = {
 export type SessionErrorEvent = {
   type: 'session.error'
   error: string
+  /**
+   * Present only when the turn ended because the model server stopped answering
+   * a streamed request and the engine cut it (F235, `StreamStalledError`): which
+   * wait ran out, and the limit it ran out at. Every other error leaves it out.
+   * It is how a client tells a stall from a crash without reading `error`: the
+   * mission driver re-prompts once on this field (`scripts/cynco-stall.mjs`).
+   */
+  stall?: { phase: 'first-byte' | 'mid-stream'; silentMs: number }
 }
 
 export type StreamTokenEvent = {
