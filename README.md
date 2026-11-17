@@ -391,7 +391,7 @@ This is the project's rule for experimental policy: observe, then advise, then e
 - **C6**, variety critical: restrict to the top-5 tools by success rate.
 - **C7**, **stuck loop escape**: when stuck 5+ turns, restrict to tools not used recently, regardless of their success rate.
 
-*Warning:* model switch on rising latency (W2, which cannot fire: see [A second main model](#a-second-main-model-not-wired)); a revert recommendation on 5+ stuck turns (W3, recommended and never executed); drift-based compaction and tool restriction; homeostatic instability rebalancing; S3/S4 imbalance correction. A fired warning rule also sends a `governance.recommendation`, which the TUI prints as a line in the chat.
+*Warning:* model switch on rising latency (W2, which cannot fire: see [A second main model](#a-second-main-model-not-wired)); a revert recommendation on 5+ stuck turns (W3: advice, never executed); drift-based compaction and tool restriction; homeostatic instability rebalancing; S3/S4 imbalance correction. A fired warning rule also sends a `governance.recommendation`. The TUI prints it as a line in the chat. The dashboard lists it on the Governance tab with what S5 would do and the words "not applied", and a revert recommendation also appears as a line in the dashboard chat (so on the phone too). Nothing acts on a recommendation: there is no button and no timer, and a revert stays the owner's to do.
 
 *Info:* variety balance shifts, homeostatic adjustments and performance metrics, logged for training.
 

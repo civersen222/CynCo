@@ -1869,6 +1869,17 @@ function handleEvent(event) {
       break;
     }
 
+    case 'governance.recommendation': {
+      // S5 would do this and did not. Shown in the Governance tab's S5 list, and in the
+      // chat when it is a revert; the page offers no way to act on one (recommendationEntry).
+      var rec = recommendationEntry(event);
+      state.s5Decisions.unshift({ ts: new Date(), decision: rec.decision, agentId: 'S5', reason: rec.reason });
+      if (state.s5Decisions.length > MAX_DECISIONS) state.s5Decisions.pop();
+      renderS5();
+      if (rec.chatLine !== null) appendChatMsg('system', rec.chatLine);
+      break;
+    }
+
     case 'config.current':
       state.config = event.config;
       syncConfigToSliders(event.config);
@@ -2264,6 +2275,34 @@ function renderGovernance() {
   } else {
     routeEl.textContent = '—';
   }
+}
+
+/**
+ * S5's recommendation in words (`governance.recommendation`): what it would do, why, and that
+ * nothing did it. Display only, by the owner's decision of 2026-11-17: a recommendation is
+ * advice, and executing a revert is authority to change files that nobody gave. A revert also
+ * gets a chat line, because it is the one recommendation about the owner's files.
+ */
+function recommendationEntry(event) {
+  var action = event.action || {};
+  var signal = event.signal || '?';
+  var parts = [];
+  if (action.revert) parts.push('revert the last change');
+  if (action.model) parts.push('switch model to ' + action.model);
+  if (action.tools && action.tools.length) parts.push('restrict tools to ' + [].concat(action.tools).join(', '));
+  if (action.contextAction && action.contextAction !== 'none') parts.push('context: ' + action.contextAction);
+  var reason = String(event.description || '');
+  var chatLine = null;
+  if (action.revert) {
+    var said = reason.trim();
+    if (said && said.charAt(said.length - 1) !== '.') said += '.';
+    chatLine = 'S5 recommends a revert (' + signal + '): ' + said + ' Nothing was reverted: this is advice, and acting on it is yours.';
+  }
+  return {
+    decision: 'recommends (' + signal + '): ' + (parts.length ? parts.join(', ') : 'no action named') + ' · not applied',
+    reason: reason,
+    chatLine: chatLine,
+  };
 }
 
 function renderS5() {

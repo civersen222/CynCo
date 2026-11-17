@@ -47,6 +47,7 @@ export const REPLAYED_TYPES: ReadonlySet<string> = new Set([
   'file.diff',
   'message.complete',
   'governance.alert',
+  'governance.recommendation',
   'mission.operator_note',
   'session.error',
   'ui.render',
