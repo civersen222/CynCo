@@ -130,6 +130,8 @@ export interface DashboardDeps {
    * and this is the only way for anything outside the engine process to ask.
    */
   getRunState?: () => { processing: boolean; toolCalls?: number }
+  /** The model request in flight and how long its server has been silent (`providers/streamWatchdog.ts`), or null. */
+  getModelSilence?: () => { phase: 'first-byte' | 'mid-stream'; silentMs: number; limitMs: number; server: string } | null
   /** Test seam: run one git command asynchronously and resolve its stdout. Default: child_process.execFile. */
   missionGit?: (args: string[]) => Promise<string>
   /**
@@ -213,6 +215,8 @@ export type SessionSnapshot = {
   project: { slug: string; chat: string | null; title: string | null } | null
   /** Decisions waiting on a person; null when the engine did not wire the dep. */
   pending: PendingDecision[] | null
+  /** The model request in flight and how long its server has sent nothing; null when none is. Absent when the engine did not wire the dep. */
+  modelSilence?: { phase: 'first-byte' | 'mid-stream'; silentMs: number; limitMs: number; server: string } | null
   /** Wakefulness: `cold` (no llama-server), `loading`, `warm`, or `waiting` on another process's GPU claim; null when not llama-cpp. */
   modelState?: 'cold' | 'loading' | 'warm' | 'waiting' | null
   /** The one-shot that owns the GPU right now (gpu-busy.json), or null. */
@@ -1710,6 +1714,7 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       contextUsed: counters?.contextUsed ?? null,
       project: this.deps.currentProject?.() ?? null,
       pending: this.deps.getPendingDecisions?.() ?? null,
+      ...(this.deps.getModelSilence ? { modelSilence: this.deps.getModelSilence() } : {}),
     }
   }
 

@@ -29,6 +29,7 @@ if (process.platform === 'win32') {
 }
 
 import { loadConfig, ConfigRefusal } from './config.js'
+import { modelSilence } from './providers/streamWatchdog.js'
 import { LocalCodeWSServer } from './bridge/server.js'
 import type { TUICommand, MCPServerInfo } from './bridge/protocol.js'
 import { PROTOCOL_VERSION } from './bridge/protocol.js'
@@ -535,6 +536,8 @@ try {
       getS4Reflector: () => loop.getGovernance().getReflector(),
       // F57: the one fact a harness outside this process cannot infer.
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
+      // A chat that shows nothing while the model is waited for can say so, and for how long (D4f).
+      getModelSilence: () => modelSilence(),
       // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
       getAwayRuns: () => {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')

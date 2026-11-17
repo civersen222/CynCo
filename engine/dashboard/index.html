@@ -364,6 +364,7 @@ input[type="range"]:disabled::-webkit-slider-thumb { cursor: not-allowed; }
 .brain-label.offline::after { content:' offline'; }
 /* Config → Phone access */
 .phone-note { color:#a0a0a0; font-size:12px; margin:6px 0 10px; line-height:1.5; }
+.chat-model-wait { color:#dcdcaa; font-size:12px; padding:4px 10px; }
 .phone-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
 .phone-row { display:flex; gap:10px; align-items:center; padding:5px 0; border-bottom:1px solid #2a2a2a; font-size:12px; flex-wrap:wrap; }
 .phone-k { color:#808080; min-width:130px; }
@@ -972,6 +973,7 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
     </div>
     <div class="chat-messages" id="chatMessages"></div>
     <div id="chatCitations"></div>
+    <div id="chatModelWait" class="chat-model-wait" hidden></div>
     <div class="chat-input-area">
       <textarea class="chat-input" id="chatInput" placeholder="Type a message... (/plan, /tdd, /debug for workflows)&#10;&#10;Enter to send, Shift+Enter for newline"
              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!chatEnterInsertsNewline()){event.preventDefault();sendChatMessage()}"></textarea>
@@ -1891,12 +1893,14 @@ function handleEvent(event) {
       break;
 
     case 'stream.thinking':
+      clearModelWait();
       brainViz.setActive(true);
       appendChatThinking(event.text || '');
       brainOnThinking(event.text || '');
       break;
 
     case 'stream.token':
+      clearModelWait();
       brainViz.setActive(true);
       brainMaybeCloseThinking();
       // Chat tab: stream assistant text
@@ -3155,6 +3159,9 @@ function fetchSessionState() {
   pollGovernance();
   if (firstRun) setInterval(pollGovernance, 3000);
 
+  // The model being waited for: asked every five seconds while a turn is open (pollModelWait).
+  if (firstRun) setInterval(function() { pollModelWait(); }, 5000);
+
   // F143: while a tool call is in flight the engine streams nothing, so
   // without this the feed freezes and the brain's watchdog declares idle
   // three minutes into a legitimate 20-minute test run. Tick the elapsed
@@ -3731,7 +3738,16 @@ function wireMissionHistory() {
     var a = ev.target && ev.target.closest ? ev.target.closest('.mh-campaign') : null;
     if (!a) return;
     ev.preventDefault();
-    focusCampaign(a.getAttribute('data-campaign'));
+    var campaign = a.getAttribute('data-campaign');
+    // The phone has no Campaign panel to open (it is on the Governance tab): there the link
+    // narrows this list to the campaign, which is the same id the filter above it uses.
+    if (window.__CYNCO_REMOTE) {
+      missionHistory.campaign = campaign;
+      missionHistory.offset = 0;
+      pollMissionHistory();
+      return;
+    }
+    focusCampaign(campaign);
   });
   pollMissionHistory();
   setInterval(pollMissionHistory, 30000);
@@ -4007,9 +4023,25 @@ function remoteRouteOnce(state) {
   state.routed = true;
   return true;
 }
+/**
+ * The outcome ledger on the phone (work order D4g). Its panel lives on the Governance tab, which
+ * the phone does not have. The one panel is moved under Away, not copied: its controls are found
+ * by id and its poll already runs. It is renamed there, because the phone's Missions tab is the
+ * schedules. True when it moved.
+ */
+function moveMissionHistoryForRemote(doc) {
+  var panel = doc.getElementById('panelMissionHistory');
+  var away = doc.querySelector('#tab-away .grid');
+  if (!panel || !away || panel.parentNode === away) return false;
+  away.appendChild(panel);
+  var title = panel.querySelector('.panel-title');
+  if (title) title.textContent = 'Mission history (every run in the outcome ledger)';
+  return true;
+}
 function applyRemoteLayout() {
   if (!window.__CYNCO_REMOTE) return;
   document.body.classList.add('remote');
+  moveMissionHistoryForRemote(document);
   var keep = remoteTabSet(true);
   var btns = document.querySelectorAll('.tab-bar > .tab-btn');
   for (var i = 0; i < btns.length; i++) {
@@ -4478,6 +4510,56 @@ function respondApproval(requestId, approved) {
 }
 
 // ── Run control for a page that may be a phone (docs/decisions/2026-10-22-phone-access.md) ──
+
+// ── The model is silent (work order D4f) ──
+// The engine waits up to twenty minutes for a first token and ten between tokens before it
+// cuts a request (F235). The chat showed nothing for all of that. /api/session carries
+// `modelSilence` (the request in flight, how long its server has sent nothing, the limit),
+// and while a turn is open the page asks every five seconds and says it under the chat.
+
+/**
+ * The line, or null when there is nothing worth saying: no request in flight, or a silence
+ * under fifteen seconds, which reading a long prompt takes on every turn. `agoMs` is how long
+ * ago the page was told, so the count moves between two answers.
+ */
+function modelWaitLine(silence, agoMs) {
+  if (!silence || typeof silence.silentMs !== 'number' || typeof silence.limitMs !== 'number') return null;
+  var ms = silence.silentMs + (agoMs > 0 ? agoMs : 0);
+  if (ms < 15000) return null;
+  function span(t) {
+    var s = Math.floor(t / 1000), m = Math.floor(s / 60);
+    return m > 0 ? m + 'm' + (s % 60 ? ' ' + (s % 60) + 's' : '') : s + 's';
+  }
+  var named = silence.server && silence.server !== 'llama-server' ? silence.server : null;
+  var end = ' The engine ends the request after ' + span(silence.limitMs) + ' of silence.';
+  if (silence.phase === 'first-byte') {
+    return 'Waiting for ' + (named ? named + "'s" : "the model's") + ' first token: ' + span(ms) + ' so far.' + end;
+  }
+  return (named || 'The model') + ' has sent nothing for ' + span(ms) + '.' + end;
+}
+
+var modelWait = { silence: null, at: 0 };
+function renderModelWait() {
+  var el = document.getElementById('chatModelWait');
+  if (!el) return;
+  var line = modelWait.silence ? modelWaitLine(modelWait.silence, Date.now() - modelWait.at) : null;
+  el.hidden = line === null;
+  el.textContent = line === null ? '' : line;
+}
+/** The model spoke, or the turn is over: the line comes down at once, not at the next answer. */
+function clearModelWait() {
+  if (modelWait.silence === null) return;
+  modelWait.silence = null;
+  renderModelWait();
+}
+function pollModelWait() {
+  if (!chatTurnRunning()) { clearModelWait(); return; }
+  fetch('/api/session').then(function(r) { return r.json(); }).then(function(d) {
+    modelWait.silence = d && d.modelSilence ? d.modelSilence : null;
+    modelWait.at = Date.now();
+    renderModelWait();
+  }).catch(function() {});
+}
 
 /** The Stop button follows the working indicator: shown while a turn runs or the engine waits on a card. */
 function showChatStop(on) {

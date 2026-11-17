@@ -59,6 +59,21 @@ describe('GET /api/session', () => {
     })
   })
 
+  // D4f: a chat that shows nothing while the model is waited for can say so. The reading is the
+  // stall clock's (`modelSilence`); an engine that did not wire it sends no such field.
+  it('carries the model request in flight and how long its server has been silent', async () => {
+    let silence: any = { phase: 'first-byte', silentMs: 80_000, limitMs: 1_200_000, server: 'llama-server' }
+    const s = await start({ getRunState: () => ({ processing: true }), getModelSilence: () => silence })
+    try {
+      expect((await (await get(s.base)).json()).modelSilence).toEqual({ phase: 'first-byte', silentMs: 80_000, limitMs: 1_200_000, server: 'llama-server' })
+      silence = null
+      const idle = await (await get(s.base)).json()
+      expect('modelSilence' in idle).toBe(true)
+      expect(idle.modelSilence).toBeNull()
+    } finally { s.server.stop() }
+    expect('modelSilence' in (await (await get(wired.base)).json())).toBe(false)
+  })
+
   it('names the bound project chat', async () => {
     bound = { slug: 'front-yard-diorama', chat: '2026-10-08-diorama.jsonl', title: 'Diorama' }
     const body = await (await get(wired.base)).json()

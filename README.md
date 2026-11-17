@@ -585,7 +585,7 @@ The dashboard is the phone client: the same page and the same engine, over your 
 
 What a paired phone can do is what the desk page can do: chat, watch tool activity, answer approval cards and AskUser questions, and press **Stop**. It cannot change configuration: management is refused off this machine whatever token is presented, and the phone is never asked for the management token. A paired phone is therefore equivalent to a terminal on this machine, Bash approvals included. Revoke a lost phone under Config → Phone access, and its page returns to pairing at once.
 
-**What the phone sees.** A remote page lands in Projects and shows four tabs: Chat, Projects, **Away** and Missions. Away lists what the missions did while you were out: time, mission, trigger, ok or FAILED, and a summary, from every mission's `runs.jsonl` via `GET /api/away`.
+**What the phone sees.** A remote page lands in Projects and shows four tabs: Chat, Projects, **Away** and Missions. Under the Away list is the mission history: every run in the outcome ledger, newest first, with the campaign filter (the same panel the desk has on its Governance tab). And when the model is being waited for, the chat says so on the desk and the phone alike: how long it has sent nothing, and after how long the engine ends the request. Away lists what the missions did while you were out: time, mission, trigger, ok or FAILED, and a summary, from every mission's `runs.jsonl` via `GET /api/away`.
 
 The layout is one column, with the send box pinned to the bottom. A page whose socket dropped, for example a phone locked mid-answer, is sent what it missed, in order, once. The headless phone engine runs with `LOCALCODE_BRAIN=off` (no jlens sidecar, no activation tap). The desk page is unchanged.
 

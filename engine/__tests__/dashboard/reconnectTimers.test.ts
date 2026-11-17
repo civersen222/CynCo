@@ -73,14 +73,15 @@ describe('dashboard: a reconnect starts no second copy of a poll', () => {
   it('the first connect starts each timer once', async () => {
     const p = page()
     await p.open()
-    expect(p.timers.map(t => t.ms).sort((a, b) => a - b)).toEqual([1000, 3000, 10000, 10000, 30000])
+    // 5000 is the model-silence poll (D4f, 2026-11-17).
+    expect(p.timers.map(t => t.ms).sort((a, b) => a - b)).toEqual([1000, 3000, 5000, 10000, 10000, 30000])
   })
 
-  it('three reconnects later the same five timers are the only ones', async () => {
+  it('three reconnects later the same six timers are the only ones', async () => {
     const p = page()
     await p.open()
     for (let i = 0; i < 3; i++) await p.open()
-    expect(p.timers.map(t => t.ms).sort((a, b) => a - b)).toEqual([1000, 3000, 10000, 10000, 30000])
+    expect(p.timers.map(t => t.ms).sort((a, b) => a - b)).toEqual([1000, 3000, 5000, 10000, 10000, 30000])
   })
 
   it('every connect still reads the state at once: only the repeating copies are held back', async () => {
