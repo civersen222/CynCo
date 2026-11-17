@@ -6,6 +6,10 @@
  * the training. Every defect this file exists to fix survived precisely there.
  */
 
+// STALE, knowingly (owner's decision of 2026-11-17, row 25): this base is from before the move
+// to Qwen3.6 and then Qwen3.8, and an adapter trained on it could not be served with the main
+// model. Nothing has been trained with it. It is changed when a training run is planned, with the
+// base that run will use; until then pass `--base`.
 export const DEFAULT_BASE = 'unsloth/Qwen2.5-Coder-14B-Instruct'
 export const DEFAULT_VERSION = 'v1'
 export const DEFAULT_STAGE = 'stats'

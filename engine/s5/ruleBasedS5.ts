@@ -200,6 +200,11 @@ const W1: S5Rule = {
   },
 }
 
+// W2 is a HYPOTHESIS, not a working rule (owner's decision of 2026-11-17, row 18). It needs two
+// models in `availableModels`, and both S5 call sites pass one (`[this.config.model]`): no setting
+// names a second main model, so it cannot fire in production. `modelSwitchClaim.test.ts` passes
+// because it hands the rule two. Kept until a second model is really on the box; switching would
+// then cost a model reload and the KV cache each time, which nobody has measured.
 const W2: S5Rule = {
   id: 'W2',
   tier: 'warning',
