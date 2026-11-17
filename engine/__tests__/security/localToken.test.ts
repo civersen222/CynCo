@@ -12,10 +12,10 @@
  * is data on the record instead of a branch in the caller.
  */
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, statSync, chmodSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { loadOrCreateTokens, TOKEN_FILENAME } from '../../security/localToken.js'
+import { loadOrCreateTokens, restrictHomeToOwner, TOKEN_FILENAME } from '../../security/localToken.js'
 
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cynco-tokens-')) })
@@ -133,5 +133,45 @@ describe('recognising a secret regardless of scope', () => {
     ['a wrong secret of the right shape', 'a'.repeat(64)],
   ])('does not know %s', (_name, presented) => {
     expect(loadOrCreateTokens(dir).isKnown(presented)).toBe(false)
+  })
+})
+
+/**
+ * The home folder holds the token file, the session journals and the audit log. On POSIX it is
+ * created by whichever code first writes into it, under the process's umask, usually 0755:
+ * every local account could list it and read anything in it that was not itself restricted
+ * (the 2026-10-30 review's S8). On Windows the home is under the user's profile, whose own
+ * access list already keeps other accounts out, and nothing is changed there.
+ */
+describe('the home folder is the owner\'s alone (POSIX)', () => {
+  const posix = process.platform !== 'win32'
+  const modeOf = (p: string) => statSync(p).mode & 0o777
+
+  it.runIf(posix)('a home that is group- or world-readable is tightened to 0700 at start', () => {
+    chmodSync(dir, 0o755)
+    loadOrCreateTokens(dir)
+    expect(modeOf(dir)).toBe(0o700)
+  })
+
+  it.runIf(posix)('a home that does not exist yet is created 0700', () => {
+    const fresh = join(dir, 'home')
+    loadOrCreateTokens(fresh)
+    expect(modeOf(fresh)).toBe(0o700)
+  })
+
+  it.runIf(posix)('a home that is already tighter is left as it is', () => {
+    chmodSync(dir, 0o500)
+    try {
+      expect(restrictHomeToOwner(dir)).toBe('left')
+      expect(modeOf(dir)).toBe(0o500)
+    } finally { chmodSync(dir, 0o700) }
+  })
+
+  it('on Windows nothing is changed, and the function says so', () => {
+    expect(restrictHomeToOwner(dir, 'win32')).toBe('windows-profile')
+  })
+
+  it('a folder that is not there is reported, not thrown', () => {
+    expect(restrictHomeToOwner(join(dir, 'absent'), 'linux')).toBe('failed')
   })
 })
