@@ -50,6 +50,7 @@ import { JlensClient } from './brain/jlensClient.js'
 import { startJlensSidecar, type JlensSidecarHandle } from './brain/jlensSidecar.js'
 import { brainEnabled, lensEnabled } from './brain/brainSwitch.js'
 import { cyncoHome, missionsDir } from './paths.js'
+import { emitLogLine } from './emitLog.js'
 import { defaultControlPath } from './daemon/control.js'
 import { liveAppsDeps } from './dashboard/appsApi.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './daemon/ntfyChannel.js'
@@ -449,7 +450,8 @@ const loop = new ConversationLoop({
   config,
   provider,
   emit: (event) => {
-    console.log(`[localcode] Emitting: ${event.type}`)
+    const line = emitLogLine(event.type)
+    if (line) console.log(line)
     wsServer.emit(event)
     dashboardServer?.broadcast(event)
     waitPush?.onEvent(event)
