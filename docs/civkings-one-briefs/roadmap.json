@@ -7,6 +7,14 @@
       "base": "801fd173ff53310fb16a6aa17baff32d60ad5a4a",
       "status": "done",
       "note": "2026-11-19: first campaign of the civkings-one roadmap (the map-first game the design in that repository describes). The owner decided the same day that the engine builds it from the approved design. Authored on the human path; the triple was run by hand against BASE, against a lazy stub and against an honest minimum before it was sealed."
+    },
+    {
+      "id": "c21",
+      "name": "The Map",
+      "bar": "python -m civkings opens a window on the simulation's world: the continent painted from the nine terrain paintings, a period atlas when zoomed out; the map is dragged, zoomed about the cursor and brought Home, the minimap jumps it, Political and Terrain switch the owners' colours; a top bar and a province panel show the simulation's own figures in any game at any turn; nothing unreadable is ever drawn, at any window size; frames are fast and the window quits clean",
+      "base": "dc2283694f81e3d12f8f61d25738313da2c2f5f8",
+      "status": "sealed",
+      "note": "2026-11-20: the design's stage 1. The measure starts the real program headless, posts input events and reads the screen; controls are found by their labels and the figures are checked against the simulation at BASE. Authored on the human path; run by hand against BASE, a lazy window and an honest one before sealing. A PASS says the window works, not that the map is good to look at: the owner looks at the screens."
     }
   ]
 }

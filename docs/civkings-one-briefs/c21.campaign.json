@@ -1,0 +1,121 @@
+{
+  "id": "c21",
+  "title": "the map",
+  "repo": "C:/Users/civer/civkings-one",
+  "base": "dc2283694f81e3d12f8f61d25738313da2c2f5f8",
+  "heldoutFamily": "civkings-one",
+  "briefsDir": "docs/civkings-one-briefs",
+  "campaignLog": "docs/civkings-one-briefs/campaign-log.md",
+  "roadmap": "docs/civkings-one-briefs/roadmap.json",
+  "suiteTarget": "gilded/tests",
+  "gate": "C:/Users/civer/.cynco/heldout/civkings-one/c21/gate_c21.py",
+  "perturb": "C:/Users/civer/.cynco/heldout/civkings-one/c21/perturb_c21.py",
+  "positive": "C:/Users/civer/.cynco/heldout/civkings-one/c21/positive_c21.py",
+  "suiteBaseline": "C:/Users/civer/.cynco/heldout/civkings-one/c21/suite_baseline_dc22836.txt",
+  "marker": "stage c21 complete",
+  "keepGreen": "python -m pytest gilded/tests/test_agenda.py gilded/tests/test_ai.py gilded/tests/test_ai_heirs.py gilded/tests/test_c3_orders.py gilded/tests/test_c3_wave2.py gilded/tests/test_chassis.py gilded/tests/test_console.py gilded/tests/test_dashboard_i5a.py gilded/tests/test_dashboard_ui7g.py gilded/tests/test_dashboard_ui7i.py gilded/tests/test_directives.py gilded/tests/test_dispositions.py gilded/tests/test_endings.py gilded/tests/test_endings_read_the_reign.py gilded/tests/test_enterprises.py gilded/tests/test_event_chains.py gilded/tests/test_fronts.py gilded/tests/test_grip.py gilded/tests/test_houses.py gilded/tests/test_ideology.py gilded/tests/test_intel.py gilded/tests/test_intel_ui8.py gilded/tests/test_labor.py gilded/tests/test_market.py gilded/tests/test_marriages.py gilded/tests/test_money_supply.py gilded/tests/test_opinion_ledger.py gilded/tests/test_pacts.py gilded/tests/test_papers.py gilded/tests/test_policy.py gilded/tests/test_provenance.py gilded/tests/test_realm.py gilded/tests/test_relationships.py gilded/tests/test_saga_beats.py gilded/tests/test_saga_director.py gilded/tests/test_saga_facts.py gilded/tests/test_saga_integration.py gilded/tests/test_saga_sources.py gilded/tests/test_save_load.py gilded/tests/test_schemes.py gilded/tests/test_schemes_s9.py gilded/tests/test_shares.py gilded/tests/test_soak.py gilded/tests/test_society_core.py gilded/tests/test_stage4_smoke.py gilded/tests/test_takeover_completes.py gilded/tests/test_takeover_door.py gilded/tests/test_takeover_means.py gilded/tests/test_treasury_journal.py gilded/tests/test_war_tab_doctrines.py gilded/tests/test_war_turn.py gilded/tests/test_world.py gilded/tests/test_c20_saves.py civkings/tests/test_c20_stand_up.py -q",
+  "budget": {
+    "hoursPerWave": 8,
+    "iterations": 2000,
+    "bashTimeoutMs": 1500000,
+    "waves": 6
+  },
+  "invariants": {
+    "editGapCap": 40,
+    "commitGapCap": 150,
+    "revertBan": true,
+    "codeIndexFirst": true
+  },
+  "posiwid": {
+    "sourceEditShare": 0.3,
+    "commitEvery": 60
+  },
+  "sweep": {
+    "max": 6
+  },
+  "prBase": "main",
+  "allow": {
+    "newFiles": [
+      "civkings/"
+    ],
+    "edit": [
+      "civkings/__init__.py",
+      "civkings/__main__.py",
+      "civkings/session.py",
+      "civkings/tests/test_c20_stand_up.py",
+      "pytest.ini",
+      "requirements.txt"
+    ]
+  },
+  "deny": [
+    "gilded/ (the simulation and its tests: read it, never edit it)",
+    "docs/ (the design and the mockups)",
+    "civkings/assets/terrain/ (the nine paintings are used as they are)",
+    "conftest.py, pyproject.toml"
+  ],
+  "measures": "HOW THE GATE MEASURES - build to these definitions exactly\n\n  WHAT IS MEASURED. The delivery is HEAD of this repository: a file that is not committed is not delivered. The delivery is copied to a private folder and the game is started there as its own program, \"python -m civkings\" with arguments, headless (SDL_VIDEODRIVER=dummy, SDL_AUDIODRIVER=dummy, GILDED_NARRATE=0). Nothing asks the program where anything is. A hand posts input events and reads the screen; what should be on the screen is worked out from the simulation alone. BASE is commit dc22836, the repository as you find it.\n\n  THE PROGRAM. \"python -m civkings [--seed S] [--house NAME] [--turns K]\" plays K turns (default 0) of the game civkings.session.new_game(S, NAME) gives, then opens the window - 1600 by 900, resizable - and runs until it is asked to quit. With --smoke the program is exactly what it is at BASE.\n  THE SCREEN is the surface pygame.display.set_mode returns. A FRAME ends when the program calls pygame.display.flip(), once per frame. When a VIDEORESIZE event arrives the program calls pygame.display.set_mode with the event's size and draws on what that returns; it accepts any size from 1024 by 640 up.\n  INPUT reaches the program only as pygame events read from pygame's event queue every frame - MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP, MOUSEWHEEL, KEYDOWN, VIDEORESIZE, QUIT - and, for where the wheel turns, pygame.mouse.get_pos().\n  A TEXT COUNTS as readable only when all of this holds: a pygame.font.Font rendered it; that rendered surface was blitted whole, straight onto the screen (not by way of another surface; not cropped by an area, by the clip or by the window's edge); it is at least 16 pixels high; its ink stands out at least 3 to 1 in luminance from what it was drawn on; nothing was painted over it later in the frame; no other text overlaps it; and it is there on two frames running. A text that is drawn onto the screen and fails any of these is an UNREADABLE TEXT.\n  A CONTROL is found by its readable label and pressed in the middle of that label. The labels are exactly: Home, +, - (a minus sign), Political, Terrain, Close.\n  THE TRUTH is the simulation's and nothing else's: GildedGame(S, None) with that House's is_player set and end_turn() called K times; then the House's treasury, year_of(turn), the turn, TURN_BUDGET, the House's row of game.ladder() (its rank, and each axis by name with its value rounded to a whole number), its capital, and for each province its name, owner, terrain, population and endowments.\n\n  THE WORLD DRAWN. IN TIME: the first frame is drawn within 30 seconds of starting when this world has never been drawn before, and within 10 seconds on a later start - what is worked out once is kept on disk, in the folder the environment variable CIVKINGS_CACHE names (default .cache/worlds, which git ignores). PAINTED: below the top bar the window is map everywhere, and the map is painted, not filled: cut into 48-pixel squares, most of it holds many different colours in each square. ATLAS: turning the wheel away zooms out, in at least two steps, until it can zoom out no further, and there the map is the period atlas - light paper, much brighter than the painting up close - with the top bar still complete. SAME WORLD: two starts with one seed open on the identical picture, pixel for pixel; another seed opens on a different one.\n\n  THE CAMERA. THE OPENING VIEW shows the player House's capital with its name readable, as near the middle of the window as the world's edge allows. A DRAG - button 1 pressed on the map, the mouse moved, button 1 released - moves the map by exactly the distance dragged; at the world's edge it moves less, never past the edge and never the other way; and a drag selects nothing. THE WHEEL zooms about the cursor: what was under the cursor is still under it afterwards, and one step back undoes one step in. Zooming in reaches an end too. HOME returns to the opening view exactly, place and zoom, from anywhere. + AND - do what one wheel step in or out at the middle of the window does. THE MINIMAP is in the bottom right corner of the window, at least 200 pixels square and no more than 24 pixels from the window's edges: a click on it moves the map to the place clicked and selects nothing. TERRAIN takes the owners' colours off the land; POLITICAL puts them back exactly as they were.\n\n  READING THE LAND. THE TOP BAR runs along the top of the window, within its top eighth, and shows, readable: the House's name, its treasury, the year, the turn together with the century's number of turns, the House's place on the ladder together with the number of Houses, and each ladder axis by name with its value - in a new game, and just as truly in a game some turns old played as another House. TOWN NAMES are printed on the map. A CLICK on a town's name, or on the mark it belongs to, selects that town's province and opens a panel in which can be read the province's name, its owner's name, its terrain, its population and each of its endowments by name - the simulation's own figures. While a province is selected the map itself marks it, outside the panel, and the panel lies wholly inside the window. CLOSE closes the panel and so does the Escape key: the screen is then exactly as it was before the click.\n\n  HOLDING UP. RESIZED to 1024 by 640 and to 1920 by 1080 the window takes that size; the top bar still shows everything; Home still works and the capital's name is readable; no text runs off the window. NO UNREADABLE TEXT is drawn at any moment. A MOVING FRAME - one frame of a drag at 1600 by 900 - takes no more than 34 milliseconds of the program's own time. Asked to QUIT, the program ends within 5 seconds with exit code 0. And everything campaign C20 measured still holds.",
+  "work": [
+    {
+      "id": "c21-world",
+      "title": "The continent, drawn from the simulation and the nine paintings",
+      "gateIds": [
+        "C21.1a.opens-in-time",
+        "C21.1b.painted-map-fills-window",
+        "C21.1c.atlas-when-zoomed-out",
+        "C21.1d.same-seed-same-world"
+      ],
+      "text": "WHAT IS THERE AT BASE: no window. python -m civkings without --smoke exits with code 2; civkings/ holds session.py (new_game), the smoke run and assets/terrain. The design (docs/design/civkings-one-game-design.md) asks for a game you look at like a map: painted terrain as the main view, and a period atlas when zoomed out. docs/mockups/mock_painted.png and docs/mockups/mock_atlas.png show the look the owner chose. WHAT THE SIMULATION GIVES: game.atlas.provinces - each province has cells on a square lattice of GRID_W by GRID_H (144 by 144, gilded/world.py), a center, a name, a terrain (coast, highlands, marsh, plains), endowments (coalfield, farmland, harbor, iron, timber), an owner (a House's name, or '' for unowned - about four fifths of the map), a population and neighbors; lattice cells that belong to no province are sea. WHAT THE ART GIVES: nine 512-pixel paintings in civkings/assets/terrain - coast, forest, grassland, hills, mountain, ocean, plains, sand, tundra. Which painting stands for which land is yours to decide. WHAT IS WANTED: python -m civkings opens a window on that world as THE WORLD DRAWN defines it: the continent painted from the nine paintings with the sea around it, coasts and province borders that do not show the lattice's squares, each House's land tinted in its own colour, and, zoomed all the way out, the same world as a light period atlas. The pictures are worked out once per world and kept on disk. A gate PASS says the window works; it does not say the map is good to look at - the owner will put your screens beside the two mockups."
+    },
+    {
+      "id": "c21-camera",
+      "title": "Flying over it: drag, wheel, Home, + and -, the minimap, Political and Terrain",
+      "gateIds": [
+        "C21.2a.drag-pans",
+        "C21.2b.wheel-zooms-at-cursor",
+        "C21.2c.zoom-ends-and-home-returns",
+        "C21.2d.zoom-buttons",
+        "C21.2e.minimap-jumps",
+        "C21.2f.map-modes"
+      ],
+      "text": "WHAT IS WANTED: the map is moved the way a map is moved in any strategy game, exactly as THE CAMERA defines it - dragging pans by the distance dragged and stops at the world's edge; the wheel zooms about the cursor between a far end and a near end; Home is the opening view again; + and - are on-screen controls for one zoom step; a minimap in the bottom right corner shows the whole world and jumps the map to where it is clicked; Political and Terrain are on-screen controls that put the owners' colours on the land and take them off. Every control is drawn with its label readable and is pressed where its label is."
+    },
+    {
+      "id": "c21-read",
+      "title": "Reading the land: a top bar that is true, and a province under the hand",
+      "gateIds": [
+        "C21.3a.top-bar-true",
+        "C21.3b.click-reads-a-province",
+        "C21.3c.selection-closes",
+        "C21.3d.selection-marked"
+      ],
+      "text": "WHAT IS WANTED: READING THE LAND, exactly. The top bar and the province panel read the simulation every time they are drawn - never a figure kept from an earlier moment, never a figure of the client's own making: started with --turns K and --house NAME they show that House, that turn, that year, that treasury, that place on the ladder, and the province's population as it stands then. Towns are marked on the map with their names; clicking one opens its province; the selected province is marked on the map; Close and Escape put the screen back exactly."
+    },
+    {
+      "id": "c21-holds-up",
+      "title": "Holding up: any window size, nothing unreadable, fast frames, a clean exit",
+      "gateIds": [
+        "C21.4a.resizes",
+        "C21.4b.every-text-readable",
+        "C21.4c.frame-time",
+        "C21.4d.quits-clean",
+        "C21.9.c20-holds"
+      ],
+      "text": "WHAT IS WANTED: HOLDING UP, exactly. The layout follows the window from 1024 by 640 to 1920 by 1080; no text is ever drawn that cannot be read by the definition in A TEXT COUNTS - not small, not faint, not cut off, not on top of other text - which includes every town and realm name on the map at every zoom; a frame of a drag stays under 34 milliseconds, so nothing costly is redone per frame; QUIT closes the program at once with exit code 0; and the smoke run, the saves and everything else campaign C20 delivered still work. Write tests of your own under civkings/tests that start the window headless, post events and read frames."
+    }
+  ],
+  "rules": [
+    "Read docs/design/civkings-one-game-design.md first and look at the two pictures in docs/mockups/. Build only what this brief asks: armies, orders, the docket, the turn and everything else in the design belong to later campaigns. This window shows the world; it does not yet play the game.",
+    "Headless runs only: SDL_VIDEODRIVER=dummy and SDL_AUDIODRIVER=dummy before importing pygame, and GILDED_NARRATE=0.",
+    "Everything new lives under civkings/. Nothing under gilded/ is edited: the client reads the simulation through its public objects and never changes it.",
+    "All text is rendered with pygame.font.Font(...).render and that surface is blitted whole, straight onto the screen. pygame.freetype and pygame_gui are not used. The two fonts in gilded/assets/fonts are the game's fonts.",
+    "Nothing is drawn that does not come from the simulation or from the nine paintings: no downloaded art, no generated art, no placeholder figures. A fact on the screen is read from the game object at the moment it is drawn.",
+    "The baked pictures of a world are a cache: kept under CIVKINGS_CACHE (default .cache/worlds), never committed, and rebuilt when missing.",
+    "Python 3.14, pygame-ce 2.5.7, numpy, scipy and Pillow are installed. Install nothing and add no dependency.",
+    "Stage files by name (git add <file>); repo-wide staging is refused by the engine. Commit each work item when it is done, with the message its COMMIT line names."
+  ],
+  "ideation": {
+    "enabled": true
+  },
+  "author": "human",
+  "authorMissionId": null
+}
