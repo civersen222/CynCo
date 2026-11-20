@@ -5,7 +5,7 @@
       "name": "Stand Up",
       "bar": "The repository stands on its own: the old text UI is gone and the simulation it sat on is untouched and green; a century can be saved at any turn and picked up by another process, with every chain ruling still doing what it did; and a civkings package starts a game and proves in one command that it plays and saves",
       "base": "801fd173ff53310fb16a6aa17baff32d60ad5a4a",
-      "status": "sealed",
+      "status": "done",
       "note": "2026-11-19: first campaign of the civkings-one roadmap (the map-first game the design in that repository describes). The owner decided the same day that the engine builds it from the approved design. Authored on the human path; the triple was run by hand against BASE, against a lazy stub and against an honest minimum before it was sealed."
     }
   ]

@@ -1,0 +1,10 @@
+{
+  "assertions": [
+    {
+      "text": "The KEEP-GREEN set passes (run it before every commit).",
+      "command": "python -m pytest gilded/tests/test_agenda.py gilded/tests/test_ai.py gilded/tests/test_ai_heirs.py gilded/tests/test_c3_orders.py gilded/tests/test_c3_wave2.py gilded/tests/test_chassis.py gilded/tests/test_console.py gilded/tests/test_dashboard_i5a.py gilded/tests/test_dashboard_ui7g.py gilded/tests/test_dashboard_ui7i.py gilded/tests/test_directives.py gilded/tests/test_dispositions.py gilded/tests/test_endings.py gilded/tests/test_endings_read_the_reign.py gilded/tests/test_enterprises.py gilded/tests/test_event_chains.py gilded/tests/test_fronts.py gilded/tests/test_grip.py gilded/tests/test_houses.py gilded/tests/test_ideology.py gilded/tests/test_intel.py gilded/tests/test_intel_ui8.py gilded/tests/test_labor.py gilded/tests/test_market.py gilded/tests/test_marriages.py gilded/tests/test_money_supply.py gilded/tests/test_opinion_ledger.py gilded/tests/test_pacts.py gilded/tests/test_papers.py gilded/tests/test_policy.py gilded/tests/test_provenance.py gilded/tests/test_realm.py gilded/tests/test_relationships.py gilded/tests/test_saga_beats.py gilded/tests/test_saga_director.py gilded/tests/test_saga_facts.py gilded/tests/test_saga_integration.py gilded/tests/test_saga_sources.py gilded/tests/test_save_load.py gilded/tests/test_schemes.py gilded/tests/test_schemes_s9.py gilded/tests/test_shares.py gilded/tests/test_soak.py gilded/tests/test_society_core.py gilded/tests/test_stage4_smoke.py gilded/tests/test_takeover_completes.py gilded/tests/test_takeover_door.py gilded/tests/test_takeover_means.py gilded/tests/test_treasury_journal.py gilded/tests/test_war_tab_doctrines.py gilded/tests/test_war_turn.py gilded/tests/test_world.py -q",
+      "timeoutMs": 1800000,
+      "role": "keep-green"
+    }
+  ]
+}

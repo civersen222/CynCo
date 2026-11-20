@@ -1,0 +1,72 @@
+MISSION C20 WAVE 1 — STAND UP
+(Campaign opened at BASE 801fd173ff53310fb16a6aa17baff32d60ad5a4a; the sealed gate MISSes 8 line(s), all by absence. 6 hours, 2000 iterations, Bash cap 1500 s.)
+
+Repo: C:\Users\civer\civkings-one
+
+BASE: 801fd173ff53310fb16a6aa17baff32d60ad5a4a. KEEP-GREEN set, run before EVERY commit:
+python -m pytest gilded/tests/test_agenda.py gilded/tests/test_ai.py gilded/tests/test_ai_heirs.py gilded/tests/test_c3_orders.py gilded/tests/test_c3_wave2.py gilded/tests/test_chassis.py gilded/tests/test_console.py gilded/tests/test_dashboard_i5a.py gilded/tests/test_dashboard_ui7g.py gilded/tests/test_dashboard_ui7i.py gilded/tests/test_directives.py gilded/tests/test_dispositions.py gilded/tests/test_endings.py gilded/tests/test_endings_read_the_reign.py gilded/tests/test_enterprises.py gilded/tests/test_event_chains.py gilded/tests/test_fronts.py gilded/tests/test_grip.py gilded/tests/test_houses.py gilded/tests/test_ideology.py gilded/tests/test_intel.py gilded/tests/test_intel_ui8.py gilded/tests/test_labor.py gilded/tests/test_market.py gilded/tests/test_marriages.py gilded/tests/test_money_supply.py gilded/tests/test_opinion_ledger.py gilded/tests/test_pacts.py gilded/tests/test_papers.py gilded/tests/test_policy.py gilded/tests/test_provenance.py gilded/tests/test_realm.py gilded/tests/test_relationships.py gilded/tests/test_saga_beats.py gilded/tests/test_saga_director.py gilded/tests/test_saga_facts.py gilded/tests/test_saga_integration.py gilded/tests/test_saga_sources.py gilded/tests/test_save_load.py gilded/tests/test_schemes.py gilded/tests/test_schemes_s9.py gilded/tests/test_shares.py gilded/tests/test_soak.py gilded/tests/test_society_core.py gilded/tests/test_stage4_smoke.py gilded/tests/test_takeover_completes.py gilded/tests/test_takeover_door.py gilded/tests/test_takeover_means.py gilded/tests/test_treasury_journal.py gilded/tests/test_war_tab_doctrines.py gilded/tests/test_war_turn.py gilded/tests/test_world.py -q
+
+THE MISSES (sealed gate at BASE 801fd173ff53310fb16a6aa17baff32d60ad5a4a, verbatim — the gate grades what the code does, as HOW THE GATE MEASURES defines it; never a claim)
+
+  C20.1a.old-ui-gone: FAIL 18 files still under gilded/ui
+  C20.1b.nothing-imports-old-ui: FAIL 94 files, e.g. gilded/__main__.py imports gilded.ui; gilded/tests/_fixtures.py imports gilded.ui; gilded/tests/_measure_c6c.py imports gilded.ui
+  C20.2a.every-turn-saves: FAIL seed A: saving raised on 56 of 70 turns, first at turn 16 | seed B: saving raised on 55 of 70 turns, first at turn 17
+  C20.2b.saved-game-plays-on: FAIL a save point could not be saved (PicklingError)
+  C20.2c.chain-choices-unchanged: FAIL war_price: the game holding the petition could not be saved (PicklingError); general_strike: the game holding the petition could not be saved (PicklingError); heir_break: the game holding the petition could not be saved (PicklingError)
+  C20.3a.new-game: FAIL civkings.session.new_game could not be used (ModuleNotFoundError: No module named 'civkings.session')
+  C20.3b.smoke-reads-back: FAIL the smoke run exited 1 (C:\Python314\python.exe: No module named civkings.__main__; 'civkings' is a package and cannot be directly executed)
+  C20.3c.smoke-can-fail: FAIL the smoke run does not pass yet, so its failing cannot be measured
+
+  Already PASS at BASE and must stay so: C20.1c.simulation-tests-kept, C20.1d.simulation-green, C20.1e.simulation-untouched.
+
+HOW THE GATE MEASURES - build to these definitions exactly
+
+  WHAT IS MEASURED. The delivery is HEAD of this repository: a file that is not committed is not delivered. The delivery is copied to a private folder and every measurement is a separate Python process started in that copy, headless (SDL_VIDEODRIVER=dummy, SDL_AUDIODRIVER=dummy, GILDED_NARRATE=0). BASE is commit 801fd17, the repository as you find it.
+
+  THE OLD UI is the package gilded/ui as it stands at BASE (18 files, 9,627 lines). It is gone when (a) no file of the delivery lies under gilded/ui, (b) no Python file of the delivery, under any name and in any folder, is a BASE gilded/ui file moved, renamed or cut down - moving the package is not removing it - and (c) no Python file of the delivery, tests included, imports gilded.ui or names it in a string.
+
+  THE SIMULATION KEPT. 52 of the 127 test files under gilded/tests never import the old UI; they are the files named in KEEP-GREEN. Each must be in the delivery exactly as it is at BASE, and together they must pass as they pass at BASE: 787 passed, none failed. Every file under gilded/ at BASE that is in neither gilded/ui nor gilded/tests must still be in the delivery and unchanged, with four exceptions this work may edit: gilded/__main__.py, gilded/society/event_chains.py, gilded/society/event_content/chains_pack2.py, gilded/society/event_content/chains_pack3.py. New files beside them are allowed.
+
+  A SAVE is made with gilded.save.save_game(game, path) and read with gilded.save.load_game(path); nothing else counts as a save. THE SAME GAME is decided by walking the public state of a game - its turn, game_over, every House, every province and every realm, and what they hold - and comparing that walk for two games.
+  EVERY TURN. A century is played headless from GildedGame(seed, None) with the first House by name flagged as the player's, calling end_turn() TURN_BUDGET times. The game is saved after every turn and a second Python process loads every save. It passes when no save raises, every save loads, and every loaded game is the same game as the one saved - at more than one seed.
+  PLAYS ON. A century is saved at three points. For each, a second process loads the save and plays the turns that remain. The game it ends with must be the same game the uninterrupted century ends with.
+  CHAIN RULINGS. The three chain petitions (kinds chain:war_price, chain:general_strike, chain:heir_break) offer two rulings each. For each of the six, a game is played until the petition is on a docket, saved, loaded by a second process and ruled there through gilded.docket.rule, and three more turns are played. The world must then be the same game BASE reaches when the same ruling is made at the same turn in a game that was never saved.
+
+  A NEW GAME. civkings.session.new_game(seed, house=None) returns (game, house). game is the simulation's own GildedGame for that seed - the world GildedGame(seed, None) builds. house is the name of the player House: the one asked for, or the first by name when none is asked for. Exactly one House has is_player set, and it is that one. A name that is no House raises ValueError.
+  THE SMOKE RUN. "python -m civkings --smoke --turns N --seed S" (and optionally --house NAME) plays N turns headless. After each turn it saves the game and has ANOTHER Python process load that save and agree with it. It exits 0 only if every one of the N saves was read back that way; when a save cannot be read back by the second process it exits non-zero.
+
+THE WORK (numbered commit points — commit AT each; a commit is the only
+backup you have; the full suite is graded after the run, not by you)
+
+c20-old-ui-out. The old text UI leaves the repository, and the simulation it sat on is untouched. WHAT IS THERE AT BASE: this repository is The Gilded Machine exactly as it stood at civkings@54d3b71. Its three-spine text UI, the package gilded/ui, is not part of the game being built here: the design (docs/design/civkings-one-game-design.md) replaces it with a map-first client in a new package, civkings, built by later campaigns. Left in the tree it is dead code that later work would copy. 75 of the 127 test files under gilded/tests import it, as do the helpers gilded/tests/_fixtures.py, _measure_c6c.py and the _probe_*.py files; outside gilded/ui and gilded/tests exactly one file imports it, gilded/__main__.py, to open the old window. WHAT IS WANTED: gilded/ui is deleted, and with it every test file and helper under gilded/tests that cannot run without it. gilded/tests/_fixtures.py is imported by test files that stay: it stays, cut down to what they use, importing nothing of the old UI. gilded/__main__.py keeps its --console mode exactly as it is and no longer opens a window. The 52 test files named in KEEP-GREEN are not touched and stay green, and no simulation file changes for this. COMMIT c20-old-ui-out.
+
+c20-saves. A century can be saved at any turn and picked up by another process. WHAT IS WRONG AT BASE (measured): at seed 7, gilded.save.save_game raises PicklingError on 56 of the 70 turns of a century - every turn from 16 on. The cause: three chain petitions hold functions that are defined inside the function that builds them, which pickle refuses. They are _war_petition and _heir_petition in gilded/society/event_content/chains_pack3.py and _strike_petition in gilded/society/event_content/chains_pack2.py; each builds two options whose apply is such an inner function, six in all, and once one of those petitions is on a docket the game cannot be saved. WHAT IS WANTED: every turn of a century saves; a second process loads each save as the same game; a century picked up from a save ends as the uninterrupted one does; and each of the six rulings, made after its save was read back, does to the world exactly what it does at BASE - it records the chosen key in the chain's ctx['choice'] and applies its effect. A ruling that can be saved because it no longer does anything is not a fix. Nothing else about the simulation's behaviour changes. Write tests of your own for this under gilded/tests. COMMIT c20-saves.
+
+c20-stand-up. A civkings package: start a game, and prove in one command that it plays and saves. WHAT IS THERE AT BASE: civkings/ holds only assets/terrain, the nine terrain paintings; there is no Python in it. WHAT IS WANTED: civkings becomes a package with two things. (1) civkings/session.py with new_game(seed, house=None), as A NEW GAME defines it: every later campaign builds the client on this one function. (2) python -m civkings --smoke --turns N --seed S [--house NAME], as THE SMOKE RUN defines it. No window is part of this campaign. Write tests of your own under civkings/tests. COMMIT c20-stand-up.
+
+PACING (enforced by the engine, not advice)
+- 40 tool calls without a source edit and the engine narrows you to edit-only tools
+  until you make one. Write the hypothesis into a commit message on the smallest edit that tests it.
+- 150 calls without a commit and the same narrowing applies until you commit.
+- Reverting is refused: git checkout --, git restore, git stash, git reset --hard, git clean. A
+  targeted Edit on top of the last commit is the only way back. Salvage lives under C:\tmp.
+- An identifier-shaped Grep returns CodeIndex's definition card first; use it.
+- Probes live under C:\tmp, never in the repo. No scratch snapshots.
+
+RULES
+- NO downloads. New files inside the repo ONLY: civkings/__init__.py, civkings/session.py, civkings/__main__.py, civkings/tests/, gilded/tests/, gilded/society/.
+- You may change: gilded/__main__.py, gilded/society/event_chains.py, gilded/society/event_content/chains_pack2.py, gilded/society/event_content/chains_pack3.py, gilded/tests/_fixtures.py, pytest.ini. NOT the simulation: every file under gilded/ that is in neither gilded/ui nor gilded/tests, except the four named in allow.edit, NOT gilded/save.py (a save is what it is at BASE), NOT the 52 test files named in KEEP-GREEN, NOT docs/ and civkings/assets/ (the design, the mockups and the nine terrain paintings), NOT conftest.py, pyproject.toml, requirements.txt.
+- Read docs/design/civkings-one-game-design.md first: it says what this repository is for. Build only what this brief asks; the map, the window and everything else in the design belong to later campaigns.
+- Headless runs only: SDL_VIDEODRIVER=dummy and SDL_AUDIODRIVER=dummy before importing pygame, and GILDED_NARRATE=0.
+- Removal means deletion, committed (git rm). A file that is moved, renamed, emptied, commented out or kept under another name has not been removed. gilded/ui must not exist at HEAD.
+- A test file is deleted only if it imports the old UI. The 52 test files named in KEEP-GREEN are not edited, moved or deleted.
+- Saves are written and read only through gilded.save.save_game and gilded.save.load_game - in the smoke run and in every test. gilded/save.py is not edited.
+- The smoke run's second process is a real second Python process started with subprocess, with the environment of the first process passed on unchanged.
+- Python 3.14, pygame-ce 2.5.7, numpy, scipy and Pillow are installed. Install nothing and add no dependency.
+- Stage files by name (git add <file>, git rm <file>); repo-wide staging is refused by the engine. Commit each work item when it is done, with the message its COMMIT line names.
+
+DONE WHEN
+The KEEP-GREEN set passes, every miss above is fixed by the definitions in HOW THE GATE
+MEASURES, and the tree is clean. Then make a final commit whose message contains exactly this marker:
+
+stage c20 complete
