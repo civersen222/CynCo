@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { grepFailure, grepTool } from '../../tools/impl/grep.js'
+import { grepArgv, grepFailure, grepTool } from '../../tools/impl/grep.js'
 import { writeFileSync, mkdirSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -21,6 +21,27 @@ describe('Grep tool', () => {
     expect(result.output).toContain('hello')
     expect(result.output).toContain('world')
     rmSync(TMP, { recursive: true, force: true })
+  })
+})
+
+// F242: the pattern and the glob are the model's. As a bare positional, a pattern such as
+// `--pre=<program>` made ripgrep run that program on every file it searched, outside the
+// containment, at the engine's integrity and with the real home.
+describe('grepArgv (the model\'s pattern is never an option)', () => {
+  it('passes the pattern after -e and the folder after --', () => {
+    const argv = grepArgv('rg', '--pre=C:/m/evil.cmd', 'C:/m')
+    const e = argv.indexOf('-e')
+    expect(e).toBeGreaterThan(0)
+    expect(argv[e + 1]).toBe('--pre=C:/m/evil.cmd')
+    expect(argv.slice(e + 2)).toEqual(['--', 'C:/m'])
+    expect(argv.filter(a => a.startsWith('--pre'))).toEqual(['--pre=C:/m/evil.cmd'])
+  })
+
+  it('joins the glob to its option', () => {
+    const argv = grepArgv('rg', 'x', 'C:/m', '--pre=evil', 2)
+    expect(argv).toContain('--glob=--pre=evil')
+    expect(argv).not.toContain('--pre=evil')
+    expect(argv.slice(argv.indexOf('-C'), argv.indexOf('-C') + 2)).toEqual(['-C', '2'])
   })
 })
 

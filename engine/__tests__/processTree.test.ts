@@ -129,9 +129,11 @@ describe('one helper (F210)', () => {
     expect(offenders).toEqual([])
   })
 
-  it('the three callers go through it', () => {
+  it('the callers go through it', () => {
     for (const [file, name] of [
       ['engine/tools/impl/bash.ts', 'ownProcessTree'],
+      // Since slice S2 the Git tool runs the repository's own hooks (F242): Stop reaches them too.
+      ['engine/tools/impl/git.ts', 'ownProcessTree'],
       ['engine/daemon/taskRunner.ts', 'ownProcessTree'],
       ['engine/brain/jlensSidecar.ts', 'ownProcessTree'],
       ['engine/brain/jlensSidecar.ts', 'killProcessTreeSync'],

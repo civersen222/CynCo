@@ -277,6 +277,96 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(String(v.home).toLowerCase().replace(/\\/g, '/'), v.output).toBe(String(v.sandboxHome).toLowerCase().replace(/\\/g, '/'))
   }, 300_000)
 
+  it('through the sites (S2a): a contract check, the Git tool, ApplyPatch and best-of-N tests run low, with the sandbox home', () => {
+    const v = ok('throughTheSites')
+    const slash = (p: unknown) => String(p).toLowerCase().replace(/\\/g, '/')
+    expect(v.contract.outcome, v.contract.tail).toBe('passed')
+    expect(v.contract.level, v.contract.tail).toBe('S-1-16-4096')
+    expect(slash(v.contract.home), v.contract.tail).toBe(slash(v.sandboxHome))
+    expect(v.git.isError, v.git.output).toBe(false)
+    expect(v.git.output).toBe('true')
+    expect(v.applyPatch.isError, v.applyPatch.output).toBe(false)
+    expect(v.applyPatch.created).toBe(true)
+    expect(v.runTests.refused).toBeNull()
+    expect(v.runTests.level).toBe('S-1-16-4096')
+  })
+
+  it('a launcher that exits 197: the contract check is unrunnable (never failed), the Git tool refuses, nothing ran', () => {
+    const v = ok('sitesLauncherRefused')
+    expect(v.contract.outcome, v.contract.tail).toBe('unrunnable')
+    expect(v.contract.tail).toContain('[containment] refused:')
+    expect(v.git.isError).toBe(true)
+    expect(v.git.output).toMatch(/^Refused \[containment\]: /)
+    expect(v.witness).toBe(false)
+  })
+
+  it('the daemon precheck runs contained with no label on its folder, answers its exit code, and is released', () => {
+    const v = ok('precheck')
+    const slash = (p: unknown) => String(p).toLowerCase().replace(/\\/g, '/')
+    expect(v.printed.code, v.printed.stdout).toBe(0)
+    expect(v.printed.level, v.printed.stdout).toBe('S-1-16-4096')
+    expect(v.exited).toEqual({ code: 3, stdout: 'go' })
+    expect(v.records.length).toBe(2)
+    for (const r of v.records) {
+      expect(r.runId.startsWith('precheck-fixture-trades-')).toBe(true)
+      expect(r.test).toBe(false)
+      expect(r.cwdLabel).toBe('none')
+      expect(r.released).toBe(true)
+      expect(r.releasedBy).toBe('release')
+    }
+    expect(v.records.map((r: { home: string }) => slash(r.home))).toContain(slash(v.printed.home))
+    // No label was set on the folder, before, during or after; and nothing was written in it.
+    expect(v.labelBefore).toEqual([])
+    expect(v.labelAfter).toEqual([])
+    expect(v.written).toEqual([])
+  })
+
+  // S2c, entry 1.B2 (06 entry A7): the authoring check inside an authoring mission's containment.
+  it('authoring check: a contained child writes the BASE archive (an extra root) and runs its tests there; release leaves no Low label', () => {
+    const v = ok('authoringCheck')
+    if (v.notRun) {
+      console.log(`[containmentLauncher] authoring check not run: ${v.notRun}`)
+      return
+    }
+    expect(v.establish).toBeUndefined()
+    expect(v.probe).toEqual({ err: null, created: true })
+    expect(v.tests.code, v.tests.output).toBe(0)
+    if (v.tests.form !== 'pytest') console.log(`[containmentLauncher] authoring check: ${v.tests.form}`)
+    // Whatever the check did, it made no second sandbox.
+    expect(v.nestedRecords).toBe(0)
+    const rel = ok('authoringCheckRelease')
+    expect(rel.relabelled, rel.note).toBe(true)
+    for (const lines of [rel.probeLabels, rel.baseLabels, rel.stagingLabels]) {
+      expect((lines as string[]).some(l => /Low Mandatory Level/i.test(l)), JSON.stringify(rel)).toBe(false)
+    }
+  })
+
+  // MEASURED, 2026-11-23, Bun 1.3.13 on Windows 11: entry 1.B2 part 2 (06 entry A7) assumes that
+  // `bun <checkout>/scripts/cynco-gate-author.mjs --check ...` runs inside a contained run. It does
+  // not: a Bun process at low integrity cannot load ANY module file from a folder that is not
+  // labelled low (`error: EPERM reading "<file>"`, also for C:\Windows\System32\drivers\etc\hosts),
+  // while node and PowerShell at the same level read the same files. The check exits 1 before it
+  // reads its staging folder. A7's acceptance (the check's own `[check] a1: REFUSED` verdict, its
+  // gates run in the BASE) therefore does NOT hold, and how the authoring check is to run is the
+  // owner's decision (run it as a harness process from the checkout, or refuse authoring
+  // dispatches). Until then the outcome pinned here is the review's minimum (rule F35): the exit is
+  // classified by `launcherFaultOf` as "did not run" (`ContainmentRefusal`, code ECONTAINMENT, the
+  // file named), so the driver and the contract read a harness fault and never a FAILED check. This
+  // case fails, and is revisited, the day a contained Bun can load the script.
+  it('authoring check, MEASURED: a low-integrity Bun cannot load the check script (EPERM), and that reads as "did not run", never as a failed check', () => {
+    const v = ok('authoringCheck')
+    if (v.notRun) return
+    for (const form of [v.empty, v.staged]) {
+      expect(form.isRefusal, form.output).toBe(true)
+      expect(form.code, form.output).toBe('ECONTAINMENT')
+      expect(form.message).toMatch(/^Refused \[containment\]: Bun at low integrity could not read .*cynco-gate-author\.mjs \(EPERM\).*did not run/)
+      expect(form.output).toMatch(/EPERM reading ".*cynco-gate-author\.mjs"/)
+      expect(form.output).not.toContain('[check] a1:')
+    }
+    expect(v.staged.gateRan).toBe(false)
+    console.log('[containmentLauncher] KNOWN: the gate-authoring check cannot run inside a contained run on this Bun (EPERM loading a medium-integrity module at low integrity); it reads as "did not run". Entry 1.B2 part 2 / 06 A7 waits on the owner')
+  })
+
   it('msys hint: Git Bash that cannot start says why, on the failure and on the success path', () => {
     const v = ok('msysHint')
     if (v.notRun) return

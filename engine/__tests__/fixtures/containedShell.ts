@@ -396,6 +396,143 @@ await step('throughTheTool', async () => {
   }
 })
 
+// S2a: the engine's other spawn sites through the real launcher, as the loop calls them.
+const levelOf = (text: string) => (/S-1-16-\d+/.exec(text) ?? ['none'])[0]
+await step('throughTheSites', async () => {
+  const { runCommandDetailed } = await import('../../tools/contractVerify.js')
+  const { gitTool } = await import('../../tools/impl/git.js')
+  const { applyPatchTool } = await import('../../tools/impl/applyPatch.js')
+  const { runTests } = await import('../../bestOfN/sampler.js')
+  const contract = await runCommandDetailed(mission, `Write-Output "home=$env:USERPROFILE"; & '${WHOAMI}' /groups /fo csv /nh`, 120_000)
+  const git = await gitTool.execute({ subcommand: 'rev-parse', args: '--is-inside-work-tree' }, mission)
+  const patch = [
+    'diff --git a/added-by-patch.txt b/added-by-patch.txt', 'new file mode 100644', '--- /dev/null',
+    '+++ b/added-by-patch.txt', '@@ -0,0 +1 @@', '+added', '',
+  ].join('\n')
+  const applied = await applyPatchTool.execute({ patch }, mission)
+  const tests = runTests(mission, { framework: 'pytest', command: `"${WHOAMI}" /groups /fo csv /nh` } as never)
+  return {
+    contract: { outcome: contract.outcome, home: (/home=(\S*)/.exec(contract.tail) ?? [null, null])[1], level: levelOf(contract.tail), tail: contract.tail.slice(0, 400) },
+    git: { isError: git.isError, output: git.output.trim().slice(0, 400) },
+    applyPatch: { isError: applied.isError, output: applied.output.slice(0, 400), created: existsSync(join(mission, 'added-by-patch.txt')) },
+    runTests: { refused: tests.refused ?? null, level: levelOf(tests.output) },
+    sandboxHome: ctx.sandbox.home,
+  }
+})
+
+// S2a: the launcher exits 197 (here because the run's record is gone): a contract check is
+// "unrunnable", never "failed", and the Git tool answers the refusal; nothing ran.
+await step('sitesLauncherRefused', async () => {
+  const { runCommandDetailed } = await import('../../tools/contractVerify.js')
+  const { gitTool } = await import('../../tools/impl/git.js')
+  const witness = join(mission, 'contract-witness.txt')
+  const rec = join(runDir, 'containment.json'), aside = join(runDir, 'containment.json.aside')
+  renameSync(rec, aside)
+  try {
+    const contract = await runCommandDetailed(mission, `Set-Content -LiteralPath '${witness}' x`, 120_000)
+    const git = await gitTool.execute({ subcommand: 'add', args: '-A' }, mission)
+    return {
+      contract: { outcome: contract.outcome, tail: contract.tail.slice(0, 600) },
+      git: { isError: git.isError, output: git.output.slice(0, 600) },
+      witness: existsSync(witness),
+    }
+  } finally {
+    renameSync(aside, rec)
+  }
+})
+
+// S2b: the daemon's precheck, as the daemon runs it. NOT a test context: runPrecheck makes a real
+// `precheck` sandbox, here under this fixture's own root (LOCALCODE_SANDBOX_ROOT points at it for the
+// step), runs the command through the launcher, and releases. The folder it runs in gets no label.
+await step('precheck', async () => {
+  const { runPrecheck } = await import('../../daemon/precheck.js')
+  const { containmentRecords } = await import('../../containment.js')
+  const folder = join(dir, 'precheck')
+  mkdirSync(folder)
+  const rootBefore = process.env.LOCALCODE_SANDBOX_ROOT
+  process.env.LOCALCODE_SANDBOX_ROOT = root
+  try {
+    const labelBefore = labelsOf(folder)
+    const printed = await runPrecheck(`echo home=%USERPROFILE%& "${WHOAMI}" /groups /fo csv /nh`, folder, 'fixture-trades')
+    const labelAfter = labelsOf(folder)
+    const exited = await runPrecheck('echo go& exit 3', folder, 'fixture-trades')
+    const recs = containmentRecords({ sandboxRoot: root }).filter(r => r.kind === 'precheck')
+    return {
+      printed: { code: printed.code, home: (/home=(\S*)/.exec(printed.stdout) ?? [null, null])[1], level: levelOf(printed.stdout), stdout: printed.stdout.slice(0, 400) },
+      exited: { code: exited.code, stdout: exited.stdout.trim() },
+      records: recs.map(r => ({ runId: r.runId, test: r.test, cwdLabel: r.cwdLabel, released: r.releasedAt !== null, releasedBy: r.releasedBy ?? null, home: join(root, r.runId, 'home') })),
+      labelBefore, labelAfter,
+      written: readdirSync(folder),
+    }
+  } finally {
+    if (rootBefore === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
+    else process.env.LOCALCODE_SANDBOX_ROOT = rootBefore
+  }
+})
+
+// S2c, entry 1.B2 (06 entry A7, 01-isolation 9.2): the gate-authoring check, run as the model and the
+// driver run it, inside an authoring mission's containment whose extra root is the BASE archive. The
+// check's own spawns run directly (the process is already low; no second sandbox), and its gates run
+// in the labelled BASE. Two forms: an empty staging folder (the check's own "missing" verdict) and a
+// staged triple whose gate leaves a witness in the BASE when it runs.
+await step('authoringCheck', async () => {
+  const python = spawnSync('python', ['--version'], { encoding: 'utf-8', windowsHide: true })
+  if (python.status !== 0) return { notRun: 'no python' }
+  const { checkCommand } = await import('../../../scripts/cynco-gate-author.mjs')
+  const { getShellInfo, shellPreamble } = await import('../../tools/shellInfo.js')
+  const { containmentRecords } = await import('../../containment.js')
+  const staging = join(dir, 'authoring', 'a1')
+  const base = join(dir, 'base-archive')
+  mkdirSync(staging, { recursive: true })
+  mkdirSync(base)
+  execFileSync('git', ['init', '-q'], { cwd: staging, windowsHide: true })
+  writeFileSync(join(staging, 'NOTES.md'), 'authoring\n')
+  execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'add', '-A'], { cwd: staging, windowsHide: true })
+  execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@localhost', 'commit', '-q', '-m', 'one'], { cwd: staging, windowsHide: true })
+  writeFileSync(join(base, 't_ok.py'), 'def test_ok():\n    assert 1 + 1 == 2\n')
+  const est2 = establishContainment({
+    test: true, kind: 'mission', label: 'authoring-check', missionCwd: staging, extraRoots: [base],
+    sandboxRoot: root, home, folders,
+  })
+  if (!est2.ok) return { establish: est2.reason }
+  const actx = est2.containment
+  try {
+    const info = getShellInfo()
+    const sh = (command: string, cwd: string) => run(shellPreamble(info) + command, { cwd, shell: info.shell, ctx: actx })
+    // A contained child writes the BASE (an extra root) and runs pytest there.
+    const probe = await sh(`Set-Content -LiteralPath '${join(base, 'probe.txt')}' x`, staging)
+    const hasPytest = spawnSync('python', ['-c', 'import pytest'], { encoding: 'utf-8', windowsHide: true }).status === 0
+    const tests = hasPytest
+      ? await sh('python -m pytest -q -p no:cacheprovider t_ok.py', base)
+      : await sh('python -m py_compile t_ok.py', base)
+    const recordsBefore = containmentRecords({ sandboxRoot: root }).length
+    // 1. The empty staging folder: the check's own verdict.
+    const empty = await sh(checkCommand(staging, base), staging)
+    // 2. A staged triple: calibration runs the three gates in the BASE.
+    const gateLines = (lines: string[]) => [
+      'from pathlib import Path',
+      `Path(${JSON.stringify(join(base, 'gate-ran.txt'))}).write_text('ran')`,
+      ...lines.map(l => `print(${JSON.stringify(l)})`),
+    ].join('\n') + '\n'
+    writeFileSync(join(staging, 'gate_a1.py'), gateLines(['A1.1: FAIL absent', 'GATE: MISS (1 fails)']))
+    writeFileSync(join(staging, 'perturb_a1.py'), '# EXPECT-FLIP:\n# MUST-FAIL: A1.1\n' + gateLines(['A1.1: FAIL absent', 'GATE: MISS (1 fails)']))
+    writeFileSync(join(staging, 'positive_a1.py'), gateLines(['A1.1: PASS', 'GATE: PASS']))
+    const staged = await sh(checkCommand(staging, base), staging)
+    const recordsAfter = containmentRecords({ sandboxRoot: root }).length
+    const out = (r: Ran) => `${r.stdout}${r.stderr}`
+    return {
+      probe: { err: probe.err?.message ?? null, created: existsSync(join(base, 'probe.txt')) },
+      tests: { form: hasPytest ? 'pytest' : 'py_compile (no pytest)', code: tests.err?.code ?? 0, output: out(tests).slice(-300) },
+      empty: { code: empty.err?.code ?? 0, isRefusal: empty.err?.isRefusal ?? false, message: empty.err?.message ?? null, output: out(empty).slice(0, 1200) },
+      staged: { code: staged.err?.code ?? 0, isRefusal: staged.err?.isRefusal ?? false, message: staged.err?.message ?? null, output: out(staged).slice(0, 3000), gateRan: existsSync(join(base, 'gate-ran.txt')) },
+      nestedRecords: recordsAfter - recordsBefore,
+    }
+  } finally {
+    const r = releaseContainment(actx)
+    cases.authoringCheckRelease = { relabelled: r.relabelled, note: r.note, probeLabels: existsSync(join(base, 'probe.txt')) ? labelsOf(join(base, 'probe.txt')) : null, baseLabels: labelsOf(base), stagingLabels: labelsOf(staging) }
+  }
+})
+
 await step('overhead', async () => {
   const out: Record<string, number> = {}
   for (const [name, shell] of [['powershell', PS], ['cmd', '']] as const) {

@@ -774,6 +774,13 @@ describe('MissionRunner precheck command', () => {
     await runner.tick()
     expect(ranTasks.length).toBe(1)
   })
+
+  it('the precheck is handed the trigger id, which names its sandbox (F242)', async () => {
+    const seen: unknown[][] = []
+    const { runner } = setup('', { runPrecheck: async (...args: unknown[]) => { seen.push(args); return { code: 0, stdout: 'skip: nothing' } } })
+    await runner.tick()
+    expect(seen).toEqual([['python dynasty/mfl.py gate cynco --pass trades --check', 'C:/repo', 'trades']])
+  })
 })
 
 describe('MissionRunner pause and resume', () => {

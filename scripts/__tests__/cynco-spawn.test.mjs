@@ -7,11 +7,14 @@
 // spawns behind it normal. The live C9 authoring runner's previous spawn was
 // four hours earlier, so its gate at BASE died in milliseconds and eleven
 // problems were recorded against a triple that had two.
-import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync, readdirSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { readFileSync, existsSync, readdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
-import { runSync, runAsync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe } from '../cynco-spawn.mjs'
+import { runSync, runAsync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe, instrumentEnv } from '../cynco-spawn.mjs'
+import { testContainment } from '../../engine/containment.js'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
 const fakeSpawn = (result, ms, clock) => (...args) => { clock.t += ms; return { ...result, _args: args } }
@@ -455,5 +458,215 @@ describe('runAsync: the async sibling of runSync', () => {
       const r = await runAsync(node, ['-e', "console.log(String(process.env.FORCE_COLOR) + '/' + process.env.NO_COLOR)"], { timeoutMs: 30_000 })
       expect(r.stdout.trim()).toBe('undefined/1')
     } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
+  })
+})
+
+// F242 (01-isolation 7.1, tests 9.7): the `contained` option. A command that runs workspace
+// code for an unattended run starts inside a containment, or not at all; a launcher that could
+// not run it is a fault, never the command's own exit code.
+describe('the contained option', () => {
+  const SWITCH = 'LOCALCODE_CONTAINMENT_OFF'
+  let switchBefore
+  let dir
+  beforeEach(() => {
+    switchBefore = process.env[SWITCH]
+    delete process.env[SWITCH]
+    dir = mkdtempSync(join(tmpdir(), 'cynco-spawn-contained-'))
+  })
+  afterEach(() => {
+    if (switchBefore === undefined) delete process.env[SWITCH]
+    else process.env[SWITCH] = switchBefore
+    rmSync(dir, { recursive: true, force: true })
+  })
+  const ctxOf = (o = {}) => {
+    const sandbox = { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch: join(dir, 'run', 'scratch') }
+    return testContainment({ missionCwd: join(dir, 'mission'), sandbox, home: join(dir, 'realhome'), folders: { state: dir, models: dir, guard: dir, audit: null }, ...o })
+  }
+  /** A test context may run here: on Windows vitest's Node has no launcher, so `lowil` is switched off for it. */
+  const allowTestRun = () => { if (process.platform === 'win32') process.env[SWITCH] = 'lowil' }
+  const recorder = () => {
+    const calls = []
+    const spawn = (cmd, args, opts) => { calls.push({ cmd, args, opts }); return { status: 0, stdout: 'ok', stderr: '' } }
+    return { calls, spawn }
+  }
+  const asyncChild = (status, stderr = '') => (cmd, args, opts) => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.pid = 4242
+    setTimeout(() => { if (stderr) child.stderr.emit('data', stderr); child.emit('close', status, null) }, 5)
+    return child
+  }
+  const UNKNOWN = '[spawn] REFUSED: containment: LOCALCODE_CONTAINMENT_OFF names an unknown layer: nonsense — nothing was run'
+
+  it('runSync and runAsync refuse a context the switch makes unrunnable, and start nothing', async () => {
+    process.env[SWITCH] = 'nonsense'
+    const { calls, spawn } = recorder()
+    const r = runSync('python', ['gate.py'], { contained: ctxOf(), timeoutMs: 1000, retryImpossibleTimeout: true }, { spawn })
+    expect(r).toEqual({ status: null, stdout: '', stderr: UNKNOWN, elapsedMs: 0, timedOut: false, fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
+    expect(faultSummary(r.fault)).toBe('code ECONTAINMENT, status null, after 0 ms')
+    let spawned = 0
+    const a = await runAsync('python', ['gate.py'], { contained: ctxOf(), timeoutMs: 1000 }, { spawn: () => { spawned++; return asyncChild(0)() } })
+    expect(a.fault?.code).toBe('ECONTAINMENT')
+    expect(a.stderr).toBe(UNKNOWN)
+    expect(a.timedOut).toBe(false)
+    expect(calls).toEqual([])
+    expect(spawned).toBe(0)
+  })
+
+  it('a test context overlays the environment: the sandbox home, NO_COLOR still 1, FORCE_COLOR still absent', () => {
+    allowTestRun()
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const ctx = ctxOf()
+      const { calls, spawn } = recorder()
+      const r = runSync('python', ['gate.py'], { contained: ctx, cwd: dir, env: { CYNCO_GATE_REPO: dir } }, { spawn })
+      expect(r.fault).toBeNull()
+      expect(calls).toHaveLength(1)
+      const env = calls[0].opts.env
+      expect(env.HOME).toBe(ctx.sandbox.home)
+      expect(env.CYNCO_SCRATCH).toBe(ctx.sandbox.scratch)
+      expect(env.NO_COLOR).toBe('1')
+      expect(env.CYNCO_GATE_REPO).toBe(dir)
+      expect('FORCE_COLOR' in env).toBe(false)
+      expect(calls[0].cmd).toBe('python')
+      expect(calls[0].args).toEqual(['gate.py'])
+      expect(calls[0].opts.cwd).toBe(dir)
+    } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
+  })
+
+  it('a contained command cannot take an exact environment', () => {
+    const { calls, spawn } = recorder()
+    const r = runSync('python', ['gate.py'], { contained: ctxOf(), env: { A: '1' }, envExact: true }, { spawn })
+    expect(r.fault?.code).toBe('ECONTAINMENT')
+    expect(r.stderr).toBe('[spawn] REFUSED: containment: a contained command cannot take an exact environment — nothing was run')
+    expect(calls).toEqual([])
+  })
+
+  it('{ own }: an establish that refuses gives the fault and starts nothing', () => {
+    const { calls, spawn } = recorder()
+    const released = []
+    const r = runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') } }, {
+      spawn, ownLevel: () => 'medium',
+      establish: () => ({ ok: false, reason: 'the sandbox root X is not an absolute path to an existing folder' }),
+      release: (c) => { released.push(c); return { relabelled: true, note: '' } },
+    })
+    expect(r.fault?.code).toBe('ECONTAINMENT')
+    expect(r.stderr).toBe('[spawn] REFUSED: containment: the sandbox root X is not an absolute path to an existing folder — nothing was run')
+    expect(calls).toEqual([])
+    expect(released).toEqual([])
+  })
+
+  it('{ own }: a grader containment around the folder, released once after the run, and once when the spawn throws', async () => {
+    allowTestRun()
+    const own = join(dir, 'base')
+    const asked = []
+    const released = []
+    const ctx = ctxOf({ kind: 'grader', missionCwd: own })
+    const hooks = {
+      ownLevel: () => 'medium',
+      establish: (a) => { asked.push(a); return { ok: true, containment: ctx, ms: 0 } },
+      release: (c) => { released.push(c); return { relabelled: true, note: '' } },
+    }
+    const { calls, spawn } = recorder()
+    expect(runSync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn }).status).toBe(0)
+    expect(asked).toEqual([{ kind: 'grader', label: 'grade-base', missionCwd: own, labelCwd: true, extraRoots: undefined }])
+    expect(calls[0].opts.env.HOME).toBe(ctx.sandbox.home)
+    expect(released).toEqual([ctx])
+    expect(() => runSync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: () => { throw new Error('spawn blew up') } })).toThrow('spawn blew up')
+    expect(released).toEqual([ctx, ctx])
+    const a = await runAsync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: () => { throw Object.assign(new Error('no'), { code: 'ENOENT' }) } })
+    expect(a.fault?.code).toBe('ENOENT')
+    expect(released).toEqual([ctx, ctx, ctx])
+    const b = await runAsync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: asyncChild(0) })
+    expect(b.status).toBe(0)
+    expect(released).toEqual([ctx, ctx, ctx, ctx])
+  })
+
+  it('{ own } with labelOwn false asks for no label and keeps Python from writing bytecode beside the code', () => {
+    allowTestRun()
+    const own = join(dir, 'archive')
+    const asked = []
+    const ctx = ctxOf({ kind: 'grader', missionCwd: own })
+    const { calls, spawn } = recorder()
+    runSync('python', ['gate.py'], { contained: { own, labelOwn: false, extraRoots: [join(dir, 'x')] } }, {
+      spawn, ownLevel: () => 'medium',
+      establish: (a) => { asked.push(a); return { ok: true, containment: ctx, ms: 0 } },
+      release: () => ({ relabelled: true, note: '' }),
+    })
+    expect(asked).toEqual([{ kind: 'grader', label: 'grade-archive', missionCwd: own, labelCwd: false, extraRoots: [join(dir, 'x')] }])
+    expect(calls[0].opts.env.PYTHONDONTWRITEBYTECODE).toBe('1')
+  })
+
+  it('a caller that is already low integrity runs the command directly: no establish, no release, today\'s values', () => {
+    const { calls, spawn } = recorder()
+    let established = 0
+    let released = 0
+    const prev = process.env.FORCE_COLOR
+    process.env.FORCE_COLOR = '3'
+    try {
+      const r = runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') }, cwd: dir, env: { CYNCO_GATE_REPO: dir }, shell: undefined }, {
+        spawn, ownLevel: () => 'low',
+        establish: () => { established++; return { ok: false, reason: 'must not be asked' } },
+        release: () => { released++; return { relabelled: true, note: '' } },
+      })
+      expect(r.status).toBe(0)
+      expect(established).toBe(0)
+      expect(released).toBe(0)
+      expect(calls[0].cmd).toBe('python')
+      expect(calls[0].args).toEqual(['gate.py'])
+      expect(calls[0].opts.env).toEqual(instrumentEnv(process.env, { CYNCO_GATE_REPO: dir }))
+    } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
+  })
+
+  // Entry 1.M1. `platform` and `bun` are seams that make the plan take the launcher's form here.
+  describe('through the launcher', () => {
+    const launcherHooks = (spawn) => ({ spawn, platform: 'win32', bun: true })
+    it('starts the launcher, not the command, with the colour-forcing keys out of its environment', () => {
+      const prev = process.env.FORCE_COLOR
+      process.env.FORCE_COLOR = '3'
+      try {
+        const { calls, spawn } = recorder()
+        const ctx = ctxOf()
+        runSync('python', ['gate.py'], { contained: ctx, cwd: dir, env: { CYNCO_GATE_REPO: dir }, shell: 'powershell.exe' }, launcherHooks(spawn))
+        expect(calls).toHaveLength(1)
+        expect(calls[0].cmd).toBe(process.execPath)
+        expect(calls[0].args).toContain('--run-dir')
+        expect(calls[0].args).toContain(ctx.sandbox.root)
+        expect(calls[0].args).toContain(`CYNCO_GATE_REPO=${dir}`)
+        expect(calls[0].args.slice(-3)).toEqual(['--shell', 'powershell.exe', 'python'])
+        expect(calls[0].opts.shell).toBeUndefined()
+        expect('FORCE_COLOR' in calls[0].opts.env).toBe(false)
+      } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
+    })
+    it('197 with the launcher\'s line is ECONTAINMENT, 198 with its line ECHILDGONE, 197 without the line an ordinary status', async () => {
+      const ctx = ctxOf()
+      const refused = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 197, stdout: '', stderr: '[containment] refused: the containment record could not be read\n' })))
+      expect(refused).toMatchObject({ status: null, timedOut: false, fault: { code: 'ECONTAINMENT', status: null } })
+      const gone = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 198, stdout: '', stderr: '[containment] child ended: signal SIGKILL\n' })))
+      expect(gone.fault?.code).toBe('ECHILDGONE')
+      const own = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 197, stdout: '', stderr: 'the gate itself exits 197\n' })))
+      expect(own).toMatchObject({ status: 197, fault: null, timedOut: false })
+      const a = await runAsync('python', [], { contained: ctx }, launcherHooks(asyncChild(197, '[containment] refused: no\n')))
+      expect(a.fault?.code).toBe('ECONTAINMENT')
+      // Without the launcher, 197 is the command's own code whatever it printed.
+      const plain = runSync('python', [], {}, { spawn: () => ({ status: 197, stdout: '', stderr: '[containment] refused: no\n' }) })
+      expect(plain).toMatchObject({ status: 197, fault: null })
+    })
+    // Review finding of slice S2 (06 entry A7): a Bun check script the launcher started at low
+    // integrity that could not load itself did not run; it is never a failing gate (F35).
+    it('exit 1 with Bun\'s EPERM reading line, through the launcher, is ECONTAINMENT; without the launcher it is exit 1', async () => {
+      const ctx = ctxOf()
+      const line = 'error: EPERM reading "C:\\\\checkout\\\\scripts\\\\cynco-gate-author.mjs"\n'
+      const r = runSync('bun', ['x.mjs'], { contained: ctx }, launcherHooks(() => ({ status: 1, stdout: '', stderr: line })))
+      expect(r).toMatchObject({ status: null, timedOut: false, fault: { code: 'ECONTAINMENT', status: null } })
+      const a = await runAsync('bun', ['x.mjs'], { contained: ctx }, launcherHooks(asyncChild(1, line)))
+      expect(a.fault?.code).toBe('ECONTAINMENT')
+      const failed = runSync('bun', ['x.mjs'], { contained: ctx }, launcherHooks(() => ({ status: 1, stdout: '', stderr: 'A1.1: FAIL\n' })))
+      expect(failed).toMatchObject({ status: 1, fault: null })
+      const plain = runSync('bun', ['x.mjs'], {}, { spawn: () => ({ status: 1, stdout: '', stderr: line }) })
+      expect(plain).toMatchObject({ status: 1, fault: null })
+    })
   })
 })

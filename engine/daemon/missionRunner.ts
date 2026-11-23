@@ -54,7 +54,7 @@ export interface MissionRunnerDeps {
   fetchRosterSnapshot: (leagueId: string, year: number, franchiseId: string) => Promise<string>
   now: () => Date
   /** Runs a trigger's precheckCommand (precheck 'command'); stdout decides, a throw lets the run proceed. */
-  runPrecheck?: (command: string, cwd?: string) => Promise<{ code: number | null; stdout: string }>
+  runPrecheck?: (command: string, cwd?: string, id?: string) => Promise<{ code: number | null; stdout: string }>
   /** The control file says pause: fire nothing, resume nothing (control.ts). */
   isPaused?: () => boolean
 }
@@ -324,7 +324,7 @@ export class MissionRunner {
       let verdict: { code: number | null; stdout: string } | null = null
       try {
         verdict = this.deps.runPrecheck
-          ? await this.deps.runPrecheck(trigger.precheckCommand, trigger.cwd ?? this.ledger.config.cwd)
+          ? await this.deps.runPrecheck(trigger.precheckCommand, trigger.cwd ?? this.ledger.config.cwd, trigger.id)
           : null
       } catch (err) {
         console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}" threw (${err instanceof Error ? err.message : err}) — running the pass anyway`)

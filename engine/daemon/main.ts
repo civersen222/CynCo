@@ -10,10 +10,11 @@ import { MissionRunner } from './missionRunner.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
 import { defaultControlPath, readControl } from './control.js'
-import { exec } from 'child_process'
+import { runPrecheck } from './precheck.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
-import { cyncoHome, missionsDir as resolveMissionsDir } from '../paths.js'
+import { cyncoHome, missionsDir as resolveMissionsDir, sandboxRoot } from '../paths.js'
+import { engineCheckout, establishContainment, releaseContainment, sweepSandboxes } from '../containment.js'
 import { giveGpuBack, takeGpuForOneShot } from '../apps/gpu.js'
 import { freeOllamaForCynco } from '../apps/ollama.js'
 import { activity } from '../power/activity.js'
@@ -32,15 +33,6 @@ const missionsDir = resolveMissionsDir()
 const controlPath = process.env.CYNCO_CONTROL_FILE ?? defaultControlPath(cyncoHome())
 const isPaused = () => readControl(controlPath).paused
 
-/** precheck 'command': the trigger's own gate, run in the mission workspace with a two-minute cap. */
-function runPrecheck(command: string, cwd?: string): Promise<{ code: number | null; stdout: string }> {
-  return new Promise((resolve) => {
-    exec(command, { cwd, timeout: 120000, windowsHide: true, encoding: 'utf-8' }, (err, stdout) => {
-      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0
-      resolve({ code, stdout: String(stdout ?? '') })
-    })
-  })
-}
 const ntfyOptions = ntfyOptionsFromEnv(process.env)
 if (!ntfyOptions) {
   console.error('[daemon] CYNCO_NTFY_URL is required (e.g. http://<tailscale-ip>:8090)')
@@ -85,6 +77,12 @@ async function fetchRosterSnapshot(leagueId: string, year: number, franchiseId: 
 
 // Load all missions
 mkdirSync(missionsDir, { recursive: true })
+// F242: remove sandboxes older than a week and give back the label of any run whose holder is gone
+// (a daemon stopped mid-task leaves its mission folder labelled).
+sweepSandboxes({ log: (line) => console.log(`[daemon] ${line}`) })
+const refuseRun = (): string | null => existsSync(sandboxRoot())
+  ? null
+  : `containment: the sandbox root ${sandboxRoot()} is not an existing folder; create it once with scripts/cynco-containment-setup.ps1`
 const runners: MissionRunner[] = []
 for (const entry of readdirSync(missionsDir)) {
   const dir = join(missionsDir, entry)
@@ -98,6 +96,13 @@ for (const entry of readdirSync(missionsDir)) {
     takeGpu: (why) => takeGpuForOneShot({ port: modelPort, by: `the one-shot ${why}`, say: sayApps })
       .then(() => freeOllamaForCynco({ by: `the one-shot ${why}`, say: sayApps })).then(() => {}),
     giveGpuBack: () => giveGpuBack(sayApps),
+    // F242: a one-shot is a contained run. No sandbox root, no run; the task runner makes the run's
+    // sandbox after the busy check, the child engine adopts it, and it is released however the child ended.
+    refuse: refuseRun,
+    contain: (input) => input.cwd
+      ? establishContainment({ kind: 'daemon-task', label: `daemon-${input.missionId}-${input.triggerId}`, missionCwd: input.cwd })
+      : { ok: false, reason: `this task names no cwd, so it would work in the engine's own checkout ${engineCheckout()}; give the mission a cwd` },
+    release: (c) => releaseContainment(c),
   })
   runners.push(new MissionRunner(ledger, {
     runTask: (input) => taskRunner.run(input),

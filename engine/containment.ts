@@ -401,23 +401,32 @@ export function toolSpawnRefusal(o: { ctx?: RunContainment | null; required?: bo
 }
 
 /**
- * Null outside a contained run. Inside one, the refusal text of a spawn site that does not yet go
- * through `containedCommand` (the Git tool, ApplyPatch, the contract's command and git checks): it
- * would run at medium integrity with the real home in the mission folder, where a hook, a git
- * setting or a test file the run wrote is executed. Such a site refuses instead, until it is
- * contained; there is no switch.
+ * Bun's own line when it could not read a module it was asked to load. Measured 2026-11-23 on Bun
+ * 1.3.13: a Bun process at low integrity gets it for ANY file in a folder that is not labelled low
+ * (a script in the engine's checkout, `C:\Windows\System32\drivers\etc\hosts`), exit 1, before the
+ * script has run a line; node and PowerShell at the same level read the same files.
  */
-export function uncontainedSiteRefusal(what: string, ctx: RunContainment | null = runContainment()): string | null {
-  if (!ctx) return null
-  return refusalText('containment', `${what} is not contained in an unattended run yet: it would run at medium integrity in the mission folder, where hooks, git settings and test files written during the run are executed`)
-}
+const BUN_LOW_READ = /^error: EPERM reading "([^"\r\n]+)"\s*$/m
 
 /**
- * A launcher exit that means "did not run" (197 with its refused line) or "ended with no status"
- * (198 with its line). A program that itself exits 197 without the line is an ordinary exit code.
+ * A launcher exit that means "did not run" (197 with its refused line), "ended with no status"
+ * (198 with its line), or a Bun the launcher started that could not load its own script at low
+ * integrity (exit 1 with Bun's `error: EPERM reading "<file>"` line; the gate-authoring check is
+ * the known case, 01-isolation entry 1.B2 part 2). A program that itself exits 197 without the line
+ * is an ordinary exit code. A command that prints Bun's line itself and exits 1 reads as "did not
+ * run" too: never as a pass.
  */
 export function launcherFaultOf(status: number | null | undefined, stderr: string | Buffer | null | undefined)
   : { code: 'ECONTAINMENT' | 'ECHILDGONE'; reason: string; text: string } | null {
+  if (status === 1) {
+    const m = BUN_LOW_READ.exec(stderr == null ? '' : String(stderr))
+    if (m === null) return null
+    const reason = `Bun at low integrity could not read ${m[1]} (EPERM), a file outside the folders the run may write, so the command did not run`
+    return {
+      code: 'ECONTAINMENT', reason,
+      text: refusalText('containment', reason, 'A Bun script that lives outside the mission folder cannot be run inside a contained run on this Bun; nothing it would have done was done.'),
+    }
+  }
   if (status !== LAUNCHER_REFUSED_EXIT && status !== LAUNCHER_CHILD_GONE_EXIT) return null
   const lines = (stderr == null ? '' : String(stderr)).split(/\r?\n/)
   if (status === LAUNCHER_REFUSED_EXIT) {

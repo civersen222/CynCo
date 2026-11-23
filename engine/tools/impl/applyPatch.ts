@@ -1,10 +1,9 @@
-import { execSync } from 'child_process'
 import { writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import type { ToolImpl } from '../types.js'
-import { uncontainedSiteRefusal } from '../../containment.js'
+import { ContainmentRefusal, toolExecSync, toolSpawnRefusal } from '../../containment.js'
 
 export const applyPatchTool: ToolImpl = {
   name: 'ApplyPatch',
@@ -20,10 +19,10 @@ export const applyPatchTool: ToolImpl = {
   tier: 'approval',
   core: true,
   execute: async (input, cwd) => {
-    // F242: `git apply` here would run at medium integrity in the mission folder; refused in a
-    // contained run until this site is contained.
-    const uncontained = uncontainedSiteRefusal('ApplyPatch')
-    if (uncontained) return { output: uncontained, isError: true }
+    // F242: `git apply` runs the mission folder's own git, so in an unattended run it starts through
+    // the containment; a run whose launcher cannot run starts nothing and writes no patch file.
+    const refusal = toolSpawnRefusal()
+    if (refusal) return { output: refusal, isError: true }
     const patch = input.patch as string
     const checkOnly = (input.check as boolean) ?? false
 
@@ -32,15 +31,16 @@ export const applyPatchTool: ToolImpl = {
     try {
       writeFileSync(patchFile, patch, 'utf-8')
       const flags = checkOnly ? '--check' : ''
-      const stdout = execSync(`git apply ${flags} "${patchFile}" 2>&1`, {
+      const stdout = toolExecSync(`git apply ${flags} "${patchFile}" 2>&1`, {
         cwd,
         encoding: 'utf-8',
         timeout: 30000,
         stdio: ['pipe', 'pipe', 'pipe'],
-      })
+      }) as string
       const msg = checkOnly ? 'Patch applies cleanly.' : 'Patch applied successfully.'
       return { output: stdout || msg, isError: false }
     } catch (err: any) {
+      if (err instanceof ContainmentRefusal) return { output: err.message, isError: true }
       const output = err.stdout ?? err.stderr ?? err.message ?? 'Unknown error'
       return { output: `Patch failed: ${output}`, isError: true }
     } finally {

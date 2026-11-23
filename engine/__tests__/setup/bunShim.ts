@@ -241,7 +241,7 @@ function makeBunServe(options: BunWSServerOptions): BunServerLike {
 /** Minimal Bun.spawn shim for vitest: spawns a real child process. */
 function makeBunSpawn(
   cmd: string[],
-  options: { cwd?: string; stdout?: string; stderr?: string }
+  options: { cwd?: string; env?: Record<string, string | undefined>; stdout?: string; stderr?: string }
 ) {
   let exitResolve: (code: number) => void
   const exitedPromise = new Promise<number>(resolve => { exitResolve = resolve })
@@ -250,6 +250,8 @@ function makeBunSpawn(
 
   const child = nodeSpawn(cmd[0], cmd.slice(1), {
     cwd: options.cwd,
+    // Undefined inherits, as Bun does; the Git tool hands its contained environment here (F242).
+    env: options.env,
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
   })
@@ -275,6 +277,8 @@ function makeBunSpawn(
     get stdout() { return makeStream(chunks.stdout) },
     get stderr() { return makeStream(chunks.stderr) },
     get exitCode() { return child.exitCode },
+    // The Git tool owns the tree by this pid (F201, F210).
+    get pid() { return child.pid },
     exited: exitedPromise,
   }
 }

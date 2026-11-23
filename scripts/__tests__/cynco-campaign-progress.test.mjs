@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
+import { describe, it, expect, afterEach, afterAll, beforeAll, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +10,12 @@ import {
 import { runnerRowsFromCampaigns } from '../cynco-runner-rows.mjs'
 import { defaultIo as campaignIo } from '../cynco-campaign.mjs'
 import { buildProgressRepo, removeProgressRepos, PROGRESS_GATE } from './fixtures/progress/repo.mjs'
+import { graderContainment } from './fixtures/graderContainment.mjs'
+
+// F242: the real gate below runs contained, in a grader sandbox the suite cannot make; it runs under a
+// test context instead (fixtures/graderContainment.mjs).
+vi.mock('../../engine/containment.js', async (importOriginal) =>
+  (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
 
 // Review M4: every temp dir this file creates is removed when it is done.
 const tempDirs = []
@@ -104,6 +110,8 @@ describe('probeProgress on a real fixture repo (git archive + the fixture gate)'
   // contents again (a new sha), and a gate that dies with exit 3.
   const { dir, shas } = buildProgressRepo(['', '1 2', '1 2\n', 'boom'])
   const spec = { id: `ptest${process.pid}`, repo: dir, gate: PROGRESS_GATE }
+  beforeAll(() => graderContainment.start())
+  afterAll(() => graderContainment.stop())
 
   it('reads 3 → 1 fails across two commits, on the archive and never the live tree', () => {
     // An uncommitted edit in the live repo that would make every line PASS:
@@ -117,6 +125,8 @@ describe('probeProgress on a real fixture repo (git archive + the fixture gate)'
     const r1 = probeProgress({ spec, sha: shas[1], lastSha: shas[0], elapsedMs: 4 * HOUR, clockMs: 8 * HOUR, n: 2 })
     expect(r1).toMatchObject({ sha: shas[1], fails: 1, passes: 2, failIds: ['P.3'], elapsedFraction: 0.5 })
     expect(Object.keys(r1).sort()).toEqual(READING_KEYS)
+    // F242: each reading's gate ran in a grader containment of its own around the archive, unlabelled.
+    expect(graderContainment.calls.slice(-2)).toEqual([0, 1].map(() => expect.objectContaining({ kind: 'grader', labelCwd: false })))
     // The temp archive is gone after each reading.
     expect(existsSync(join(tmpdir(), `cynco-progress-${spec.id}-1`))).toBe(false)
     expect(existsSync(join(tmpdir(), `cynco-progress-${spec.id}-2`))).toBe(false)
@@ -174,6 +184,8 @@ describe('probeIo — the gate runs on the archive, capped, and is never retried
     expect(r.fails).toBe(1)
     const dest = join(tmpdir(), 'cynco-progress-pflags-1')
     expect(gateCalls).toHaveLength(1)
+    // F242, addition A7: the gate runs contained around the archive, which is NOT labelled writable.
+    expect(gateCalls[0].opts.contained).toEqual({ own: dest, labelOwn: false })
     expect(gateCalls[0].opts).toMatchObject({ cwd: dest, env: { CYNCO_GATE_REPO: dest }, retryImpossibleTimeout: false, timeoutMs: PROBE_GATE_TIMEOUT_UNMEASURED_MS })
     probeProgress({ spec, sha: 'def', io, n: 2, gateMs: 215_000 })
     expect(gateCalls[1].opts.timeoutMs).toBe(860_000)

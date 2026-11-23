@@ -18,6 +18,7 @@ import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, op
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { cyncoHome } from '../engine/paths.js'
+import { harnessGitEnv } from '../engine/harnessGit.js'
 import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
@@ -269,7 +270,9 @@ export function runDispatch(args, env, hooks = {}) {
   return r
 }
 
-const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).stdout ?? ''
+// F242: the mission repository is a contained run's to write, so the runner's reads of it run with the
+// harness-git environment (no hooks, monitor or repository-defined filters).
+const gitC = (repo, args) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: harnessGitEnv(process.env) }).stdout ?? ''
 const repoRel = (abs) => relative(process.cwd(), abs).replace(/\\/g, '/')
 /**
  * A file as a commit pathspec: `[path]` when it lives inside this checkout,
@@ -364,7 +367,7 @@ export const defaultIo = {
   // `onStaleRetry` (P-F155): the progress tracker's counter — its every tick
   // follows a gap, so the retry line is counted and logged once per wave.
   repoHead: (repo, rev = 'HEAD', { onStaleRetry } = {}) => {
-    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true, ...(onStaleRetry ? { onStaleRetry } : {}) })
+    const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`], { timeoutMs: GIT_READ_TIMEOUT_MS, retryImpossibleTimeout: true, env: harnessGitEnv({}), ...(onStaleRetry ? { onStaleRetry } : {}) })
     return !r.fault && !r.timedOut && r.status === 0 ? (String(r.stdout ?? '').trim() || null) : null
   },
   // Phase 6 ruling 2: the mid-wave progress probe's io (archive the sha, run
@@ -378,7 +381,7 @@ export const defaultIo = {
   // whose changes HEAD does not already hold (`git apply --check --reverse`
   // succeeds only when they are already there).
   salvageOf: (missionId, { patches = [], repo = null } = {}) => salvageFrom({ missionId, patches, dir: 'C:/tmp',
-    applied: (p) => Boolean(repo) && runSync('git', ['-C', repo, 'apply', '--check', '--reverse', p], { timeoutMs: 60_000, retryImpossibleTimeout: true }).status === 0 }),
+    applied: (p) => Boolean(repo) && runSync('git', ['-C', repo, 'apply', '--check', '--reverse', p], { timeoutMs: 60_000, retryImpossibleTimeout: true, env: harnessGitEnv({}, { repo }) }).status === 0 }),
   // Ruling 7: the advisory occupant runs on the SAME GPU as the wave. A live
   // engine on 9161 (the dashboard, or a run someone else started) means the
   // card is taken — any answer, even a 404, proves something is listening.

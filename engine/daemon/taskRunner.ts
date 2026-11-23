@@ -7,6 +7,7 @@ import { clearGpuBusy, writeGpuBusy } from './gpuBusyFile.js'
 import { activity as processActivity, type ActivityRegistry } from '../power/activity.js'
 import { ownProcessTree, type OwnedTree } from '../processTree.js'
 import type { TaskFileInput, TaskOutcome } from './types.js'
+import type { RunContainment } from '../containment.js'
 
 export class GpuBusyError extends Error {
   constructor() { super('GPU busy: an interactive llama-server is running') }
@@ -108,6 +109,12 @@ export interface TaskRunnerOptions {
   takeGpu?: (why: string) => Promise<void>
   /** After the run, however it ended, and after a deferral: start again what was stopped for it. */
   giveGpuBack?: () => Promise<void>
+  /** Asked after the paused check and before the GPU is taken: `<layer>: <reason>` refuses the run, null lets it go on. */
+  refuse?: () => string | null
+  /** After the busy check: make the run's sandbox (engine/containment.ts). A refusal is a failed run, never an uncontained one. */
+  contain?: (input: TaskFileInput) => { ok: true; containment: RunContainment } | { ok: false; reason: string }
+  /** After the child has exited, however it ended: give the mission folder its label back. */
+  release?: (c: RunContainment) => { relabelled: boolean; note: string }
 }
 
 /** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
@@ -126,6 +133,12 @@ export class TaskRunner {
       console.log(`[task:${input.triggerId}] paused before start — not spawned`)
       return { ok: false, summary: '', recommendations: [], error: 'PAUSED', paused: { elapsedMs: 0 } }
     }
+    // Nothing is taken yet, so nothing is given back. Not through hook(), which swallows.
+    const refusal = this.opts.refuse?.() ?? null
+    if (refusal) {
+      console.log(`[task:${input.triggerId}] REFUSED: ${refusal} — nothing was run`)
+      return { ok: false, summary: '', recommendations: [], error: `REFUSED: ${refusal}` }
+    }
     // A hook that fails must not stop a run or hide a deferral: say so and go on.
     const hook = async (name: string, fn?: () => Promise<void>) => {
       try { await fn?.() } catch (e) { console.log(`[task:${input.triggerId}] ${name} failed: ${e instanceof Error ? e.message : String(e)}`) }
@@ -137,6 +150,20 @@ export class TaskRunner {
       await hook('giving the GPU back', this.opts.giveGpuBack)
       throw new GpuBusyError()
     }
+    // F242: the sandbox is made only for a run that will start (a deferral builds none). A refusal is a
+    // failed run: nothing is spawned and what was taken for it is given back.
+    const est = this.opts.contain?.(input)
+    if (est && !est.ok) {
+      console.log(`[task:${input.triggerId}] REFUSED: containment: ${est.reason} — nothing was run`)
+      await hook('giving the GPU back', this.opts.giveGpuBack)
+      return { ok: false, summary: '', recommendations: [], error: `REFUSED: containment: ${est.reason}` }
+    }
+    // Called once the child has exited or been killed, or when it never started. releaseContainment never throws.
+    const releaseSandbox = () => {
+      if (!est?.ok || !this.opts.release) return
+      const r = this.opts.release(est.containment)
+      if (!r.relabelled && r.note) console.log(`[task:${input.triggerId}] ${r.note}`)
+    }
 
     const repoRoot = this.opts.repoRoot ?? process.cwd()
     const stamp = Date.now()
@@ -144,7 +171,19 @@ export class TaskRunner {
     const finalInput: TaskFileInput = {
       ...input,
       outcomePath: input.outcomePath || join(this.opts.workDir, `outcome-${input.triggerId}-${stamp}.json`),
+      // The child engine adopts this sandbox before the model loads (engine/main.ts).
+      ...(est?.ok ? { runId: est.containment.runId } : {}),
     }
+    // A throw before the child is owned (task file, spawn) would leave the mission folder labelled.
+    let child: ReturnType<typeof spawn>
+    let tree: OwnedTree
+    let busyPath: string | undefined
+    let endActivity: () => void
+    // What the catch below must end if a throw comes after the child was started.
+    let startedChild: ReturnType<typeof spawn> | undefined
+    let startedTree: OwnedTree | undefined
+    let activityEnd: (() => void) | undefined
+    try {
     writeTaskFile(taskPath, finalInput)
 
     const cmd = this.opts.spawnCmd ?? ['bun', join(repoRoot, 'engine', 'main.ts')]
@@ -155,7 +194,7 @@ export class TaskRunner {
       if (k.startsWith('CYNCO_NTFY_')) continue
       env[k] = v
     }
-    const child = spawn(cmd[0], [...cmd.slice(1), '--run-task', taskPath], {
+    child = spawn(cmd[0], [...cmd.slice(1), '--run-task', taskPath], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -164,22 +203,48 @@ export class TaskRunner {
       detached: process.platform !== 'win32',
       env,
     })
+    startedChild = child
     // Taken now, while the child has started nothing: a kill later cannot miss
     // the llama-server it spawns (engine/processTree.ts).
-    const tree = ownProcessTree(child.pid)
+    tree = ownProcessTree(child.pid)
+    startedTree = tree
     // The claim on the GPU: readers (lazy engine, dashboard, widget) wait on
     // it instead of killing this child's llama-server (F182). Cleared in the
     // finally below on every exit path, including the timeout kill.
-    const busyPath = this.opts.gpuBusyPath
+    busyPath = this.opts.gpuBusyPath
     // A one-shot is an open activity for its whole lifetime: the PC stays awake
     // (engine/power/awake.ts) until the child has exited or been killed.
-    const endActivity = (this.opts.activity ?? processActivity).begin('oneshot', input.triggerId)
+    endActivity = (this.opts.activity ?? processActivity).begin('oneshot', input.triggerId)
+    activityEnd = endActivity
     if (child.pid) {
       try {
         writeGpuBusy({ task: input.missionId, triggerId: input.triggerId, startedAt: new Date().toISOString(), timeoutMs: input.timeoutMs, pid: child.pid }, busyPath)
       } catch (e) {
         console.log(`[task:${input.triggerId}] gpu-busy.json not written: ${e instanceof Error ? e.message : String(e)}`)
       }
+    }
+    } catch (e) {
+      // A throw after the child was started (review finding of slice S2): the child and what it
+      // started are ended before its sandbox is given back, or the one-shot would run on in a
+      // folder whose label was just set back to medium.
+      if (startedChild !== undefined) {
+        console.log(`[task:${input.triggerId}] the one-shot was started and then setup failed: ${e instanceof Error ? e.message : String(e)} — ending it`)
+        await this.killTree(startedChild, new Promise<number | null>(resolve => {
+          if (startedChild!.exitCode !== null) return resolve(startedChild!.exitCode)
+          startedChild!.once('exit', code => resolve(code))
+          startedChild!.once('error', () => resolve(null))
+        }), startedTree ?? ownProcessTree(undefined))
+        startedTree?.release()
+      }
+      activityEnd?.()
+      try {
+        clearGpuBusy(busyPath)
+      } catch (clearErr) {
+        console.log(`[task:${input.triggerId}] gpu-busy.json not cleared: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`)
+      }
+      await hook('giving the GPU back', this.opts.giveGpuBack)
+      releaseSandbox()
+      throw e
     }
     try {
     let sessionId: string | undefined
@@ -228,6 +293,8 @@ export class TaskRunner {
     return outcome
     } finally {
       tree.release()
+      // The child has exited or been killed (killTree, or `await exited`): its sandbox can be given back.
+      releaseSandbox()
       endActivity()
       try {
         clearGpuBusy(busyPath)

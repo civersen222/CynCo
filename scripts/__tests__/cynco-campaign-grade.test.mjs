@@ -85,6 +85,10 @@ describe('gradeWave', () => {
     expect(garbage.sweepFault).toBe('unparseable sweep output')
     const broken = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: 0, stdout: '{"killed":' }]]))
     expect(broken.sweepFault).toBe('unparseable sweep output')
+    // A sweep refused containment did not run (review finding of slice S2): never "unparseable".
+    const notRun = await gradeWave(spec, row, fakeIo([...green, [/sweep/, { status: null, stdout: '', stderr: '[spawn] REFUSED: containment: x — nothing was run', fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } }]]))
+    expect(notRun.sweep).toBeNull()
+    expect(notRun.sweepFault).toBe('sweep did not run (code ECONTAINMENT, status null, after 0 ms)')
     // No diff is not a fault: the sweep was never attempted.
     const noDiff = await gradeWave(spec, { ...row, commitRange: { base: '1d03308', head: '1d03308' } }, fakeIo(green))
     expect(noDiff.sweep).toBeNull(); expect(noDiff.sweepFault).toBeNull()
@@ -137,6 +141,19 @@ describe('gradeWave', () => {
     expect(io.calls[1].opts.retryImpossibleTimeout).toBe(true)
     // the sweep mutates the tree: running it twice is not running it once
     expect(io.calls[2].opts.retryImpossibleTimeout).toBeUndefined()
+  })
+  // F242 (01-isolation 7.3): every grader run starts in a containment of its own around the repository.
+  // The gate and the suite gate label it writable (they run pytest in it); the sweep never writes it.
+  it('runs the gate and suite gate contained around the repository, and the sweep contained without a label', async () => {
+    const io = fakeIo([
+      [/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }],
+      [/g_suite/, { status: 0, stdout: 'g_suite: PASS' }],
+      [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }],
+    ])
+    await gradeWave(spec, row, io)
+    expect(io.calls[0].opts.contained).toEqual({ own: 'C:/repo', labelOwn: true })
+    expect(io.calls[1].opts.contained).toEqual({ own: 'C:/repo' })
+    expect(io.calls[2].opts.contained).toEqual({ own: 'C:/repo', labelOwn: false })
   })
   it('parses regressions by node id from the suite gate output', async () => {
     const io = fakeIo([[/gate_c8\.py/, { status: 0, stdout: 'GATE: PASS\n' }], [/g_suite/, { status: 1, stdout: '  REGRESSED 2 test(s) that pass on the baseline:\n      - gilded/tests/a.py::test_x\n      - gilded/tests/b.py::test_y\ng_suite: FAIL' }], [/sweep/, { status: 0, stdout: '{"command":"x","kind":"derived","killed":1,"total":1,"survived":[]}' }]])

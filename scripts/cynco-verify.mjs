@@ -209,8 +209,13 @@ const PYTEST_NO_TESTS = 5
  * about the DELIVERY — because it never finished, never started, or answered
  * about the HARNESS instead (`harnessFault` is set whenever `verified` is
  * null for one of those reasons).
+ *
+ * `contained` (F242): the mission's run context; the check then starts inside
+ * the run's sandbox (on Windows through the low-integrity launcher). A check
+ * that could not be run contained is a harness fault (`ECONTAINMENT`), never a
+ * failed delivery. No default: without it the check runs as it always has.
  */
-export function runCheck(command, cwd, timeoutMs) {
+export function runCheck(command, cwd, timeoutMs, { contained } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
   // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: an
@@ -218,7 +223,7 @@ export function runCheck(command, cwd, timeoutMs) {
   // F166: the suite gate parses pytest's plain `FAILED ` lines, so the check
   // gets the colourless instrument environment rather than whatever
   // colour-forcing the operator's shell exported.
-  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true })
+  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true, ...(contained ? { contained } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 
@@ -229,11 +234,12 @@ export function runCheck(command, cwd, timeoutMs) {
  * same result shape, through runAsync. `env` is laid over the instrument
  * environment — the driver hands each marker check its CYNCO_CHECK_ORDINAL
  * (final review I1), so a fixture can tell the driver's call from any other.
+ * `contained` is runCheck's option.
  */
-export async function runCheckAsync(command, cwd, timeoutMs, { env } = {}) {
+export async function runCheckAsync(command, cwd, timeoutMs, { env, contained } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
-  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}) })
+  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}), ...(contained ? { contained } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 

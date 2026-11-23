@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { snapshotUncommittedWork } from '../cynco-work-snapshot.mjs'
+import { harnessGitBin } from '../../engine/harnessGit.js'
 
 let repo, out
 
@@ -177,5 +178,26 @@ describe('snapshotUncommittedWork', () => {
     const imported = driver.includes("from './cynco-work-snapshot.mjs'")
     const called = /snapshotUncommittedWork\(\s*CWD\s*,/.test(driver)
     expect({ imported, called }).toEqual({ imported: true, called: true })
+  })
+})
+
+// F242 (01-isolation 7.6, tests 9.7): the workspace is a contained run's to write, so both git calls run
+// with the harness-git environment, git is named by its full path, and the patch-producing diff carries
+// --no-ext-diff --no-textconv. Read against a planted repository by harnessGit.test.ts; here, the call.
+describe('snapshotUncommittedWork runs git as the harness', () => {
+  it('both calls receive the harness-git environment; the diff carries the two diff flags and the work tree pin', () => {
+    const calls = []
+    const spawn = (file, args, opts) => { calls.push({ file, args, opts }); return { status: 0, stdout: '' } }
+    snapshotUncommittedWork(repo, out, 'm1', { spawn })
+    expect(calls).toHaveLength(2)
+    for (const c of calls) {
+      expect(c.file).toBe(harnessGitBin())
+      expect(Number(c.opts.env.GIT_CONFIG_COUNT)).toBeGreaterThan(0)
+      expect(c.opts.cwd).toBe(repo)
+    }
+    expect(calls[0].args.slice(0, 3)).toEqual(['diff', '--no-ext-diff', '--no-textconv'])
+    expect(calls[0].opts.env.GIT_WORK_TREE).toBeDefined()
+    expect(calls[1].args[0]).toBe('ls-files')
+    expect(calls[1].opts.env.GIT_WORK_TREE).toBeUndefined()
   })
 })

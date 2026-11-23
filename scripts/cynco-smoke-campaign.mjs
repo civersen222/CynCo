@@ -41,6 +41,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SUITE_GATE_FILE } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
+import { harnessGitEnv } from '../engine/harnessGit.js'
 import { WORKER_INVARIANTS, heldoutDirFor } from './cynco-gate-author.mjs'
 
 export const SMOKE_ID = 's1'
@@ -118,6 +119,10 @@ export function smokeSpec({ repo, base, heldout, smokeDir }) {
     suiteBaseline: `${heldout}/suite_baseline_${base.slice(0, 7)}.txt`,
     marker: 'smoke s1 complete',
     keepGreen: 'python -m pytest -q test_calc.py',
+    // The smoke repository's own suite. Without it the CivKings default (`gilded/tests`) was asked
+    // for, pytest answered exit 4 (no such path) and calibration wrote an EMPTY suite baseline that
+    // measured nothing; since F242's review a baseline is written only after a pytest exit of 0 or 1.
+    suiteTarget: 'test_calc.py',
     // Phase 7 ruling 3 / review I3: the marker check defaults to the suite
     // gate; the smoke names its own fixture — fails once, then passes — and
     // lowers the retry floor so its one-hour wave can reach the retry at all.
@@ -161,7 +166,7 @@ export function smokeSpec({ repo, base, heldout, smokeDir }) {
 
 /** `rev` (HEAD, a sha, an abbreviation) in `repo` as its full commit sha; throws naming the failure. */
 export function commitOf(repo, rev) {
-  const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', `${rev}^{commit}`], { cwd: process.cwd(), env: {}, timeoutMs: 60_000, retryImpossibleTimeout: true })
+  const r = runSync('git', ['-C', repo, 'rev-parse', '--verify', `${rev}^{commit}`], { cwd: process.cwd(), env: harnessGitEnv({}), timeoutMs: 60_000, retryImpossibleTimeout: true })
   if (r.fault) throw new Error(`git -C ${repo} rev-parse ${rev} did not run (${faultSummary(r.fault)})`)
   if (r.status !== 0 || !/^[0-9a-f]{40}$/.test(String(r.stdout).trim())) {
     throw new Error(`git -C ${repo} rev-parse ${rev} failed: ${String(r.stderr).trim() || String(r.stdout).trim()}`)

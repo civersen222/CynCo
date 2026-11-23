@@ -1,5 +1,7 @@
 import type { ToolImpl } from '../types.js'
-import { uncontainedSiteRefusal } from '../../containment.js'
+import { containedCommand, launcherFaultOf, toolSpawnRefusal, type ContainedSpawn } from '../../containment.js'
+import { ownProcessTree } from '../../processTree.js'
+import { bashDefaultTimeoutMs } from './bash.js'
 
 const DANGEROUS_PATTERNS = [/push\s+(--force\b|-f\b)/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
 
@@ -121,17 +123,71 @@ function unquotedParts(args: string): string {
  * Returns [] on any failure. This runs after a commit that already succeeded;
  * a diagnostic that can turn a success into an error is worse than no diagnostic.
  */
-async function trackedModificationsRemaining(cwd: string): Promise<string[]> {
+async function trackedModificationsRemaining(cwd: string, signal?: AbortSignal): Promise<string[]> {
+  // F242: started like the tool's own git (contained in an unattended run); a refusal or a
+  // launcher that could not run is "failure", so [].
+  if (toolSpawnRefusal()) return []
   try {
-    const proc = Bun.spawn(['git', 'status', '--porcelain'], { cwd, stdout: 'pipe', stderr: 'pipe' })
-    const out = await new Response(proc.stdout).text()
-    await proc.exited
-    if (proc.exitCode !== 0) return []
-    return out.split('\n')
+    const c = containedCommand({ file: 'git', args: ['status', '--porcelain'] }, { cwd, extraEnv: GIT_TOOL_ENV })
+    const r = await runOwned(c, signal)
+    if (r.ended !== null) return []
+    if (c.viaLauncher && launcherFaultOf(r.exitCode, r.stderr)) return []
+    if (r.exitCode !== 0) return []
+    return r.stdout.split('\n')
       .filter(l => l.length > 3 && l.slice(0, 2) !== '??' && l[1] !== ' ')
       .map(l => l.slice(3).trim())
   } catch {
     return []
+  }
+}
+
+/**
+ * What the tool's git is given on top of the tool environment, so that nothing it starts waits on
+ * a person: no credential prompt, and `:` as the editor (git runs no program for it), so a commit
+ * with no message is refused at once instead of waiting on an editor that never closes.
+ */
+const GIT_TOOL_ENV: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_EDITOR: ':',
+  GIT_SEQUENCE_EDITOR: ':',
+  GCM_INTERACTIVE: 'never',
+}
+
+/** How long a stopped or timed-out git may keep its pipes before the call returns anyway. */
+const STOP_GRACE_MS = 2000
+
+/**
+ * Runs `c` with its tree owned from the start (F201, F210): the turn's Stop and the cap
+ * (`bashDefaultTimeoutMs`, what a Bash call gets unasked) kill git and whatever it started (a hook,
+ * a filter, a credential helper). `ended` says which of the two ended it, or null.
+ */
+async function runOwned(c: ContainedSpawn, signal?: AbortSignal, capMs = bashDefaultTimeoutMs())
+  : Promise<{ stdout: string; stderr: string; exitCode: number | null; ended: 'stopped' | 'timeout' | null }> {
+  if (signal?.aborted) return { stdout: '', stderr: '', exitCode: null, ended: 'stopped' }
+  const proc = Bun.spawn([c.file, ...c.args], { cwd: c.cwd, env: c.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+  const tree = ownProcessTree(proc.pid)
+  let ended: 'stopped' | 'timeout' | null = null
+  let giveUp: () => void = () => {}
+  const gaveUp = new Promise<void>(resolve => { giveUp = resolve })
+  const killFor = (why: 'stopped' | 'timeout'): void => {
+    if (ended !== null) return
+    ended = why
+    void tree.kill()
+    setTimeout(giveUp, STOP_GRACE_MS)
+  }
+  const onAbort = (): void => killFor('stopped')
+  const deadline = setTimeout(() => killFor('timeout'), capMs)
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const read = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited])
+    const r = await Promise.race([read, gaveUp.then(() => null)])
+    if (r === null) return { stdout: '', stderr: '', exitCode: null, ended }
+    return { stdout: r[0], stderr: r[1], exitCode: proc.exitCode, ended }
+  } finally {
+    clearTimeout(deadline)
+    signal?.removeEventListener('abort', onAbort)
+    // A git that ended on its own gives its handle back; one that was killed has none left.
+    if (ended === null) tree.release()
   }
 }
 
@@ -148,7 +204,7 @@ export const gitTool: ToolImpl = {
   },
   tier: 'approval',
   core: true,
-  execute: async (input, cwd) => {
+  execute: async (input, cwd, signal) => {
     const rawSub = input.subcommand as string
     const args = (input.args as string) ?? ''
     const fullCmd = `git ${rawSub} ${args}`.trim()
@@ -203,19 +259,28 @@ export const gitTool: ToolImpl = {
       }
     }
 
-    // F242: in a contained run git would run here at medium integrity, reading the mission folder's
-    // own .git/config and hooks; refused until this site is contained.
-    const uncontained = uncontainedSiteRefusal('the Git tool')
-    if (uncontained) return { output: uncontained, isError: true }
+    // F242: this is the run's own git, so in an unattended run it starts through the containment
+    // (low integrity on Windows, the sandbox as home) and keeps the repository's own hooks and
+    // settings; it gets no harnessGitEnv. A run whose launcher cannot run starts nothing.
+    const refusal = toolSpawnRefusal()
+    if (refusal) return { output: refusal, isError: true }
 
     try {
-      const proc = Bun.spawn(['git', ...buildArgv(sub, argTokens)], {
-        cwd, stdout: 'pipe', stderr: 'pipe',
-      })
-      const stdout = await new Response(proc.stdout).text()
-      const stderr = await new Response(proc.stderr).text()
-      await proc.exited
-      if (proc.exitCode !== 0) {
+      const c = containedCommand({ file: 'git', args: buildArgv(sub, argTokens) }, { cwd, extraEnv: GIT_TOOL_ENV })
+      const { stdout, stderr, exitCode, ended } = await runOwned(c, signal)
+      if (ended !== null) {
+        const partial = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n') || '(nothing)'
+        return {
+          output: ended === 'stopped'
+            ? `git ${sub} stopped: the turn was stopped, and git and what it started were ended. Output so far:\n${partial}`
+            : `git ${sub} timeout after ${bashDefaultTimeoutMs()}ms: git and what it started (a hook, a filter, a credential helper) were ended. Output so far:\n${partial}`,
+          isError: true,
+        }
+      }
+      // 197 / 198 from the launcher with its named line: git did not run (or ended with no status).
+      const fault = c.viaLauncher ? launcherFaultOf(exitCode, stderr) : null
+      if (fault) return { output: fault.text, isError: true }
+      if (exitCode !== 0) {
         // Both streams, because git does not put its diagnostics where you would
         // expect. A `git commit` with nothing staged exits 1 with stderr EMPTY and
         // the entire explanation ("nothing added to commit but untracked files
@@ -223,7 +288,7 @@ export const gitTool: ToolImpl = {
         // "exited with code 1", and it had to spend a turn running `git status` to
         // learn what any human would have read off the failure itself.
         const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
-        return { output: detail || `git ${sub} exited with code ${proc.exitCode}`, isError: true }
+        return { output: detail || `git ${sub} exited with code ${exitCode}`, isError: true }
       }
       // A commit is a claim that the work has been delivered, and the workspace
       // is not the delivery. Watched live: a run staged exactly the two files
@@ -237,7 +302,7 @@ export const gitTool: ToolImpl = {
       // and only the agent can tell which is which. Untracked files are excluded
       // — a file git has never seen cannot be a gap in what was just delivered.
       if (sub === 'commit') {
-        const left = await trackedModificationsRemaining(cwd)
+        const left = await trackedModificationsRemaining(cwd, signal)
         if (left.length > 0) {
           return {
             output: `${stdout || '(no output)'}\n\n[git] ${left.length} tracked file(s) still modified and NOT in this commit:\n` +

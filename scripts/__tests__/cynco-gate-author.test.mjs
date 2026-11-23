@@ -646,6 +646,9 @@ describe('authorCampaign', () => {
     expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe('7200000')
     expect(d.env.CYNCO_CHECK_TIMEOUT_MS).toBe('7200000')
     expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe(d.env.CYNCO_CHECK_TIMEOUT_MS)
+    // F242, entry 1.B2 part 1: the check calibrates in the BASE archive, so the dispatch labels that
+    // folder for the run as well (dispatch-mission.sh passes it to cynco-sandbox.mjs create --also).
+    expect(d.env.CYNCO_MISSION_ALSO_LABEL).toBe('C:/tmp/c9_author_base')
     expect(r.ok).toBe(true)
     expect(r.proposal).toMatchObject({ type: 'Code', name: 'gate/c9', status: 'pending' })
     expect(r.proposal.evidence).toMatchObject({ lineCount: IDS.length, problems: [], missionId: 'c9-author-1', verified: true })
@@ -687,6 +690,12 @@ describe('authorCampaign', () => {
     expect(call).toBeTruthy()
     expect(call.args).toEqual([SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base', '--json'])
     expect(call.opts.timeoutMs).toBe(CHECK_SUBPROCESS_TIMEOUT_MS)
+    // F242: the check starts in the checkout (no cwd: rule H1), and every git the runner runs in the
+    // staging folder, which the authoring mission writes, carries the harness-git environment.
+    expect(call.opts.cwd).toBeUndefined()
+    const gitCalls = spawned.filter(s => s.cmd === 'git')
+    expect(gitCalls.map(g => g.args.find(a => !a.startsWith('-') && !a.includes('/')))).toEqual(expect.arrayContaining(['config', 'add', 'commit']))
+    for (const g of gitCalls) expect(Number(g.opts.env?.GIT_CONFIG_COUNT), g.args.join(' ')).toBeGreaterThan(0)
     // And it is the check the RUNNER believes: the proposal's line count is the
     // subprocess's, not anything computed in this process.
     expect(state.state.authoring.c9.lastCheck.lineCount).toBe(IDS.length)

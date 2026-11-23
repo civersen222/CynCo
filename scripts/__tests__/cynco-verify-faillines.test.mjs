@@ -8,7 +8,10 @@
 // lines (verbatim shapes from that log) that the tail cannot hold them.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { failingLines, failReport, FAIL_LINE, FAIL_LINES_MAX } from '../cynco-verify.mjs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { failingLines, failReport, FAIL_LINE, FAIL_LINES_MAX, runCheck, runCheckAsync } from '../cynco-verify.mjs'
+import { testContainment } from '../../engine/containment.js'
 
 const passes = [
   'regression T3.8 an expert bluffs the player who folds and never the one who calls; a sharp does not tell them apart: PASS',
@@ -85,4 +88,34 @@ describe('the driver uses it', () => {
     expect(driver).toMatch(/failLines: failingLines\(r\.output\)\.lines \}/)
     expect(driver).toMatch(/failLines: failingLines\(attempt\.r\.output\)\.lines,/)
   })
+})
+
+// F242 (01-isolation 7.2, tests 9.7): the driver's check and probe run inside the run's containment.
+// A check that could not be started there is a harness fault, never a failed delivery.
+describe('runCheck with the run context', () => {
+  const ctx = () => {
+    const d = join(tmpdir(), 'cynco-verify-contained-nowhere')
+    return testContainment({ missionCwd: d, sandbox: { root: d, home: join(d, 'h'), tmp: join(d, 't'), scratch: join(d, 's') }, home: d, folders: { state: d, models: d, guard: d, audit: null } })
+  }
+  it('a check that cannot start contained is UNMEASURED, naming ECONTAINMENT; without the option it runs as before', async () => {
+    const before = process.env.LOCALCODE_CONTAINMENT_OFF
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'nonsense'
+    try {
+      const r = runCheck('exit 0', process.cwd(), 30_000, { contained: ctx() })
+      expect(r.verified).toBeNull()
+      expect(r.spawnFailed).toBe(true)
+      expect(r.exitCode).toBeNull()
+      expect(r.harnessFault).toMatch(/^spawn failed: code ECONTAINMENT/)
+      expect(r.outputTail).toContain('[spawn] REFUSED: containment: LOCALCODE_CONTAINMENT_OFF names an unknown layer: nonsense')
+      const a = await runCheckAsync('exit 0', process.cwd(), 30_000, { contained: ctx() })
+      expect(a.verified).toBeNull()
+      expect(a.harnessFault).toMatch(/^spawn failed: code ECONTAINMENT/)
+    } finally {
+      if (before === undefined) delete process.env.LOCALCODE_CONTAINMENT_OFF
+      else process.env.LOCALCODE_CONTAINMENT_OFF = before
+    }
+    const plain = runCheck('exit 0', process.cwd(), 30_000)
+    expect(plain.verified).toBe(true)
+    expect(plain.spawnFailed).toBe(false)
+  }, 60_000)
 })

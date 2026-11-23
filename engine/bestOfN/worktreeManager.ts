@@ -2,6 +2,7 @@ import { execSync } from 'child_process'
 import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { basename, dirname, resolve, join } from 'path'
 import { tmpdir } from 'os'
+import { harnessGitEnv } from '../harnessGit.js'
 
 /** Every worktree this manager creates lives at `<tmpdir>/cynco-bestofn-XXXXXX`. */
 export const WORKTREE_PREFIX = 'cynco-bestofn-'
@@ -75,7 +76,7 @@ export interface WorktreeManagerOptions {
   /** Liveness probe for a lock's pid; default `process.kill(pid, 0)`. */
   isAlive?: (pid: number) => boolean
   /** Test seam: runs one git command line; default `child_process.execSync`. */
-  exec?: (command: string, options: { cwd: string; stdio: 'pipe'; timeout: number }) => Buffer | string
+  exec?: (command: string, options: { cwd: string; stdio: 'pipe'; timeout: number; env?: Record<string, string | undefined> }) => Buffer | string
 }
 
 /**
@@ -214,10 +215,13 @@ export class WorktreeManager {
    * create would fail "already exists" (final review M3, T1-N1).
    */
   private git(args: string, { retry = false }: { retry?: boolean } = {}): string {
+    // Harness git in a folder a run may have written (F242): `worktree add` checks files out, which
+    // would run a repository-defined smudge filter and a post-checkout hook.
     const run = () => this.exec(`git ${args}`, {
       cwd: this.repoRoot,
       stdio: 'pipe',
       timeout: GIT_TIMEOUT_MS,
+      env: harnessGitEnv(process.env, { repo: this.repoRoot }),
     })
       .toString()
       .trim()

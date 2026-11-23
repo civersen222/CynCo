@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { homeProblems } from './cynco-campaign-home.mjs'
+import { harnessGitEnv } from '../engine/harnessGit.js'
 
 const REQUIRED = ['id', 'title', 'repo', 'base', 'gate', 'perturb', 'suiteBaseline', 'marker', 'keepGreen', 'budget', 'invariants', 'posiwid', 'allow', 'deny', 'measures', 'work', 'rules']
 /** The only env keys a campaign spec may hand the dispatched engine (F161): the explicit-path overrides for the runtime assets. */
@@ -95,7 +96,7 @@ export function loadCampaignSpec(path) {
 const defaultIo = {
   exists: (p) => existsSync(p),
   readFile: (p) => readFileSync(p, 'utf8'),
-  gitHasCommit: (repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8' }).status === 0,
+  gitHasCommit: (repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8', env: harnessGitEnv(process.env) }).status === 0,
 }
 
 /** S5 identity: the invariants no wave, proposal, or generated brief may violate.

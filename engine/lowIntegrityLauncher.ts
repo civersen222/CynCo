@@ -30,6 +30,9 @@
  * (F201, F210).
  *
  * Imports node built-ins and ./containment.js only; bun:ffi is loaded when the token is lowered.
+ * Every file module is imported statically, so it is loaded before the lowering: Bun at low
+ * integrity cannot load a module from a folder that is not labelled low (measured 2026-11-23,
+ * engine/tools/CLAUDE.md), so an `import()` after the lowering would fail.
  */
 import { readFileSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'

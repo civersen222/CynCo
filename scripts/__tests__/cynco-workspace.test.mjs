@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { purgeStaleAgentState, AGENT_STATE_FILES } from '../cynco-workspace.mjs'
+import { purgeStaleAgentState, purgeBytecodeCaches, AGENT_STATE_FILES } from '../cynco-workspace.mjs'
+import { harnessGitBin } from '../../engine/harnessGit.js'
 
 let repo
 
@@ -75,5 +76,23 @@ describe('purgeStaleAgentState', () => {
     const lines = purgeStaleAgentState(repo, io)
     expect(lines).toHaveLength(2)
     expect(lines[1]).toContain('EBUSY')
+  })
+})
+
+// F242 (01-isolation 7.6, tests 9.7): the purges' `git ls-files` runs in a folder a contained run wrote, so
+// git is named by its full path and runs with the harness-git environment.
+describe('the purges run git as the harness', () => {
+  it('purgeStaleAgentState and purgeBytecodeCaches pass harnessGitBin() and an env that holds GIT_CONFIG_COUNT', () => {
+    const calls = []
+    const spawnSync = (file, args, opts) => { calls.push({ file, args, opts }); return { status: 128, stdout: '' } }
+    purgeStaleAgentState(repo, { existsSync: () => true, rmSync: () => {}, spawnSync })
+    const dirent = (name) => ({ name, isDirectory: () => true })
+    purgeBytecodeCaches(repo, { readdirSync: (d) => (d === repo ? [dirent('__pycache__')] : []), rmSync: () => {}, spawnSync })
+    expect(calls).toHaveLength(2)
+    for (const c of calls) {
+      expect(c.file).toBe(harnessGitBin())
+      expect(c.args[0]).toBe('ls-files')
+      expect(Number(c.opts.env.GIT_CONFIG_COUNT)).toBeGreaterThan(0)
+    }
   })
 })

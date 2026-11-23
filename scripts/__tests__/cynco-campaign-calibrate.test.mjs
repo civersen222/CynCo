@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { calibrate, instrumentOf } from '../cynco-campaign-calibrate.mjs'
+import { SUITE_TIMEOUT_MS } from '../cynco-campaign-grade.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { id: 'c8', repo: 'C:/repo', base: '1d03308', gate: 'C:/h/gate_c8.py', perturb: 'C:/h/perturb_c8.py', suiteBaseline: 'C:/h/suite_baseline_1d03308.txt' }
@@ -284,5 +285,73 @@ describe('calibrate', () => {
     const r = await calibrate(spec, fake)
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/git archive 1d03308 failed: fatal: not a valid object name/)
+  })
+})
+
+// F242 (01-isolation 7.3, tests 9.7).
+describe('calibrate runs contained, and a baseline run that did not complete writes no baseline', () => {
+  const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+  /** io() with the pytest baseline run answered by `pytestResult`, and every call's options kept. */
+  const withBaseline = (pytestResult) => {
+    const fake = io({ perturbLog, baselineExists: false, headerText: fullHeader })
+    const inner = fake.run
+    fake.opts = []
+    fake.run = (cmd, args, opts) => {
+      fake.opts.push({ k: [cmd, ...args].join(' '), opts })
+      if (/pytest/.test([cmd, ...args].join(' '))) return pytestResult
+      return inner(cmd, args, opts)
+    }
+    return fake
+  }
+
+  it('the gate, perturb, positive and baseline runs each run in a grader containment around the BASE folder; the archive does not', async () => {
+    const fake = withBaseline({ status: 0, stdout: '100 passed\n', stderr: '' })
+    const r = await calibrate(withPositive, fake)
+    expect(r.ok).toBe(true)
+    const contained = fake.opts.filter(o => o.opts?.contained)
+    expect(contained.map(o => o.k.split(' ')[1].split('/').pop())).toEqual(['gate_c8.py', 'perturb_c8.py', 'positive_c8.py', '-m'])
+    for (const o of contained) expect(o.opts.contained).toEqual({ own: 'C:/tmp/c8_base' })
+    const archive = fake.opts.find(o => /archive/.test(o.k))
+    expect(archive.opts.contained).toBeUndefined()
+    // The archive's git runs with the harness-git environment: the keys alone, for runSync to merge.
+    expect(archive.opts.env.GIT_CONFIG_COUNT).toBeDefined()
+    expect(archive.opts.env.PATH).toBeUndefined()
+  })
+
+  it('a baseline run that faulted: ok false, the problem named, no baseline written', async () => {
+    const fake = withBaseline({ status: null, stdout: '', stderr: '[spawn] REFUSED: containment: x — nothing was run', fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(false)
+    expect(r.harnessFault).toBe(true)
+    expect(r.suiteBaselineCreated).toBe(false)
+    expect(r.problems).toEqual(['suite baseline run did not complete (code ECONTAINMENT, status null, after 0 ms)'])
+    expect(fake.writes).toEqual([])
+  })
+
+  it('a baseline run that timed out: the same, naming the cap', async () => {
+    const fake = withBaseline({ status: null, stdout: 'FAILED gilded/tests/a.py::t1 - x\n', stderr: '', timedOut: true, fault: null })
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(false)
+    expect(r.harnessFault).toBe(true)
+    expect(r.problems).toEqual([`suite baseline run did not complete (timed out after ${SUITE_TIMEOUT_MS} ms)`])
+    expect(fake.writes).toEqual([])
+  })
+
+  // Review finding of slice S2: pytest ran but measured nothing (2: interrupted or a collection
+  // error; 3, 4, 5). Its empty FAILED list would read as "no standing failures".
+  it('a baseline run whose pytest exit is not 0 or 1: the same, naming the exit', async () => {
+    for (const status of [2, 3, 4, 5]) {
+      const fake = withBaseline({ status, stdout: 'ERROR collecting gilded/tests/a.py\n', stderr: '', timedOut: false, fault: null })
+      const r = await calibrate(spec, fake)
+      expect(r.ok).toBe(false)
+      expect(r.harnessFault).toBe(true)
+      expect(r.suiteBaselineCreated).toBe(false)
+      expect(r.problems).toEqual([`suite baseline run did not complete (pytest exit ${status})`])
+      expect(fake.writes).toEqual([])
+    }
+    const failing = withBaseline({ status: 1, stdout: 'FAILED gilded/tests/a.py::t1 - x\n', stderr: '', timedOut: false, fault: null })
+    const r1 = await calibrate(spec, failing)
+    expect(r1.suiteBaselineCreated).toBe(true)
+    expect(failing.writes.length).toBe(1)
   })
 })

@@ -1,4 +1,5 @@
 import { execSync } from 'child_process'
+import { ContainmentRefusal, toolExecSync } from '../containment.js'
 import type { Diagnostic, LSPServerConfig } from './types.js'
 
 const KNOWN_SERVERS: LSPServerConfig[] = [
@@ -26,6 +27,7 @@ export class LSPManager {
   detectAvailable(): LSPServerConfig[] {
     return KNOWN_SERVERS.filter(s => {
       try {
+        // Not contained: it runs in the engine's own folder and starts no workspace code.
         execSync(`which ${s.command} 2>/dev/null || where ${s.command} 2>NUL`, { encoding: 'utf-8', stdio: 'pipe' })
         return true
       } catch { return false }
@@ -48,9 +50,11 @@ export class LSPManager {
 
   private getTypeScriptDiagnostics(filePath: string): Diagnostic[] {
     try {
-      execSync(`npx tsc --noEmit --pretty false 2>&1`, { cwd: this.cwd, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
+      // Workspace code (a local tsc), so contained in an unattended run (F242).
+      toolExecSync(`npx tsc --noEmit --pretty false 2>&1`, { cwd: this.cwd, encoding: 'utf-8', timeout: 15000, stdio: 'pipe' })
       return [] // No errors
     } catch (err: any) {
+      if (err instanceof ContainmentRefusal) { console.log('[lsp] diagnostics not run: ' + err.message); return [] }
       const output = err.stdout ?? ''
       return this.parseTscOutput(output)
     }
@@ -75,9 +79,11 @@ export class LSPManager {
 
   private getPythonDiagnostics(filePath: string): Diagnostic[] {
     try {
-      execSync(`python -m py_compile "${filePath}" 2>&1`, { cwd: this.cwd, encoding: 'utf-8', timeout: 10000, stdio: 'pipe' })
+      // Workspace code (a py_compile.py the run planted would be imported), so contained (F242).
+      toolExecSync(`python -m py_compile "${filePath}" 2>&1`, { cwd: this.cwd, encoding: 'utf-8', timeout: 10000, stdio: 'pipe' })
       return []
     } catch (err: any) {
+      if (err instanceof ContainmentRefusal) { console.log('[lsp] diagnostics not run: ' + err.message); return [] }
       const output = (err.stderr ?? err.stdout ?? '').trim()
       if (output) {
         return [{ file: filePath, line: 0, column: 0, severity: 'error', message: output.slice(0, 500), source: 'python' }]

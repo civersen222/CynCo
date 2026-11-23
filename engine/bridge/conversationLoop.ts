@@ -113,6 +113,8 @@ import { detectTests } from '../bestOfN/testDetector.js'
 import { WorktreeManager } from '../bestOfN/worktreeManager.js'
 import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
+import { runContainment } from '../containment.js'
+import { harnessGitEnv } from '../harnessGit.js'
 import type { ProjectBinding } from '../projects/binding.js'
 import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
@@ -917,7 +919,7 @@ export class ConversationLoop {
       const { execSync } = require('child_process')
       // If not a git repo, make it one — snapshots need git
       if (!fs.existsSync(path.join(cwd, '.git'))) {
-        execSync('git init', { cwd, stdio: 'pipe' })
+        execSync('git init', { cwd, stdio: 'pipe', env: harnessGitEnv(process.env) })
         console.log('[snapshot] Initialized git repo in project directory')
       }
       this.snapshot = new WorkspaceSnapshot(cwd)
@@ -2564,7 +2566,12 @@ export class ConversationLoop {
           this.inBestOfN = true
 
           const candidates: any[] = []
-          const wtManager = new WorktreeManager(mainCwd)
+          // F242: in a contained run the candidates' worktrees live in the sandbox's scratch folder,
+          // which a low child may write; undefined is the OS temp folder, as before.
+          const wtManager = new WorktreeManager(mainCwd, { tmpRoot: runContainment()?.sandbox.scratch })
+          // Set when a candidate's tests could not be run in this run: no candidate is then applied,
+          // because an untested candidate would win on a score that measured nothing.
+          let bonRefusal: string | null = null
 
           try {
             for (let i = 0; i < bonCount; i++) {
@@ -2594,6 +2601,11 @@ export class ConversationLoop {
               // Extract patch and run tests
               const patch = extractPatch(wtPath)
               const testResult = runTests(wtPath, testInfo)
+              if (testResult.refused) {
+                bonRefusal = testResult.refused
+                console.log('[bestOfN] tests not run: ' + bonRefusal)
+                break
+              }
               const passRate = testResult.total > 0 ? testResult.passed / testResult.total : 0
 
               candidates.push({
@@ -2627,7 +2639,7 @@ export class ConversationLoop {
             // Select winner
             const winner = selectWinner(candidates)
 
-            if (winner && winner.patch) {
+            if (!bonRefusal && winner && winner.patch) {
               const applied = applyPatch(mainCwd, winner.patch)
               const msg = applied
                 ? `\n**Best-of-N result:** Candidate ${winner.index + 1} selected — ${winner.testsPassed}/${winner.testsTotal} tests passing (${(winner.passRate * 100).toFixed(0)}%). Patch applied.\n`
@@ -2643,6 +2655,8 @@ export class ConversationLoop {
                 bestOfNRan = true
               }
               // If patch didn't apply, fall through to normal single-pass below
+            } else if (bonRefusal) {
+              this.emit({ type: 'stream.token', text: '\n**Best-of-N:** the candidates\' tests could not be run, so no candidate was applied. Running single-pass fallback.\n', messageId: '' } as any)
             } else {
               this.emit({ type: 'stream.token', text: '\n**Best-of-N:** No candidate produced a valid patch. Running single-pass fallback.\n', messageId: '' } as any)
             }
@@ -4785,6 +4799,7 @@ export class ConversationLoop {
       return execSync('git rev-parse HEAD', {
         cwd: this.executor['cwd'],
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: harnessGitEnv(process.env),
       }).toString().trim()
     } catch {
       return null
@@ -4817,6 +4832,7 @@ export class ConversationLoop {
       execSync(`git merge-base --is-ancestor ${ancestor} ${descendant}`, {
         cwd: this.executor['cwd'],
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: harnessGitEnv(process.env),
       })
       return true
     } catch {
@@ -4831,6 +4847,7 @@ export class ConversationLoop {
       const out = execSync('git status --porcelain', {
         cwd: this.executor['cwd'],
         stdio: ['pipe', 'pipe', 'pipe'],
+        env: harnessGitEnv(process.env, { repo: this.executor['cwd'] }),
       }).toString()
       const tracked = out.split('\n').filter((l: string) => l.trim() && !l.startsWith('??'))
       return tracked.length === 0

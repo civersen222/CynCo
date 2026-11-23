@@ -82,6 +82,14 @@ if [ -n "${LOCALCODE_CONTAINMENT_OFF:-}" ]; then
   exit 1
 fi
 ALSO_ARGS=()
+# Folders the run may also write, besides its mission folder (a ';' list): set only by
+# scripts/cynco-gate-author.mjs, whose check calibrates in the BASE archive (entry 1.B2).
+if [ -n "${CYNCO_MISSION_ALSO_LABEL:-}" ]; then
+  IFS=';' read -r -a ALSO_DIRS <<< "$CYNCO_MISSION_ALSO_LABEL"
+  for d in "${ALSO_DIRS[@]}"; do
+    if [ -n "$d" ]; then ALSO_ARGS+=(--also "$d"); fi
+  done
+fi
 SANDBOX_CREATED=
 
 # --- a fresh engine, always ------------------------------------------------

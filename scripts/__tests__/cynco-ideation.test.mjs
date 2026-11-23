@@ -1,9 +1,31 @@
-import { describe, it, expect } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseIdeation, measureFollowed, authorityRegistry, promotionProposal, ideationPrompt, runIdeation, capProposal, effectiveInvariants, CAP_PROPOSAL_FACTOR } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
+import { testContainment } from '../../engine/containment.js'
+
+// F242: the ideation one-shot starts in a sandbox made for it. These seams stand in for the real
+// establish and release, which cannot run in the suite (its sandbox root does not exist).
+// Every state folder this file makes is removed when it is done.
+const stateDirs = []
+const tempState = () => { const d = mkdtempSync(join(tmpdir(), 'cynco-ideation-')); stateDirs.push(d); return d }
+afterAll(() => { for (const d of stateDirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
+
+function containSeams() {
+  const calls = { contain: [], release: [] }
+  const ctx = testContainment({
+    kind: 'daemon-task', missionCwd: process.cwd(), runId: 'ideation-c8-20261123T120000-abcd',
+    sandbox: { root: join(tmpdir(), 'nowhere-root'), home: join(tmpdir(), 'nowhere-home'), tmp: join(tmpdir(), 'nowhere-tmp'), scratch: join(tmpdir(), 'nowhere-scratch') },
+    home: tmpdir(), folders: { state: tmpdir(), models: tmpdir(), guard: tmpdir(), audit: null },
+  })
+  return {
+    calls, ctx,
+    contain: (a) => { calls.contain.push(a); return { ok: true, containment: ctx, ms: 0 } },
+    release: (c) => { calls.release.push(c); return { relabelled: true, note: '' } },
+  }
+}
 
 describe('ideation', () => {
   it('parses the daemon outcome contract into hypotheses and a trap', () => {
@@ -86,10 +108,11 @@ describe('ideation', () => {
     expect(promotionProposal(strong, 0.5)).toBeNull() // already at the bound
   })
   it('runIdeation writes a task file and parses the outcome via an injected io.runTask', async () => {
-    const stateDir = mkdtempSync(join(tmpdir(), 'cynco-ideation-'))
+    const stateDir = tempState()
     const outcome = { ok: true, summary: 'one cause', recommendations: [
       { id: 'rec-1', actionType: 'hypothesis', summary: 'C8.1a', detail: 'owner fill missing | firstEdit: gilded/ui/widgets.py' },
       { id: 'rec-2', actionType: 'trap', summary: 'trap', detail: 'do not touch palette.py' } ] }
+    const seams = containSeams()
     const io = {
       runTask: async (repoRoot, taskPath, env, cwd) => {
         const task = JSON.parse(readFileSync(taskPath, 'utf8'))
@@ -97,6 +120,7 @@ describe('ideation', () => {
         writeFileSync(task.outcomePath, JSON.stringify(outcome))
         return 0
       },
+      contain: seams.contain, release: seams.release,
     }
     const spec = { id: 'c8', repo: process.cwd(), work: [] }
     const fails = [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }]
@@ -104,6 +128,68 @@ describe('ideation', () => {
     expect(result.ideation).toEqual({ hypotheses: [{ gateId: 'C8.1a', cause: 'owner fill missing', firstEdit: 'gilded/ui/widgets.py' }], order: ['C8.1a'], trap: 'do not touch palette.py' })
     expect(result.taskPath).toContain('ideation')
     expect(result.outcomePath).toContain('ideation')
+  })
+
+  // F242 (01-isolation 7.4, tests 9.7).
+  it('a containment that cannot be made runs no task and says REFUSED: containment', async () => {
+    const stateDir = tempState()
+    const ran = []
+    const released = []
+    const said = []
+    const err = console.error
+    console.error = (...a) => { said.push(a.join(' ')) }
+    try {
+      const result = await runIdeation({ spec: { id: 'c8', repo: process.cwd(), work: [] }, fails: [], prior: null, briefText: 'B', stateDir, io: {
+        runTask: async (...a) => { ran.push(a); return 0 },
+        contain: () => ({ ok: false, reason: 'the sandbox root X is not an absolute path to an existing folder' }),
+        release: (c) => { released.push(c); return { relabelled: true, note: '' } },
+      } })
+      expect(result.ideation).toBeNull()
+      expect(result.exitCode).toBeNull()
+      expect(result.error).toBe('REFUSED: containment: the sandbox root X is not an absolute path to an existing folder')
+      expect(ran).toEqual([])
+      expect(released).toEqual([])
+      expect(existsSync(result.taskPath)).toBe(false)
+      expect(said).toContain('[campaign] REFUSED: containment: the sandbox root X is not an absolute path to an existing folder — nothing was run')
+    } finally {
+      console.error = err
+    }
+  })
+
+  it('the task file carries the run id and the repository; the child starts in the checkout; release runs once', async () => {
+    const stateDir = tempState()
+    const seams = containSeams()
+    const seen = []
+    const repo = join(tmpdir(), 'some-mission-repo')
+    const repoRoot = join(tmpdir(), 'the-checkout')
+    await runIdeation({ spec: { id: 'c8', repo, work: [] }, fails: [], prior: null, briefText: 'B', stateDir, repoRoot, io: {
+      runTask: async (root, taskPath, env, cwd) => { seen.push({ root, cwd, task: JSON.parse(readFileSync(taskPath, 'utf8')) }); return 0 },
+      contain: seams.contain, release: seams.release,
+    } })
+    expect(seams.calls.contain).toEqual([{ kind: 'daemon-task', label: 'ideation-c8', missionCwd: repo, labelCwd: false }])
+    expect(seen).toHaveLength(1)
+    expect(seen[0].root).toBe(repoRoot)
+    expect(seen[0].cwd).toBe(repoRoot)
+    expect(seen[0].task.runId).toBe(seams.ctx.runId)
+    expect(seen[0].task.cwd).toBe(repo)
+    expect(seams.calls.release).toEqual([seams.ctx])
+  })
+
+  it('release runs once when the run throws', async () => {
+    const stateDir = tempState()
+    const seams = containSeams()
+    await expect(runIdeation({ spec: { id: 'c8', repo: process.cwd(), work: [] }, fails: [], prior: null, briefText: 'B', stateDir, io: {
+      runTask: async () => { throw new Error('spawn blew up') },
+      contain: seams.contain, release: seams.release,
+    } })).rejects.toThrow('spawn blew up')
+    expect(seams.calls.release).toEqual([seams.ctx])
+  })
+
+  it('rule H1 in the source: the started bun gets the checkout as its working folder, never the repository', () => {
+    const src = readFileSync(new URL('../cynco-ideation.mjs', import.meta.url), 'utf8')
+    expect(src).toContain('?? runTask)(repoRoot, taskPath, env, repoRoot)')
+    expect(src).not.toContain('taskPath, env, spec.repo)')
+    expect(src).toContain('establishContainment')
   })
 })
 

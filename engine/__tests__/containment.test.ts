@@ -22,7 +22,7 @@ import {
   containmentRecords, containmentSwitch, engineCheckout, establishContainment, launcherFaultOf,
   LAUNCHER_UNAVAILABLE, mintRunId, MSYS_IN_CONTAINED_RUN, NO_CONTAINMENT, operatorRefusal,
   refusalLayerOf, refusalPrefix, refusalText, releaseContainment, runContainment, setRunContainment,
-  sweepSandboxes, SWITCH_IN_UNATTENDED, testContainment, toolEnv, toolSpawnRefusal, uncontainedSiteRefusal,
+  sweepSandboxes, SWITCH_IN_UNATTENDED, testContainment, toolEnv, toolSpawnRefusal,
   type ContainmentRecord, type ContainmentRunner, type RunContainment,
 } from '../containment.js'
 import { RUN_ID_RE } from '../missionEnv.js'
@@ -360,15 +360,6 @@ describe('toolSpawnRefusal', () => {
   })
 })
 
-describe('uncontainedSiteRefusal', () => {
-  it('null outside a contained run; inside one, a containment refusal naming the site', () => {
-    expect(uncontainedSiteRefusal('the Git tool', null)).toBeNull()
-    const text = uncontainedSiteRefusal('the Git tool', ctxOf())!
-    expect(refusalLayerOf(text)).toBe('containment')
-    expect(text).toBe(refusalText('containment', 'the Git tool is not contained in an unattended run yet: it would run at medium integrity in the mission folder, where hooks, git settings and test files written during the run are executed'))
-  })
-})
-
 describe('containmentSwitch and containmentOff', () => {
   it('reads the one variable', () => {
     expect(containmentSwitch({})).toEqual({ raw: null, off: [], unknown: [] })
@@ -399,6 +390,23 @@ describe('launcherFaultOf', () => {
     expect(launcherFaultOf(198, '[containment] child ended: SIGKILL')?.code).toBe('ECHILDGONE')
     expect(launcherFaultOf(0, '[containment] refused: x')).toBeNull()
     expect(launcherFaultOf(7, '')).toBeNull()
+  })
+
+  // Review finding of slice S2 (rule F35): the gate-authoring check is a Bun script in the
+  // checkout, which a Bun at low integrity cannot load. Its exit 1 is "did not run", never a FAILED
+  // check; any other exit 1 is the command's own.
+  it('exit 1 with Bun\'s own EPERM line is "did not run" (ECONTAINMENT), naming the file', () => {
+    const line = 'error: EPERM reading "C:\\Users\\o\\localcode\\scripts\\cynco-gate-author.mjs"'
+    const f = launcherFaultOf(1, `${line}\n`)
+    expect(f?.code).toBe('ECONTAINMENT')
+    expect(f?.reason).toContain('C:\\Users\\o\\localcode\\scripts\\cynco-gate-author.mjs')
+    expect(f?.reason).toContain('did not run')
+    expect(f?.text.startsWith('Refused [containment]: ')).toBe(true)
+    expect(launcherFaultOf(1, `Bun v1.3.13\r\n${line}\r\n`)?.code).toBe('ECONTAINMENT')
+    expect(launcherFaultOf(1, 'FAILED test_x.py::test_a\nerror: something else')).toBeNull()
+    expect(launcherFaultOf(1, `prefix ${line}`)).toBeNull()
+    expect(launcherFaultOf(2, line)).toBeNull()
+    expect(launcherFaultOf(0, line)).toBeNull()
   })
 })
 

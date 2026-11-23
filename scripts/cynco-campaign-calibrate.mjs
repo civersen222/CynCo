@@ -6,6 +6,7 @@ import { parseGateOutput, parsePerturbHeader, compareCalibration, gateInterprete
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
 import { campaignHome } from './cynco-campaign-home.mjs'
+import { harnessGitEnv } from '../engine/harnessGit.js'
 
 export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
@@ -26,10 +27,15 @@ export const defaultIo = {
  * spellings of "the BASE the gate was calibrated against" is exactly the kind
  * of drift Rule 11 exists to prevent. Outside the repo, always — a worktree
  * inside it would put the BASE on the same disk the mission is editing.
+ *
+ * F242: the repository may have been written by a contained run, so `git archive`
+ * runs with the harness-git environment (no hooks, no repository-defined filter,
+ * the work tree pinned). It is not contained itself: Git Bash cannot start at low
+ * integrity while another Git Bash runs.
  */
 export function archiveBase(repo, base, dest, io = defaultIo) {
   io.freshDir?.(dest)
-  const arch = io.run(bashExe(), ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: {}, timeoutMs: 300_000 })
+  const arch = io.run(bashExe(), ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: harnessGitEnv({}, { repo }), timeoutMs: 300_000 })
   if (arch.status !== 0) return { ok: false, problems: [`git archive ${base} failed: ${String(arch.stderr).trim()}`] }
   return { ok: true, problems: [] }
 }
@@ -80,9 +86,9 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   try { header = parsePerturbHeader(io.readFile(spec.perturb)) } catch (e) { return { ok: false, problems: [named(e.message, 'perturb')] } }
 
   const env = { CYNCO_GATE_REPO: baseDir }
-  const baseRun = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const baseRun = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
   const base = parseGateOutput(baseRun.stdout + '\n' + baseRun.stderr)
-  const pertRun = io.run(gateInterpreter(spec.perturb), [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const pertRun = io.run(gateInterpreter(spec.perturb), [spec.perturb], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
   const perturbed = parseGateOutput(pertRun.stdout + '\n' + pertRun.stderr)
 
   // Rule 14, mechanical: the positive shim makes every graded fact true, so a
@@ -90,7 +96,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // can never hold) is caught here rather than after a wave of GPU hours.
   let positiveRun = null, positive = null
   if (spec.positive) {
-    positiveRun = io.run(gateInterpreter(spec.positive), [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true })
+    positiveRun = io.run(gateInterpreter(spec.positive), [spec.positive], { cwd: baseDir, env, timeoutMs: GATE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
     positive = parseGateOutput(positiveRun.stdout + '\n' + positiveRun.stderr)
   }
 
@@ -149,7 +155,34 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   let suiteBaselineCreated = false
   const { suiteTarget } = campaignHome(spec)
   if (ok && suiteTarget !== null && !io.exists(spec.suiteBaseline)) {
-    const py = io.run('python', ['-m', 'pytest', suiteTarget, '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+    const py = io.run('python', ['-m', 'pytest', suiteTarget, '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
+    // Entry 1.B2 part 3: a baseline run that never ran, or never finished, measured nothing. Writing
+    // its (empty) failure list would read as "no standing failures" and launder every one of them
+    // into a regression later, so no baseline file is written and the calibration is a harness fault.
+    // Only pytest's 0 (all passed) and 1 (some failed) mean the suite was measured: 2 (interrupted or
+    // a collection error), 3, 4 and 5 (internal error, usage error, nothing collected) measured
+    // nothing either, and a contained run adds ways for a collection to fail.
+    const measured = py.status === 0 || py.status === 1
+    if (py.fault || py.timedOut || !measured) {
+      const why = py.fault ? faultSummary(py.fault) : py.timedOut ? `timed out after ${SUITE_TIMEOUT_MS} ms` : `pytest exit ${py.status}`
+      return {
+        ok: false,
+        problems: [`suite baseline run did not complete (${why})`],
+        gateSha256: io.sha256(spec.gate),
+        perturbSha256: io.sha256(spec.perturb),
+        positiveSha256: spec.positive ? io.sha256(spec.positive) : null,
+        baseFails: base.fails,
+        basePasses: base.passes,
+        perturbFails: perturbed.fails,
+        positive,
+        suiteBaselineCreated: false,
+        baseGateMs: typeof baseRun.elapsedMs === 'number' ? baseRun.elapsedMs : null,
+        baseOutputTail: (baseRun.stdout + baseRun.stderr).slice(-4000),
+        perturbOutputTail: (pertRun.stdout + pertRun.stderr).slice(-4000),
+        positiveOutputTail: positiveRun ? (positiveRun.stdout + positiveRun.stderr).slice(-4000) : null,
+        harnessFault: true,
+      }
+    }
     const ids = (py.stdout + py.stderr).split('\n').filter(l => l.startsWith('FAILED ')).map(l => l.slice(7).split(/\s+-\s+/)[0].trim())
     io.writeFile(spec.suiteBaseline, `# standing failures of ${suiteTarget} at ${spec.base}, measured ${new Date().toISOString().slice(0, 10)} by cynco-campaign calibrate\n${ids.join('\n')}\n`)
     suiteBaselineCreated = true

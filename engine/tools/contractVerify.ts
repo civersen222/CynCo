@@ -19,10 +19,11 @@
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
-import { exec, execFile } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from './shellInfo.js'
 import { testCaseAssertions } from '../training/gitFacts.js'
-import { runContainment, uncontainedSiteRefusal } from '../containment.js'
+import { toolExec, toolSpawnRefusal } from '../containment.js'
+import { harnessGitBin, harnessGitEnv } from '../harnessGit.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -266,11 +267,10 @@ export async function verifyAssertion(
 }
 
 function git(cwd: string, args: string[]): Promise<string | null> {
-  // F242: not run in a contained run (it would read the mission folder's own git settings at
-  // medium integrity); null is the honest "the repository cannot answer here".
-  if (runContainment()) return Promise.resolve(null)
+  // F242: the folder may be a mission folder a contained run wrote; its hooks, monitor, filters,
+  // pager and work-tree setting are switched off, and a planted git.exe there is never the one run.
   return new Promise(resolvePromise => {
-    execFile('git', args, { cwd, encoding: 'utf-8' }, (err, stdout) => {
+    execFile(harnessGitBin(), args, { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env, { repo: cwd }) }, (err, stdout) => {
       resolvePromise(err ? null : stdout)
     })
   })
@@ -378,27 +378,36 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   const startedAt = Date.now()
-  // F242: a check command run here would execute what the run wrote (a conftest.py, a script) at
-  // medium integrity; in a contained run it is no answer, and says why.
-  const uncontained = uncontainedSiteRefusal('a contract check command')
-  if (uncontained) return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: uncontained })
+  // F242: a check command executes what the run wrote (a conftest.py, a script), so it starts
+  // through the containment with the shared tool environment. A run whose launcher cannot run
+  // starts nothing: no answer, never a failed check (F35).
+  const refusal = toolSpawnRefusal()
+  if (refusal) return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: refusal })
   return new Promise(resolvePromise => {
-    exec(
-      runnable,
-      { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        const ms = Date.now() - startedAt
-        const tail = capTail((stdout ?? '') + (stderr ?? ''), 40, 4096)
-        if (!err) return resolvePromise({ outcome: 'passed', ms, tail })
-        const e = err as Error & { code?: number | string; killed?: boolean }
-        if (e.killed) return resolvePromise({ outcome: 'timeout', ms, tail })
-        // A shell that ran the command reports its status as a number — including
-        // 127 for "not found", which is a real failing answer. Anything else
-        // (the shell would not start, output overran the buffer) is no answer.
-        if (typeof e.code === 'number') return resolvePromise({ outcome: 'failed', ms, tail })
-        return resolvePromise({ outcome: 'unrunnable', ms, tail })
-      },
-    )
+    // toolExec throws only before anything starts (its backstop refusal, or the long-command file
+    // that could not be written): that is no answer, never a rejected check.
+    try {
+      toolExec(
+        runnable,
+        { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 },
+        (err, stdout, stderr) => {
+          const ms = Date.now() - startedAt
+          const tail = capTail((stdout ?? '') + (stderr ?? ''), 40, 4096)
+          if (!err) return resolvePromise({ outcome: 'passed', ms, tail })
+          const e = err as Error & { code?: number | string; killed?: boolean }
+          if (e.killed) return resolvePromise({ outcome: 'timeout', ms, tail })
+          // A shell that ran the command reports its status as a number — including
+          // 127 for "not found", which is a real failing answer. Anything else
+          // (the shell would not start, output overran the buffer, the launcher
+          // refused with 197 or lost its child with 198: code 'ECONTAINMENT' /
+          // 'ECHILDGONE') is no answer.
+          if (typeof e.code === 'number') return resolvePromise({ outcome: 'failed', ms, tail })
+          return resolvePromise({ outcome: 'unrunnable', ms, tail })
+        },
+      )
+    } catch (e) {
+      resolvePromise({ outcome: 'unrunnable', ms: Date.now() - startedAt, tail: (e as Error).message })
+    }
   })
 }
 

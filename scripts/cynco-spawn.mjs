@@ -28,8 +28,12 @@
 //      caller cannot mistake "the harness did not run this" for "the thing I was
 //      measuring failed".
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { win32 } from 'node:path'
+import { existsSync, unlinkSync } from 'node:fs'
+import { basename, win32 } from 'node:path'
+import {
+  containedCommand, toolSpawnRefusal, establishContainment, releaseContainment, ownIntegrityLevel, launcherFaultOf,
+  refusalPrefix, refusalText,
+} from '../engine/containment.js'
 
 /**
  * The fraction of the cap a run must have actually spent before an ETIMEDOUT is
@@ -94,7 +98,8 @@ export function bashExe() {
  * Options: `cwd`, `env` (merged over process.env unless `envExact`, which
  * passes `env` as the whole environment), `timeoutMs`, `shell`,
  * `retryImpossibleTimeout` (see below), `onStaleRetry(line)` (the retry's log
- * line goes to it instead of stderr).
+ * line goes to it instead of stderr), `contained` (a run context, or
+ * `{ own, extraRoots?, labelOwn? }`: see `containedPlan`; F242).
  *
  * Returns `{ status, stdout, stderr, elapsedMs, timedOut, fault }`.
  * `timedOut` and `fault` are mutually exclusive, and both are absent-or-false
@@ -161,26 +166,138 @@ export function instrumentEnv(base, env) {
   return merged
 }
 
-function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn = spawnSync, now = () => Date.now() } = {}) {
-  const t0 = now()
-  const r = spawn(cmd, args, {
-    cwd,
-    // `envExact`: the caller built the WHOLE environment and stripped keys out
-    // of it on purpose (the mission dispatch drops CYNCO_NTFY_* and GitHub
-    // tokens) — merging process.env back underneath would put them straight back.
+// F242: the `contained` option. A command that runs workspace code for an unattended run (the
+// driver's check and probe, every grader and calibration run) starts inside a containment: the
+// caller's own (`contained` is a run context) or one made for this command (`{ own, extraRoots?,
+// labelOwn? }`, kind `grader`, released when the command has ended). On Windows the child is then
+// started by the low-integrity launcher. A command that could not be run contained is not run: the
+// result carries `fault.code === 'ECONTAINMENT'`, so every caller's `if (r.fault)` reads it as
+// "did not run", never as a failing gate.
+let saidDirect = false
+
+/** `Refused [containment]: <reason>. <the default advice>` back to `<reason>`. */
+function refusalReason(text) {
+  const prefix = `${refusalPrefix('containment')} `
+  const suffix = refusalText('containment', '').slice(prefix.length)
+  let r = String(text)
+  if (r.startsWith(prefix)) r = r.slice(prefix.length)
+  if (r.endsWith(suffix)) r = r.slice(0, r.length - suffix.length)
+  return r
+}
+
+/** The result of a command that was refused before anything was started. */
+function refusedResult(reason) {
+  return {
+    status: null, stdout: '', stderr: `[spawn] REFUSED: containment: ${reason} — nothing was run`, elapsedMs: 0, timedOut: false,
+    fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 },
+  }
+}
+
+/**
+ * What to start, and how to clean up after it. `{ refused }` when nothing may be started;
+ * otherwise `{ cmd, args, shell, cwd, env, viaLauncher, done }`, where `done()` deletes a long
+ * command's file and releases a containment made here. `hooks.ownLevel`, `hooks.establish`,
+ * `hooks.release`, `hooks.platform` and `hooks.bun` are test seams.
+ */
+function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks = {}) {
+  const plain = () => ({
+    cmd, args, shell, cwd, viaLauncher: false, done: () => {},
     env: envExact ? (env ?? process.env) : instrumentEnv(process.env, env),
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    maxBuffer: 64 * 1024 * 1024,
-    windowsHide: true,
-    shell,
   })
-  const elapsedMs = Math.max(0, now() - t0)
-  return classified({ status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal ?? null, error: r.error }, elapsedMs, timeoutMs)
+  if (contained == null) return plain()
+  if (envExact) return { refused: 'a contained command cannot take an exact environment' }
+  let ctx
+  let own = false
+  if (typeof contained.runId === 'string') {
+    ctx = contained
+  } else {
+    if (typeof contained.own !== 'string' || contained.own === '') {
+      return { refused: 'the contained option names neither a run context nor a folder of its own' }
+    }
+    // Entry 1.B2 part 2: a process that is already low integrity (the authoring check started by a
+    // contained Bash or check) cannot make a sandbox or set a label, and needs neither.
+    if ((hooks.ownLevel ?? ownIntegrityLevel)() === 'low') {
+      if (!saidDirect) {
+        saidDirect = true
+        console.error('[spawn] already inside a contained run: commands run directly, with no second sandbox')
+      }
+      return plain()
+    }
+    const est = (hooks.establish ?? establishContainment)({
+      kind: 'grader', label: `grade-${basename(contained.own)}`, missionCwd: contained.own,
+      labelCwd: contained.labelOwn !== false, extraRoots: contained.extraRoots,
+    })
+    if (!est.ok) return { refused: est.reason }
+    ctx = est.containment
+    own = true
+  }
+  const release = () => {
+    if (!own) return
+    const r = (hooks.release ?? releaseContainment)(ctx)
+    if (!r.relabelled && r.note) console.error(`[spawn] ${r.note}`)
+  }
+  const refusal = toolSpawnRefusal({ ctx, required: true, platform: hooks.platform, bun: hooks.bun })
+  if (refusal) {
+    release()
+    return { refused: refusalReason(refusal) }
+  }
+  let c
+  try {
+    c = containedCommand({ file: cmd, args: args ?? [], ...(shell !== undefined ? { shell } : {}) }, {
+      ctx, cwd, platform: hooks.platform,
+      env: instrumentEnv(process.env, { ...(contained.labelOwn === false ? { PYTHONDONTWRITEBYTECODE: '1' } : {}), ...(env ?? {}) }),
+    })
+  } catch (e) {
+    // A long command whose file could not be written: nothing was started.
+    release()
+    return { refused: `the contained command could not be prepared (${e?.message ?? e})` }
+  }
+  const done = () => {
+    if (c.commandFile) {
+      try { unlinkSync(c.commandFile) } catch (e) { console.error(`[spawn] the command file ${c.commandFile} could not be removed: ${e?.message ?? e}`) }
+    }
+    release()
+  }
+  if (!c.viaLauncher) return { cmd: c.file, args: c.args, shell, cwd: c.cwd, env: c.env, viaLauncher: false, done }
+  // F166: the launcher's child inherits what the launcher has, so the two colour-forcing keys are
+  // taken out of the launcher's own environment unless the caller named them.
+  const launcherEnv = { ...c.env }
+  for (const k of COLOUR_FORCING_KEYS) if (!(env && k in env)) delete launcherEnv[k]
+  return { cmd: c.file, args: c.args, shell: undefined, cwd: c.cwd, env: launcherEnv, viaLauncher: true, done }
+}
+
+function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained } = {}, { spawn = spawnSync, now = () => Date.now(), ...hooks } = {}) {
+  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
+  if (plan.refused !== undefined) return refusedResult(plan.refused)
+  try {
+    const t0 = now()
+    const r = spawn(plan.cmd, plan.args, {
+      cwd: plan.cwd,
+      // `envExact`: the caller built the WHOLE environment and stripped keys out
+      // of it on purpose (the mission dispatch drops CYNCO_NTFY_* and GitHub
+      // tokens) — merging process.env back underneath would put them straight back.
+      env: plan.env,
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+      windowsHide: true,
+      shell: plan.shell,
+    })
+    const elapsedMs = Math.max(0, now() - t0)
+    return classified({ status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal ?? null, error: r.error }, elapsedMs, timeoutMs, plan.viaLauncher)
+  } finally {
+    plan.done()
+  }
 }
 
 /** Rules 1 and 2 above, shared by runSync and runAsync: an ETIMEDOUT is believed only when the time was spent. */
-function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs) {
+function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs, viaLauncher = false) {
+  // Entry 1.M1: a launcher that could not run the command (197 with its refused line), or whose
+  // child ended with no status (198 with its line), is a fault, never the command's own exit code.
+  const launcherFault = viaLauncher ? launcherFaultOf(status, stderr) : null
+  if (launcherFault) {
+    return { status: null, stdout, stderr, elapsedMs, timedOut: false, fault: { code: launcherFault.code, status: null, signal, elapsedMs } }
+  }
   const out = { status, stdout, stderr, elapsedMs, timedOut: false, fault: null }
   if (!error) return out
   const spentIt = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
@@ -207,8 +324,12 @@ function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeou
  * has nothing to retry. On a timeout the child's whole tree is killed
  * (`taskkill /T` on Windows — a shell's pytest grandchild would outlive a
  * plain kill). `hooks.spawn`, `hooks.now` and `hooks.kill` are test seams.
+ * `contained` is runSync's option, with the same refusal; the containment is
+ * released when the child has closed.
  */
-export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree } = {}) {
+export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
+  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
+  if (plan.refused !== undefined) return Promise.resolve(refusedResult(plan.refused))
   const t0 = now()
   return new Promise((resolveRun) => {
     let stdout = ''
@@ -220,17 +341,18 @@ export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell } = {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolveRun(classified({ stdout, stderr, ...fields }, Math.max(0, now() - t0), timeoutMs))
+      plan.done()
+      resolveRun(classified({ stdout, stderr, ...fields }, Math.max(0, now() - t0), timeoutMs, plan.viaLauncher))
     }
     const timer = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
       ? setTimeout(() => { deadlineHit = true; kill(child) }, timeoutMs)
       : null
     try {
-      child = spawnImpl(cmd, args, {
-        cwd,
-        env: envExact ? (env ?? process.env) : instrumentEnv(process.env, env),
+      child = spawnImpl(plan.cmd, plan.args, {
+        cwd: plan.cwd,
+        env: plan.env,
         windowsHide: true,
-        shell,
+        shell: plan.shell,
       })
     } catch (e) {
       settle({ status: null, signal: null, error: { code: e?.code ?? 'ESPAWN' } })

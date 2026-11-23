@@ -169,7 +169,8 @@ describe('the marker-check path: snapshotted, restored on every exit', () => {
   it('the driver runs the marker check (with its ordinal) and wraps the check routine in the restore', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../scripts/cynco-mission-driver.mjs', import.meta.url)), 'utf-8')
     expect(src).toMatch(/const MARKER = markerCheckFrom\(process\.env, checkCmd, CHECK_TIMEOUT_MS\)/)
-    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \} \}\)/)
+    // F242: the check also runs inside the run's own containment.
+    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \}, contained: runContainment\(\) \}\)/)
     expect(src).not.toMatch(/runCheckAsync\(checkCmd/)
     expect(src).toMatch(/await withHeldOutRestored\(heldOutSnapshots, async \(\) => \{\s*\n\s*if \(MARKER\.command && !gate\.run\)/)
   })

@@ -115,14 +115,15 @@ export function probeGateTimeoutMs(gateMs) {
  * The probe's io. `archive` is calibrate's archiveBase (a fresh dir, `git
  * archive <sha> | tar -x` through bashExe(), F160); `runGate` is the grade
  * module's own runGate pointed at the ARCHIVE with `retry: false` — the one
- * place a spawn of the sealed gate is deliberately not retried; `removeDir`
+ * place a spawn of the sealed gate is deliberately not retried — and
+ * `labelOwn: false` (F242: the archive is not labelled writable for the gate); `removeDir`
  * cleans the archive after the reading. The two module ios are parameters so a
  * test can prove the flags without spawning a gate.
  */
 export function probeIo({ calibrate = calibrateIo, grade = gradeIo } = {}) {
   return {
     archive: (repo, sha, dest, { onStaleRetry } = {}) => archiveProbe(repo, sha, dest, calibrate, onStaleRetry),
-    runGate: (spec, dest, { timeoutMs } = {}) => runGate(spec, grade, { repo: dest, timeoutMs: timeoutMs ?? probeGateTimeoutMs(null), retry: false }),
+    runGate: (spec, dest, { timeoutMs } = {}) => runGate(spec, grade, { repo: dest, timeoutMs: timeoutMs ?? probeGateTimeoutMs(null), retry: false, labelOwn: false }),
     removeDir: (p) => rmSync(p, { recursive: true, force: true }),
   }
 }

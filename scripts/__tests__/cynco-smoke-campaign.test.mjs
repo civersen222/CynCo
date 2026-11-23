@@ -2,7 +2,7 @@
 // live proof. These tests run the REAL python against a temp clone of the
 // smoke repo — the triple has to be genuinely runnable, not a stand-in — and
 // never touch C:/tmp/phase2-smoke itself or the live ~/.cynco.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,12 @@ import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID, MARKER_CHECK_ONCE, MARKER
 import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
 import { calibrate, archiveBase } from '../cynco-campaign-calibrate.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
+import { graderContainment } from './fixtures/graderContainment.mjs'
+
+// F242: calibration runs its gates contained, in a grader sandbox the suite cannot make; they run under a
+// test context instead (fixtures/graderContainment.mjs).
+vi.mock('../../engine/containment.js', async (importOriginal) =>
+  (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
 
 const SMOKE_REPO = 'C:/tmp/phase2-smoke'
 const HAS_SMOKE = existsSync(join(SMOKE_REPO, '.git'))
@@ -43,7 +49,9 @@ const SMOKE_BASE = '1b00179cdd81fe95ccb0ea0c09ecc85be1f8080f'
 
 describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
   let repo, home, specPath, spec
+  afterAll(() => graderContainment.stop())
   beforeAll(() => {
+    graderContainment.start()
     repo = cloneSmoke()
     if (git(['cat-file', '-e', `${SMOKE_BASE}^{commit}`], repo).status !== 0) throw new Error(`${SMOKE_REPO} lacks the fixture BASE ${SMOKE_BASE}`)
     // F163 / T7-M1: the generator refuses unless the repo's HEAD IS the base,
@@ -63,6 +71,8 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
+      // Its own suite: the CivKings default path does not exist here and measured nothing.
+      suiteTarget: 'test_calc.py',
       // Phase 7 ruling 3 / review I3: the smoke's own fails-once fixture, and a
       // retry floor its one-hour wave can reach.
       markerCheck: `python ${home}/smoke/marker_check_once.py`,

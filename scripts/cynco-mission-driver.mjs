@@ -98,6 +98,7 @@ import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAut
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
 import { adoptContainment, setRunContainment, runContainment, operatorRefusal } from '../engine/containment.js'
 import { missionRunId } from '../engine/missionEnv.js'
+import { harnessGitBin, harnessGitEnv } from '../engine/harnessGit.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 // The repository is named, never assumed: a default of the CivKings repo sent
@@ -125,6 +126,10 @@ if (!adopted.ok) {
   process.exit(2)
 }
 setRunContainment(adopted.containment)
+// F242: the mission folder is the run's to write, so every git the driver runs there runs with its hooks,
+// monitor and repository-defined filters off, and names git by its full path (a git.exe, git.cmd or git.bat
+// planted in the folder is never the one started).
+const GIT = harnessGitBin()
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
 // One engine per wave: the bridge takes one client at a time, on purpose. So
 // two waves in parallel means a second daemon on its own port with its own
@@ -563,7 +568,7 @@ if (!baselineSha) {
 
 async function gitLog() {
   const range = baselineSha ? [`${baselineSha}..HEAD`] : ['-3']
-  const p = Bun.spawn(['git', 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe' })
+  const p = Bun.spawn([GIT, 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe', env: harnessGitEnv(process.env) })
   return await new Response(p.stdout).text()
 }
 
@@ -709,7 +714,7 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
     if (probeState && shouldProbe({ probeCmd, landed, exitReason })) {
       const probedSha = gitHead(CWD)
       console.log(`[probe] running in ${CWD}: ${probeCmd} (cap ${PROBE_TIMEOUT_MS}ms, run ${probeState.runs + 1})`)
-      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS)
+      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment() })
       probeState.runs++
       probeState.lastExit = pr.exitCode
       probeState.lastVerified = pr.verified
@@ -840,14 +845,14 @@ else if (!quiet) console.log('[driver] WARNING: commit landed but the run never 
  */
 function gitHead(cwd) {
   if (!cwd) throw new Error('gitHead: cwd is required — an unqualified HEAD reads the driver\'s own repo, not the mission workspace')
-  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8' })
+  const r = spawnSync(GIT, ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
   if (r.error || r.status !== 0) return null
   const sha = (r.stdout ?? '').trim()
   return sha || null
 }
 
 try {
-  const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
+  const p = Bun.spawn([GIT, 'status', '--short'], { cwd: CWD, stdout: 'pipe', env: harnessGitEnv(process.env, { repo: CWD }) })
   console.log('[git status]\n' + await new Response(p.stdout).text())
 } catch (e) { console.log(`[driver] git status failed: ${e?.message ?? e}`) }
 
@@ -913,7 +918,7 @@ async function gradeAtCheck({ quarantine }) {
   let patchPath = null
   if (quarantine) {
     try {
-      const st = spawnSync('git', ['status', '--porcelain', '-uno'], { cwd: CWD, encoding: 'utf8' })
+      const st = spawnSync(GIT, ['status', '--porcelain', '-uno'], { cwd: CWD, encoding: 'utf8', env: harnessGitEnv(process.env, { repo: CWD }) })
       const lines = (st.status === 0 ? st.stdout.trim() : '') ? st.stdout.trim().split('\n') : []
       dirtyAtVerify = lines.length
       if (dirtyAtVerify > 0) {
@@ -922,7 +927,7 @@ async function gradeAtCheck({ quarantine }) {
         const snap = snapshotUncommittedWork(CWD, 'C:/tmp', missionId, { ordinal })
         if (snap.written) {
           console.log(`[verify] tree dirty at gate time: ${dirtyAtVerify} tracked file(s) — preserved → ${snap.patchPath}; resetting so the gate grades the commit, not the tree (F132)`)
-          spawnSync('git', ['checkout', '--', '.'], { cwd: CWD })
+          spawnSync(GIT, ['checkout', '--', '.'], { cwd: CWD, env: harnessGitEnv(process.env, { repo: CWD }) })
           resetFiles = dirtyAtVerify
           patchPath = snap.patchPath
           verifyPatches.push(snap.patchPath)
@@ -941,7 +946,7 @@ async function gradeAtCheck({ quarantine }) {
   // CYNCO_CHECK_ORDINAL (final review I1): which of this driver's checks this
   // is, so an instrument can tell the driver's call from anyone else's — the
   // smoke's fail-once fixture fails only for ordinal 1.
-  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) } })
+  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment() })
   const headAfter = gitHead(CWD)
   return { r, tampered, dirtyAtVerify, resetFiles, patchPath, headBefore, headAfter }
 }
@@ -1015,7 +1020,7 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
 // that is. `null` on any failure: unknown is a truthful answer and "clean" is not.
 async function readHistoryRewrite() {
   const git = async (args) => {
-    const p = Bun.spawn(['git', ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+    const p = Bun.spawn([GIT, ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore', env: harnessGitEnv(process.env) })
     const text = await new Response(p.stdout).text()
     return (await p.exited) === 0 ? text : null
   }

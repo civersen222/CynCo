@@ -27,7 +27,7 @@ Turns a finished agent task into fine-tuning data: what actually happened (traje
 - **`computeReward`** (`rewardLabeler.ts:133`) — weighted mean of measured positive components minus stuck-turn/iteration penalties, with the `testsUnmodified === 0` veto to `-1.0` checked first.
 - **`finalizeTask`** (`rewardLabeler.ts:160`) — computes the reward, persists `<taskId>.outcome.json` (evidence) and `<taskId>.reward.json` (verdict); called by `conversationLoop.ts`.
 - **`TrajectoryRecorder`** (`trajectoryRecorder.ts:114`) — `startTask`/`recordTurn`/`endTask`; the per-task JSONL writer, obtained via `getTrajectoryRecorder()`/`initTrajectoryRecorder()`.
-- **`collectGitFacts`** (`gitFacts.ts:463`) — the sole entry point that measures a task's diff against a base sha; returns `null` (not a guessed empty result) when unmeasurable.
+- **`collectGitFacts`** (`gitFacts.ts:473`) — the sole entry point that measures a task's diff against a base sha; returns `null` (not a guessed empty result) when unmeasurable.
 - **`evaluateReadiness`** (`datasetBuilder.ts:504`) — gates whether the corpus is trainable (volume, pairable negatives, unsaturated mean, non-zero built rows); called by `runTraining.ts` stages `stats`/`dataset`/`sft`.
 - **`exportDatasets`** (`datasetBuilder.ts:423`) — loads trajectories, builds `sft.jsonl`/`dpo.jsonl`/`stats.json`, always rewrites both files even when empty.
 

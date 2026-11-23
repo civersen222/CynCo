@@ -26,6 +26,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFile } from 'child_process'
+import { harnessGitEnv } from '../harnessGit.js'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import type { PendingDecision } from '../bridge/conversationLoop.js'
@@ -1745,7 +1746,8 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
   private runMissionGit(args: string[]): Promise<string> {
     if (this.deps.missionGit) return this.deps.missionGit(args)
     return new Promise((resolve, reject) => {
-      execFile('git', args, { encoding: 'utf-8', timeout: MISSION_GIT_TIMEOUT_MS, windowsHide: true },
+      // Harness git in a mission folder (F242): the folder is named with -C; no hooks, monitor or pager.
+      execFile('git', args, { encoding: 'utf-8', timeout: MISSION_GIT_TIMEOUT_MS, windowsHide: true, env: harnessGitEnv(process.env) },
         (err, stdout) => (err ? reject(err) : resolve(String(stdout))))
     })
   }

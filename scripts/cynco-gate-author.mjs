@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
+import { harnessGitEnv } from '../engine/harnessGit.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { lintGate } from './cynco-gate-lint.mjs'
@@ -185,15 +186,15 @@ export function prepareStaging({ id, base, repo = CIVKINGS_REPO, io }) {
   const baseDir = baseDirFor(id)
   io.mkdir(stagingDir)
   if (!io.exists(`${stagingDir}/.git`)) {
-    const init = io.run('git', ['init', stagingDir], { timeoutMs: 60_000 })
+    const init = io.run('git', ['init', stagingDir], { timeoutMs: 60_000, env: harnessGitEnv({}) })
     if (init.status !== 0) throw new Error(`git init ${stagingDir} failed: ${String(init.stderr).trim()}`)
   }
   // A repo with no identity is FATAL, not cosmetic: the mission is ordered to
   // commit after each cut, `git commit` refuses without a user, and
   // dispatch-mission.sh runs `git rev-parse` under `set -e` in the same tree.
   // Pin a local one so the author's only backup cannot fail on configuration.
-  io.run('git', ['-C', stagingDir, 'config', 'user.name', 'cynco-author'], { timeoutMs: 60_000 })
-  io.run('git', ['-C', stagingDir, 'config', 'user.email', 'cynco@localhost'], { timeoutMs: 60_000 })
+  io.run('git', ['-C', stagingDir, 'config', 'user.name', 'cynco-author'], { timeoutMs: 60_000, env: harnessGitEnv({}) })
+  io.run('git', ['-C', stagingDir, 'config', 'user.email', 'cynco@localhost'], { timeoutMs: 60_000, env: harnessGitEnv({}) })
   const arch = archiveBase(repo, base, baseDir, calibrationIo(io))
   if (!arch.ok) throw new Error(arch.problems.join('; '))
   const mirrored = mirrorPriorCampaigns({ id, io })
@@ -842,9 +843,11 @@ export function gateAuthorPromotion(summary, currentAuthority, alpha = 0.05, { e
 }
 
 function commitStaging(stagingDir, message, io) {
-  const r = io.run('git', ['-C', norm(stagingDir), 'add', '-A'], { timeoutMs: 60_000 })
+  // F242: the staging folder is the authoring mission's own, so the harness's git there runs with its
+  // hooks, monitor and repository-defined filters off and the work tree pinned.
+  const r = io.run('git', ['-C', norm(stagingDir), 'add', '-A'], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: norm(stagingDir) }) })
   if (r.status !== 0) { console.error(`[author] git add in ${norm(stagingDir)} failed: ${String(r.stderr).trim()}`); return }
-  const c = io.run('git', ['-C', norm(stagingDir), 'commit', '-m', message], { timeoutMs: 60_000 })
+  const c = io.run('git', ['-C', norm(stagingDir), 'commit', '-m', message], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: norm(stagingDir) }) })
   // "nothing to commit" is exit 1 and is not a fault: a resume that changed
   // nothing but the brief number still has a brief to dispatch.
   if (c.status !== 0 && !/nothing to commit/i.test(String(c.stdout) + String(c.stderr))) {
@@ -1043,7 +1046,7 @@ export function restoreUncommittedWork({ stagingDir, missionId, io, snapshotDir 
   const patch = `${norm(snapshotDir)}/${missionId}.uncommitted.patch`
   if (!io.exists(patch)) return null
   const dir = norm(stagingDir)
-  const check = io.run('git', ['-C', dir, 'apply', '--check', patch], { timeoutMs: 60_000 })
+  const check = io.run('git', ['-C', dir, 'apply', '--check', patch], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: dir }) })
   if (check.fault) {
     return `The previous run's uncommitted work (${patch}) was NOT restored: git apply --check could not run (${faultSummary(check.fault)}). The tree is at its last commit.`
   }
@@ -1051,7 +1054,7 @@ export function restoreUncommittedWork({ stagingDir, missionId, io, snapshotDir 
     const why = String(check.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${check.status}`
     return `The previous run's uncommitted work (${patch}) was NOT restored: it does not apply cleanly to the current tree (${why}). The tree is at its last commit — nothing is half-applied.`
   }
-  const applied = io.run('git', ['-C', dir, 'apply', patch], { timeoutMs: 60_000 })
+  const applied = io.run('git', ['-C', dir, 'apply', patch], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: dir }) })
   if (applied.fault || applied.status !== 0) {
     const why = applied.fault ? faultSummary(applied.fault) : (String(applied.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${applied.status}`)
     return `The previous run's uncommitted work (${patch}) was NOT restored: git apply failed after passing --check (${why}). The tree may be partly changed — run the check before you trust it.`
@@ -1195,6 +1198,10 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
     CYNCO_SKIP_IDLE_ENGINE: '1',
     DRIVER_PID_FILE: pidFile,
     DRIVER_LOG: driverLog,
+    // F242, entry 1.B2 part 1: the check runs its calibration in the BASE archive, so the dispatch
+    // labels that folder for the run too (dispatch-mission.sh hands it to cynco-sandbox.mjs create
+    // --also). toolEnv strips the key from every tool child.
+    CYNCO_MISSION_ALSO_LABEL: baseDir,
   })
   // Persist BEFORE the wall clock starts, the same discipline runWave keeps: a
   // runner that dies in the wait must not let the next invocation dispatch a
@@ -1456,7 +1463,7 @@ export async function sealGate({ id, state, roadmap, io }) {
   const identity = checkIdentity(spec, {
     exists: (p) => io.exists(stagedFor[norm(p)] ?? p),
     readFile: (p) => io.readFile(stagedFor[norm(p)] ?? p),
-    gitHasCommit: io.gitHasCommit ?? ((repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8' }).status === 0),
+    gitHasCommit: io.gitHasCommit ?? ((repo, sha) => spawnSync('git', ['-C', repo, 'cat-file', '-e', `${sha}^{commit}`], { encoding: 'utf8', env: harnessGitEnv(process.env) }).status === 0),
   })
   if (!identity.ok) return { ok: false, problems: identity.problems, check }
 

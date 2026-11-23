@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { writeTaskFile } from '../engine/daemon/taskFile.js'
+import { establishContainment, releaseContainment, operatorRefusal } from '../engine/containment.js'
 import { heterarchy } from '../engine/cybernetics-core/src/index.js'
 import { fisherExact } from './cynco-signal-validation.mjs'
 import { seatAuthority } from './cynco-proposals.mjs'
@@ -63,15 +64,29 @@ export async function runIdeation({ spec, fails, prior, briefText, stateDir, rep
   const taskPath = join(dir, `task-wave-${stamp}.json`)
   const outcomePath = join(dir, `outcome-wave-${stamp}.json`)
   const { prompt, context } = ideationPrompt({ spec, fails, prior, briefText })
-  writeTaskFile(taskPath, { missionId: `campaign-${spec.id}`, triggerId: `wave-${stamp}`, prompt, context, allowedTools: ['Read', 'Grep', 'Glob', 'CodeIndex'], timeoutMs: IDEATION_TIMEOUT_MS, outcomePath })
-  const env = {}
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('CYNCO_NTFY_')) env[k] = v
-  env.LOCALCODE_APPROVE_ALL = 'true'
-  const code = await (io?.runTask ?? runTask)(repoRoot, taskPath, env, spec.repo)
+  // F242: the one-shot is an unattended run, so it starts in a sandbox made for it, which it adopts at
+  // boot. The repository is not labelled: the one-shot's tools (Read, Grep, Glob, CodeIndex) write nothing.
+  const est = (io?.contain ?? establishContainment)({ kind: 'daemon-task', label: `ideation-${spec.id}`, missionCwd: spec.repo, labelCwd: false })
+  if (!est.ok) {
+    console.error(operatorRefusal('[campaign]', 'containment', est.reason, 'run'))
+    return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: null, error: `REFUSED: containment: ${est.reason}` }
+  }
   try {
-    const outcome = JSON.parse(readFileSync(outcomePath, 'utf8'))
-    return { ideation: parseIdeation(outcome), taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code }
-  } catch (e) { return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code, error: String(e) } }
+    writeTaskFile(taskPath, { missionId: `campaign-${spec.id}`, triggerId: `wave-${stamp}`, prompt, context, allowedTools: ['Read', 'Grep', 'Glob', 'CodeIndex'], timeoutMs: IDEATION_TIMEOUT_MS, outcomePath, cwd: spec.repo, runId: est.containment.runId })
+    const env = {}
+    for (const [k, v] of Object.entries(process.env)) if (!k.startsWith('CYNCO_NTFY_')) env[k] = v
+    env.LOCALCODE_APPROVE_ALL = 'true'
+    // Rule H1: the child starts in the checkout, never in the mission repository, where a planted
+    // bunfig.toml or .env would be read at medium integrity; the workspace travels in the task file.
+    const code = await (io?.runTask ?? runTask)(repoRoot, taskPath, env, repoRoot)
+    try {
+      const outcome = JSON.parse(readFileSync(outcomePath, 'utf8'))
+      return { ideation: parseIdeation(outcome), taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code }
+    } catch (e) { return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code, error: String(e) } }
+  } finally {
+    const r = (io?.release ?? releaseContainment)(est.containment)
+    if (!r.relabelled && r.note) console.error(`[campaign] ${r.note}`)
+  }
 }
 
 function runTask(repoRoot, taskPath, env, cwd) {

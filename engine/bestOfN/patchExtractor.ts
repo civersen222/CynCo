@@ -1,4 +1,5 @@
 import { execSync } from 'child_process'
+import { harnessGitEnv } from '../harnessGit.js'
 
 const MAX_BUFFER = 10 * 1024 * 1024 // 10 MB
 
@@ -16,14 +17,17 @@ const MAX_BUFFER = 10 * 1024 * 1024 // 10 MB
  * or if any git command fails.
  */
 export function extractPatch(cwd: string): string {
+  // Harness git in a folder a candidate wrote (F242): no hooks, monitor, repository filters or pager.
+  const env = harnessGitEnv(process.env, { repo: cwd })
   const run = (cmd: string, opts: { trim?: boolean } = {}): string => {
-    const out = execSync(cmd, { cwd, stdio: 'pipe', maxBuffer: MAX_BUFFER }).toString()
+    const out = execSync(cmd, { cwd, stdio: 'pipe', maxBuffer: MAX_BUFFER, env }).toString()
     return opts.trim === false ? out : out.trim()
   }
 
   try {
     run('git add -A')
-    const diff = run('git diff --cached HEAD', { trim: false })
+    // A patch-producing diff: no external diff or textconv driver the folder names (HARNESS_DIFF_FLAGS).
+    const diff = run('git diff --no-ext-diff --no-textconv --cached HEAD', { trim: false })
     run('git reset HEAD')
     // A diff with no changes is empty; one with changes starts with "diff --git"
     // and ends with the newline git apply requires — never trim it (F162).

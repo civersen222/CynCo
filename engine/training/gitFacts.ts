@@ -6,6 +6,7 @@
  */
 
 import { execSync } from 'child_process'
+import { HARNESS_DIFF_FLAGS, harnessGitEnv } from '../harnessGit.js'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
 
@@ -421,8 +422,17 @@ export function changedBetween(
   return [...new Set(touched)]
 }
 
+/**
+ * Every git this module runs is harness git in a folder a run wrote (F242): no hooks, monitor,
+ * repository filters or pager, the work tree pinned, and a `diff` never runs an external diff or
+ * textconv driver the folder names.
+ */
 function git(cwd: string, args: string): string {
-  return execSync(`git ${args}`, { cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024 })
+  const line = args.startsWith('diff ') ? `diff ${HARNESS_DIFF_FLAGS.join(' ')} ${args.slice(5)}` : args
+  return execSync(`git ${line}`, {
+    cwd, stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 8 * 1024 * 1024,
+    env: harnessGitEnv(process.env, { repo: cwd }),
+  })
     .toString()
 }
 
