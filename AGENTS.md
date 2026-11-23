@@ -36,6 +36,9 @@ LocalCode is a local-first coding agent engine (Bun + TypeScript under `engine/`
 | Security | `engine/security/` | Local tokens (`tokens.json`), Job Object child cleanup (`jobObject.ts`) |
 | Event-loop watch | `engine/loopWatch.ts` | One line in the engine log when the event loop was blocked for more than a second, with how long and when: the dashboard, the phone and a Stop are all answered from that loop (F225; started by `engine/main.ts` when the engine is ready) |
 | Process trees | `engine/processTree.ts` | The one place a process is killed with everything it started: `ownProcessTree` (a Job Object per started process on Windows under Bun) for the Bash tool's Stop and timeout, the daemon's one-shots and the jlens sidecar; `killProcessTree` where the tree was not started here (F210) |
+| Containment | `engine/containment.ts` | The run context; the one environment builder, command rewriter and refusal for every child that runs workspace code in an unattended run; the per-run sandbox under `LOCALCODE_SANDBOX_ROOT` (who makes it, who checks it, who releases it); `scripts/cynco-sandbox.mjs` is its command line. The owning text, with what it blocks and what it does not, is in `engine/tools/CLAUDE.md` (F242) |
+| Low-integrity launcher | `engine/lowIntegrityLauncher.ts` | Started in place of a contained child on Windows: lowers its own token through bun:ffi, then runs the command as its child with inherited stdio; exits with its code, or 197 / 198 and a named line |
+| Real paths | `engine/realPath.ts` | `isInside`, `realPathOf`, `realInside`, shared by the projects package and the containment layers |
 | Cybernetics core | `engine/cybernetics-core/README.md` | Beer/Ashby/Pask primitives the VSM layer is built on |
 
 ## Invariants

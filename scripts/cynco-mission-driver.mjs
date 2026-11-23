@@ -87,7 +87,7 @@ import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, not
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { createStallRecovery, stallRepromptRound } from './cynco-stall.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
-import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT, containmentDispatchRefusal } from './cynco-contract.mjs'
 import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut, withHeldOutRestored, driverInstrumentAssertions } from './cynco-held-out.mjs'
@@ -96,6 +96,8 @@ import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-sh
 import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
+import { adoptContainment, setRunContainment, runContainment, operatorRefusal } from '../engine/containment.js'
+import { missionRunId } from '../engine/missionEnv.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 // The repository is named, never assumed: a default of the CivKings repo sent
@@ -115,6 +117,14 @@ if (cwdError) {
   console.error('[driver] spell the path with forward slashes, e.g. C:/Users/civer/casino')
   process.exit(2)
 }
+// F242: the driver runs the mission's check and probe commands, so it adopts the same sandbox the
+// engine adopted. Run by hand against an engine it did not start, it has no run id and stops here.
+const adopted = adoptContainment({ runId: missionRunId(), missionCwd: CWD, who: 'driver' })
+if (!adopted.ok) {
+  console.error(operatorRefusal('[driver]', 'containment', adopted.reason, 'dispatched'))
+  process.exit(2)
+}
+setRunContainment(adopted.containment)
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
 // One engine per wave: the bridge takes one client at a time, on purpose. So
 // two waves in parallel means a second daemon on its own port with its own
@@ -379,6 +389,7 @@ const readyGateTimer = setTimeout(() => {
   // than reporting a timeout and leaving the operator to guess which.
   const refusal = s5DispatchRefusal({ capabilities: null })
     ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null }) : null)
+    ?? containmentDispatchRefusal({ capabilities: null })
   console.error(`[driver] REFUSED: no session.ready in ${process.env.CYNCO_READY_S ?? '30'}s — ${refusal}`)
   process.exit(4)
 }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
@@ -439,6 +450,7 @@ function onMissionMessage(ev) {
       // anything is sealed.
       const refusal = s5DispatchRefusal({ capabilities: m.capabilities })
         ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities }) : null)
+        ?? containmentDispatchRefusal({ capabilities: m.capabilities })
       if (refusal) {
         console.error(`[driver] REFUSED: ${refusal}`)
         process.exit(4)

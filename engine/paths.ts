@@ -60,3 +60,14 @@ export function missionsDir(): string {
   if (override !== undefined && override !== '') return override
   return join(cyncoHome(), 'missions')
 }
+
+/**
+ * The parent of every run's sandbox, `<root>/<run id>/{home,tmp,scratch}` (engine/containment.ts, F242).
+ * `LOCALCODE_SANDBOX_ROOT` (empty = unset) or `C:/cynco-sandbox`. Never created by the engine, the daemon,
+ * a dispatch or a test: a root that does not exist is a refusal, which is also what makes this
+ * Windows-shaped default safe on another system. Read on every call.
+ */
+export function sandboxRoot(env: Record<string, string | undefined> = process.env): string {
+  const v = env.LOCALCODE_SANDBOX_ROOT
+  return v && v.trim() ? v : 'C:/cynco-sandbox'
+}

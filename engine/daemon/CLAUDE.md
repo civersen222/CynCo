@@ -22,7 +22,7 @@ The CynCo liveness layer: a tiny always-on sentinel (`main.ts`) that never loads
 | `tradeScan.ts` | Multi-pass trade-scan orchestrator (`taskType: 'trade-scan'`), dispatched from `oneShot.ts`, runs inside the same engine process. |
 
 ## Important types & functions
-- **`TriggerSpec` / `TaskFileInput` / `TaskOutcome`** (`types.ts:92`, `types.ts:70`, `types.ts:92`) — the contracts every other daemon file passes across the daemon↔engine process boundary.
+- **`TriggerSpec`** (`types.ts:7`), **`TaskFileInput`** (`types.ts:70`), **`TaskOutcome`** (`types.ts:95`) — the contracts every other daemon file passes across the daemon↔engine process boundary.
 - **`MissionRunner`** (`missionRunner.ts:62`) — the class whose `tick()` (called every 30s from `main.ts`) drives the whole per-mission scheduling/firing/notification loop.
 - **`runGovernedLoop`** (`oneShot.ts:157`) — runs one prompt through the real `ConversationLoop`, called by both `runOneShotTask` and `tradeScan.ts`'s final ranking pass.
 - **`runOneShotTask`** (`oneShot.ts:236`) — the function `engine/main.ts` invokes when `--run-task` is passed; reads the task file, dispatches to `runGovernedLoop` or `runTradeScan`, writes the outcome.

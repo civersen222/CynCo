@@ -1,4 +1,5 @@
 import type { ToolImpl } from '../types.js'
+import { uncontainedSiteRefusal } from '../../containment.js'
 
 const DANGEROUS_PATTERNS = [/push\s+(--force\b|-f\b)/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
 
@@ -201,6 +202,11 @@ export const gitTool: ToolImpl = {
         }
       }
     }
+
+    // F242: in a contained run git would run here at medium integrity, reading the mission folder's
+    // own .git/config and hooks; refused until this site is contained.
+    const uncontained = uncontainedSiteRefusal('the Git tool')
+    if (uncontained) return { output: uncontained, isError: true }
 
     try {
       const proc = Bun.spawn(['git', ...buildArgv(sub, argTokens)], {

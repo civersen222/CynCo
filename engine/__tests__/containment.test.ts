@@ -1,0 +1,1029 @@
+/**
+ * engine/containment.ts (F242): the run context, the environment builder, the command the
+ * launcher is started with, the switch, the sandbox life cycle and every refusal by its text.
+ *
+ * Every test works inside its own mkdtemp folder and names every folder it uses: the sandbox
+ * root, a fake home, the mission folder, CynCo's state, models and guard folders. Nothing here
+ * runs icacls, whoami or PowerShell for real: a `run` seam answers for them and records the
+ * calls. Windows-only behaviour is driven with `platform: 'win32'` and the seam, so it runs on
+ * every system; vitest's Node has no launcher, so a Windows establish here is a test context
+ * with `lowil` switched off (the probe needs Bun and lives in the launcher fixture).
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import {
+  existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync,
+  statSync, symlinkSync, unlinkSync, writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
+import {
+  acknowledgedVolumes, adoptContainment, containedCommand, containmentHint, containmentOff,
+  containmentRecords, containmentSwitch, engineCheckout, establishContainment, launcherFaultOf,
+  LAUNCHER_UNAVAILABLE, mintRunId, MSYS_IN_CONTAINED_RUN, NO_CONTAINMENT, operatorRefusal,
+  refusalLayerOf, refusalPrefix, refusalText, releaseContainment, runContainment, setRunContainment,
+  sweepSandboxes, SWITCH_IN_UNATTENDED, testContainment, toolEnv, toolSpawnRefusal, uncontainedSiteRefusal,
+  type ContainmentRecord, type ContainmentRunner, type RunContainment,
+} from '../containment.js'
+import { RUN_ID_RE } from '../missionEnv.js'
+
+const ENV_KEYS = ['LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_MARKER']
+
+let dir: string
+let L: { root: string; home: string; mission: string; extra: string; state: string; models: string; guard: string; outside: string }
+let folders: RunContainment['folders']
+let links: string[]
+
+function link(target: string, at: string): void {
+  symlinkSync(target, at, 'junction')
+  links.push(at)
+}
+
+beforeEach(() => {
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'cynco-containment-')))
+  L = {
+    root: join(dir, 'root'), home: join(dir, 'home'), mission: join(dir, 'mission'), extra: join(dir, 'extra'),
+    state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), outside: join(dir, 'outside'),
+  }
+  for (const p of Object.values(L)) mkdirSync(p)
+  mkdirSync(join(L.mission, '.git'))
+  writeFileSync(join(L.mission, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+  folders = { state: L.state, models: L.models, guard: L.guard, audit: null }
+  links = []
+  for (const k of ENV_KEYS) delete process.env[k]
+})
+
+afterEach(() => {
+  setRunContainment(null)
+  for (const k of ENV_KEYS) delete process.env[k]
+  vi.restoreAllMocks()
+  // The links this test made are removed as entries first, so the clean-up below never walks one.
+  for (const l of links) {
+    try {
+      rmdirSync(l)
+    } catch {
+      try { unlinkSync(l) } catch (e) { void e }
+    }
+  }
+  rmSync(dir, { recursive: true, force: true })
+})
+
+/** A context over this test's folders (nothing on disk is created by testContainment). */
+function ctxOf(over: Partial<Parameters<typeof testContainment>[0]> = {}): RunContainment {
+  const runDir = join(L.root, 'run')
+  return testContainment({
+    missionCwd: L.mission,
+    sandbox: { root: runDir, home: join(runDir, 'home'), tmp: join(runDir, 'tmp'), scratch: join(runDir, 'scratch') },
+    home: L.home, folders, ...over,
+  })
+}
+
+const exeOf = (file: string) => basename(file.replace(/\\/g, '/')).toLowerCase()
+
+interface Call { file: string; args: string[] }
+function seam(o: {
+  volumes?: string | null; level?: string; homeLow?: boolean
+  icacls?: (args: string[], calls: Call[]) => { ok: boolean; out: string } | undefined
+  /** Answers a one-argument `icacls <path>` (a label read) before the default. */
+  read?: (path: string) => { ok: boolean; out: string } | undefined
+  before?: (c: Call) => void
+  first?: { ok: boolean; out: string; code: number | null }
+} = {}) {
+  const calls: Call[] = []
+  let n = 0
+  const run: ContainmentRunner = (file, args) => {
+    const c = { file, args: [...args] }
+    calls.push(c)
+    o.before?.(c)
+    if (n++ === 0 && o.first) return o.first
+    const exe = exeOf(file)
+    if (exe === 'whoami.exe') {
+      if (args[0] === '/groups') return { ok: true, out: `"Mandatory Label\\X Mandatory Level","Label","${o.level ?? 'S-1-16-8192'}",""\r\n`, code: 0 }
+      return { ok: true, out: '"pc\\owner","S-1-5-21-11-22-33-1001"\r\n', code: 0 }
+    }
+    if (exe === 'powershell.exe') {
+      if (o.volumes === null) return { ok: false, out: 'Get-CimInstance : Access denied', code: 1 }
+      return { ok: true, out: o.volumes ?? 'C:|3|NTFS\r\n', code: 0 }
+    }
+    if (exe === 'icacls.exe') {
+      if (args.length === 1) {
+        const answer = o.read?.(args[0])
+        if (answer) return { ...answer, code: answer.ok ? 0 : 5 }
+        const label = o.homeLow ? '\r\n         Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)' : ''
+        return { ok: true, out: `${args[0]} NT AUTHORITY\\SYSTEM:(OI)(CI)(F)${label}\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n`, code: 0 }
+      }
+      const custom = o.icacls?.(args, calls)
+      if (custom) return { ...custom, code: custom.ok ? 0 : 5 }
+      return { ok: true, out: `processed file: ${args[0]}\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n`, code: 0 }
+    }
+    return { ok: false, out: `unexpected program ${file}`, code: 1 }
+  }
+  const icacls = () => calls.filter(c => exeOf(c.file) === 'icacls.exe' && c.args.length > 1)
+  const labels = (level: 'L' | 'M') => icacls().filter(c => c.args[1] === '/setintegritylevel' && c.args[2] === `(OI)(CI)${level}`).map(c => c.args[0])
+  return { run, calls, icacls, labels }
+}
+
+function base(over: Partial<Parameters<typeof establishContainment>[0]> = {}): Parameters<typeof establishContainment>[0] {
+  return { kind: 'mission', label: 'unit', missionCwd: L.mission, sandboxRoot: L.root, home: L.home, folders, platform: 'linux', ...over }
+}
+
+/** A Windows establish under vitest's Node: a test context with the launcher layer switched off. */
+function winBase(run: ContainmentRunner, over: Partial<Parameters<typeof establishContainment>[0]> = {}) {
+  process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+  return base({ platform: 'win32', test: true, run, ...over })
+}
+
+function refusal(r: ReturnType<typeof establishContainment> | ReturnType<typeof adoptContainment>): string {
+  expect(r.ok, 'expected a refusal').toBe(false)
+  return (r as { ok: false; reason: string }).reason
+}
+
+function established(r: ReturnType<typeof establishContainment>): RunContainment {
+  if (!r.ok) throw new Error(`establish refused: ${r.reason}`)
+  return r.containment
+}
+
+function recPath(runId: string): string {
+  return join(L.root, runId, 'containment.json')
+}
+function readRec(runId: string): ContainmentRecord {
+  return JSON.parse(readFileSync(recPath(runId), 'utf-8')) as ContainmentRecord
+}
+function editRec(runId: string, fn: (r: ContainmentRecord) => void): void {
+  const r = readRec(runId)
+  fn(r)
+  writeFileSync(recPath(runId), JSON.stringify(r, null, 2))
+}
+
+const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid!
+const fold = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p).replace(/\\/g, '/')
+
+// ─── The refusal format ─────────────────────────────────────────────────────────────────────────
+
+describe('the refusal format', () => {
+  it('prefix, text and the layer read back', () => {
+    expect(refusalPrefix('containment')).toBe('Refused [containment]:')
+    const t = refusalText('containment', 'a reason')
+    expect(t.startsWith('Refused [containment]: a reason. The command was not run')).toBe(true)
+    expect(refusalLayerOf(t)).toBe('containment')
+    expect(refusalLayerOf(refusalText('protected path', 'x', 'Nothing was run.'))).toBe('protected path')
+    expect(refusalLayerOf(refusalText('audit', 'x'))).toBe('audit')
+    expect(refusalLayerOf(refusalText('integrity', 'x'))).toBe('integrity')
+    expect(refusalLayerOf('Error: something else')).toBeNull()
+  })
+
+  it('the operator line', () => {
+    expect(operatorRefusal('[sandbox]', 'containment', 'why', 'run')).toBe('[sandbox] REFUSED: containment: why — nothing was run')
+    expect(operatorRefusal('[driver]', 'audit', 'why', 'dispatched')).toBe('[driver] REFUSED: audit: why — nothing was dispatched')
+  })
+})
+
+// ─── toolEnv ────────────────────────────────────────────────────────────────────────────────────
+
+describe('toolEnv', () => {
+  const baseEnv = {
+    PATH: '/usr/bin',
+    LOCALCODE_MISSION_CHECK: 'python gate.py', LOCALCODE_MISSION_MARKER: 'm', LOCALCODE_MISSION_CWD: 'C:/r', LOCALCODE_MISSION_BASE: 'abc',
+    CYNCO_MARKER_CHECK: 'CHK=1 python g.py', CYNCO_MARKER_CHECK_TIMEOUT_MS: '1800000', CYNCO_MISSION_ALSO_LABEL: 'C:/base',
+    CYNCO_BASH_TIMEOUT_MS: '300000', LOCALCODE_APPROVE_ALL: 'true',
+    LOCALCODE_MODELS_DIR: 'C:/m', LOCALCODE_SANDBOX_ROOT: 'C:/s', GH_TOKEN: 'secret', HOME: '/home/owner', USERPROFILE: 'C:\\Users\\owner',
+  }
+
+  it('with no context: the harness keys go, the rest stays, UTF-8 forced', () => {
+    const env = toolEnv(baseEnv, null, 'linux')
+    expect(Object.keys(env).filter(k => k.startsWith('LOCALCODE_MISSION_') || k.startsWith('CYNCO_MARKER_CHECK'))).toEqual([])
+    expect(env.CYNCO_MISSION_ALSO_LABEL).toBeUndefined()
+    expect(env.PATH).toBe('/usr/bin')
+    expect(env.LOCALCODE_APPROVE_ALL).toBe('true')
+    expect(env.PYTHONIOENCODING).toBe('utf-8')
+    expect(env.PYTHONUTF8).toBe('1')
+    for (const k of ['LOCALCODE_MODELS_DIR', 'LOCALCODE_SANDBOX_ROOT', 'GH_TOKEN', 'HOME', 'USERPROFILE'] as const) expect(env[k]).toBe(baseEnv[k])
+  })
+
+  it('with a context on win32: every overlaid key, one spelling each, secrets and containment keys gone', () => {
+    const ctx = ctxOf()
+    const env = toolEnv({
+      ...baseEnv, Path: 'C:\\Windows', Temp: 'C:\\Users\\owner\\AppData\\Local\\Temp', UserProfile: 'C:\\Users\\owner',
+      APPDATA: 'C:\\Users\\owner\\AppData\\Roaming',
+      CYNCO_NTFY_TOKEN: 't', GITHUB_TOKEN: 't', LOCALCODE_API_KEY: 'k', LOCALCODE_GUARD_DIR: 'g', LOCALCODE_AUDIT_DIR: 'a',
+      LOCALCODE_CONTAINMENT_OFF: 'lowil', LOCALCODE_UNPROTECTED_VOLUMES_OK: 'D:',
+    }, ctx, 'win32')
+    const sb = ctx.sandbox
+    expect(env.HOME).toBe(sb.home)
+    expect(env.USERPROFILE).toBe(sb.home)
+    expect(env.TEMP).toBe(sb.tmp)
+    expect(env.TMP).toBe(sb.tmp)
+    expect(env.TMPDIR).toBe(sb.tmp)
+    expect(env.CYNCO_SCRATCH).toBe(sb.scratch)
+    expect(env.GIT_CONFIG_GLOBAL).toBe(join(sb.home, '.gitconfig'))
+    expect(env.APPDATA).toBe(join(sb.home, 'AppData', 'Roaming'))
+    expect(env.LOCALAPPDATA).toBe(join(sb.home, 'AppData', 'Local'))
+    if (/^[A-Za-z]:/.test(sb.home)) {
+      expect(env.HOMEDRIVE).toBe(sb.home.slice(0, 2))
+      expect(fold(`${env.HOMEDRIVE}${env.HOMEPATH}`)).toBe(fold(sb.home))
+    }
+    expect(env.PYTHONUSERBASE).toBe(join('C:\\Users\\owner\\AppData\\Roaming', 'Python'))
+    expect(fold(env.PYTHONUSERBASE!).startsWith(fold(sb.root))).toBe(false)
+    expect(Object.keys(env).filter(k => k.toUpperCase() === 'TEMP')).toEqual(['TEMP'])
+    expect(Object.keys(env).filter(k => k.toUpperCase() === 'USERPROFILE')).toEqual(['USERPROFILE'])
+    expect(env.Path).toBe('C:\\Windows')
+    for (const k of ['CYNCO_NTFY_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'LOCALCODE_API_KEY', 'LOCALCODE_SANDBOX_ROOT', 'LOCALCODE_GUARD_DIR',
+      'LOCALCODE_AUDIT_DIR', 'LOCALCODE_MODELS_DIR', 'LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'CYNCO_MISSION_ALSO_LABEL']) {
+      expect(env[k], k).toBeUndefined()
+    }
+  })
+
+  it('an explicit PYTHONUSERBASE wins, and with no APPDATA the real home is used', () => {
+    const ctx = ctxOf()
+    expect(toolEnv({ PYTHONUSERBASE: 'C:\\py' }, ctx, 'win32').PYTHONUSERBASE).toBe('C:\\py')
+    expect(toolEnv({}, ctx, 'win32').PYTHONUSERBASE).toBe(join(L.home, 'AppData', 'Roaming', 'Python'))
+  })
+
+  it('with a context on linux: home, temp, scratch and git config redirected; nothing Windows-only added', () => {
+    const ctx = ctxOf()
+    const env = toolEnv({ PATH: '/usr/bin', XDG_CONFIG_HOME: '/home/owner/.config' }, ctx, 'linux')
+    expect(env.HOME).toBe(ctx.sandbox.home)
+    for (const k of ['TMPDIR', 'TEMP', 'TMP'] as const) expect(env[k]).toBe(ctx.sandbox.tmp)
+    expect(env.CYNCO_SCRATCH).toBe(ctx.sandbox.scratch)
+    expect(env.GIT_CONFIG_GLOBAL).toBe(join(ctx.sandbox.home, '.gitconfig'))
+    expect(env.USERPROFILE).toBeUndefined()
+    expect(env.APPDATA).toBeUndefined()
+    expect(env.HOMEDRIVE).toBeUndefined()
+    expect(env.XDG_CONFIG_HOME).toBe(join(ctx.sandbox.home, '.config'))
+    expect(env.XDG_CACHE_HOME).toBeUndefined()
+    expect(env.PYTHONUSERBASE).toBe(join(L.home, '.local'))
+  })
+})
+
+// ─── containedCommand ───────────────────────────────────────────────────────────────────────────
+
+describe('containedCommand', () => {
+  it('passes through with no context and off Windows', () => {
+    const none = containedCommand({ file: 'echo hi', args: [], shell: true }, { ctx: null, cwd: L.mission, env: { A: '1', LOCALCODE_MISSION_CWD: 'x' }, extraEnv: { B: '2' }, platform: 'win32' })
+    expect(none.viaLauncher).toBe(false)
+    expect(none.file).toBe('echo hi')
+    expect(none.cwd).toBe(L.mission)
+    expect(none.env.A).toBe('1')
+    expect(none.env.B).toBe('2')
+    expect(none.env.LOCALCODE_MISSION_CWD).toBeUndefined()
+    const ctx = ctxOf()
+    const lin = containedCommand({ file: 'git', args: ['status'] }, { ctx, cwd: L.mission, env: { A: '1' }, extraEnv: { B: '2' }, platform: 'linux' })
+    expect(lin.viaLauncher).toBe(false)
+    expect(lin.args).toEqual(['status'])
+    expect(lin.env.HOME).toBe(ctx.sandbox.home)
+    expect(lin.env.B).toBe('2')
+  })
+
+  it('on win32 builds the launcher argv, in the checkout, with the engine environment unchanged', () => {
+    const ctx = ctxOf()
+    const c = containedCommand({ file: 'Get-ChildItem', args: [], shell: 'powershell.exe' }, {
+      ctx, cwd: L.mission, env: { ...process.env, CYNCO_CHECK_ORDINAL: '3' }, extraEnv: { NO_COLOR: '1' }, platform: 'win32', execPath: 'C:/bun/bun.exe',
+    })
+    const checkout = engineCheckout()
+    expect(c.viaLauncher).toBe(true)
+    expect(c.file).toBe('C:/bun/bun.exe')
+    expect(c.cwd).toBe(checkout)
+    expect(c.env).toBe(process.env)
+    expect(c.args.slice(0, 7)).toEqual([
+      '--no-env-file',
+      `--config=${join(checkout, 'engine', 'lowIntegrityLauncher.bunfig.toml')}`,
+      join(checkout, 'engine', 'lowIntegrityLauncher.ts'),
+      '--run-dir', ctx.sandbox.root,
+      '--cwd', L.mission,
+    ])
+    const envPairs = c.args.flatMap((a, i) => (a === '--env' ? [c.args[i + 1]] : []))
+    expect(envPairs).toEqual(['CYNCO_CHECK_ORDINAL=3', 'NO_COLOR=1'])
+    expect(c.args.slice(-3)).toEqual(['--shell', 'powershell.exe', 'Get-ChildItem'])
+    expect(c.commandFile).toBeUndefined()
+  })
+
+  it('shell: true leaves the shell slot empty; the argv form is --exec', () => {
+    const ctx = ctxOf()
+    expect(containedCommand({ file: 'echo x', args: [], shell: true }, { ctx, platform: 'win32' }).args.slice(-3)).toEqual(['--shell', '', 'echo x'])
+    expect(containedCommand({ file: 'git', args: ['--version'] }, { ctx, platform: 'win32' }).args.slice(-3)).toEqual(['--exec', 'git', '--version'])
+  })
+
+  it('a 20,000-character command goes through --command-file in the run folder', () => {
+    const runDir = join(L.root, 'run')
+    mkdirSync(runDir)
+    const ctx = ctxOf()
+    const long = 'Write-Output ' + 'x'.repeat(20_000)
+    const c = containedCommand({ file: long, args: [], shell: true }, { ctx, platform: 'win32' })
+    expect(c.args.slice(-4, -1)).toEqual(['--shell', '', '--command-file'])
+    expect(c.commandFile).toBe(c.args[c.args.length - 1])
+    expect(dirname(c.commandFile!)).toBe(runDir)
+    expect(readFileSync(c.commandFile!, 'utf-8')).toBe(long)
+  })
+
+  it('a test context with lowil switched off is the pass-through', () => {
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+    const ctx = ctxOf()
+    const c = containedCommand({ file: 'echo x', args: [], shell: true }, { ctx, cwd: L.mission, platform: 'win32' })
+    expect(c.viaLauncher).toBe(false)
+    expect(c.env.USERPROFILE).toBe(ctx.sandbox.home)
+  })
+})
+
+// ─── toolSpawnRefusal, the switch, launcher faults ──────────────────────────────────────────────
+
+describe('toolSpawnRefusal', () => {
+  it('the six rules', () => {
+    const test = ctxOf()
+    const live: RunContainment = { ...test, test: false }
+    expect(toolSpawnRefusal({ ctx: null })).toBeNull()
+    expect(toolSpawnRefusal({ ctx: null, required: true })).toBe(refusalText('containment', NO_CONTAINMENT))
+    expect(toolSpawnRefusal({ ctx: live, platform: 'linux' })).toBeNull()
+    expect(toolSpawnRefusal({ ctx: live, platform: 'win32', bun: false })).toBe(refusalText('containment', LAUNCHER_UNAVAILABLE('not Bun')))
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+    expect(toolSpawnRefusal({ ctx: live, platform: 'linux' })).toBe(refusalText('containment', SWITCH_IN_UNATTENDED))
+    expect(toolSpawnRefusal({ ctx: test, platform: 'win32', bun: false })).toBeNull()
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil,bogus'
+    for (const platform of ['linux', 'win32'] as const) {
+      expect(toolSpawnRefusal({ ctx: test, platform })).toBe(refusalText('containment', 'LOCALCODE_CONTAINMENT_OFF names an unknown layer: bogus'))
+    }
+  })
+
+  it('a Bun process without the launcher files names the missing file', () => {
+    const t = toolSpawnRefusal({ ctx: { ...ctxOf(), test: false }, platform: 'win32', bun: true })
+    if (existsSync(join(engineCheckout(), 'engine', 'lowIntegrityLauncher.bunfig.toml')) && existsSync(join(engineCheckout(), 'engine', 'lowIntegrityLauncher.ts'))) {
+      expect(t).toBeNull()
+    } else {
+      expect(t).toContain('launcher file missing: ')
+    }
+  })
+
+  it('every refusal reads back as the containment layer', () => {
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'paths'
+    const t = toolSpawnRefusal({ ctx: { ...ctxOf(), test: false }, platform: 'linux' })!
+    expect(t.startsWith(refusalPrefix('containment'))).toBe(true)
+    expect(refusalLayerOf(t)).toBe('containment')
+  })
+})
+
+describe('uncontainedSiteRefusal', () => {
+  it('null outside a contained run; inside one, a containment refusal naming the site', () => {
+    expect(uncontainedSiteRefusal('the Git tool', null)).toBeNull()
+    const text = uncontainedSiteRefusal('the Git tool', ctxOf())!
+    expect(refusalLayerOf(text)).toBe('containment')
+    expect(text).toBe(refusalText('containment', 'the Git tool is not contained in an unattended run yet: it would run at medium integrity in the mission folder, where hooks, git settings and test files written during the run are executed'))
+  })
+})
+
+describe('containmentSwitch and containmentOff', () => {
+  it('reads the one variable', () => {
+    expect(containmentSwitch({})).toEqual({ raw: null, off: [], unknown: [] })
+    expect(containmentSwitch({ LOCALCODE_CONTAINMENT_OFF: '  ' }).raw).toBeNull()
+    expect(containmentSwitch({ LOCALCODE_CONTAINMENT_OFF: 'lowil, Paths' }).off).toEqual(['lowil', 'paths'])
+    const odd = containmentSwitch({ LOCALCODE_CONTAINMENT_OFF: 'lowil,audit' })
+    expect(odd.unknown).toEqual(['audit'])
+  })
+
+  it('switches a layer off only for a test context, and never with an unknown word', () => {
+    const test = ctxOf()
+    const live: RunContainment = { ...test, test: false }
+    expect(containmentOff('lowil', test, { LOCALCODE_CONTAINMENT_OFF: 'lowil' })).toBe(true)
+    expect(containmentOff('paths', test, { LOCALCODE_CONTAINMENT_OFF: 'lowil' })).toBe(false)
+    expect(containmentOff('lowil', test, { LOCALCODE_CONTAINMENT_OFF: 'lowil,x' })).toBe(false)
+    expect(containmentOff('lowil', live, { LOCALCODE_CONTAINMENT_OFF: 'lowil' })).toBe(false)
+    expect(containmentOff('lowil', null, { LOCALCODE_CONTAINMENT_OFF: 'lowil' })).toBe(false)
+  })
+})
+
+describe('launcherFaultOf', () => {
+  it('197 and 198 are faults only with their own line', () => {
+    const f = launcherFaultOf(197, 'noise\n[containment] refused: the record could not be read\n')
+    expect(f?.code).toBe('ECONTAINMENT')
+    expect(f?.reason).toBe('the record could not be read')
+    expect(f?.text).toBe(refusalText('containment', 'the record could not be read'))
+    expect(launcherFaultOf(197, 'a program that exits 197 by itself')).toBeNull()
+    expect(launcherFaultOf(198, '[containment] child ended: SIGKILL')?.code).toBe('ECHILDGONE')
+    expect(launcherFaultOf(0, '[containment] refused: x')).toBeNull()
+    expect(launcherFaultOf(7, '')).toBeNull()
+  })
+})
+
+// ─── Run ids, volumes, hints, the test seam ─────────────────────────────────────────────────────
+
+describe('mintRunId and acknowledgedVolumes', () => {
+  it('every label gives a well-formed run id, and two calls differ', () => {
+    for (const label of ['my mission', 'a/b\\c', '..hidden', '-x', '_x', 'x'.repeat(200), '', '!!!']) {
+      expect(mintRunId(label), label).toMatch(RUN_ID_RE)
+    }
+    expect(mintRunId('')).toMatch(/^run-/)
+    expect(mintRunId('a')).not.toBe(mintRunId('a'))
+  })
+
+  it('volume roots in one spelling; anything else as written', () => {
+    expect(acknowledgedVolumes({ LOCALCODE_UNPROTECTED_VOLUMES_OK: 'D:;d:\\; D: ; ' })).toEqual(['D:\\'])
+    expect(acknowledgedVolumes({ LOCALCODE_UNPROTECTED_VOLUMES_OK: 'D:\\data' })).toEqual(['D:\\data'])
+    expect(acknowledgedVolumes({})).toEqual([])
+  })
+})
+
+describe('containmentHint', () => {
+  const msys = 'sh.exe: *** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1): 0xC0000022'
+  it('says nothing with no context or off Windows', () => {
+    expect(containmentHint('failure', msys, null, 'win32')).toBe('')
+    expect(containmentHint('failure', msys, ctxOf(), 'linux')).toBe('')
+  })
+  it('the msys text on failure and on success, and the timeout text', () => {
+    const ctx = ctxOf()
+    expect(containmentHint('failure', msys, ctx, 'win32')).toContain(MSYS_IN_CONTAINED_RUN)
+    expect(containmentHint('success', `ok\n${msys}`, ctx, 'win32')).toContain('Use the PowerShell form instead')
+    expect(containmentHint('failure', 'plain error', ctx, 'win32')).toBe('')
+    expect(containmentHint('timeout', '', ctx, 'win32')).toContain('-p no:cacheprovider')
+  })
+})
+
+describe('testContainment', () => {
+  it('is pure and marks the context as a test', () => {
+    const before = readdirSync(dir).sort()
+    const ctx = ctxOf()
+    expect(ctx.test).toBe(true)
+    expect(ctx.runId).toMatch(RUN_ID_RE)
+    expect(readdirSync(dir).sort()).toEqual(before)
+    expect(existsSync(ctx.sandbox.root)).toBe(false)
+    expect(Object.isFrozen(ctx)).toBe(true)
+    setRunContainment(ctx)
+    expect(runContainment()).toBe(ctx)
+  })
+
+  it('refuses inside a process that is itself an unattended run', () => {
+    process.env.LOCALCODE_MISSION_MARKER = 'DONE'
+    expect(() => ctxOf()).toThrow('testContainment() was called in a process that is itself an unattended run')
+  })
+})
+
+// ─── establishContainment ───────────────────────────────────────────────────────────────────────
+
+describe('establishContainment: the sandbox it makes', () => {
+  it('on win32: folders, the record before the first label, the exact icacls calls', () => {
+    const runId = mintRunId('unit')
+    const recordFirst: boolean[] = []
+    const s = seam({ before: c => { if (exeOf(c.file) === 'icacls.exe' && c.args.length > 1) recordFirst.push(existsSync(recPath(runId))) } })
+    writeFileSync(join(L.home, '.gitconfig'), '[user]\n\tname = owner\n')
+    const ctx = established(establishContainment(winBase(s.run, { label: undefined, runId, extraRoots: [L.extra] })))
+    const runDir = join(L.root, runId)
+    for (const d of ['home', join('home', 'AppData', 'Roaming'), join('home', 'AppData', 'Local'), 'tmp', 'scratch']) expect(existsSync(join(runDir, d)), d).toBe(true)
+    expect(recordFirst.length).toBeGreaterThan(0)
+    expect(recordFirst.every(Boolean)).toBe(true)
+    const grants = s.icacls().filter(c => c.args[1] === '/grant')
+    expect(grants.map(c => c.args[0])).toEqual([runDir])
+    expect(grants[0].args[2]).toBe('*S-1-5-21-11-22-33-1001:(OI)(CI)F')
+    expect(s.labels('L')).toEqual([join(runDir, 'home'), join(runDir, 'tmp'), join(runDir, 'scratch'), L.mission, L.extra])
+    expect(s.labels('L')).not.toContain(runDir)
+    expect(s.calls.some(c => c.args.some(a => a.toUpperCase() === '/T'))).toBe(false)
+    const gitconfig = readFileSync(join(runDir, 'home', '.gitconfig'), 'utf-8')
+    expect(gitconfig).toContain('[include]')
+    expect(gitconfig).toContain(`path = ${join(L.home, '.gitconfig').replace(/\\/g, '/')}`)
+    const rec = readRec(runId)
+    expect(rec.cwdLabel).toBe('low')
+    expect(rec.holder).toBeNull()
+    expect(rec.releasedAt).toBeNull()
+    expect(ctx.runId).toBe(runId)
+    expect(ctx.sandbox.root).toBe(runDir)
+    expect(ctx.extraRoots).toEqual([L.extra])
+    expect(ctx.folders).toEqual(folders)
+    expect(ctx.isolation).toBe('overlay')
+  })
+
+  it('no .gitconfig in the home folder: no include', () => {
+    const ctx = established(establishContainment(base()))
+    expect(readFileSync(join(ctx.sandbox.home, '.gitconfig'), 'utf-8')).not.toContain('[include]')
+  })
+
+  it('labelCwd: false labels nothing outside the sandbox', () => {
+    const s = seam()
+    const ctx = established(establishContainment(winBase(s.run, { labelCwd: false, kind: 'precheck' })))
+    expect(s.labels('L')).toEqual([join(ctx.sandbox.root, 'home'), join(ctx.sandbox.root, 'tmp'), join(ctx.sandbox.root, 'scratch')])
+    expect(readRec(ctx.runId).cwdLabel).toBe('none')
+  })
+
+  it('a precheck and a grader record name this process as holder; a mission record names none', () => {
+    for (const kind of ['precheck', 'grader'] as const) {
+      const ctx = established(establishContainment(base({ kind })))
+      expect(readRec(ctx.runId).holder?.pid).toBe(process.pid)
+    }
+    const m = established(establishContainment(base()))
+    expect(readRec(m.runId).holder).toBeNull()
+  })
+
+  it('a label that fails, then succeeds after the grant, records cwdGranted', () => {
+    let tries = 0
+    const s = seam({ icacls: args => (args[0] === L.mission && args[1] === '/setintegritylevel' && tries++ === 0 ? { ok: false, out: `${args[0]}: Access is denied.` } : undefined) })
+    const ctx = established(establishContainment(winBase(s.run)))
+    expect(s.icacls().filter(c => c.args[1] === '/grant').map(c => c.args[0])).toEqual([ctx.sandbox.root, L.mission])
+    expect(readRec(ctx.runId).cwdGranted).toBe(true)
+  })
+
+  it('F155: an impossible ETIMEDOUT on the first call is retried once and said', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const s = seam({ first: { ok: false, out: 'ETIMEDOUT', code: null } })
+    established(establishContainment(winBase(s.run)))
+    expect(log.mock.calls.map(c => String(c[0])).some(l => l.includes('an impossible ETIMEDOUT after'))).toBe(true)
+  })
+})
+
+describe('establishContainment: every refusal by its text', () => {
+  it('E1, E2: the switch', () => {
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+    expect(refusal(establishContainment(base()))).toBe(SWITCH_IN_UNATTENDED)
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'nope'
+    expect(refusal(establishContainment(base({ test: true })))).toBe('LOCALCODE_CONTAINMENT_OFF names an unknown layer: nope')
+  })
+
+  it('the switch rows of entry 1.M2: grader, precheck and daemon-task with lowil and no mission key', () => {
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+    for (const kind of ['grader', 'precheck', 'daemon-task'] as const) {
+      expect(refusal(establishContainment(base({ kind })))).toBe(SWITCH_IN_UNATTENDED)
+    }
+    expect(readdirSync(L.root)).toEqual([])
+  })
+
+  it('E3: a low process does not establish a second containment', () => {
+    const s = seam({ level: 'S-1-16-4096' })
+    expect(refusal(establishContainment(winBase(s.run)))).toBe('this process is already running at low integrity, and a contained run does not establish a second containment')
+  })
+
+  it('E4: exactly one of a label and a well-formed run id', () => {
+    expect(refusal(establishContainment(base({ label: undefined })))).toBe('establishContainment needs exactly one of a label and a well-formed run id (got neither)')
+    expect(refusal(establishContainment(base({ runId: mintRunId('x') })))).toMatch(/^establishContainment needs exactly one of a label and a well-formed run id \(got label unit and run id /)
+    expect(refusal(establishContainment(base({ label: undefined, runId: 'bad id' })))).toBe('establishContainment needs exactly one of a label and a well-formed run id (got run id bad id)')
+  })
+
+  it('E5: no cwd', () => {
+    expect(refusal(establishContainment(base({ missionCwd: '' })))).toBe(`this task names no cwd, so it would work in the engine's own checkout ${engineCheckout()}; give the mission a cwd`)
+  })
+
+  it('E6: under Node on Windows the launcher is unavailable, and nothing is created', () => {
+    const s = seam()
+    expect(refusal(establishContainment(base({ platform: 'win32', run: s.run })))).toBe(LAUNCHER_UNAVAILABLE('not Bun'))
+    expect(readdirSync(L.root)).toEqual([])
+  })
+
+  it('S1, S2: the sandbox root', () => {
+    const missing = join(dir, 'no-such-root')
+    expect(refusal(establishContainment(base({ sandboxRoot: missing })))).toBe(`the sandbox root ${missing} is not an absolute path to an existing folder; create it once with scripts/cynco-containment-setup.ps1 or name another folder in LOCALCODE_SANDBOX_ROOT`)
+    expect(refusal(establishContainment(base({ sandboxRoot: 'relative/root' })))).toMatch(/^the sandbox root relative\/root is not an absolute path/)
+    expect(refusal(establishContainment(base({ sandboxRoot: dir })))).toBe(`the sandbox root ${dir} is a drive root, or is or contains the home folder ${L.home}`)
+    expect(refusal(establishContainment(base({ sandboxRoot: L.home })))).toBe(`the sandbox root ${L.home} is a drive root, or is or contains the home folder ${L.home}`)
+  })
+
+  it('V1, V2, V3: volumes that cannot be protected', () => {
+    const vols = 'C:|3|NTFS\r\nE:|2|exFAT\r\nF:|5|\r\nG:|2|\r\n'
+    expect(refusal(establishContainment(winBase(seam({ volumes: vols }).run)))).toBe('E:\\ (exFAT) cannot be protected by integrity labels and is not acknowledged')
+    process.env.LOCALCODE_UNPROTECTED_VOLUMES_OK = 'e:'
+    const ok = established(establishContainment(winBase(seam({ volumes: vols }).run)))
+    expect(ok.unprotectedVolumes).toEqual(['E:\\'])
+    process.env.LOCALCODE_UNPROTECTED_VOLUMES_OK = 'C:'
+    expect(refusal(establishContainment(winBase(seam().run)))).toBe('the entry C:\\ of LOCALCODE_UNPROTECTED_VOLUMES_OK is not the root of an attached volume that integrity labels cannot protect')
+    delete process.env.LOCALCODE_UNPROTECTED_VOLUMES_OK
+    expect(refusal(establishContainment(winBase(seam({ volumes: null }).run)))).toBe('the attached volumes could not be listed (Get-CimInstance : Access denied), so it is not known whether one of them is unprotected')
+  })
+
+  it.skipIf(process.platform !== 'win32')('S3: the sandbox root on a volume without labels', () => {
+    const vol = `${L.root.slice(0, 1).toUpperCase()}:`
+    process.env.LOCALCODE_UNPROTECTED_VOLUMES_OK = vol
+    const s = seam({ volumes: `${vol}|3|exFAT\r\n` })
+    expect(refusal(establishContainment(winBase(s.run)))).toBe(`the sandbox root ${L.root} is on ${vol}\\, a volume without integrity labels`)
+  })
+
+  it('H1: a home folder labelled low', () => {
+    expect(refusal(establishContainment(winBase(seam({ homeLow: true }).run)))).toBe(`the home folder ${L.home} is itself labelled low integrity, so low integrity protects nothing in it`)
+  })
+
+  it('H1: a home folder whose label cannot be read', () => {
+    const s = seam({ read: p => (p === L.home ? { ok: false, out: `${L.home}: Access is denied.` } : undefined) })
+    expect(refusal(establishContainment(winBase(s.run)))).toBe(`the integrity label of the home folder ${L.home} could not be read (${L.home}: Access is denied.)`)
+  })
+
+  // M4 is reached only on a volume that holds neither the checkout nor the home folder (M2 and M3
+  // come first for those), so it runs where such a volume exists; it only reads that root.
+  const otherVolume = process.platform === 'win32'
+    ? 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l => `${l}:\\`).find(v => v[0] !== engineCheckout()[0].toUpperCase() && v[0] !== tmpdir()[0].toUpperCase() && existsSync(v) && (() => { try { return statSync(v).isDirectory() } catch (e) { void e; return false } })())
+    : undefined
+  it.skipIf(otherVolume === undefined)('M4: a volume root', () => {
+    expect(refusal(establishContainment(base({ missionCwd: otherVolume!, home: L.home })))).toBe(`the mission folder ${otherVolume} is a volume root`)
+  })
+
+  it('M1: a folder that is not there', () => {
+    const gone = join(dir, 'gone')
+    expect(refusal(establishContainment(base({ missionCwd: gone })))).toBe(`the mission folder ${gone} does not exist or is not a folder`)
+    expect(refusal(establishContainment(base({ extraRoots: [gone] })))).toBe(`the extra folder ${gone} does not exist or is not a folder`)
+  })
+
+  it('M2: the checkout, a folder that contains it, a folder inside it', () => {
+    const co = engineCheckout()
+    for (const p of [co, dirname(co), join(co, 'engine')]) {
+      expect(refusal(establishContainment(base({ missionCwd: p })))).toBe(`the mission folder ${realpathSync.native(p)} is, contains or is inside the checkout this engine runs from (${co})`)
+    }
+  })
+
+  it('M3: the home folder', () => {
+    expect(refusal(establishContainment(base({ missionCwd: L.home })))).toBe(`the mission folder ${L.home} is the home folder ${L.home} or contains it`)
+  })
+
+  it('M5: a network path', () => {
+    const unc = process.platform === 'win32' ? `\\\\?\\${L.mission}` : `/${L.mission}`
+    expect(refusal(establishContainment(base({ missionCwd: unc })))).toMatch(/ is on a network share or on a volume without integrity labels$/)
+  })
+
+  it('M6: CynCo\'s own folders; the authoring staging folder is the exception', () => {
+    const state = join(L.home, '.cynco')
+    mkdirSync(join(state, 'authoring', 'x', '.git'), { recursive: true })
+    writeFileSync(join(state, 'authoring', 'x', '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    const f = { ...folders, state }
+    expect(refusal(establishContainment(base({ missionCwd: join(state, 'authoring'), folders: f })))).toBe(`the mission folder ${join(state, 'authoring')} is, contains or is inside ${state} (CynCo's state folder)`)
+    expect(establishContainment(base({ missionCwd: join(state, 'authoring', 'x'), folders: f })).ok).toBe(true)
+    expect(refusal(establishContainment(base({ missionCwd: L.guard })))).toBe(`the mission folder ${L.guard} is, contains or is inside ${L.guard} (the guard folder)`)
+    expect(refusal(establishContainment(base({ missionCwd: L.models })))).toBe(`the mission folder ${L.models} is, contains or is inside ${L.models} (the models folder)`)
+    const audit = join(L.mission, 'audit')
+    mkdirSync(audit)
+    expect(refusal(establishContainment(base({ folders: { ...folders, audit } })))).toBe(`the mission folder ${L.mission} is, contains or is inside ${audit} (the audit folder)`)
+    const inRoot = join(L.root, 'm')
+    mkdirSync(inRoot)
+    expect(refusal(establishContainment(base({ missionCwd: inRoot })))).toBe(`the mission folder ${inRoot} is, contains or is inside ${L.root} (the sandbox root)`)
+  })
+
+  it('M7: a dot-folder of the home folder', () => {
+    const ssh = join(L.home, '.ssh', 'keys')
+    mkdirSync(ssh, { recursive: true })
+    expect(refusal(establishContainment(base({ missionCwd: ssh })))).toBe(`the mission folder ${ssh} is inside ${join(L.home, '.ssh')}, a dot-folder of the home folder`)
+  })
+
+  it('M8: a link at the first or second level that leads out; one that stays inside is allowed', () => {
+    link(L.outside, join(L.mission, 'out1'))
+    expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'out1')} -> ${L.outside})`)
+    rmdirSync(join(L.mission, 'out1'))
+    links = []
+    mkdirSync(join(L.mission, 'sub'))
+    link(L.outside, join(L.mission, 'sub', 'out2'))
+    expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'sub', 'out2')} -> ${L.outside})`)
+    rmdirSync(join(L.mission, 'sub', 'out2'))
+    links = []
+    mkdirSync(join(L.mission, 'inner'))
+    link(join(L.mission, 'inner'), join(L.mission, 'sub', 'in'))
+    expect(establishContainment(base()).ok).toBe(true)
+  })
+
+  it('M9: the mission folder is the top of its own repository (mission only)', () => {
+    const noGit = join(dir, 'nogit')
+    mkdirSync(noGit)
+    expect(refusal(establishContainment(base({ missionCwd: noGit })))).toBe(`the mission folder ${noGit} is not the top of its own git repository (.git is missing); a mission works in a clone made with git clone --no-hardlinks, not in a worktree or a subfolder`)
+    expect(establishContainment(base({ missionCwd: noGit, kind: 'daemon-task' })).ok).toBe(true)
+    const gitFile = join(dir, 'gitfile')
+    mkdirSync(gitFile)
+    writeFileSync(join(gitFile, '.git'), 'gitdir: ../elsewhere\n')
+    expect(refusal(establishContainment(base({ missionCwd: gitFile })))).toContain('(.git is a file: a worktree or a submodule)')
+    const noHead = join(dir, 'nohead')
+    mkdirSync(join(noHead, '.git'), { recursive: true })
+    expect(refusal(establishContainment(base({ missionCwd: noHead })))).toContain('(.git holds no HEAD)')
+  })
+
+  it('a hard link under a folder that will be labelled: refused, wherever its other name is', () => {
+    mkdirSync(join(L.mission, 'deep', 'er'), { recursive: true })
+    writeFileSync(join(L.outside, 'secret.txt'), 'x')
+    const inner = join(L.mission, 'deep', 'er', 'secret-alias.txt')
+    linkSync(join(L.outside, 'secret.txt'), inner)
+    // Off Windows nothing is labelled, so nothing is checked.
+    expect(establishContainment(base()).ok).toBe(true)
+    expect(refusal(establishContainment(winBase(seam().run)))).toBe(`the mission folder ${L.mission} holds a file with more than one name (${inner} has 2); a low label set on such a file reaches every other name of it, so the folder is not labelled: work in a clone made with git clone --no-hardlinks`)
+    // Nor with labelCwd false.
+    expect(establishContainment(winBase(seam().run, { labelCwd: false, kind: 'precheck' })).ok).toBe(true)
+    unlinkSync(inner)
+    expect(establishContainment(winBase(seam().run)).ok).toBe(true)
+  })
+
+  it('a folder still labelled low with no live run holding it is refused before anything is made', () => {
+    const lowRead = (p: string) => (p === L.mission ? { ok: true, out: `${p} NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\r\n         Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)\r\n` } : undefined)
+    expect(refusal(establishContainment(winBase(seam({ read: lowRead }).run)))).toBe(`the mission folder ${L.mission} is already labelled low integrity and no live run holds it (an earlier run's release did not set it back, or it sits in a folder labelled low). Look at what changed in it, then set it back with icacls "${L.mission}" /setintegritylevel (OI)(CI)M`)
+    expect(readdirSync(L.root)).toEqual([])
+    // A live run holding the folder is the legitimate reason for its label.
+    const first = established(establishContainment(winBase(seam().run)))
+    editRec(first.runId, rec => { rec.holder = { pid: process.pid, startedAt: new Date().toISOString() } })
+    expect(establishContainment(winBase(seam({ read: lowRead }).run)).ok).toBe(true)
+  })
+
+  it('a dead run naming the folder is released with its label set back before the label is read', () => {
+    const first = established(establishContainment(winBase(seam().run)))
+    editRec(first.runId, rec => { rec.holder = { pid: deadPid(), startedAt: new Date().toISOString() } })
+    const s = seam()
+    established(establishContainment(winBase(s.run)))
+    expect(s.labels('M')).toEqual([L.mission])
+    expect(readRec(first.runId).releasedBy).toBe('holder-gone')
+  })
+
+  it('C1: a run folder that already exists', () => {
+    const runId = mintRunId('unit')
+    mkdirSync(join(L.root, runId))
+    expect(refusal(establishContainment(base({ label: undefined, runId })))).toMatch(new RegExp(`^the sandbox ${join(L.root, runId).replace(/\\/g, '\\\\')} could not be created \\(`))
+  })
+
+  it('C2: a sandbox label that fails', () => {
+    const s = seam({ icacls: args => (args[0].endsWith('tmp') && args[1] === '/setintegritylevel' ? { ok: false, out: 'tmp: Access is denied.' } : undefined) })
+    expect(refusal(establishContainment(winBase(s.run)))).toMatch(/^the sandbox .*tmp could not be labelled low integrity \(tmp: Access is denied\.\)$/)
+  })
+
+  it('C3: a label that fails after the grant names the icacls line; what was labelled is set back', () => {
+    const s = seam({ icacls: args => (args[0] === L.extra ? { ok: false, out: `${L.extra}: Access is denied.` } : undefined) })
+    const r = establishContainment(winBase(s.run, { extraRoots: [L.extra] }))
+    expect(refusal(r)).toBe(`the extra folder ${L.extra} could not be labelled low integrity (${L.extra}: Access is denied.)`)
+    expect(s.labels('M')).toEqual([L.mission])
+    const [rec] = containmentRecords({ sandboxRoot: L.root })
+    expect(rec.releasedBy).toBe('failed-establish')
+    expect(rec.releasedAt).not.toBeNull()
+  })
+})
+
+// ─── adoptContainment ───────────────────────────────────────────────────────────────────────────
+
+describe('adoptContainment', () => {
+  function made(over: Partial<Parameters<typeof establishContainment>[0]> = {}): RunContainment {
+    return established(establishContainment(base({ extraRoots: [L.extra], ...over })))
+  }
+  const adopt = (runId: string | null, over: Partial<Parameters<typeof adoptContainment>[0]> = {}) =>
+    adoptContainment({ runId, missionCwd: L.mission, who: 'engine', sandboxRoot: L.root, probe: false, platform: 'linux', ...over })
+
+  it('builds the context from the record and holds it', () => {
+    const c = made()
+    const r = adopt(c.runId)
+    if (!r.ok) throw new Error(r.reason)
+    expect(r.containment.folders).toEqual(readRec(c.runId).folders)
+    expect(r.containment.home).toBe(L.home)
+    expect(r.containment.extraRoots).toEqual([L.extra])
+    expect(r.containment.unprotectedVolumes).toEqual([])
+    expect(r.containment.test).toBe(false)
+    expect(readRec(c.runId).holder?.pid).toBe(process.pid)
+    expect(adopt(c.runId).ok).toBe(true)
+    expect(runContainment()).toBeNull()
+  })
+
+  it('the driver verifies and does not hold', () => {
+    const c = made()
+    expect(adopt(c.runId, { who: 'driver' }).ok).toBe(true)
+    expect(readRec(c.runId).holder).toBeNull()
+  })
+
+  it('every refusal by its text', () => {
+    const c = made()
+    const path = recPath(c.runId)
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'paths'
+    expect(refusal(adopt(c.runId))).toBe(SWITCH_IN_UNATTENDED)
+    delete process.env.LOCALCODE_CONTAINMENT_OFF
+    expect(refusal(adopt(null))).toBe('no run id was handed to this engine (LOCALCODE_MISSION_RUN_ID is unset or malformed); a mission is started with scripts/dispatch-mission.sh, which creates the sandbox')
+    expect(refusal(adopt('malformed', { who: 'engine' }))).toContain('no run id was handed to this engine')
+    expect(refusal(adopt(null, { who: 'one-shot' }))).toBe('the task file names no sandbox (runId); a one-shot is started by the daemon or the campaign runner, which create it')
+    expect(refusal(adopt(null, { who: 'driver' }))).toBe('the driver was handed no run id (LOCALCODE_MISSION_RUN_ID is unset or malformed); it is started by scripts/dispatch-mission.sh')
+    expect(refusal(adopt(c.runId, { missionCwd: '' }))).toBe('this run was not told its mission folder')
+    const other = mintRunId('other')
+    expect(refusal(adopt(other))).toMatch(new RegExp(`^no containment record at .*${other}.*containment\\.json \\(`))
+    expect(refusal(adopt(c.runId, { missionCwd: L.extra }))).toBe(`the containment record ${path} is for ${L.mission}, not for this run's folder ${L.extra}`)
+    expect(refusal(adopt(c.runId, { platform: 'win32' }))).toBe(LAUNCHER_UNAVAILABLE('not Bun'))
+    editRec(c.runId, r => { r.holder = { pid: process.ppid, startedAt: new Date().toISOString() } })
+    expect(refusal(adopt(c.runId))).toBe(`the containment record ${path} is already held by pid ${process.ppid}`)
+    editRec(c.runId, r => { r.holder = null })
+    rmdirSync(join(L.root, c.runId, 'tmp'))
+    expect(refusal(adopt(c.runId))).toBe(`the sandbox folder ${join(L.root, c.runId, 'tmp')} is missing`)
+    editRec(c.runId, r => { (r as { schema: number }).schema = 2 })
+    expect(refusal(adopt(c.runId))).toBe(`the containment record ${path} is not a version this engine reads (schema 2)`)
+  })
+
+  it('a record of another kind is refused by name', () => {
+    const p = made({ kind: 'precheck' })
+    expect(refusal(adopt(p.runId))).toBe(`the containment record ${recPath(p.runId)} is for a precheck run; the engine adopts only a mission record`)
+    expect(refusal(adopt(p.runId, { who: 'driver' }))).toBe(`the containment record ${recPath(p.runId)} is for a precheck run; the driver adopts only a mission record`)
+    const m = made()
+    expect(refusal(adopt(m.runId, { who: 'one-shot' }))).toBe(`the containment record ${recPath(m.runId)} is for a mission run; a one-shot adopts only a daemon-task record`)
+    const noGit = join(dir, 'task')
+    mkdirSync(noGit)
+    const t = made({ kind: 'daemon-task', missionCwd: noGit, extraRoots: [] })
+    expect(adopt(t.runId, { who: 'one-shot', missionCwd: noGit }).ok).toBe(true)
+  })
+
+  it('a record made by a test, and a released record, cannot serve a run', () => {
+    process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+    const t = made({ test: true })
+    delete process.env.LOCALCODE_CONTAINMENT_OFF
+    expect(refusal(adopt(t.runId))).toBe('this containment record was made by a test and cannot serve a run')
+    const c = made()
+    releaseContainment(c.runId, { sandboxRoot: L.root, platform: 'linux' })
+    expect(refusal(adopt(c.runId))).toBe(`the containment record ${recPath(c.runId)} was released at ${readRec(c.runId).releasedAt}`)
+  })
+})
+
+// ─── releaseContainment ─────────────────────────────────────────────────────────────────────────
+
+describe('releaseContainment', () => {
+  function labelledRun(s: ReturnType<typeof seam>): RunContainment {
+    return established(establishContainment(winBase(s.run, { extraRoots: [L.extra] })))
+  }
+
+  it('marks the record and sets each labelled folder back to medium, never with /T', () => {
+    const s = seam()
+    const c = labelledRun(s)
+    const r = seam()
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled).toBe(true)
+    expect(r.labels('M')).toEqual([L.mission, L.extra])
+    expect(r.calls.some(x => x.args.some(a => a.toUpperCase() === '/T'))).toBe(false)
+    expect(readRec(c.runId).releasedBy).toBe('release')
+    const again = releaseContainment(c.runId, { sandboxRoot: L.root, platform: 'win32', run: r.run })
+    expect(again.note).toBe(`run ${c.runId} was already released at ${readRec(c.runId).releasedAt}`)
+    expect(r.labels('M')).toHaveLength(2)
+  })
+
+  it('leaves a folder another live run holds, and says which', () => {
+    const first = labelledRun(seam())
+    const second = labelledRun(seam())
+    editRec(first.runId, rec => { rec.holder = { pid: process.pid, startedAt: new Date().toISOString() } })
+    const r = seam()
+    const res = releaseContainment(second, { platform: 'win32', run: r.run })
+    expect(r.labels('M')).toEqual([])
+    expect(res.note).toContain(`${L.mission} stays labelled low: run ${first.runId} still holds it`)
+  })
+
+  it('relabels when the other run\'s holder is gone, or it has had no holder for 15 minutes', () => {
+    const first = labelledRun(seam())
+    const second = labelledRun(seam())
+    editRec(first.runId, rec => { rec.holder = { pid: deadPid(), startedAt: new Date().toISOString() } })
+    const r = seam()
+    releaseContainment(second, { platform: 'win32', run: r.run })
+    expect(r.labels('M')).toEqual([L.mission, L.extra])
+    const third = labelledRun(seam())
+    editRec(first.runId, rec => { rec.holder = null; rec.createdAt = new Date(Date.now() - 20 * 60_000).toISOString() })
+    const r2 = seam()
+    releaseContainment(third, { platform: 'win32', run: r2.run })
+    expect(r2.labels('M')).toEqual([L.mission, L.extra])
+  })
+
+  it('sets the folder low again when a run became active during the relabel', () => {
+    const first = labelledRun(seam())
+    releaseContainment(first, { platform: 'win32', run: seam().run })
+    const second = labelledRun(seam())
+    const r = seam({
+      before: call => {
+        if (exeOf(call.file) === 'icacls.exe' && call.args[0] === L.mission && call.args[2] === '(OI)(CI)M') {
+          editRec(first.runId, rec => { rec.releasedAt = null; delete rec.releasedBy; rec.holder = { pid: process.pid, startedAt: new Date().toISOString() } })
+        }
+      },
+    })
+    const res = releaseContainment(second, { platform: 'win32', run: r.run })
+    expect(r.labels('L')).toEqual([L.mission])
+    expect(res.note).toContain(`${L.mission} was labelled low again: run ${first.runId} became active during the release`)
+  })
+
+  it('rule R4: a low label the run set itself under the folder is set back; an inherited one is left; links are not entered', () => {
+    mkdirSync(join(L.mission, 'sub', 'deeper'), { recursive: true })
+    writeFileSync(join(L.mission, 'f.txt'), 'x')
+    writeFileSync(join(L.mission, 'g.txt'), 'x')
+    writeFileSync(join(L.mission, 'sub', 'deeper', 'h.txt'), 'x')
+    writeFileSync(join(L.outside, 'never-listed.txt'), 'x')
+    const c = labelledRun(seam())
+    link(L.outside, join(L.mission, 'jn'))
+    const block = (p: string, label: string) => `${p} NT AUTHORITY\\SYSTEM:(I)(F)\r\n          Mandatory Label\\${label}\r\n\r\n`
+    const r = seam({
+      icacls: args => {
+        if (args[1] !== '/L' || args.length !== 2) return undefined
+        if (args[0] === join(L.mission, '*')) {
+          // f.txt carries the run's own label; g.txt an inherited one; sub its own; .git and jn
+          // are not in the listing and are asked on their own.
+          return { ok: true, out: block(join(L.mission, 'f.txt'), 'Low Mandatory Level:(NW)') + block(join(L.mission, 'g.txt'), 'Low Mandatory Level:(I)(NW)') + block(join(L.mission, 'sub'), 'Low Mandatory Level:(OI)(CI)(NW)') + 'Successfully processed 3 files; Failed processing 0 files\r\n' }
+        }
+        if (args[0] === join(L.mission, 'jn')) return { ok: true, out: block(args[0], 'Low Mandatory Level:(OI)(CI)(NW)') }
+        return undefined
+      },
+    })
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled, res.note).toBe(true)
+    const resets = r.calls.filter(x => x.args[1] === '/L' && x.args[2] === '/setintegritylevel').map(x => [x.args[0], x.args[3]])
+    expect(resets).toEqual(expect.arrayContaining([[join(L.mission, 'f.txt'), 'M'], [join(L.mission, 'sub'), '(OI)(CI)M'], [join(L.mission, 'jn'), 'M']]))
+    expect(resets).toHaveLength(3)
+    const listed = r.calls.filter(x => x.args.length === 2 && x.args[1] === '/L').map(x => x.args[0])
+    expect(listed).toContain(join(L.mission, 'sub', '*'))
+    expect(listed).toContain(join(L.mission, 'sub', 'deeper', '*'))
+    expect(listed).not.toContain(join(L.mission, 'jn', '*'))
+    expect(listed.some(a => a.startsWith(L.outside))).toBe(false)
+    expect(r.calls.some(x => x.args.some(a => a.toUpperCase() === '/T'))).toBe(false)
+    expect(res.note).toContain(`${L.mission} set back to medium integrity (`)
+    expect(res.note).toContain('3 set back')
+  })
+
+  it('rule R4: an entry under the folder whose low label cannot be set back makes the release say so', () => {
+    writeFileSync(join(L.mission, 'f.txt'), 'x')
+    const c = labelledRun(seam())
+    const r = seam({
+      icacls: args => {
+        if (args[0] === join(L.mission, '*') && args[1] === '/L') return { ok: true, out: `${join(L.mission, 'f.txt')} Mandatory Label\\Low Mandatory Level:(NW)\r\n` }
+        if (args[0] === join(L.mission, 'f.txt') && args[2] === '/setintegritylevel') return { ok: false, out: 'Access is denied.' }
+        return undefined
+      },
+    })
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled).toBe(false)
+    expect(res.note).toContain(`${L.mission}: 1 entry under it may still be labelled low (${join(L.mission, 'f.txt')} could not be set back (Access is denied.))`)
+  })
+
+  it('a missing record and a missing folder are notes; a failed relabel is logged; nothing throws', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const id = mintRunId('nobody')
+    expect(releaseContainment(id, { sandboxRoot: L.root, platform: 'win32', run: seam().run })).toEqual({ relabelled: false, note: `no containment record for ${id}` })
+    const c = labelledRun(seam())
+    rmSync(L.extra, { recursive: true })
+    const r = seam({ icacls: args => (args[0] === L.mission ? { ok: false, out: 'Access is denied.' } : undefined) })
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled).toBe(false)
+    expect(res.note).toContain(`${L.mission} could not be set back to medium integrity (Access is denied.)`)
+    expect(res.note).toContain(`${L.extra} is missing`)
+    expect(log.mock.calls.map(x => String(x[0])).some(l => l.startsWith('[containment] run ') && l.includes('could not be set back'))).toBe(true)
+  })
+})
+
+// ─── sweepSandboxes and containmentRecords ──────────────────────────────────────────────────────
+
+describe('sweepSandboxes', () => {
+  const daysAgo = (d: number) => () => new Date(Date.now() - d * 24 * 3600_000)
+  const quiet = () => undefined
+
+  it('removes a run folder 8 days old and keeps one 6 days old', () => {
+    const old = established(establishContainment(base({ now: daysAgo(8) })))
+    const young = established(establishContainment(base({ now: daysAgo(6) })))
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: quiet })
+    expect(res.removed).toEqual([join(L.root, old.runId)])
+    expect(existsSync(join(L.root, old.runId))).toBe(false)
+    expect(existsSync(join(L.root, young.runId))).toBe(true)
+    expect(readRec(young.runId).releasedBy).toBe('holder-gone')
+  })
+
+  it('releases an active record whose holder is gone without removing it; never removes a held one', () => {
+    const gone = established(establishContainment(base({ now: () => new Date(Date.now() - 3600_000) })))
+    const held = established(establishContainment(base({ now: daysAgo(9) })))
+    editRec(held.runId, rec => { rec.holder = { pid: process.pid, startedAt: new Date().toISOString() } })
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: quiet })
+    expect(res.removed).toEqual([])
+    expect(readRec(gone.runId).releasedBy).toBe('holder-gone')
+    expect(readRec(held.runId).releasedAt).toBeNull()
+  })
+
+  it('never touches what is not a run folder with its own record', () => {
+    const design = join(L.root, '_design')
+    mkdirSync(design)
+    const noRecord = join(L.root, mintRunId('norecord'))
+    mkdirSync(noRecord)
+    const old = established(establishContainment(base({ now: daysAgo(10) })))
+    const otherName = join(L.root, mintRunId('renamed'))
+    mkdirSync(otherName)
+    writeFileSync(join(otherName, 'containment.json'), readFileSync(recPath(old.runId)))
+    writeFileSync(join(L.root, 'a-file.txt'), 'x')
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: quiet })
+    expect(res.removed).toEqual([join(L.root, old.runId)])
+    for (const p of [design, noRecord, otherName, join(L.root, 'a-file.txt')]) expect(existsSync(p), p).toBe(true)
+  })
+
+  it('a link inside an old sandbox is removed as an entry; what it points at is intact', () => {
+    const sentinel = join(dir, 'sentinel')
+    mkdirSync(sentinel)
+    writeFileSync(join(sentinel, 'keep.txt'), 'keep')
+    const old = established(establishContainment(base({ now: daysAgo(8) })))
+    symlinkSync(sentinel, join(old.sandbox.scratch, 'link'), 'junction')
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: quiet })
+    expect(res.removed).toEqual([join(L.root, old.runId)])
+    expect(readFileSync(join(sentinel, 'keep.txt'), 'utf-8')).toBe('keep')
+  })
+
+  it('refuses a root that contains the home folder, and removes nothing', () => {
+    const old = established(establishContainment(base({ now: daysAgo(8) })))
+    const homeInRoot = join(L.root, 'h')
+    mkdirSync(homeInRoot)
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: homeInRoot, platform: 'linux', log: l => lines.push(l) })
+    expect(res).toEqual({ removed: [], kept: 0 })
+    expect(lines.join('\n')).toContain('the sweep refused')
+    expect(existsSync(join(L.root, old.runId))).toBe(true)
+  })
+
+  it('containmentRecords lists oldest first, and an unreadable root is empty', () => {
+    const b = established(establishContainment(base({ now: daysAgo(1) })))
+    const a = established(establishContainment(base({ now: daysAgo(2) })))
+    expect(containmentRecords({ sandboxRoot: L.root }).map(r => r.runId)).toEqual([a.runId, b.runId])
+    expect(containmentRecords({ sandboxRoot: join(dir, 'none') })).toEqual([])
+  })
+})
+
+// ─── Source pins ────────────────────────────────────────────────────────────────────────────────
+
+describe('source pins', () => {
+  const src = readFileSync(join(engineCheckout(), 'engine', 'containment.ts'), 'utf-8')
+  const launcher = join(engineCheckout(), 'engine', 'lowIntegrityLauncher.ts')
+  it('no /T, no taskkill, no rmSync in the module or the launcher', () => {
+    for (const text of [src, existsSync(launcher) ? readFileSync(launcher, 'utf-8') : '']) {
+      expect(text).not.toContain("'/T'")
+      expect(text).not.toContain('taskkill')
+      expect(text).not.toContain('rmSync(')
+    }
+  })
+  it('imports nothing from the tools, the audit, the integrity module or harness git', () => {
+    const imports = [...src.matchAll(/from '([^']+)'/g)].map(m => m[1])
+    for (const i of imports) expect(i, i).not.toMatch(/tools|audit|integrity|harnessGit/)
+  })
+})

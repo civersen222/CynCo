@@ -70,6 +70,20 @@ STAMP=$(basename "$BRIEF" | sed 's/\.[^.]*$//')
 ENGINE_LOG=${ENGINE_LOG:-/c/tmp/engine_${STAMP}.log}
 DRIVER_LOG=${DRIVER_LOG:-/c/tmp/driver_${STAMP}.log}
 
+# --- containment (F242) ------------------------------------------------------
+# One run id for the sandbox, the record, the baseline, the audit and the engine.
+if ! RUN_ID=$(bun scripts/cynco-sandbox.mjs mint "$STAMP" | tr -d '\r') || [ -z "$RUN_ID" ]; then
+  echo "[dispatch] REFUSED: containment: no run id could be minted for $STAMP — nothing was dispatched" >&2
+  exit 1
+fi
+echo "[dispatch] run $RUN_ID"
+if [ -n "${LOCALCODE_CONTAINMENT_OFF:-}" ]; then
+  echo "[dispatch] REFUSED: containment: LOCALCODE_CONTAINMENT_OFF is set ($LOCALCODE_CONTAINMENT_OFF): a dispatch never runs with a containment layer off. Unset it. — nothing was dispatched" >&2
+  exit 1
+fi
+ALSO_ARGS=()
+SANDBOX_CREATED=
+
 # --- a fresh engine, always ------------------------------------------------
 # On Windows the child outlives the parent, so a killed engine leaves its
 # llama-server holding the port and the next engine adopts a server whose args
@@ -97,12 +111,17 @@ dispatch_abandoned() {
     taskkill //PID "$ENGINE_WINPID" //T //F >/dev/null 2>&1 || true
     echo "[dispatch] stopped before the mission started — the mission engine this dispatch started is stopped"
   fi
+  if [ -n "${SANDBOX_CREATED:-}" ]; then
+    bun scripts/cynco-sandbox.mjs release "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+  fi
   if [ -n "$PHONE_ENGINE_WAS_RUNNING" ]; then
     echo "[dispatch] stopped before the mission started — starting the phone engine again"
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 start engine 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
   fi
 }
 trap dispatch_abandoned EXIT
+bun scripts/cynco-sandbox.mjs create --run-id "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} || exit 1
+SANDBOX_CREATED=1
 if [ "$(phone_engine_task_state)" = "Running" ]; then
   PHONE_ENGINE_WAS_RUNNING=1
   echo "[dispatch] stopping the phone engine through its task (started again when the mission is over)"
@@ -117,6 +136,7 @@ fi
 for pid in $LC_ENGINE_PIDS; do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
+bun scripts/cynco-sandbox.mjs release-dead --kind mission --except "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
 # The owner's local-LLM apps first (F219): a model server of theirs on our port
 # is named, stopped and owed its server back when the mission ends, by the rule
 # a chat turn and a one-shot follow (engine/apps), instead of being killed by
@@ -226,6 +246,7 @@ LOCALCODE_MISSION_MARKER="$MARKER" \
 LOCALCODE_MISSION_CWD="$MISSION_CWD" \
 LOCALCODE_MISSION_BASE="$MISSION_BASE" \
 LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
+LOCALCODE_MISSION_RUN_ID="$RUN_ID" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
 CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
   bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
@@ -238,6 +259,14 @@ ENGINE_WINPID=$(cat "/proc/$ENGINE_PID/winpid" 2>/dev/null || true)
 echo "[dispatch] waiting for the model to load"
 for _ in $(seq 1 120); do
   if grep -q "Chat template supports native tool calls" "$ENGINE_LOG" 2>/dev/null; then break; fi
+  if REFUSED_LINE=$(grep -m1 '^\[containment\] refused: ' "$ENGINE_LOG" 2>/dev/null | tr -d '\r') && [ -n "$REFUSED_LINE" ]; then
+    echo "[dispatch] REFUSED: ${REFUSED_LINE#\[containment\] refused: } — nothing was dispatched (engine log $ENGINE_LOG)" >&2
+    exit 1
+  fi
+  if FATAL_LINE=$(grep -m1 '^\[llama-cpp\] FATAL' "$ENGINE_LOG" 2>/dev/null | tr -d '\r') && [ -n "$FATAL_LINE" ]; then
+    echo "[dispatch] the engine failed to start: $FATAL_LINE — see $ENGINE_LOG" >&2
+    exit 1
+  fi
   sleep 5
 done
 grep -q "Chat template supports native tool calls" "$ENGINE_LOG" || {
@@ -385,6 +414,7 @@ CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
 CYNCO_PROBE_TIMEOUT_MS="$CYNCO_PROBE_TIMEOUT_MS" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
 CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
+LOCALCODE_MISSION_RUN_ID="$RUN_ID" \
 CYNCO_TEARDOWN_ENGINE=1 \
   bun scripts/cynco-mission-driver.mjs \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
@@ -439,6 +469,7 @@ IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
   sleep 10
   END_OUT=$(bun scripts/cynco-mission-end.mjs --engine-pid "${ENGINE_WINPID:-0}" ${CYNCO_SKIP_IDLE_ENGINE:+--skip-idle} 2>&1 | tr -d '\r' || true)
   printf '%s\n' "$END_OUT" | grep '^\[mission-end\]' >> "$DRIVER_LOG" || true
+  bun scripts/cynco-sandbox.mjs release "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   case "$(printf '%s\n' "$END_OUT" | sed -n 's/^ACTION //p' | tail -1)" in
     phone)
       powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 start engine >> "$DRIVER_LOG" 2>&1 || true

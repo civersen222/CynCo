@@ -32,6 +32,8 @@ export default defineConfig({
     // hostEnv clears every LOCALCODE_* the launching shell exports, so the
     // suite runs on the engine's defaults on the owner's PC as it does on CI
     // and never reaches the owner's live services (F206).
+    // containment, after hostEnv (which would clear it): the sandbox, guard and audit folders default
+    // to live C:/cynco-* folders, so the suite names one that is never created and they refuse (F242).
     // noLiveServices makes fetch to this machine's own service ports (Ollama,
     // the model server, the engine, the embedding service) fail as a closed
     // port does, which is what a CI runner has there (F206).
@@ -40,6 +42,7 @@ export default defineConfig({
     setupFiles: [
       'engine/__tests__/setup/cyncoHome.ts',
       'engine/__tests__/setup/hostEnv.ts',
+      'engine/__tests__/setup/containment.ts',
       'engine/__tests__/setup/noLiveServices.ts',
       'engine/__tests__/setup/missionEnv.ts',
       'engine/__tests__/setup/bunShim.ts',

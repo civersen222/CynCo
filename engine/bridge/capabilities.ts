@@ -27,6 +27,7 @@
 import { callTouchesSealed, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { isHouseConductEnabled, isS5EnforcementEnabled } from '../config.js'
 import { isUnattendedMission } from '../missionEnv.js'
+import { runContainment } from '../containment.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
 export const CAP_SEALED_GATES = 'sealed-gates'
@@ -65,6 +66,14 @@ export const CAP_S5_EARNED_ONLY = 's5-earned-only'
  * predicate, or the advertised arm and the served arm are two arms).
  */
 export const CAP_HOUSE_CONDUCT = 'house-conduct'
+/**
+ * F242. Every command this process starts for the model runs in the run's sandbox and, on Windows,
+ * at low integrity, and this process measured that with the launcher probe. A word for the SAFE state:
+ * an engine that cannot say it is refused by the driver, and silence is not permission.
+ */
+export const CAP_CONTAINED = 'contained-tools'
+/** The same sandbox and overlay with no kernel layer under it (any system other than Windows). */
+export const CAP_CONTAINED_OVERLAY = 'contained-overlay'
 
 /**
  * A path that cannot collide with a real instrument, and says what it is to
@@ -84,6 +93,8 @@ type Wiring = {
   unattended?: () => boolean
   /** Same predicate the loop passes to `assembleBasePrompt`; optional so a wiring without it never claims the word. */
   houseConduct?: () => boolean
+  /** What the run context says; optional so a wiring without it never claims either word. */
+  contained?: () => 'verified' | 'overlay' | null
 }
 
 const LIVE: Wiring = {
@@ -96,6 +107,7 @@ const LIVE: Wiring = {
   s5Enforcing: () => isS5EnforcementEnabled(),
   unattended: () => isUnattendedMission(),
   houseConduct: () => isHouseConductEnabled(),
+  contained: () => { const c = runContainment(); return c && !c.test ? c.isolation : null },
 }
 
 /**
@@ -139,6 +151,14 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
     if (wiring.houseConduct?.() === true) caps.push(CAP_HOUSE_CONDUCT)
   } catch (e) {
     console.log(`[capability] ${CAP_HOUSE_CONDUCT} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
+  }
+  // F242. The run context, its own try like the others.
+  try {
+    const k = wiring.contained?.() ?? null
+    if (k === 'verified') caps.push(CAP_CONTAINED)
+    else if (k === 'overlay') caps.push(CAP_CONTAINED_OVERLAY)
+  } catch (e) {
+    console.log(`[capability] ${CAP_CONTAINED}/${CAP_CONTAINED_OVERLAY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }

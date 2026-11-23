@@ -115,6 +115,7 @@ try {
 // of llama-server startup — and only then does runOneShotTask() read the file
 // and throw `Task file missing required field: triggerId`. Validate before the
 // model, so a typo fails in milliseconds instead of after a full load.
+let oneShotTask: import('./daemon/types.js').TaskFileInput | null = null
 {
   const idx = process.argv.indexOf('--run-task')
   if (idx !== -1) {
@@ -125,7 +126,7 @@ try {
     }
     const { readTaskFile } = await import('./daemon/taskFile.js')
     try {
-      readTaskFile(p)
+      oneShotTask = readTaskFile(p)
     } catch (err: any) {
       console.error(`[one-shot] ${err?.message ?? err}`)
       process.exit(1)
@@ -142,6 +143,45 @@ import { bootstrapProvider } from './bootstrapProvider.js'
   const { installKillOnCloseJob } = await import('./security/jobObject.js')
   const job = await installKillOnCloseJob()
   console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
+}
+// ─── Containment (F242) ──────────────────────────────────────
+// An unattended run adopts the sandbox its starter made, or does not start. Nothing below this block
+// can observe "declared unattended but not contained": a refusal exits here, before the model loads.
+{
+  const { isContainedRun, missionRunId } = await import('./missionEnv.js')
+  if (isContainedRun()) {
+    const c = await import('./containment.js')
+    const { writeOutcome } = await import('./daemon/taskFile.js')
+    const refuseBoot = (layer: import('./containment.js').RefusalLayer, reason: string): never => {
+      console.log(`[containment] refused: ${layer}: ${reason}`)
+      console.error(c.operatorRefusal(oneShotTask ? '[one-shot]' : '[engine]', layer, reason, 'run'))
+      if (oneShotTask) {
+        try {
+          writeOutcome(oneShotTask.outcomePath, { ok: false, summary: '', recommendations: [], error: `REFUSED: ${layer}: ${reason}` })
+        } catch (e) {
+          console.error(`[one-shot] outcome file not written: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      process.exit(1)
+    }
+    // step 1: the switch is never honoured for a run
+    if (c.containmentSwitch().raw !== null) refuseBoot('containment', c.SWITCH_IN_UNATTENDED)
+    // step 2 (S7): the integrity latch
+    // step 3: adopt
+    if (oneShotTask && !oneShotTask.cwd) {
+      refuseBoot('containment', `this task names no cwd, so it would work in the engine's own checkout ${c.engineCheckout()}; give the mission a cwd`)
+    }
+    const adopted = oneShotTask
+      ? c.adoptContainment({ runId: oneShotTask.runId ?? null, missionCwd: oneShotTask.cwd!, who: 'one-shot' })
+      : c.adoptContainment({ runId: missionRunId(), missionCwd: process.env.LOCALCODE_MISSION_CWD ?? '', who: 'engine' })
+    if (!adopted.ok) refuseBoot('containment', adopted.reason)
+    else {
+      c.setRunContainment(adopted.containment)
+      const k = adopted.containment
+      console.log(`[containment] run ${k.runId}: ${k.isolation === 'verified' ? 'verified' : 'overlay only'}, sandbox ${k.sandbox.root}, mission folder ${k.missionCwd}`)
+    }
+    // step 4 (S4): pathGuardFault    step 5 (S5): toolAudit probe    step 6 (S7): models record, tripwire
+  }
 }
 // Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
 // the headless phone engine before loading its own model and restarts it on

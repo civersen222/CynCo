@@ -87,6 +87,9 @@ export interface TaskFileInput {
   /** Set by the daemon when it relaunches a paused run: the one-shot reloads this session's journal
    *  and continues from the last tool result instead of starting the prompt over. */
   resumeSessionId?: string
+  /** The sandbox this run's tools start in (engine/containment.ts): written by whoever starts the one-shot,
+   *  checked by the child before the model loads. Absent = the child refuses to start. */
+  runId?: string
 }
 
 export interface TaskOutcome {

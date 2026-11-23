@@ -22,6 +22,7 @@ import { isAbsolute, resolve } from 'node:path'
 import { exec, execFile } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from './shellInfo.js'
 import { testCaseAssertions } from '../training/gitFacts.js'
+import { runContainment, uncontainedSiteRefusal } from '../containment.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -265,6 +266,9 @@ export async function verifyAssertion(
 }
 
 function git(cwd: string, args: string[]): Promise<string | null> {
+  // F242: not run in a contained run (it would read the mission folder's own git settings at
+  // medium integrity); null is the honest "the repository cannot answer here".
+  if (runContainment()) return Promise.resolve(null)
   return new Promise(resolvePromise => {
     execFile('git', args, { cwd, encoding: 'utf-8' }, (err, stdout) => {
       resolvePromise(err ? null : stdout)
@@ -374,6 +378,10 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   const startedAt = Date.now()
+  // F242: a check command run here would execute what the run wrote (a conftest.py, a script) at
+  // medium integrity; in a contained run it is no answer, and says why.
+  const uncontained = uncontainedSiteRefusal('a contract check command')
+  if (uncontained) return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: uncontained })
   return new Promise(resolvePromise => {
     exec(
       runnable,

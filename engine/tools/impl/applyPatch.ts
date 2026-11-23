@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
 import type { ToolImpl } from '../types.js'
+import { uncontainedSiteRefusal } from '../../containment.js'
 
 export const applyPatchTool: ToolImpl = {
   name: 'ApplyPatch',
@@ -19,6 +20,10 @@ export const applyPatchTool: ToolImpl = {
   tier: 'approval',
   core: true,
   execute: async (input, cwd) => {
+    // F242: `git apply` here would run at medium integrity in the mission folder; refused in a
+    // contained run until this site is contained.
+    const uncontained = uncontainedSiteRefusal('ApplyPatch')
+    if (uncontained) return { output: uncontained, isError: true }
     const patch = input.patch as string
     const checkOnly = (input.check as boolean) ?? false
 

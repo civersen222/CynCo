@@ -1,4 +1,4 @@
-import { exec } from 'child_process'
+import { toolExec, toolSpawnRefusal, containmentHint } from '../../containment.js'
 import type { ToolImpl } from '../types.js'
 import { ownProcessTree } from '../../processTree.js'
 import { checkBashSafety } from '../bashSafety.js'
@@ -195,6 +195,9 @@ export const bashTool: ToolImpl = {
     // only what reaches the shell carries the preamble. See shellPreamble.
     const runnable = shellPreamble(shellInfo) + merged.command
 
+    const refusal = toolSpawnRefusal()
+    if (refusal) return { output: refusal, isError: true }
+
     return new Promise((resolve) => {
       // Stop (F201) and the timeout (F210). The loop used to give up on a
       // stopped turn and leave the command running to its own end, and the
@@ -219,7 +222,7 @@ export const bashTool: ToolImpl = {
       const timeoutResult = (partial: string) => ({
         output: `Error: command timeout after ${timeout}ms. If the command was ` +
           `making progress rather than hanging, retry it with a larger ` +
-          `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}`,
+          `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}${containmentHint('timeout', partial)}`,
         isError: true,
       })
       const killFor = (why: 'stopped' | 'timeout') => {
@@ -233,12 +236,11 @@ export const bashTool: ToolImpl = {
         })
       }
       const onAbort = () => killFor('stopped')
-      const child = exec(runnable, {
+      const child = toolExec(runnable, {
         cwd,
         encoding: 'utf-8',
         // No `timeout` here: exec's kills the shell alone. `deadline` below is the timeout.
-        // UTF-8 forced for Python, harness-only keys dropped: see bashToolEnv.
-        env: bashToolEnv(process.env),
+        // UTF-8 forced for Python, harness-only keys dropped, sandbox overlay in a contained run: see toolEnv (engine/containment.ts).
         maxBuffer: 2 * 1024 * 1024, // 2MB
         shell,
       }, (err, stdout, stderr) => {
@@ -257,8 +259,11 @@ export const bashTool: ToolImpl = {
           return
         }
         if (err) {
-          const rawOutput = failedOutput(stderr, stdout, (err as any).code,
+          const faultCode = (err as { code?: unknown }).code
+          if (faultCode === 'ECONTAINMENT' || faultCode === 'ECHILDGONE') { resolve({ output: (err as Error).message, isError: true }); return }
+          const base = failedOutput(stderr, stdout, (err as any).code,
             `shell=${shell}, signal=${(err as any).signal ?? 'none'}`)
+          const rawOutput = base + containmentHint('failure', base)
           resolve({ output: formatBashFailure(command, rawOutput), isError: true })
           return
         }
@@ -270,7 +275,7 @@ export const bashTool: ToolImpl = {
         // Hint on success only. A failing command already has the model's full
         // attention on its own error; adding tool advice there buries the reason
         // it failed under advice it did not ask for.
-        resolve({ output: withToolHint(command, succeeded), isError: false })
+        resolve({ output: withToolHint(command, succeeded) + containmentHint('success', String(stderr ?? '')), isError: false })
       })
       const tree = ownProcessTree(child.pid)
       const deadline = setTimeout(() => killFor('timeout'), timeout)
@@ -279,26 +284,5 @@ export const bashTool: ToolImpl = {
   },
 }
 
-/**
- * Keys the HARNESS reads and the model's shell must never hold (Phase 7 final
- * review I1, closing T6 N2). `LOCALCODE_MISSION_*` names the mission's check
- * command (the dashboard reads them in-process); `CYNCO_MARKER_CHECK*` is the
- * driver's marker check — the whole-suite gate with its sealed baseline on a
- * campaign. The engine process keeps both (it seals the marker check's
- * instruments); a command the model runs inherits neither.
- */
-const HARNESS_ONLY_ENV = [/^LOCALCODE_MISSION_/, /^CYNCO_MARKER_CHECK/]
-
-/**
- * The environment the Bash tool's shell runs with: `base` minus the
- * harness-only keys, with UTF-8 forced for Python subprocesses on Windows (the
- * default cp1252 codec crashes any script that prints non-ASCII).
- */
-export function bashToolEnv(base: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {}
-  for (const [k, v] of Object.entries(base)) {
-    if (HARNESS_ONLY_ENV.some(re => re.test(k))) continue
-    out[k] = v
-  }
-  return { ...out, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
-}
+/** The environment a tool child runs with is built in one place: `toolEnv` (engine/containment.ts). */
+export { toolEnv as bashToolEnv } from '../../containment.js'
