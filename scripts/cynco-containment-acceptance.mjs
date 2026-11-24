@@ -56,7 +56,18 @@
 // SAFETY (rules S0, S1, S1' of the specification). This file holds destructive command text through
 // the catalog it imports. Such text is started in exactly one place: an inner process, on Windows,
 // under Bun, in a live-fire run, after that process has shown by its canaries that a contained
-// child is at low integrity and cannot create a file in the fake home. An inner process runs
+// child is at low integrity and is denied creating a file in the fake home, in the child's own words.
+//
+// HOW AN ANSWER IS READ (F246; the repeat live-fire run of 2026-11-24 read eight kernel denials as "not
+// proven"). A word that counts toward a pass needs positive evidence: what the child itself said, or a thing
+// on disk. Never absence, an exit number alone, or text the harness or the engine wrote. A child's output is
+// read with its line breaks joined (`flatText`: Windows PowerShell wraps its error records at 119 columns). A
+// call a layer refused before it ran (`refusedByOf`) and a program that could not be started
+// (`notStartedWords`) are "not proven" wherever words are read. Before any of that, an idle command that
+// touches nothing must answer with its marker and none of the words the stage reads (`idleVerdict`): a shell
+// that prints words by itself stops the run. The readers are tested against what the programs really print at
+// low integrity (`scripts/__tests__/cynco-acceptance-real-denials.test.mjs`).
+// An inner process runs
 // `innerSelfCheck` before it imports any engine module (the two pure helpers of engine/realPath.ts
 // and engine/missionEnv.ts excepted), and refuses unless its home, temp and CynCo folders all lie
 // inside the test root it was given and that root carries its sentinel. A destructive mission variant
@@ -194,6 +205,8 @@ const NOT_PROVEN = new Set(['twin did not resolve', 'not proven', 'did not act',
 const FAILING = new Set(['FAILED', 'UNSAFE'])
 /** The twin's detail when Git Bash could not start at low integrity (twinFirst writes it). */
 const GIT_BASH_DID_NOT_START = 'Git Bash did not start'
+/** The detail of a left-behind surface that did not fire in the control (leftBehindOutcome writes it; F4 reads it exactly). */
+const LEFT_BEHIND_NOT_IN_CONTROL = 'it did not fire in the control either'
 
 /**
  * The not-proven entries a PASS admits (R14), keyed by id, variant and reason class, each with its
@@ -203,7 +216,12 @@ const GIT_BASH_DID_NOT_START = 'Git Bash did not start'
 export const ACCEPTED_NOT_PROVEN = Object.freeze([
   {
     ids: ['authoring'], variants: ['the check command', 'the check command as a Bash call'], reason: 'owner-decision-25',
-    test: (e) => /open owner decision/.test(e.detail ?? ''),
+    // Wave 10d, F4: only the runner's own sentence, at the start of the detail as runs 2 and 5 write it; a child that
+    // prints the words inside a longer answer is not this row.
+    test: (e) => {
+      const d = String(e.detail ?? '')
+      return d.startsWith(OWNER_DECISION) || d.startsWith(`allowed by the path check; ${OWNER_DECISION}`)
+    },
     words: 'how the gate-authoring check runs under containment is the owner\'s open decision (decision sheet item 25): Bun at low integrity cannot load a module from a folder not labelled low',
   },
   {
@@ -214,7 +232,8 @@ export const ACCEPTED_NOT_PROVEN = Object.freeze([
   },
   {
     ids: ['left-behind'], variants: ['textconv', 'pager'], reason: 'did-not-fire-in-control',
-    test: (e) => /did not fire in the control either/.test(e.detail ?? ''),
+    // Wave 10d, F4: exactly the detail leftBehindOutcome writes, never the words inside a longer one.
+    test: (e) => e.detail === LEFT_BEHIND_NOT_IN_CONTROL,
     words: 'the textconv and pager surfaces did not fire in the control either (plain git at medium integrity on this git), so the run shows nothing about them either way',
   },
   {
@@ -531,6 +550,35 @@ export function liveFireRefusal(liveFire, unprotected = []) {
 }
 
 /**
+ * The words in `text` that a pattern reading a child's answer would match: a denial, PowerShell refusing POSIX text,
+ * Git Bash that did not start, Bun that could not load, and (wave 10c, C1) a program that could not be started.
+ */
+function answerWordsIn(text) {
+  const flat = flatText(text)
+  return [denialWords(text), ...[PS_REFUSES_POSIX, MSYS, BUN_LOW].map(re => re.exec(flat)?.[0] ?? null), notStartedWords(text)].filter(w => w !== null)
+}
+
+/**
+ * The denial words run together (wave 10c, C10): PowerShell cuts a path token longer than a line anywhere, and
+ * `flatText` then puts a space at the cut, so a root holding `accessdenied` or `xeperm` can read as "access denied" or
+ * "x eperm" in a child's wrapped answer. Matched against the root with its white space removed (wave 10d, F12: only
+ * white space; a separator stays in the child's text, so `Kee\perm-x` can never read as EPERM).
+ */
+const DENIAL_RUN_TOGETHER = /accessisdenied|accessdenied|permissiondenied|eperm|eacces/i
+
+/**
+ * The words in a path that a child's answer naming it would be read as (D5, C10, F12): anything `answerWordsIn` reads,
+ * and the denial words run together once its white space is removed. A word read both ways is named once, by its
+ * spelling as written ("Access is denied" and "accessisdenied" are one word).
+ */
+function pathAnswerWords(p) {
+  const seen = new Set()
+  const key = (w) => w.replace(/\s+/g, '').toLowerCase()
+  return [...answerWordsIn(p), DENIAL_RUN_TOGETHER.exec(String(p).replace(/\s+/g, ''))?.[0] ?? null]
+    .filter(w => w !== null && !seen.has(key(w)) && seen.add(key(w)))
+}
+
+/**
  * Where the fake profile may be built (rule F1, by real path). `realRoot` is the real path of the
  * root, or of the temp folder a root would be made in; a share or a `\\?\` path is refused, and so
  * is a real path on a volume in `unprotected`. Null, or the REFUSED line.
@@ -542,9 +590,40 @@ export function fakeRootRefusal({ root, realRoot, unprotected = [], real = realO
   if (realRoot === undefined && typeof root === 'string') realRoot = real(root)
   if (typeof realRoot !== 'string' || realRoot === '') return refusedLine(`the real path of ${shown} could not be read`)
   if (/^[\\/]{2}/.test(realRoot)) return refusedLine(`${shown} is a network share or a device path (${realRoot}); the fake stage needs a folder on a local volume Windows can protect`)
+  // Wave 10b, D5: a child's answer names the paths it was handed, so a root whose path holds words the stage reads
+  // as an answer (a folder named `eperm-check` made a missing path read "denied") would decide outcomes by itself.
+  for (const p of [...new Set([typeof root === 'string' ? root : null, realRoot].filter(Boolean))]) {
+    // C10, F12: the root as written, and run together (white space removed).
+    const words = pathAnswerWords(p)
+    if (words.length) {
+      return refusedLine(`${shown}${p === shown ? '' : ` (real path ${p})`} holds words the stage reads as a child's answer (${words.join(', ')}): a child that names it would read as that answer. Use a folder whose path does not hold them`)
+    }
+  }
   const m = /^([A-Za-z]):/.exec(realRoot)
   const vol = m ? (unprotected ?? []).find(v => String(v.root ?? v).toUpperCase().replace(/[\\/]?$/, '\\') === `${m[1].toUpperCase()}:\\`) : null
   if (vol) return refusedLine(`${shown} is on ${vol.root ?? vol} (${vol.fileSystem ?? 'no integrity labels'}), which carries no integrity labels; the fake stage needs a folder on a volume Windows can protect`)
+  return null
+}
+
+/**
+ * The real-profile stage's probe folders (wave 10d, F7; pure but for `real`): a G6 probe's answer names the file it
+ * was to create, so a home, guard, audit or models folder whose path (as given, or its real path) holds words the
+ * stage reads as an answer would decide the probe by itself, as a root does for the fake stage (`fakeRootRefusal`,
+ * the same words). `folders`: `[[what, path]]`; a path that is not given is skipped. Null, or the REFUSED line naming
+ * the folder and the words.
+ */
+export function probeFolderRefusal(folders, real = realOf) {
+  for (const [what, p] of folders ?? []) {
+    if (typeof p !== 'string' || p === '') continue
+    let r = null
+    try { r = real(p) } catch (e) { r = null }
+    for (const x of [...new Set([p, typeof r === 'string' && r !== '' ? r : null].filter(Boolean))]) {
+      const words = pathAnswerWords(x)
+      if (words.length) {
+        return refusedLine(`the ${what} folder ${p}${x === p ? '' : ` (real path ${x})`} holds words the stage reads as a child's answer (${words.join(', ')}): a probe's answer names it, and would read as that answer. The real-profile stage cannot be run against it`)
+      }
+    }
+  }
   return null
 }
 
@@ -916,8 +995,27 @@ function openRecordOf(dir, runId) {
 const sysExe = (exe) => join(process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows', 'System32', exe)
 /** Windows' own whoami by full path: a Git Bash PATH puts the msys whoami first, which cannot start at low integrity. */
 const WHOAMI = () => `& '${sysExe('whoami.exe')}' /groups`
-/** One line for a printed detail: a tool's multi-line output joined with ' | '. */
-const oneLine = (s) => String(s ?? '').replace(/\s*\r?\n\s*/g, ' | ').trim()
+/**
+ * One line for a printed detail: a tool's multi-line output joined with ' | '. A lone carriage return and the
+ * Unicode line and paragraph separators break a line too (a terminal or an editor shows them as one), so no
+ * printed entry carries a line break (wave 10b, D4).
+ */
+const oneLine = (s) => String(s ?? '').replace(/\s*(?:\r\n|[\r\n\u2028\u2029])\s*/g, ' | ').trim()
+/**
+ * A tool's or a child's output with every run of white space as one space, for reading what it says. Windows
+ * PowerShell 5.1 wraps an error at the width of its output (119 columns without a console), so the words of
+ * one sentence arrive on two or three lines, and where the break falls follows the length of the paths in it.
+ * It breaks at a space when the line has one, so a short word stays whole; only a path longer than a line is
+ * cut. The repeat live-fire run of 2026-11-24 (live-2) read eight kernel denials as "not proven" this way.
+ */
+export const flatText = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+/**
+ * Before a child's words quoted from `flatText` (wave 10d, F11): PowerShell cuts a path longer than a line anywhere,
+ * and the joined text then shows the path with a space at the cut, a path that does not exist. The detail says so.
+ */
+const JOINED = 'lines joined: '
+/** Whether a child's output, read as one line, matches: every pattern that reads a sentence goes through here. */
+const says = (re, text) => re.test(flatText(text))
 
 function icaclsOf(path) {
   const r = runSync(sysExe('icacls.exe'), [path], { timeoutMs: 20_000, retryImpossibleTimeout: true })
@@ -1022,14 +1120,64 @@ export function madeByThisCall({ existedBefore, existsNow }) {
  * then (undefined before the probe is run; null when that could not be read). A key that is there before
  * (or might be) aborts the stage and is never deleted: it is not this stage's. One whose presence after
  * the probe cannot be read aborts too (RS10: the probe proved nothing) and is not deleted.
- * `{ abort, delete, line }`.
+ * Wave 10b, D9 (the RH1 rule): with the key absent afterwards, `reg add`'s own answer (`output`, its stdout and
+ * stderr; reg.exe prints `ERROR: Access is denied.` on stderr, raw) must name the denial and the call must not
+ * have been refused before it ran (`refused`, a layer or null), else the stage aborts: absence alone proves
+ * nothing. `after` undefined is the plan before the probe (`line` null); after the probe the real stage always passes
+ * `output` (pinned by T2.17d), and without it the stage aborts (wave 10c, C8). An answer that shows reg add was never
+ * started aborts too (C1). `{ abort, delete, line }`.
  */
-export function registryProbePlan({ key, before, after }) {
+export function registryProbePlan({ key, before, after, refused = null, output }) {
   if (before === true) return { abort: true, delete: false, line: `ABORT: ${key} already exists before the probe; it is not this stage's, so nothing was run against it and nothing is deleted. No attack was run.` }
   if (before !== false) return { abort: true, delete: false, line: `ABORT: whether ${key} exists could not be read before the probe; nothing was run against it. No attack was run.` }
   if (after === true) return { abort: true, delete: true, line: `ABORT: a contained child CREATED ${key}. Low integrity is not holding there.` }
   if (after === null) return { abort: true, delete: false, line: `ABORT: whether ${key} exists could not be read after the probe, so the probe shows nothing; nothing is deleted.` }
-  return { abort: false, delete: false, line: null }
+  // The plan before the probe: no `after` yet.
+  if (after === undefined) return { abort: false, delete: false, line: null }
+  // Wave 10c, C8: after the probe, an absent key with reg add's answer not handed over proves nothing.
+  if (output === undefined) return { abort: true, delete: false, line: `ABORT: ${key} is absent after the probe, but reg add's answer was not read, so low integrity is not shown to hold there; nothing is deleted. No attack was run.` }
+  const never = refused ? null : probeNeverRan(key, output)
+  if (never !== null) return { abort: true, delete: false, line: never }
+  const words = refused ? null : denialWords(output)
+  if (words === null) return { abort: true, delete: false, line: probeNamesNoDenial(key, refused, output) }
+  return { abort: false, delete: false, line: `preflight: a contained child was denied creating ${key} (reg query finds no such key; reg add answered, ${JOINED}${words})` }
+}
+
+/**
+ * A child's answer on one line, for quoting (wave 10c, C11): `oneLine` without the separators an empty first or last
+ * line leaves at its ends (stdout empty, then a line break, then stderr).
+ */
+function answerLine(output) {
+  return oneLine(output).replace(/^(?:\|\s*)+/, '').replace(/(?:\s*\|)+$/, '')
+}
+
+/** The ABORT line of a create-only probe that made nothing and whose answer names no access denial (D9). */
+function probeNamesNoDenial(what, refused, output) {
+  return `ABORT: the probe made nothing at ${what}, but its answer names no access denial${refused ? ` (it was refused by ${refused} before it ran)` : ''}, so low integrity is not shown to hold there. No attack was run. Its answer: ${answerLine(output).slice(0, 200) || '(no output)'}`
+}
+
+/** The ABORT line of a create-only probe whose program could not be started (wave 10c, C1), or null. */
+function probeNeverRan(what, output) {
+  const words = notStartedWords(output)
+  return words === null ? null : `ABORT: the probe at ${what} never ran: its program could not be started (${JOINED}${words}), so low integrity is not shown to hold there. No attack was run. Its answer: ${answerLine(output).slice(0, 200)}`
+}
+
+/**
+ * Rule G6 of the real stage, one create-only file probe (pure; wave 10b, D9, the RH1 rule). `existsAfter`: whether
+ * the target exists after the contained child was asked to create it; `refused`: the layer that refused the call
+ * before it ran, or null; `output`: the child's stdout and stderr. Created: ABORT, and the file is deleted. Not
+ * created but refused, a program that could not be started (wave 10c, C1), or no denial in the answer: ABORT, nothing
+ * to delete (absence alone proves nothing).
+ * Otherwise the preflight line, with the denial's own words. `{ abort, delete, line }`.
+ */
+export function fileProbePlan({ target, existsAfter, refused = null, output }) {
+  if (existsAfter) return { abort: true, delete: true, line: `ABORT: a contained child CREATED ${target}. Low integrity is not holding there.` }
+  // Wave 10c, C1: a program that could not be started made nothing and was denied nothing it was to do.
+  const never = refused ? null : probeNeverRan(target, output)
+  if (never !== null) return { abort: true, delete: false, line: never }
+  const words = refused ? null : denialWords(output)
+  if (words === null) return { abort: true, delete: false, line: probeNamesNoDenial(target, refused, output) }
+  return { abort: false, delete: false, line: `preflight: a contained child was denied creating ${target} (${JOINED}${words})` }
 }
 
 /** A `reg query` result as presence: true (exit 0), false (exit 1: no such key), null (anything else: a fault, a timeout, another exit). */
@@ -1115,11 +1263,16 @@ function fail(report, why) {
   report.failures.push(why)
 }
 
+/** The line `entry` prints for one entry (pure): its detail on one line, at most 300 characters of it. */
+export function entryLine(full) {
+  return `${TAG} run ${full.run} ${full.phase}: ${full.id} ${full.variant} ${full.form}: ${full.outcome}${full.detail ? ` (${oneLine(full.detail).slice(0, 300)})` : ''}`
+}
+
 function entry(report, e) {
   const full = { run: report.run, phase: report.phase, id: e.id, variant: e.variant ?? '-', form: e.form ?? '-', outcome: e.outcome,
     decoys: e.decoys ?? null, audit: e.audit ?? null, targets: e.targets ?? [], detail: e.detail ?? null }
   report.entries.push(full)
-  say(`${TAG} run ${report.run} ${report.phase}: ${full.id} ${full.variant} ${full.form}: ${full.outcome}${full.detail ? ` (${oneLine(full.detail).slice(0, 300)})` : ''}`)
+  say(entryLine(full))
   if (FAILING.has(full.outcome)) fail(report, `${full.id} ${full.variant} ${full.form}: ${full.detail ?? full.outcome}`)
   return full
 }
@@ -1241,6 +1394,74 @@ function viaToolExec(R, command, cwd, timeoutMs = VIA_TOOLEXEC_CAP_MS) {
   })
 }
 
+/** The launcher's own lines in a raw stderr (`launcherFaultOf`): never started, or ended with no status. */
+const LAUNCHER_LINE = /^\[containment\] (?:refused|child ended): /m
+
+/**
+ * The layer that refused a call made through `viaToolExec` before its command ran, or null (pure; wave 10b, D1):
+ * 'containment' when toolExec answered a ContainmentRefusal, or when a line of the raw stderr is the launcher's
+ * own. Their reasons carry error codes such as "(EPERM)", which are not a denial of what the command was to do.
+ */
+export function rerunRefusedBy(r) {
+  return refusedByOf({ output: r?.stderr, refused: r?.refused })
+}
+
+/**
+ * The layer that refused a call before its command ran, or null (pure; wave 10c, C6): the one reading of both of
+ * `fireBash`'s branches and of `childCreates`. `refused` set (toolExec answered a ContainmentRefusal): 'containment'.
+ * Else `layerOf(output)` (the engine's `refusalLayerOf`, which reads a `Refused [<layer>]:` prefix), else
+ * 'containment' when a line of `output` is the launcher's own (`[containment] refused: ` or `[containment] child
+ * ended: `): an unsealed launcher line can stand inside a Bash tool answer too.
+ */
+export function refusedByOf({ output, layerOf = null, refused = null }) {
+  if (refused) return 'containment'
+  const text = String(output ?? '')
+  const layer = typeof layerOf === 'function' ? layerOf(text) : null
+  if (layer) return layer
+  return LAUNCHER_LINE.test(text) ? 'containment' : null
+}
+
+/**
+ * The command with a trailing ` 2>&1`, unless it already ends with one (pure; wave 10b, D8). The Bash tool drops
+ * stderr on exit 0 when stdout holds anything (`stdout || stderr`); a trailing merge is the exception: under
+ * PowerShell the tool strips it and returns both streams whatever the exit code (F60,
+ * `stripTrailingStderrMerge`), and a POSIX shell merges the streams itself. A denial on stderr of a form that
+ * exits 0 is then read, not dropped.
+ */
+export function withStderrMerged(command) {
+  const text = String(command ?? '')
+  const trimmed = text.replace(/\s+$/, '')
+  return /\s2>&1$/.test(trimmed) ? text : `${trimmed} 2>&1`
+}
+
+/** The start of the marker the idle command prints; the run's nonce follows it (wave 10c, C4). */
+const IDLE_MARKER = 'cynco-idle-'
+
+/** A command that touches nothing and prints the marker with the run's nonce, in the contained shell's dialect (C4). */
+export function idleCommand(shell, nonce) {
+  return shell === 'powershell' ? `Write-Output '${IDLE_MARKER}${nonce}'` : `echo ${IDLE_MARKER}${nonce}`
+}
+
+/**
+ * The idle answer (pure; wave 10c, C4). A profile, or anything else the shell prints by itself, would put words into
+ * every answer, and a form would then read as what the shell said, not as what the form did. So before the first
+ * form is read, the contained shell is handed `idleCommand`, through the same call path the forms use. Good only
+ * when the call did not fail and was not refused, its marker is in the output, and the output holds none of the
+ * words the stage reads as an answer (`answerWordsIn`, the not-started reader of C1 among them). `{ ok, line }`:
+ * the preflight line, or why no form can be read here.
+ */
+export function idleVerdict({ isError, output, nonce, refusedBy = null }) {
+  const text = String(output ?? '')
+  const said = answerLine(text).slice(0, 200) || '(no output)'
+  const marker = `${IDLE_MARKER}${nonce}`
+  if (refusedBy) return { ok: false, line: `a command that touches nothing was refused by ${refusedBy}: no form can be read here (${said})` }
+  if (isError) return { ok: false, line: `a command that touches nothing failed: no form can be read here (${said})` }
+  if (!text.includes(marker)) return { ok: false, line: `a command that touches nothing did not print its marker ${marker}: no form can be read here (${said})` }
+  const words = answerWordsIn(text)
+  if (words.length) return { ok: false, line: `a command that touches nothing answered with words the stage reads as an answer (${JOINED}${words.join(', ')}): no form can be read here` }
+  return { ok: true, line: `preflight: a command that touches nothing answered with its marker alone, and with no words the stage reads as an answer (${said})` }
+}
+
 /** The commit this checkout is on and whether its tree is dirty (rule G9; F132: grade the commit, not the tree). */
 function commitOf() {
   const head = runSync('git', ['rev-parse', 'HEAD'], { cwd: CHECKOUT, timeoutMs: 20_000 })
@@ -1254,16 +1475,50 @@ const psOrSh = (R, ps, sh) => (R.tools.shell === 'powershell' ? ps : sh)
 const q = (R, p) => (R.tools.shell === 'powershell' ? `'${String(p).replace(/'/g, "''")}'` : `'${String(p).replace(/'/g, "'\\''")}'`)
 const createCmd = (R, p) => psOrSh(R, `New-Item -ItemType File -Path ${q(R, p)}`, `touch ${q(R, p)}`)
 
-/** A contained child tries to create `p`; true when the file exists afterwards (it is then removed). */
+/**
+ * What one create of a contained child shows (pure; wave 10c, C2 and C3, the rule D9 holds a probe to): 'created';
+ * 'denied' only when nothing was made, no layer refused the call before the child ran (`refusedBy`), its program
+ * started (`notStartedWords`) and the child's own answer names the denial (`words`); otherwise 'not proven' with
+ * `why`, which quotes the answer. Absence alone proves nothing (a program that never started, a missing folder).
+ */
+export function childCreateReading({ created, output, refusedBy = null }) {
+  const said = answerLine(output).slice(0, 200) || '(no output)'
+  if (created) return { outcome: 'created', words: null, why: null }
+  if (refusedBy) return { outcome: 'not proven', words: null, why: `refused by ${refusedBy} before the child ran, so it shows nothing: ${said}` }
+  if (notStartedWords(output) !== null) return { outcome: 'not proven', words: null, why: `the program could not be started, so the child never ran: ${said}` }
+  const words = denialWords(output)
+  if (words !== null) return { outcome: 'denied', words, why: null }
+  return { outcome: 'not proven', words: null, why: `nothing was made, but the child's answer names no access denial: ${said}` }
+}
+
+/**
+ * A contained child tries to create `p`; `created` is true when the file exists afterwards (it is then removed unless
+ * `keep`). `reading` is `childCreateReading` of the call (C3): the layer read as `fireBash` reads it, and on Windows
+ * the command handed over with a trailing merge so that the denial is read from both streams whatever the exit code
+ * (D8's reason: the Bash tool drops stderr on exit 0 when stdout holds anything).
+ */
 async function childCreates(R, p, keep = false) {
   const before = existsSync(p)
-  const r = await call(R.ex, 'Bash', { command: createCmd(R, p) })
+  const r = await call(R.ex, 'Bash', { command: WIN ? withStderrMerged(createCmd(R, p)) : createCmd(R, p) })
   const now = existsSync(p)
   if (now && !before && !keep) {
     const why = removeOne(p)
     if (why) say(`${TAG} the canary file ${p} could not be removed: ${why}`)
   }
-  return { created: now && !before, result: r }
+  const created = now && !before
+  const refusedBy = refusedByOf({ output: r.output, layerOf: R.E.C.refusalLayerOf })
+  return { created, result: r, refusedBy, reading: childCreateReading({ created, output: r.output, refusedBy }) }
+}
+
+/**
+ * The idle answer of an inner run (wave 10d, F3; C4's `idleVerdict`), asked before any child's words are read: through
+ * the call path of `childCreates` (the executor's Bash tool, with the trailing merge on Windows, the layer read by
+ * `refusedByOf`), which is the path of `fireBash` too for a command bashSafety does not block. `{ ok, line }`.
+ */
+async function idleAnswer(R) {
+  const cmd = idleCommand(R.tools.shell, R.nonce)
+  const r = await call(R.ex, 'Bash', { command: WIN ? withStderrMerged(cmd) : cmd })
+  return idleVerdict({ isError: r.isError, output: r.output, nonce: R.nonce, refusedBy: refusedByOf({ output: r.output, layerOf: R.E.C.refusalLayerOf }) })
 }
 
 function canaryC0(E, fake, report) {
@@ -1292,21 +1547,43 @@ async function canary(R) {
     say(`${TAG} canary ${name}: ${c[name]}`)
   }
   if (WIN) {
+    // Wave 10d, F3: the idle answer first, before any child's words are read (whoami's groups among them); a bad one is a
+    // failed canary, and nothing more runs.
+    const iv = await idleAnswer(R)
+    c.idle = iv.ok ? `passed (${iv.line})` : `FAILED: ${iv.line}`
+    say(`${TAG} canary idle: ${c.idle}`)
+    if (!iv.ok) { say(`${TAG} FAIL (canary): idle: ${iv.line}. No attack was run.`); report.canaryFailed = true; fail(report, `canary idle: ${iv.line}`); return false }
     const who = await call(ex, 'Bash', { command: WHOAMI() })
     kernel('c1', /S-1-16-4096/.test(who.output), `the contained child's groups do not show S-1-16-4096 (${who.output.slice(0, 200)})`)
-    const c2 = await childCreates(R, join(fake.home, `canary-${nonce}.txt`))
-    kernel('c2', !c2.created, `a contained child CREATED ${join(fake.home, `canary-${nonce}.txt`)}`)
-    const c3a = await childCreates(R, join(fake.state, 'profiles', `canary-${nonce}.txt`))
-    const c3b = await childCreates(R, join(fake.linked, `canary-${nonce}.txt`))
-    kernel('c3', !c3a.created && !c3b.created, `${c3a.created ? 'the profiles folder' : ''}${c3a.created && c3b.created ? ' and ' : ''}${c3b.created ? 'the junction inside the mission folder' : ''} let a contained child create a file`)
+    // Wave 10c, C3: a create canary passes only when the child was denied in its own words (childCreateReading); one
+    // that made nothing and shows no denial (refused before it ran, a program that never started, a missing
+    // folder) is a FAILED canary that proves nothing, and nothing destructive runs.
+    const unproven = (path, c) => `the canary proves nothing: ${path}: ${c.reading.why}`
+    const c2path = join(fake.home, `canary-${nonce}.txt`)
+    const c2 = await childCreates(R, c2path)
+    kernel('c2', c2.reading.outcome === 'denied', c2.created ? `a contained child CREATED ${c2path}` : unproven(c2path, c2))
+    const c3 = [['the profiles folder', join(fake.state, 'profiles', `canary-${nonce}.txt`)], ['the junction inside the mission folder', join(fake.linked, `canary-${nonce}.txt`)]]
+    const c3r = []
+    for (const [what, path] of c3) c3r.push({ what, path, c: await childCreates(R, path) })
+    const c3made = c3r.filter(x => x.c.created).map(x => x.what)
+    kernel('c3', c3r.every(x => x.c.reading.outcome === 'denied'), c3made.length
+      ? `${c3made.join(' and ')} let a contained child create a file`
+      : c3r.filter(x => x.c.reading.outcome !== 'denied').map(x => unproven(x.path, x.c)).join('; '))
     const leak = []
     const top = [fake.home, ...readdirSync(fake.home).map(n => join(fake.home, n))]
     const second = top.slice(1).filter(p => { try { return lstatSync(p).isDirectory() } catch (e) { return false } }).flatMap(p => readdirSync(p).map(n => join(p, n)))
     for (const p of [...top, ...second, fake.guard, fake.audit, fake.models]) if (lowLabelled(p)) leak.push(p)
-    const denied = []
-    for (const d of [fake.guard, fake.audit, fake.models]) if ((await childCreates(R, join(d, `canary-${nonce}.txt`))).created) denied.push(d)
+    const made = []
+    const notShown = []
+    for (const d of [fake.guard, fake.audit, fake.models]) {
+      const path = join(d, `canary-${nonce}.txt`)
+      const c = await childCreates(R, path)
+      if (c.created) made.push(d)
+      else if (c.reading.outcome !== 'denied') notShown.push(unproven(path, c))
+    }
     report.labelLeak = leak.length === 0 ? 'none' : leak
-    kernel('c6', leak.length === 0 && denied.length === 0, `${leak.length ? `Low labels on ${leak.slice(0, 5).join(', ')}` : ''}${leak.length && denied.length ? '; ' : ''}${denied.length ? `a contained child created a file in ${denied.join(', ')}` : ''}`)
+    const c6why = [leak.length ? `Low labels on ${leak.slice(0, 5).join(', ')}` : '', made.length ? `a contained child created a file in ${made.join(', ')}` : '', ...notShown].filter(Boolean).join('; ')
+    kernel('c6', leak.length === 0 && made.length === 0 && notShown.length === 0, c6why)
   } else {
     for (const n of ['c1', 'c2', 'c3', 'c6']) c[n] = 'not-applicable'
     report.labelLeak = 'none'
@@ -1423,7 +1700,7 @@ async function honestWork(R, ex, tag, o = {}) {
 export function pytestCause({ refused, isError, output, file, inRoot }) {
   const said = oneLine(output).slice(0, 200)
   if (refused) return { ok: false, line: `(b) FAILED: refused by ${refused}: ${said}` }
-  if (isError && /No module named '?pytest'?/.test(String(output ?? ''))) {
+  if (isError && says(/No module named '?pytest'?/, output)) {
     return { ok: null, line: `(b) not proven: no module named pytest with the fake home: pytest is installed only in the real user site, which the fake stage does not read; shown by the real-profile stage (${said})` }
   }
   if (isError) return { ok: null, line: `(b) not proven: the call that asks for pytest failed: ${said}` }
@@ -1463,7 +1740,14 @@ function catalogFor(R) {
   return { p, variants }
 }
 
-const MSYS = /NtCreateDirectoryObject|msys-|Git Bash and the other programs/
+/**
+ * Git Bash that could not start in a contained run: the msys runtime's own line, read by the engine's signature
+ * (`MSYS_SIGNATURE` in engine/containment.ts, `NtCreateDirectoryObject(\BaseNamedObjects\msys-`), or the start of the
+ * engine's hint (`MSYS_IN_CONTAINED_RUN`). Read through `says`. Not the bare token `msys-` (wave 10b, D6): it is in
+ * the name of the runtime's library, so any message that names the library read as "did not start"; and not the bare
+ * word `NtCreateDirectoryObject` (wave 10d, F5): the engine reads the whole signature, and a test pins the two equal.
+ */
+const MSYS = /NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-|Git Bash and the other programs of Git/
 
 /**
  * Rule S1', the decision (pure): what one listing twin's answer means. `refusedLayer`: the layer that refused
@@ -1480,7 +1764,7 @@ export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome }) {
     return { ok: false, failed: true, refusedTwin: true, outcome: 'FAILED', paths: [], detail: `the listing-only twin was refused: ${text.slice(0, 200)}` }
   }
   if (isError || !d.resolved) {
-    const why = isError ? (MSYS.test(text) ? `${GIT_BASH_DID_NOT_START}: ${text.slice(0, 200)}` : text.slice(0, 200)) : d.why
+    const why = isError ? (says(MSYS, text) ? `${GIT_BASH_DID_NOT_START}: ${text.slice(0, 200)}` : text.slice(0, 200)) : d.why
     return { ok: false, outcome: 'twin did not resolve', paths: [], detail: why }
   }
   const outside = d.paths.find(x => !inRoot(x))
@@ -1551,6 +1835,52 @@ export function leftBehindDrift({ calls, readFile, configGet, hookNames }) {
   return out
 }
 
+/**
+ * The outcome of one left-behind surface (pure; wave 10c, C9). `armed`: it fired in the control; `armedBy`: the key of
+ * the control line after which its witness was first there; `fired` / `firedBy`: it fired in the proof, and after
+ * which line; `proof`: every proof line in the order it ran, `{ key, what, group, ran, why }` (`group` 'harness' for
+ * the git lines and the two harness calls, 'pytest' for the contained pytest). Fired in the proof: FAILED. Not armed:
+ * 'not proven', "it did not fire in the control either", as before. Armed: 'neutralised' only when the proof lines
+ * that arm it ran to a status: its own line and every line of its group before it (a hook needs the lines that
+ * stage and commit, the conftest the contained pytest alone); otherwise 'not proven', naming what did not run. A
+ * witness that is absent after a proof line that never ran proves nothing.
+ * Wave 10d, F1: `loaded`, for the conftest surface only (undefined for the others): whether the contained pytest
+ * loaded conftest.py, shown by its witness in the run's sandbox home after the proof (and not before it); the
+ * witness in the fake home is `fired`. A contained pytest that only ended with a number (a missing module, a missing
+ * python, a usage error) loaded nothing: 'not proven', with its answer `said`.
+ */
+export function leftBehindOutcome({ armed, armedBy, fired, firedBy, proof, loaded, said }) {
+  if (fired) return { outcome: 'FAILED', detail: `fired when the harness ran ${firedBy}` }
+  if (!armed) return { outcome: 'not proven', detail: LEFT_BEHIND_NOT_IN_CONTROL }
+  const lines = Array.isArray(proof) ? proof : []
+  const at = lines.findIndex(l => l.key === armedBy)
+  if (at < 0) return { outcome: 'not proven', detail: `the proof has no line for ${armedBy ?? 'the line that armed it'} in the control, so it shows nothing` }
+  const missed = lines.slice(0, at + 1).filter(l => l.group === lines[at].group && l.ran !== true)
+  if (missed.length) return { outcome: 'not proven', detail: `the proof did not run what arms it: ${missed.map(l => `${l.what} (${l.why ?? 'it did not run'})`).join('; ')}` }
+  if (loaded === false) return { outcome: 'not proven', detail: `the contained pytest never loaded conftest.py: ${String(said ?? '') || '(no output)'}` }
+  return { outcome: 'neutralised', detail: null }
+}
+
+/** How a harness git line ended, in words: `{ status, fault, timedOut }`, or nothing when it did not run. */
+const lineEnd = (x) => (!x ? 'did not run' : x.fault ? `could not be started (${x.fault})` : x.timedOut ? 'timed out' : typeof x.status === 'number' ? `exited ${x.status}` : 'ended with no status')
+
+/**
+ * Whether one git line of the left-behind proof ran (pure; wave 10d, F2). `proof` and `control`: `{ status, fault,
+ * timedOut }` of the proof's line and of the control's same line (`fault` a code or null). The proof's line ran when it
+ * ended with the status the control's line ended with: a hook or a driver that git would run comes after the step
+ * that decides the status, so a line that answered otherwise may never have reached it. A harness-git refusal
+ * (`harnessRefused`: the harness gave git the refused GIT_DIR, the decision that prints its `[harness-git] git
+ * refused` line, and git exited 128) ran by design: it is the neutralisation. `{ ran, why }`; `why` names both
+ * statuses when the line did not run.
+ */
+export function harnessLineRan({ proof, control, harnessRefused = false }) {
+  const why = `it ${lineEnd(proof)}; the control's line ${lineEnd(control)}`
+  if (!proof || proof.fault || proof.timedOut || typeof proof.status !== 'number') return { ran: false, why }
+  if (harnessRefused === true && proof.status === 128) return { ran: true, why: null }
+  if (!control || control.fault || control.timedOut || control.status !== proof.status) return { ran: false, why }
+  return { ran: true, why: null }
+}
+
 /** Rule F5: plant, CONTROL, PROOF. */
 async function leftBehind(R) {
   const { E, fake, ctx, report, nonce } = R
@@ -1570,24 +1900,39 @@ async function leftBehind(R) {
   const lineFor = (g, dir, proof) => (proof ? g.argv : (g.controlArgv ?? g.argv)).map(w => (w === '<dir>' ? dir : w))
   const change = () => appendFileSync(join(fake.mission, 'README.md'), 'a change for the diff\n')
   const gitBin = E.H.harnessGitBin()
+  /**
+   * Every harness line, in order; `after(line)` is called after each. A git line: `{ key, what, group, git: true, end,
+   * harnessRefused }`, `end` its `{ status, fault, timedOut }` (wave 10d, F2: the proof's line is judged against the
+   * control's by `harnessLineRan`), `harnessRefused` whether the harness gave git the refused GIT_DIR. A harness call:
+   * `{ key, what, group, ran, why }` (wave 10c, C9), ran when it did not throw (the one after a throw is not reached).
+   */
   const runLines = async (proof, after) => {
     change()
     const dir = join(R.root, `wt-${proof ? 'proof' : 'control'}-${nonce}`)
-    for (const g of LEFT_BEHIND.harnessGit) {
+    for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) {
       if (g.argv[0] === 'add') writeFileSync(join(fake.mission, `left-behind-${proof ? 'proof' : 'control'}-${nonce}.txt`), 'x\n')
       const argv = lineFor(g, dir, proof)
       const env = proof ? E.H.harnessGitEnv(process.env, { repo: fake.mission }) : process.env
       const r = runSync(proof ? gitBin : 'git', argv, { cwd: fake.mission, env, envExact: true, timeoutMs: 60_000 })
-      after(`git ${argv.join(' ')}`, r)
+      after({ key: `git#${i}`, what: `git ${argv.join(' ')}`, group: 'harness', git: true,
+        end: { status: typeof r.status === 'number' ? r.status : null, fault: r.fault ? String(r.fault.code ?? r.fault.message ?? r.fault) : null, timedOut: Boolean(r.timedOut) },
+        harnessRefused: proof && env.GIT_DIR === E.H.refusedGitDir() })
     }
-    try {
-      E.snap.snapshotUncommittedWork(fake.mission, join(R.root, `snap-${proof ? 'proof' : 'control'}-${nonce}`), 'acc')
-      after('snapshotUncommittedWork', null)
-      await new E.W.WorktreeManager(fake.mission, { tmpRoot: ctx.sandbox.scratch }).create()
-      after('WorktreeManager.create', null)
-    } catch (e) {
-      say(`${TAG} left-behind: a harness call threw: ${e?.message ?? e}`)
-      after('a harness call', null)
+    const calls = [
+      ['snapshotUncommittedWork', async () => E.snap.snapshotUncommittedWork(fake.mission, join(R.root, `snap-${proof ? 'proof' : 'control'}-${nonce}`), 'acc')],
+      ['WorktreeManager.create', async () => new E.W.WorktreeManager(fake.mission, { tmpRoot: ctx.sandbox.scratch }).create()],
+    ]
+    let threw = null
+    for (const [name, fn] of calls) {
+      if (threw !== null) { after({ key: name, what: name, group: 'harness', ran: false, why: `not reached: the call before it threw (${threw})` }); continue }
+      try {
+        await fn()
+        after({ key: name, what: name, group: 'harness', ran: true, why: null })
+      } catch (e) {
+        threw = String(e?.message ?? e)
+        say(`${TAG} left-behind: a harness call threw: ${threw}`)
+        after({ key: name, what: name, group: 'harness', ran: false, why: `it threw: ${threw}` })
+      }
     }
   }
   // The conftest surface needs a pytest. When the fake home has none (pytest is often only in the real
@@ -1617,8 +1962,16 @@ async function leftBehind(R) {
     return
   }
   // CONTROL: the harness's own process, its plain environment (the fake home), today's argv where a line had its flags added.
-  await runLines(false, () => {})
+  // C9: which line armed each surface (the first after which its witness was there), so the proof can be held to it.
+  const armedBy = new Map()
+  const noteArmed = (key) => {
+    for (const s of fired()) if (!armedBy.has(s)) armedBy.set(s, key)
+  }
+  // F2: how each control git line ended, for the proof's same line.
+  const controlEnds = new Map()
+  await runLines(false, (l) => { if (l.git) controlEnds.set(l.key, l.end); noteArmed(l.key) })
   const pytestPlain = runSync(R.tools.python, ['-m', 'pytest', '-q'], { cwd: fake.mission, timeoutMs: 120_000 })
+  noteArmed('pytest')
   const armed = new Set(fired())
   const pytestNote = pytestPlain.status === null || /No module named pytest/.test(`${pytestPlain.stdout}${pytestPlain.stderr}`)
     ? 'pytest is not importable with the fake home' : standIn ? 'armed through the stand-in pytest in the fake user site' : null
@@ -1632,10 +1985,36 @@ async function leftBehind(R) {
   const note = (what) => {
     for (const s of fired()) if (!seen.has(s)) { seen.add(s); firedBy.set(s, what) }
   }
-  await runLines(true, (what) => note(what))
+  // C9: each proof line's result, in the order it ran. F2: a git line ran when it ended as the control's did (or was the
+  // harness's refusal), and both ends are printed, so that the evidence shows them.
+  const proofLines = []
+  await runLines(true, (l) => {
+    if (l.git) {
+      const h = harnessLineRan({ proof: l.end, control: controlEnds.get(l.key), harnessRefused: l.harnessRefused })
+      say(`${TAG} left-behind: ${l.what}: the control's line ${lineEnd(controlEnds.get(l.key))}, the proof's ${lineEnd(l.end)}${l.harnessRefused ? ' (the harness refused it: GIT_DIR is the refused one)' : ''}`)
+      proofLines.push({ key: l.key, what: l.what, group: l.group, ran: h.ran, why: h.why })
+    } else {
+      proofLines.push(l)
+    }
+    note(l.what)
+  })
+  // F1: the conftest witness in the run's sandbox home is the positive evidence that the contained pytest loaded it; one
+  // that is there before the proof is not the proof's, and is removed first by its literal path.
+  const sandboxWitness = join(ctx.sandbox.home, LEFT_BEHIND.witness('conftest', nonce))
+  if (existsSync(sandboxWitness)) {
+    const why = removeOne(sandboxWitness)
+    say(`${TAG} left-behind: the conftest witness was in the sandbox home before the proof: ${why === null ? 'removed' : `could not be removed (${why})`}`)
+  }
+  const witnessBefore = existsSync(sandboxWitness)
   const tp = await viaToolExec(R, `${R.tools.python} -m pytest -q`, fake.mission)
   note('python -m pytest -q (contained)')
   report.notes.push(`the contained pytest of the proof exited ${tp.code}`)
+  const conftestLoaded = !witnessBefore && existsSync(sandboxWitness)
+  const tpSaid = `exit ${tp.code ?? 'none'}: ${answerLine(`${tp.stdout}\n${tp.stderr}${tp.refused ? `\n${tp.refused.message}` : ''}`).slice(0, 200) || '(no output)'}`
+  // The contained pytest (or the stand-in) ran when it ended with a status and was not refused by the containment.
+  const tpRefused = rerunRefusedBy(tp)
+  proofLines.push({ key: 'pytest', what: 'python -m pytest -q (contained)', group: 'pytest', ran: tpRefused === null && !tp.timedOut && typeof tp.code === 'number',
+    why: tpRefused ? `refused by ${tpRefused}: ${answerLine(`${tp.stderr}${tp.refused ? `\n${tp.refused.message}` : ''}`).slice(0, 160)}` : tp.timedOut ? 'it timed out' : typeof tp.code === 'number' ? null : `it ended with no status (${String(tp.err?.code ?? tp.err?.message ?? 'no code')})` })
   if (standIn) {
     const left = removeStandIn(standIn)
     if (left.length) say(`${TAG} left-behind: the stand-in pytest could not be removed: ${left.join('; ')}`)
@@ -1651,7 +2030,8 @@ async function leftBehind(R) {
       const why = removeOne(witnessPath(s))
       if (why) say(`${TAG} left-behind: the witness ${witnessPath(s)} could not be removed: ${why}`)
     }
-    entry(report, { id: 'left-behind', variant: s, form: 'harness', outcome: f ? 'FAILED' : a ? 'neutralised' : 'not proven', detail: f ? `fired when the harness ran ${firedBy.get(s)}` : a ? null : 'it did not fire in the control either' })
+    const o = leftBehindOutcome({ armed: a, armedBy: armedBy.get(s), fired: f, firedBy: firedBy.get(s), proof: proofLines, ...(s === 'conftest' ? { loaded: conftestLoaded, said: tpSaid } : {}) })
+    entry(report, { id: 'left-behind', variant: s, form: 'harness', outcome: o.outcome, detail: o.detail })
   }
   if (existsSync(join(ctx.sandbox.home, LEFT_BEHIND.witness('conftest', nonce)))) report.notes.push('the conftest witness is in the sandbox home (allowed)')
 }
@@ -1690,18 +2070,79 @@ function removeStandIn(s) {
 const CHECK_MISSING = 'missing: gate_a1.py was never written into the staging dir'
 const OWNER_DECISION = 'open owner decision (how the gate-authoring check runs under containment)'
 const BUN_LOW = /Bun at low integrity could not (read|load)/
+/** Bun's own line when it could not read the module it was to load (`BUN_LOW_READ` in engine/containment.ts). */
+const BUN_EPERM_READING = /^\s*error: EPERM reading /m
+/**
+ * Whether a child's output says Bun could not load its script at low integrity: the engine's sentence about it
+ * (`BUN_LOW`), or Bun's own line. The form then never ran, and the line's "EPERM" is not a denial of what the
+ * form was to do (wave 10b, D1).
+ */
+const bunCouldNotLoad = (output) => says(BUN_LOW, output) || BUN_EPERM_READING.test(String(output ?? ''))
+/**
+ * Windows PowerShell's own record when it could not START a native program (measured 2026-11-24 at low integrity:
+ * `Program 'w.exe' failed to run: Access is deniedAt line:1 char:56 ... ResourceUnavailable ... NativeCommandFailed`).
+ * The program never ran; the record's "Access is denied" is about starting it, not about what the form was to do.
+ * Read through `flatText`: a program path longer than a line is cut anywhere.
+ */
+const PS_PROGRAM_NOT_STARTED = /Program '[^']{1,1024}' failed to run:/
+/** The Bash tool's own answer to a call that arrived after a Stop (`engine/tools/impl/bash.ts`): no shell was started. */
+const BASH_NOT_STARTED = /^Error: command stopped before it started\b/
+/**
+ * The launcher's own line for a command it never started (`[containment] refused: <reason>`, exit 197; read as
+ * "did not run" by `launcherFaultOf` in engine/containment.ts). Not its `child ended:` line: that child did run.
+ */
+const LAUNCHER_REFUSED_LINE = /^\[containment\] refused: [^\r\n]{0,200}/m
+
+/**
+ * The words that show a form's program never ran, or null (pure; wave 10c, C1): PowerShell's record of a program it
+ * could not start, Bun that could not load its script at low integrity (the engine's sentence or Bun's own line,
+ * D1), the Bash tool's answer to a call made after a Stop, and the launcher's line for a command it never started.
+ * Each is what a tool or a shell says in its own words when nothing ran; a denial word inside one of them is about
+ * starting the program, never about what the form was to do.
+ */
+export function notStartedWords(output) {
+  const text = String(output ?? '')
+  const flat = flatText(text)
+  const ps = PS_PROGRAM_NOT_STARTED.exec(flat)
+  if (ps) return ps[0]
+  const bun = BUN_LOW.exec(flat)
+  if (bun) return bun[0]
+  const line = BUN_EPERM_READING.exec(text)
+  if (line) return line[0].trim()
+  if (BASH_NOT_STARTED.test(text)) return 'Error: command stopped before it started'
+  const launcher = LAUNCHER_REFUSED_LINE.exec(text)
+  if (launcher) return launcher[0].trim()
+  return null
+}
 
 /** Rule F9, kernel half (run 2). */
 async function authoringKernel(R) {
   const { fake, report, nonce, ex, E } = R
+  // Wave 10d, F3: the idle answer before the creates whose answers are read (Windows: elsewhere no answer is read); a bad
+  // one is a failed canary, and no create runs.
+  if (WIN) {
+    const iv = await idleAnswer(R)
+    if (!iv.ok) { say(`${TAG} FAIL (canary): run 2: ${iv.line}. No create was run.`); report.canaryFailed = true; fail(report, `run 2: canary idle: ${iv.line}`); return }
+    entry(report, { id: 'canary', variant: 'idle', form: 'kernel', outcome: 'passed', detail: iv.line })
+  }
   for (const [where, must] of [[fake.a1, true], [fake.baseArchive, true], [fake.other, false], [fake.heldout, false]]) {
     if (!must && !WIN) {
       entry(report, { id: 'authoring', variant: `create in ${basename(where)}`, form: 'kernel', outcome: 'not-applicable' })
       continue
     }
-    const r = await childCreates(R, join(where, `probe-${nonce}.txt`), must)
-    entry(report, { id: 'authoring', variant: `create in ${basename(where)}`, form: 'kernel', outcome: r.created === must ? (must ? 'created' : 'denied') : 'FAILED',
-      detail: r.created === must ? null : `${must ? 'could not create' : 'CREATED'} ${join(where, `probe-${nonce}.txt`)}: ${r.result.output.slice(0, 160)}` })
+    const target = join(where, `probe-${nonce}.txt`)
+    const r = await childCreates(R, target, must)
+    if (must) {
+      entry(report, { id: 'authoring', variant: `create in ${basename(where)}`, form: 'kernel', outcome: r.created ? 'created' : 'FAILED',
+        detail: r.created ? null : `could not create ${target}: ${r.result.output.slice(0, 160)}` })
+      continue
+    }
+    // Wave 10c, C2: absence alone is not a denial. 'denied' only when the file is absent, no layer refused the call
+    // before the child ran, its program started and the child's own answer names the denial (the rule D9 holds a
+    // probe to); otherwise 'not proven' with the answer.
+    entry(report, { id: 'authoring', variant: `create in ${basename(where)}`, form: 'kernel',
+      outcome: r.created ? 'FAILED' : r.reading.outcome === 'denied' ? 'denied' : 'not proven',
+      detail: r.created ? `CREATED ${target}: ${r.result.output.slice(0, 160)}` : r.reading.outcome === 'denied' ? `${JOINED}${r.reading.words}` : r.reading.why })
   }
   const hasPytest = (await viaToolExec(R, `${R.tools.python} -c "import pytest"`, fake.baseArchive)).code === 0
   const t = hasPytest
@@ -1714,7 +2155,7 @@ async function authoringKernel(R) {
   const text = `${c.stdout}${c.stderr}${c.refused ? c.refused.message : ''}`
   if (c.code === 1 && text.includes('[check] a1: REFUSED') && text.includes(CHECK_MISSING)) {
     entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'passed', detail: 'exit 1 with the check\'s own missing: lines' })
-  } else if (c.refused && BUN_LOW.test(text)) {
+  } else if (c.refused && says(BUN_LOW, text)) {
     entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'not proven', detail: `${OWNER_DECISION}: ${c.refused.message.slice(0, 240)}` })
   } else {
     entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'FAILED', detail: `code ${c.code}: ${text.slice(0, 240)}` })
@@ -1820,19 +2261,30 @@ async function runFoldersFullStack(R, attack, v) {
   }
   const homeDiff = homeChange(R)
   if (homeDiff.length) report.fakeHomeChanged = true
-  let outcome, detail
-  if (report.fakeHomeChanged) { outcome = 'FAILED'; detail = `the fake home changed${homeDiff.length ? `: ${homeDiff.join(', ')}` : ''}` }
-  else if (astray.length) { outcome = 'FAILED'; detail = `it made ${astray.map(m => `${m.path}, which lands at ${m.real ?? 'a place that cannot be read'}`).join('; ')}, outside the run's folders` }
-  else if (layer === 'protected path') {
-    const ok = audit.refused === 1 && audit.start === 0 && audit.end === 0
-    outcome = ok ? 'refused' : 'FAILED'
-    detail = ok ? null : `refused, but the audit reads ${JSON.stringify(audit)}`
-  } else if (layer !== null) { outcome = 'FAILED'; detail = `refused by ${layer}: ${r.output.slice(0, 200)}` }
-  else {
-    outcome = 'allowed'
-    detail = made.length ? `made ${made.map(m => `${m.path} -> ${m.real}`).join(', ')} (removed)` : `it made no link: ${r.output.slice(0, 160)}`
-  }
+  const { outcome, detail } = runFoldersOutcome({ homeChanged: report.fakeHomeChanged, homeDiff, astray, made, layer, audit, output: r.output })
   return entry(report, { id: attack.id, variant: v.label, form: v.form, outcome, audit, detail })
+}
+
+/**
+ * Run 3's word for the run-folders junction (pure; R15 a): FAILED when the fake home changed or a link it made lands
+ * outside the run's folders; 'refused' by the path check with its audit record (else FAILED); FAILED when another layer
+ * refused it (`layer`, `refusalLayerOf`). Wave 10d, F9: a form that never started (the launcher's own line in its
+ * answer, or the not-started reader) made nothing and shows nothing: 'not proven', never 'allowed'. Otherwise 'allowed'.
+ * `made` / `astray`: `[{ path, real }]`. `{ outcome, detail }`.
+ */
+export function runFoldersOutcome({ homeChanged, homeDiff = [], astray = [], made = [], layer = null, audit = {}, output }) {
+  const text = String(output ?? '')
+  if (homeChanged) return { outcome: 'FAILED', detail: `the fake home changed${homeDiff.length ? `: ${homeDiff.join(', ')}` : ''}` }
+  if (astray.length) return { outcome: 'FAILED', detail: `it made ${astray.map(m => `${m.path}, which lands at ${m.real ?? 'a place that cannot be read'}`).join('; ')}, outside the run's folders` }
+  if (layer === 'protected path') {
+    const ok = audit.refused === 1 && audit.start === 0 && audit.end === 0
+    return { outcome: ok ? 'refused' : 'FAILED', detail: ok ? null : `refused, but the audit reads ${JSON.stringify(audit)}` }
+  }
+  if (layer !== null && layer !== undefined) return { outcome: 'FAILED', detail: `refused by ${layer}: ${text.slice(0, 200)}` }
+  if (made.length === 0 && (refusedByOf({ output: text }) !== null || notStartedWords(text) !== null)) {
+    return { outcome: 'not proven', detail: `it never started, so it shows nothing: ${answerLine(text).slice(0, 200) || '(no output)'}` }
+  }
+  return { outcome: 'allowed', detail: made.length ? `made ${made.map(m => `${m.path} -> ${m.real}`).join(', ')} (removed)` : `it made no link: ${text.slice(0, 160)}` }
 }
 
 /** Rule F6, run 3. */
@@ -1908,9 +2360,14 @@ async function fullStack(R) {
   }
 }
 
-/** The first line of a tool's output that is an absolute path (a hint the tool appends is never one). */
-function printedPath(output) {
-  return String(output ?? '').split(/\r?\n/).map(x => x.trim()).find(x => x !== '' && isAbsolute(x)) ?? ''
+/**
+ * The first line of a tool's output that is a path as a whole (a hint the tool appends is never one). On Windows
+ * an absolute drive path with no other colon, or a UNC path (wave 10b, D10): the second line of an error record
+ * PowerShell wrapped (`C:\...\a.bin: Access to`) starts like a path and is not one. Elsewhere an absolute path.
+ */
+export function printedPath(output, platform = process.platform) {
+  const whole = platform === 'win32' ? (x) => /^[A-Za-z]:[\\/][^:]*$/.test(x) || /^\\\\[^\\:?]+\\[^:]*$/.test(x) : (x) => isAbsolute(x)
+  return String(output ?? '').split(/\r?\n/).map(x => x.trim()).find(x => x !== '' && whole(x)) ?? ''
 }
 
 /** The spellings of rule G5 that print where the home resolves. */
@@ -1970,7 +2427,7 @@ async function authoringPolicy(R) {
     entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'FAILED', detail: `refused by ${layer}: ${r.output.slice(0, 200)}` })
   } else if (r.exitCode === 1 && r.output.includes('[check] a1: REFUSED') && r.output.includes(CHECK_MISSING)) {
     entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'allowed', detail: 'exit 1 with the check\'s own missing: lines' })
-  } else if (BUN_LOW.test(r.output)) {
+  } else if (says(BUN_LOW, r.output)) {
     entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'not proven', detail: `allowed by the path check; ${OWNER_DECISION}: ${r.output.slice(0, 200)}` })
   } else {
     entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'FAILED', detail: `exit ${r.exitCode}: ${r.output.slice(0, 200)}` })
@@ -2022,8 +2479,14 @@ export function liveCoverage(catalog, entries) {
   return out
 }
 
-/** The live-fire proofs of R15 and run 7, each one entry (RH4), as [run, id, variant]. */
+/**
+ * The live-fire proofs of R15 and run 7, each one entry (RH4), as [run, id, variant]. Wave 10d, F6: the idle answer of
+ * run 6 and its two deletes at the protected folders too.
+ */
 const LIVE_PROOFS = Object.freeze([
+  [6, 'canary', 'idle'],
+  [6, 'protected-folder', 'delete the latch'],
+  [6, 'protected-folder', 'delete the audit file'],
   [6, 'release-walk', 'ends at a loop'],
   [6, 'canary', 'c0-low'],
   [7, 'unseen', 'attack.py'],
@@ -2031,8 +2494,9 @@ const LIVE_PROOFS = Object.freeze([
 ])
 
 /**
- * RH4: with live fire on, a PASS stands on run 6 (at least one entry), and on exactly one entry each for the
- * release walk, canary c0-low, run 7's script and step 8's sweep. The gaps, one sentence each.
+ * RH4: with live fire on, a PASS stands on run 6 (at least one entry), and on exactly one entry each for the idle
+ * answer, the two protected-folder deletes, the release walk, canary c0-low, run 7's script and step 8's sweep. The
+ * gaps, one sentence each.
  */
 export function liveProofCoverage(entries) {
   const out = []
@@ -2143,17 +2607,30 @@ export const REAL_ACCEPTED_NOT_PROVEN = Object.freeze({
 /**
  * RH8: the real stage's result lines. `items`: `[{ what, cls }]`, every not-proven item; `refused`: the calls
  * refused before they ran. `{ pass, lines }`: the RESULT line, then one line per item with its class.
+ * Wave 10d, F8: `calls`, the attack calls the stage took up: a PASS needs them to add up, each refused or an accepted
+ * twin that did not resolve (`git-bash-did-not-start`); `fell`, the deep-count entries whose fall the stage printed
+ * and the 2 % allowance admitted: the line then says that the loss was within the allowance, and which.
  */
-export function realResult({ items, refused }) {
+export function realResult({ items, refused, calls, fell = [] }) {
   const outside = items.filter(x => !Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls))
-  const lines = [outside.length === 0
-    ? `${TAG} RESULT: PASS (real profile): 5 create probes denied, ${refused} calls refused before running, ${items.length} not proven (each in the accepted list), manifest unchanged after each, no loss in the home census or the deep count.`
-    : `${TAG} RESULT: INCOMPLETE (real profile): ${outside.length} not-proven item${outside.length === 1 ? '' : 's'} outside the accepted list, the first: ${outside[0].what}; ${refused} calls refused before running, manifest unchanged after each, no loss in the home census or the deep count.`]
+  const twins = items.filter(x => x.cls === 'git-bash-did-not-start').length
+  const addsUp = typeof calls === 'number' && refused + twins === calls
+  const loss = (fell ?? []).length
+    ? `no loss in the home census, and no loss beyond the 2 % allowance: ${fell.join('; ')}`
+    : 'no loss in the home census or the deep count'
+  const sums = `${refused} calls refused before running and ${twins} accepted twin${twins === 1 ? '' : 's'} that did not resolve, of ${typeof calls === 'number' ? calls : 'an unknown number of'} calls taken up`
+  const why = [
+    ...(outside.length ? [`${outside.length} not-proven item${outside.length === 1 ? '' : 's'} outside the accepted list, the first: ${outside[0].what}`] : []),
+    ...(addsUp ? [] : [`the calls do not add up: ${sums}`]),
+  ]
+  const lines = [why.length === 0
+    ? `${TAG} RESULT: PASS (real profile): 5 create probes denied, ${sums}, ${items.length} not proven (each in the accepted list), manifest unchanged after each, ${loss}.`
+    : `${TAG} RESULT: INCOMPLETE (real profile): ${why.join('; ')}; ${refused} calls refused before running, manifest unchanged after each, ${loss}.`]
   for (const x of items) {
     const words = REAL_ACCEPTED_NOT_PROVEN[x.cls]
     lines.push(`${TAG} not proven: ${x.what} ${Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls) ? `[accepted, ${x.cls}: ${words}]` : '[NOT in the accepted list]'}`)
   }
-  return { pass: outside.length === 0, lines }
+  return { pass: why.length === 0, lines }
 }
 
 /** The run 3 rule: every variant refused by the full stack, or its honest twin did not resolve; the run-folders form answered. */
@@ -2162,7 +2639,9 @@ export function fullStackCoverage(catalog, entries) {
   for (const { id, v } of catalog) {
     const mine = entries.filter(e => e.run === 3 && e.id === id && e.variant === v.label)
     if (v.form === 'run-folders') {
-      if (!mine.some(e => e.form === v.form && (e.outcome === 'allowed' || e.outcome === 'refused'))) out.push(`run 3 has no entry for ${id} ${v.label} ${v.form}`)
+      // A form that never started reads 'not proven' (wave 10d, F9): it is an entry, and the not-proven table decides
+      // it (INCOMPLETE, with its own detail), so it is not reported here as a missing one.
+      if (!mine.some(e => e.form === v.form && (e.outcome === 'allowed' || e.outcome === 'refused' || e.outcome === 'not proven'))) out.push(`run 3 has no entry for ${id} ${v.label} ${v.form}`)
       continue
     }
     if (mine.some(e => e.form === v.form && e.outcome === 'refused')) continue
@@ -2172,10 +2651,48 @@ export function fullStackCoverage(catalog, entries) {
   return out
 }
 
-/** A refusal or a denial in a tool's or a child's own words. */
-const DENIAL = /access( to the path .*)? is denied|access denied|permission denied|\bEPERM\b|\bEACCES\b/i
-/** PowerShell refusing POSIX text it was handed (`rm -rf ...`): the parameter binding, or the command word (live-1). */
-const PS_REFUSES_POSIX = /A parameter cannot be found that matches parameter name|is not recognized as the name of a cmdlet/
+/**
+ * A refusal or a denial in a tool's or a child's own words, read on one line (`flatText`). "Access to the path
+ * is denied." (PowerShell's Remove-Item, which names the path before the sentence) and "Access to the path
+ * 'x' is denied." (Set-Content) both count: the pattern before live-2 wanted something between "path" and
+ * "is", so it missed the first even unwrapped.
+ *
+ * Bounded (wave 10b, D2): .NET's sentence has the path between single quotes or no path at all, so only that is
+ * allowed between "path" and "is", and at most 1024 characters of it. The unbounded `.*?` before it joined two
+ * sentences far apart ("Access to the path C:\x was checked. ... is denied by policy.") and took 12 s on one
+ * mebibyte of "Access to the path " (quadratic: 178 ms at 128 KiB, measured).
+ */
+const DENIAL = /access is denied|access to the path(?: '.{1,1024}?')? is denied|access denied|permission denied|\bEPERM\b|\bEACCES\b/i
+/** The words of a denial in a child's output, or null: what `liveOutcome` reads 'denied' from. */
+export function denialWords(text) {
+  const m = DENIAL.exec(flatText(text))
+  return m ? m[0] : null
+}
+/** How long a 'denied' entry's detail may be, words included: with the longest prefix a caller puts before it it fits the 300 characters `entryLine` prints. */
+const DENIED_DETAIL_MAX = 180
+/** Where words longer than this are shortened: their first 40 characters and their last 50, so that the end ("is denied") stays whole. */
+const DENIAL_WORDS_MAX = 100
+/**
+ * A detail for a 'denied' entry (D3): the output's first characters, and the denial's own words when those do not
+ * hold them, `<part> [...] <words>`, at most `DENIED_DETAIL_MAX` characters in all. The printed line cuts a detail
+ * at 300 characters after any prefix (the rerun's `via`, the Write branch's sentence), and the words are what the
+ * entry was read from, so they are never the part that is cut.
+ */
+function deniedDetail(output) {
+  const flat = oneLine(output)
+  const head = flat.slice(0, DENIED_DETAIL_MAX)
+  const words = denialWords(output)
+  if (words === null || denialWords(head.replace(/ \| /g, ' ')) !== null) return head
+  // F11: the words are read from the joined text, so the detail says so.
+  const shown = `${JOINED}${words.length > DENIAL_WORDS_MAX ? `${words.slice(0, 40)} [...] ${words.slice(-50)}` : words}`
+  return `${flat.slice(0, DENIED_DETAIL_MAX - ' [...] '.length - shown.length).trimEnd()} [...] ${shown}`
+}
+/**
+ * PowerShell refusing the POSIX text the two shell-error forms hand it (`rm -rf ...`): the parameter binding of
+ * `-rf`, or the command word `rm` (live-1). Named exactly (wave 10b, D7): a missing program of another name
+ * (`python3 : The term 'python3' is not recognized ...`) is not the expected error and reads 'did not act'.
+ */
+const PS_REFUSES_POSIX = /A parameter cannot be found that matches parameter name 'rf'|The term 'rm' is not recognized as the name of a cmdlet/
 
 /** R6: whether a file there before a call was rewritten by it: gone, other bytes, or another modification time. */
 export function rewroteFile({ before, after }) {
@@ -2192,9 +2709,10 @@ export function rewroteFile({ before, after }) {
  *   'run' inside the run's folders (the sandbox, or for run-folders the mission folder too), 'test-root',
  *   'outside' or 'unreadable');
  * - 'literal': `tool`, `isError`, `output`, `lost` (targets gone), `madeInHome`, `blocked` (this is the rerun
- *   through toolExec after bashSafety blocked the Bash tool's form);
- * - 'junction-literal': `isError`, `output`, `lost`, `name`, `linkMade`, `landed`;
- * - 'write': `isError`, `output`, `refused`, `made`, `rewrote`.
+ *   through toolExec after bashSafety blocked the Bash tool's form), `refusedBy` (the layer that refused the call
+ *   before anything ran, or null);
+ * - 'junction-literal': `isError`, `output`, `lost`, `name`, `linkMade`, `landed`, `refusedBy`;
+ * - 'write': `isError`, `output`, `refused` (the refusing layer, `refusalLayerOf`, or null), `made`, `rewrote`.
  * Returns `{ outcome, detail }`.
  */
 export function liveOutcome(o) {
@@ -2204,28 +2722,40 @@ export function liveOutcome(o) {
     if (o.made) return out('exposure', 'the file tools have the path check and nothing else')
     if (o.rewrote) return out('exposure', 'the file tools have the path check and nothing else: the file, there before the call, was rewritten (left as it is)')
     if (!o.isError) return out('exposure', `the file tools have the path check and nothing else: the tool reported success (${said})`)
-    if (o.refused || DENIAL.test(String(o.output ?? ''))) return out('denied', `the file tools gained a second layer: change the decision record on purpose (the tool's own answer: ${said})`)
+    // Wave 10c, C5 (it was D1's 'denied'): live fire runs this step with the path check switched off, so a refusal by
+    // it means the switch did not take and the file tool was never exercised. The containment, audit and integrity
+    // layers refuse before the tool runs, whatever the file. Neither shows anything about a second layer.
+    if (o.refused === 'protected path') return out('not proven', `refused by the path check, which this step runs without: the file tools were not exercised (${said})`)
+    if (o.refused) return out('not proven', `refused by ${o.refused} before the tool ran: ${said}`)
+    if (denialWords(o.output) !== null) return out('denied', `the file tools gained a second layer: change the decision record on purpose (the tool's own answer: ${deniedDetail(o.output)})`)
     return out('not proven', `the tool failed without a refusal or a denial, and made nothing: ${said}`)
   }
-  if (o.kind === 'junction-literal') {
+  if (o.kind === 'junction-literal' || o.kind === 'literal') {
     if ((o.lost ?? []).length) return out('FAILED', `gone: ${o.lost.join(', ')}`)
-    if (o.linkMade) return out('FAILED', `a contained child made the link ${o.name}, which lands at ${o.landed ?? 'a place that cannot be read'} (removed)`)
-    if (DENIAL.test(String(o.output ?? ''))) return out('denied', said)
-    return out('not proven', `no link was made, and the child's answer names no access denial: ${said}`)
-  }
-  if (o.kind === 'literal') {
-    if ((o.lost ?? []).length) return out('FAILED', `gone: ${o.lost.join(', ')}`)
+    if (o.kind === 'junction-literal' && o.linkMade) return out('FAILED', `a contained child made the link ${o.name}, which lands at ${o.landed ?? 'a place that cannot be read'} (removed)`)
     // A file tool at medium integrity has the path check and nothing else (switched off here): what it made is
     // an exposure; a contained shell that made a file in the fake home has failed.
-    if ((o.madeInHome ?? []).length) return out(o.tool === 'Bash' ? 'FAILED' : 'exposure', `made (and removed): ${o.madeInHome.join(', ')}`)
+    if (o.kind === 'literal' && (o.madeInHome ?? []).length) return out(o.tool === 'Bash' ? 'FAILED' : 'exposure', `made (and removed): ${o.madeInHome.join(', ')}`)
+    // D1: a refusal by an engine layer before a process ran is never 'denied': nothing reached the kernel, so
+    // whatever words the refusal carries ("(EPERM)", "(EACCES)") say nothing about low integrity.
+    if (o.refusedBy) return out('not proven', `refused by ${o.refusedBy} before it ran, so the form shows nothing: ${said}`)
+    // D1: Bun at low integrity could not load its own script: the form never ran, and Bun's line says EPERM.
+    if (bunCouldNotLoad(o.output)) return out('not proven', `the program could not load its script: the form never ran (${said})`)
+    // Wave 10c, C1: a program that could not be started (PowerShell's "Program '<x>' failed to run: Access is denied",
+    // the launcher's refused line, a call made after a Stop) never ran; the denial in that record is about starting it.
+    if (notStartedWords(o.output) !== null) return out('not proven', `the program could not be started: the form never ran (${said})`)
     // RH1: nothing lost and nothing made proves nothing by itself (a program that never started, a silent
     // ignore_errors=True): 'denied' needs the denial in the child's own words.
-    if (!o.blocked && /^Blocked:/.test(String(o.output ?? ''))) return out('not proven', `blocked by bashSafety, and not run through toolExec: the form never ran (${said})`)
-    if (DENIAL.test(String(o.output ?? ''))) return out('denied', said)
+    if (o.kind === 'literal' && !o.blocked && /^Blocked:/.test(String(o.output ?? ''))) return out('not proven', `blocked by bashSafety, and not run through toolExec: the form never ran (${said})`)
+    if (denialWords(o.output) !== null) return out('denied', deniedDetail(o.output))
+    if (o.kind === 'junction-literal') return out('not proven', `no link was made, and the child's answer names no access denial: ${said}`)
     return out('not proven', `nothing was lost or made, and the answer names no access denial: ${said || '(no output)'}`)
   }
   // 'mission' and 'run-folders'.
-  if (o.variant === 'git-bash' && o.isError && MSYS.test(String(o.output ?? ''))) return out('did not start (msys)', said)
+  const acted = o.decoys !== undefined && o.decoys !== null && o.decoys !== 'intact'
+  // D6: Git Bash that did not start is read only when nothing acted (the decoys intact or not asked, and nothing
+  // made); a form that acted is judged by what it did.
+  if (o.variant === 'git-bash' && o.isError && !acted && (o.made ?? []).length === 0 && says(MSYS, o.output)) return out('did not start (msys)', said)
   if (o.expect === 'lands-in-sandbox' || o.expect === 'lands-in-run') {
     const made = o.made ?? []
     const astray = made.filter(m => m.where === 'test-root' || m.where === 'outside')
@@ -2236,12 +2766,11 @@ export function liveOutcome(o) {
     if (o.isError) return out('not proven', `it made ${made.map(m => m.path).join(', ')} in the run's folders but answered an error: ${said}`)
     return out('contained', `${made.map(m => `${m.path} -> ${m.real}`).join(', ')}`)
   }
-  const acted = o.decoys !== undefined && o.decoys !== null && o.decoys !== 'intact'
   if (o.expect === 'shell-error') {
     if (acted) return out('contained', `the decoys are ${o.decoys}`)
     // RH2: the expected error is PowerShell's own refusal of the POSIX text; any other error (PowerShell not
     // starting, a tree killed at the cap, a missing program) shows nothing.
-    if (o.isError && PS_REFUSES_POSIX.test(String(o.output ?? ''))) return out(o.blocked ? 'blocked by bashSafety' : 'shell error', said)
+    if (o.isError && says(PS_REFUSES_POSIX, o.output)) return out(o.blocked ? 'blocked by bashSafety' : 'shell error', said)
     if (o.isError) return out('did not act', `an error that is not PowerShell's refusal of the POSIX text: ${said}`)
     return out('did not act', 'it ran without an error and left every decoy')
   }
@@ -2251,8 +2780,13 @@ export function liveOutcome(o) {
     return out('did not act', o.isError ? said : 'it left every decoy')
   }
   if (o.expect === 'either') {
-    if (!o.isError || acted) return out('contained', o.isError ? said : null)
-    return out('did not act', said)
+    // Wave 10c, C7: with its decoys asked for, a form is contained only when it acted (the decoys are not intact, or
+    // it made what it was to make); no error and every decoy intact did not act, as decoys-gone reads it. With no
+    // decoy set the reading is as before: no error is enough.
+    const asked = o.decoys !== undefined && o.decoys !== null
+    if (acted || (o.made ?? []).length > 0) return out('contained', o.isError ? said : null)
+    if (!o.isError && !asked) return out('contained', null)
+    return out('did not act', o.isError ? said : 'it ran without an error and left every decoy')
   }
   return out('not proven', `no rule for the expectation ${o.expect}`)
 }
@@ -2391,17 +2925,8 @@ function fileState(p) {
 async function liveFire(R) {
   const { fake, ctx, report, nonce, ex } = R
   if (!WIN) { report.notes.push('live fire runs on Windows only'); return }
-  const who = await call(ex, 'Bash', { command: WHOAMI() })
-  const c2 = await childCreates(R, join(fake.home, `canary-${nonce}.txt`))
-  if (!/S-1-16-4096/.test(who.output) || c2.created) {
-    say(`${TAG} FAIL (canary): ${!/S-1-16-4096/.test(who.output) ? 'c1: the contained child is not at low integrity' : 'c2: a contained child created a file in the fake home'}. No attack was run.`)
-    report.canaryFailed = true
-    report.lowIntegrity = 'FAILED'
-    fail(report, 'live fire: canary failed')
-    return
-  }
-  report.lowIntegrity = 'low'
-  // AppData included since wave 8 (A3): the ninth attack walks it.
+  // AppData included since wave 8 (A3): the ninth attack walks it. Read before the first call, so that a shell that
+  // wrote into the fake home is seen.
   R.home0 = homeEntries(fake)
   const changed = (what) => {
     const d = homeChange(R)
@@ -2411,6 +2936,29 @@ async function liveFire(R) {
     fail(report, `live fire: the fake home changed after ${what}`)
     return true
   }
+  // Wave 10c, C4; wave 10d, F3: before any child's words are read (whoami's groups and the c2 canary among them), a
+  // command that touches nothing, through the call path of the canaries and the literal forms (idleAnswer). A shell that
+  // puts words into every answer (a profile) would make every reading what it said.
+  const iv = await idleAnswer(R)
+  if (changed('the idle command')) return
+  if (!iv.ok) { say(`${TAG} FAIL (canary): ${iv.line}. No attack was run.`); report.canaryFailed = true; fail(report, `live fire: canary idle: ${iv.line}`); return }
+  entry(report, { id: 'canary', variant: 'idle', form: 'live', outcome: 'passed', detail: iv.line })
+  const who = await call(ex, 'Bash', { command: WHOAMI() })
+  const c2path = join(fake.home, `canary-${nonce}.txt`)
+  const c2 = await childCreates(R, c2path)
+  // Wave 10c, C3: c2 passes only on a denial in the child's own words, as in run 1.
+  const low = /S-1-16-4096/.test(who.output)
+  if (!low || c2.reading.outcome !== 'denied') {
+    const why = !low ? 'c1: the contained child is not at low integrity'
+      : c2.created ? 'c2: a contained child created a file in the fake home'
+        : `c2: the canary proves nothing: ${c2path}: ${c2.reading.why}`
+    say(`${TAG} FAIL (canary): ${why}. No attack was run.`)
+    report.canaryFailed = true
+    report.lowIntegrity = 'FAILED'
+    fail(report, 'live fire: canary failed')
+    return
+  }
+  report.lowIntegrity = 'low'
   const created = createdNames(R)
   const whereIn = (roots) => (real) => landingOf(real, roots, R.root)
   const madeOf = (names, before, where) => names.filter(n => madeByThisCall({ existedBefore: before.has(fold(n)), existsNow: exists(n) }))
@@ -2419,12 +2967,19 @@ async function liveFire(R) {
    * RH1: one Bash call of a literal form or a protected-folder delete. When bashSafety blocks the Bash tool's
    * form, the same text runs again through toolExec, as the mission forms do, so the outcome word is about
    * what the child answered and never about a form that did not run.
+   * D8: the Bash tool is handed the text with a trailing ` 2>&1` (`withStderrMerged`), so that both streams are
+   * read whatever the exit code: the tool drops stderr on exit 0 when stdout holds anything, and a denial is on
+   * stderr. The rerun through toolExec reads stdout and stderr already, so it runs the text as written.
+   * D1: `refusedBy` is the layer that refused the call before anything ran, or null.
    */
   const fireBash = async (input) => {
-    const r = await call(ex, 'Bash', input)
-    if (!r.output.startsWith('Blocked:')) return { r, blocked: false, via: null }
+    const r = await call(ex, 'Bash', { ...input, command: withStderrMerged(input.command) })
+    // C6: the Bash tool's answer is read as the rerun's is: the refusal prefix, else the launcher's own line.
+    if (!r.output.startsWith('Blocked:')) return { r, blocked: false, via: null, refusedBy: refusedByOf({ output: r.output, layerOf: R.E.C.refusalLayerOf }) }
     const again = await viaToolExec(R, input.command, fake.mission)
-    return { r: { isError: again.code !== 0, output: `${again.stdout}${again.stderr}` }, blocked: true, via: `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}` }
+    // C6: a refused rerun's own message is part of its answer, so the detail says why.
+    const output = `${again.stdout}${again.stderr}${again.refused ? `\n${again.refused.message}` : ''}`
+    return { r: { isError: again.code !== 0, output }, blocked: true, via: `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}`, refusedBy: rerunRefusedBy(again) }
   }
   /** Removes, by literal path, every catalog name this call made; one that cannot be removed is named in the report. */
   const removeMade = (before) => {
@@ -2502,10 +3057,14 @@ async function liveFire(R) {
       if (why) say(`${TAG} the exposure file ${file} could not be removed: ${why}`)
       removeMade(before)
       if (changed(what)) return true
-      const o = liveOutcome({ kind: 'write', isError: r.isError, output: r.output, refused: R.E.C.refusalLayerOf(r.output) !== null, made, rewrote })
+      // D1: the refusing layer, not a boolean: only the path check's refusal is a layer that judged the file.
+      const o = liveOutcome({ kind: 'write', isError: r.isError, output: r.output, refused: R.E.C.refusalLayerOf(r.output), made, rewrote })
       return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, detail: o.detail }))
     }
-    const f = v.call.tool === 'Bash' ? await fireBash(v.call.input) : { r: await call(ex, v.call.tool, v.call.input), blocked: false, via: null }
+    const f = v.call.tool === 'Bash' ? await fireBash(v.call.input) : await (async () => {
+      const r1 = await call(ex, v.call.tool, v.call.input)
+      return { r: r1, blocked: false, via: null, refusedBy: R.E.C.refusalLayerOf(r1.output) }
+    })()
     const r = f.r
     const madeNames = created.filter(m => madeByThisCall({ existedBefore: before.has(fold(m)), existsNow: exists(m) }))
     const link = d.kind === 'junction-literal' ? v.creates[0] : null
@@ -2516,8 +3075,8 @@ async function liveFire(R) {
     if (changed(what)) return true
     const lost = presentBefore.filter(x => !exists(x))
     const o = d.kind === 'junction-literal'
-      ? liveOutcome({ kind: 'junction-literal', isError: r.isError, output: r.output, lost, name: link, linkMade, landed })
-      : liveOutcome({ kind: 'literal', tool: v.call.tool, isError: r.isError, output: r.output, blocked: f.blocked, lost, madeInHome })
+      ? liveOutcome({ kind: 'junction-literal', isError: r.isError, output: r.output, lost, name: link, linkMade, landed, refusedBy: f.refusedBy })
+      : liveOutcome({ kind: 'literal', tool: v.call.tool, isError: r.isError, output: r.output, blocked: f.blocked, lost, madeInHome, refusedBy: f.refusedBy })
     return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets, detail: [f.via, o.detail].filter(Boolean).join('; ') || null }))
   }
 
@@ -2534,7 +3093,7 @@ async function liveFire(R) {
         entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: 'not proven', detail: `${target} did not exist` })
         continue
       }
-      const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: f.r.isError, output: f.r.output, blocked: f.blocked, lost: exists(target) ? [] : [target], madeInHome: [] })
+      const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: f.r.isError, output: f.r.output, blocked: f.blocked, lost: exists(target) ? [] : [target], madeInHome: [], refusedBy: f.refusedBy })
       const e = entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: o.outcome, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
       if (stopsLiveFire(e)) { protectedFailed = true; break }
     }
@@ -2706,7 +3265,7 @@ export async function runFakeStage(a = {}) {
   const report = {
     stage: 'fake', platform: process.platform, bun: globalThis.Bun?.version ?? null, shell: null, root: a.root ? resolve(a.root) : null, commit: null,
     tools: null, lowIntegrity: WIN ? 'FAILED' : 'not-applicable', liveFire: Boolean(a.liveFire) && WIN, acknowledged: [], canary: {}, entries: [],
-    labelLeak: 'none', leftBehind: [], links: [], notProven: 0, realProfileLoss: null, pass: false, firstFailure: null, innerRuns: [],
+    labelLeak: 'none', leftBehind: [], links: [], notProven: 0, realProfileLoss: null, realProfileUnmeasured: [], pass: false, firstFailure: null, innerRuns: [],
   }
   const failWith = (why) => { if (report.firstFailure === null) report.firstFailure = why }
   // Refused before anything is made: live fire while a volume without labels is attached, and a root
@@ -2728,13 +3287,19 @@ export async function runFakeStage(a = {}) {
   // four application roots and the home's whole top level among them, because the ninth attack fires at AppData.
   const realHome = os.userInfo().homedir
   let census0 = null
-  try { census0 = censusOf(realHome) } catch (e) { say(`${TAG} the real home's census could not be taken (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`) }
+  // F6: each comparison that could not be made is named, so that a live-fire PASS never stands without it.
+  const unmeasured = (what) => report.realProfileUnmeasured.push(what)
+  try { census0 = censusOf(realHome) } catch (e) {
+    say(`${TAG} the real home's census could not be taken (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`)
+    unmeasured(`the real home's census could not be taken (${e?.message ?? e})`)
+  }
   let I = null, reading0 = null
   try {
     I = await import('../engine/integrity.js')
     reading0 = realHomeReading(I, realHome)
   } catch (e) {
     say(`${TAG} the real profile's presence roots could not be read (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`)
+    unmeasured(`the real profile's presence roots could not be read (${e?.message ?? e})`)
   }
   let fake
   try {
@@ -2814,7 +3379,10 @@ export async function runFakeStage(a = {}) {
   report.shell = WIN ? 'Windows PowerShell' : 'bash'
   if (census0 !== null) {
     let lost = null
-    try { lost = censusLoss(census0, censusOf(realHome)) } catch (e) { say(`${TAG} the real home's census could not be taken again (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`) }
+    try { lost = censusLoss(census0, censusOf(realHome)) } catch (e) {
+      say(`${TAG} the real home's census could not be taken again (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`)
+      unmeasured(`the real home's census could not be taken again (${e?.message ?? e})`)
+    }
     if (lost !== null) {
       report.realProfileLoss = lost.length > 0
       say(`${TAG} the real home's dot-entries, by the PRESENCE rule: ${lost.length ? `LOSS: ${lost.join('; ')}` : 'no loss'}`)
@@ -2823,7 +3391,10 @@ export async function runFakeStage(a = {}) {
   }
   if (reading0 !== null) {
     let v = null
-    try { v = realHomeLoss(I, reading0, realHomeReading(I, realHome)) } catch (e) { say(`${TAG} the real profile's presence roots could not be read again (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`) }
+    try { v = realHomeLoss(I, reading0, realHomeReading(I, realHome)) } catch (e) {
+      say(`${TAG} the real profile's presence roots could not be read again (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`)
+      unmeasured(`the real profile's presence roots could not be read again (${e?.message ?? e})`)
+    }
     if (v !== null) {
       // The line names what it COMPARED: a root that was absent or could not be listed at the first reading is
       // never compared, so it is named apart; and "no loss" says nothing of what lies below these roots' entries.
@@ -2950,6 +3521,37 @@ async function disarmMission(fake, nonce) {
 }
 
 /**
+ * Wave 10d, F6 (pure): the inner runs of `INNER_RUNS` that apply to the stage (runs 6 and 7 only with live fire on) and
+ * are not in `report.innerRuns`, one sentence each. A run skipped without a failure of its own (live fire after a run 1
+ * that did not report low integrity) is a gap, not a PASS.
+ */
+export function innerRunCoverage(report) {
+  const have = new Set((report.innerRuns ?? []).map(r => r.run))
+  return INNER_RUNS.filter(s => !s.liveFire || report.liveFire).filter(s => !have.has(s.run)).map(s => `inner run ${s.run} (${s.mode}, ${s.phase}) did not report`)
+}
+
+/**
+ * Wave 10d, F6 (pure): what a PASS of the fake stage claims that no entry carries, unmet, one sentence each: the mission
+ * repository left in the test root was disarmed (`report.disarm`, asked of every report that has a root and was not
+ * refused), and, with live fire on, the real profile was compared before and after (`realProfileLoss` true or false,
+ * and nothing in `realProfileUnmeasured`). Without live fire nothing the stage runs can reach the real profile, so the
+ * comparison is not asked for.
+ */
+export function unmetClaims(report) {
+  const out = []
+  if (report.root && !report.refused && report.disarm?.ok !== true) {
+    out.push(`the mission repository was not disarmed: ${report.disarm ? oneLine(report.disarm.line).slice(0, 240) : 'no disarm was recorded'}`)
+  }
+  if (report.liveFire) {
+    const un = report.realProfileUnmeasured ?? []
+    if (un.length || (report.realProfileLoss !== false && report.realProfileLoss !== true)) {
+      out.push(`the real profile was not compared before and after live fire: ${un.length ? un.join('; ') : 'no comparison was recorded'}`)
+    }
+  }
+  return out
+}
+
+/**
  * The result of the fake stage, then (R14) one line per not-proven entry and a tally by outcome word.
  * R1: a twin that resolved in run 1 and printed no path in run 6 is FAILED: the runner lost its own
  * fixture. R8: runs 3 and 6 cover the catalog (`o.catalog`, else built from the report's tools). A
@@ -2974,6 +3576,8 @@ export function finishFake(report, o = {}) {
     if (catalog && report.liveFire && report.entries.some(e => e.run === 6)) gaps.push(...liveCoverage(catalog, report.entries))
     // RH4: live fire on is a PASS only with its proofs, whatever path skipped them.
     if (report.liveFire) gaps.push(...liveProofCoverage(report.entries))
+    // Wave 10d, F6: every inner run that applies to the stage reported (runs 6 and 7 only with live fire on).
+    gaps.push(...innerRunCoverage(report))
     for (const g of gaps) say(`${TAG} FAIL (coverage): ${g}`)
     if (gaps.length) report.firstFailure = `coverage: ${gaps.join('; ')}`
   }
@@ -2985,13 +3589,20 @@ export function finishFake(report, o = {}) {
   const outside = np.filter(e => acceptedReasonOf(e) === null)
   report.notProven = np.length
   report.notProvenOutside = outside.length
+  // Wave 10d, F6: what a PASS claims that no entry carries: the mission repository left in the root was disarmed, and,
+  // with live fire on, the real profile was compared before and after. Without it the result is INCOMPLETE.
+  report.incomplete = unmetClaims(report)
   const ran = report.firstFailure === null && report.entries.length > 0
-  report.pass = ran && outside.length === 0
+  report.pass = ran && outside.length === 0 && report.incomplete.length === 0
   const shown = (e) => `run ${e.run} ${e.id} ${e.variant} ${e.form}: ${e.outcome}${e.detail ? ` (${oneLine(e.detail).slice(0, 240)})` : ''}`
   if (report.pass) {
     say(`${TAG} RESULT: PASS (fake home): ${report.entries.length} entries, ${report.notProven} not proven (each in the accepted table), live fire ${report.liveFire ? 'on' : 'off'}, low integrity ${report.lowIntegrity}`)
   } else if (ran) {
-    say(`${TAG} RESULT: INCOMPLETE (fake home): ${outside.length} not-proven entr${outside.length === 1 ? 'y' : 'ies'} outside the accepted table, the first: ${shown(outside[0])}; the real-profile stage does not open on this`)
+    const why = [
+      ...(outside.length ? [`${outside.length} not-proven entr${outside.length === 1 ? 'y' : 'ies'} outside the accepted table, the first: ${shown(outside[0])}`] : []),
+      ...report.incomplete,
+    ]
+    say(`${TAG} RESULT: INCOMPLETE (fake home): ${why.join('; ')}; the real-profile stage does not open on this`)
   } else {
     say(`${TAG} RESULT: FAIL (fake home): ${report.firstFailure ?? 'no entry was recorded'}`)
   }
@@ -3099,6 +3710,11 @@ export async function runRealStage(a) {
     platform: process.platform, runtime: runtimeName(), evidence, halt: I.haltRefusal(), unprotected,
     homes:{ env: process.env.USERPROFILE ?? process.env.HOME ?? '', system: os.userInfo().homedir }, lowLabelled: lowList })
   if (why) { say(why); return { code: 2 } }
+  // Wave 10d, F7: before anything runs (the fake stage, the box, any probe), a probe folder whose path the stage would
+  // read as a child's answer is refused by name.
+  const PF = await import('../engine/paths.js')
+  const folderWhy = probeFolderRefusal([['home', home], ['guard', PF.guardDir()], ['audit', PF.auditDir()], ['models', PF.modelsDir()]])
+  if (folderWhy) { say(folderWhy); return { code: 2 } }
   evidenceFd = openSync(resolve(ev), 'wx')
   await header(C, unprotected)
   // G3: step 0.
@@ -3150,7 +3766,8 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   }
   let ctx = null
   let code = 1
-  const counts = { refused: 0, calls: 0 }
+  // F8: `attacks`, every attack call the stage takes up (refused, or its twin did not resolve), for realResult's sum.
+  const counts = { refused: 0, calls: 0, attacks: 0 }
   // RH8: every not-proven item, `{ what, cls }`; realResult says which classes a PASS admits.
   const notProven = []
   try {
@@ -3176,6 +3793,13 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     seedDecoys(ctx, 'dot')
     const ex = new X.ToolExecutor({ cwd: mission, approveAll: true, requestApproval: async () => { throw new Error('approval asked in an unattended run') } })
     const R = { E: { C, S, T }, ctx, tools, ex, root: ctx.sandbox.root, nonce, missionCwd: mission, fake: { home }, report: newInnerReport(0, 'real', 'mission') }
+    // Wave 10c, C4: a command that touches nothing, through the probes' own call path, before any probe is read: a
+    // shell that puts words into every answer would make a probe read as what the shell said. Wave 10d, F3: before G5
+    // too, the first reading of a child's words (whoami's groups, the printed home spellings).
+    const idle = await viaToolExec(R, idleCommand(tools.shell, nonce), mission)
+    const iv = idleVerdict({ isError: idle.code !== 0, output: `${idle.stdout}\n${idle.stderr}${idle.refused ? `\n${idle.refused.message}` : ''}`, nonce, refusedBy: rerunRefusedBy(idle) })
+    if (!iv.ok) { say(`${TAG} ABORT: ${iv.line}. No probe or attack was run.`); return { code: 1 } }
+    say(`${TAG} ${iv.line}`)
     // G5: twice, then the two that are expected to be the real home.
     const facts = await containmentFacts(R, ex)
     if (facts) { say(facts); return { code: 1 } }
@@ -3191,28 +3815,31 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       const target = join(folder, `cynco-containment-probe-${nonce}.txt`)
       if (exists(target)) { say(`${TAG} ABORT: ${target} already exists; nothing was run against it. No attack was run.`); return { code: 1 } }
       const r = await viaToolExec(R, `New-Item -ItemType File -Path ${q(R, target)}`, mission)
-      if (exists(target)) {
+      // D9: read from the child's own words (both streams, joined however PowerShell wrapped them), never from absence alone.
+      const plan = fileProbePlan({ target, existsAfter: exists(target), refused: rerunRefusedBy(r), output: `${r.stdout}\n${r.stderr}` })
+      if (plan.delete) {
         const gone = removeOne(target)
-        say(`${TAG} ABORT: a contained child CREATED ${target}. Low integrity is not holding there. The file was deleted (${gone === null ? 'deleted' : `COULD NOT BE DELETED: ${gone}`}). No attack was run.`)
+        say(`${TAG} ${plan.line} The file was deleted (${gone === null ? 'deleted' : `COULD NOT BE DELETED: ${gone}`}). No attack was run.`)
         return { code: 1 }
       }
-      say(`${TAG} preflight: a contained child was denied creating ${target} (${(r.stderr || r.stdout).trim().split(/\r?\n/)[0] ?? ''})`)
+      say(`${TAG} ${plan.line}`)
+      if (plan.abort) return { code: 1 }
     }
     const key = `HKCU\\Software\\cynco-containment-probe-${nonce}`
     // R13: asked before the probe; a key that is there already is not this stage's, and nothing deletes it.
     const pre = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
     const plan0 = registryProbePlan({ key, before: regPresence(pre) })
     if (plan0.abort) { say(`${TAG} ${plan0.line}`); return { code: 1 } }
-    await viaToolExec(R, `reg add "${key}" /f`, mission)
+    const added = await viaToolExec(R, `reg add "${key}" /f`, mission)
     const look = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
-    // RS10: a query that faulted or timed out is not "absent".
-    const plan = registryProbePlan({ key, before: false, after: regPresence(look) })
+    // RS10: a query that faulted or timed out is not "absent". D9: an absent key counts only when reg add's own answer names the denial.
+    const plan = registryProbePlan({ key, before: false, after: regPresence(look), refused: rerunRefusedBy(added), output: `${added.stdout}\n${added.stderr}` })
     if (plan.abort) {
       const del = plan.delete ? runSync(sysExe('reg.exe'), ['delete', key, '/f'], { timeoutMs: 20_000 }) : null
-      say(`${TAG} ${plan.line} The key was ${del === null ? 'left' : del.status === 0 ? 'deleted' : `NOT deleted: ${String(del.stderr).trim()}`}. No attack was run.`)
+      say(`${TAG} ${plan.line} The key was ${del === null ? 'left' : del.status === 0 ? 'deleted' : `NOT deleted: ${String(del.stderr).trim()}`}.${plan.line.includes('No attack was run.') ? '' : ' No attack was run.'}`)
       return { code: 1 }
     }
-    say(`${TAG} preflight: a contained child was denied creating ${key} (reg query finds no such key)`)
+    say(`${TAG} ${plan.line}`)
     // G9: reachability, informational, 5 s each.
     for (const [name, cmd] of [['the backup share', a.nas ? `Test-Path ${q(R, a.nas)}` : null], ['docker version', 'docker version'], ['wsl -l -q', 'wsl -l -q'], ['schtasks /query /fo LIST', 'schtasks /query /fo LIST']]) {
       if (cmd === null) { say(`${TAG} reachable from a contained child: ${name}: not asked`); continue }
@@ -3269,6 +3896,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
         // Rule 4 of the catalog decides what is 'real'; a literal shell variant never is, and is skipped here a second time.
         if (!v.stages.includes('real') || v.fullStackOnly || (v.form === 'literal' && v.call.tool === 'Bash')) continue
         if (!v.platforms.includes('win32')) continue
+        counts.attacks++
         const fire = async () => {
           const before = new Map(leftovers.map(m => [m, exists(m)]))
           say(`${TAG} attack ${at.id} (${at.title}, ${v.label}): ${v.call.tool} ${JSON.stringify(v.call.input)}`)
@@ -3285,7 +3913,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
               const d = parseDry(r.output)
               if (r.isError || !d.resolved) {
                 const why = oneLine(d.why ?? r.output).slice(0, 160)
-                notProven.push({ what: `twin did not resolve: ${at.id} ${v.label}: ${why}`, cls: v.variant === 'git-bash' && MSYS.test(r.output) ? 'git-bash-did-not-start' : 'twin-did-not-resolve' })
+                notProven.push({ what: `twin did not resolve: ${at.id} ${v.label}: ${why}`, cls: v.variant === 'git-bash' && says(MSYS, r.output) ? 'git-bash-did-not-start' : 'twin-did-not-resolve' })
                 say(`${TAG} twin did not resolve: ${at.id} ${v.label}: ${why}; the attack was NOT handed over`)
                 return { ok: false }
               }
@@ -3314,10 +3942,13 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const lost = censusLoss(c0, censusOf(home))
     const d1 = deepCountOf(home)
     let deepFail = false
+    // F8: every fall printed here, so that a PASS says it stood on the allowance.
+    const fell = []
     for (const e0 of d0) {
       const e1 = d1.find(x => x.name === e0.name) ?? { files: 0, bytes: 0, unreadable: 0 }
       if (e1.files < e0.files || e1.bytes < e0.bytes) {
         say(`${TAG} deep count: ${e0.name}: files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes}`)
+        fell.push(`${e0.name} (files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes})`)
         if (e0.files > 0 && (e0.files - e1.files) / e0.files > 0.02) deepFail = true
       }
     }
@@ -3332,7 +3963,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     }
     for (const e of unreadable0) notProven.push({ what: `deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read`, cls: 'deep-count-unreadable' })
     // RH8: each not-proven item on a line of its own; one outside the accepted list makes the stage INCOMPLETE.
-    const result = realResult({ items: notProven, refused: counts.refused })
+    const result = realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell })
     for (const l of result.lines) say(l)
     if (!result.pass) return { code: 1 }
     code = 0

@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import {
   ACCEPTED_NOT_PROVEN, REAL_PROFILE_FLAG, REAL_PROFILE_VAR, UNSEEN_MARKER, acceptedReasonOf, auditCountsFor, buildFakeProfile, c0LowOutcome, censusOf,
-  createdNamesOf, deepCountOf, disarmPlan, evidenceRefusal, fakeRootRefusal, fakeStageRefusal, finishFake, foldersHoldingEntries, fullStackCoverage,
+  createdNamesOf, deepCountOf, denialWords, disarmPlan, evidenceRefusal, fakeRootRefusal, fakeStageRefusal, finishFake, flatText, foldersHoldingEntries, fullStackCoverage,
   innerSelfCheck, insideRoot, leftBehindDrift, liveCoverage, liveDisposition, liveFireRefusal, liveLinkCommands, liveLinkPaths, liveOutcome,
   madeByThisCall, parseDry, parseUnseenMarker, realStageRefusal, registryProbePlan, releaseWalkOutcome, removeOne, repointedEnv, rewroteFile,
   runFakeStage, startInner, sweepLinkCheck, sweepOutcome, treeDigest, treeEntries, unseenOutcome, unseenScript,
@@ -22,8 +22,10 @@ import { ATTACK_ORDER, BYPASS_SPELLINGS, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET
 import * as catalogModule from '../cynco-containment-attacks.mjs'
 import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
 import { HARNESS_DIFF_FLAGS } from '../../engine/harnessGit.js'
-import { operatorRefusal } from '../../engine/containment.js'
+import { MSYS_IN_CONTAINED_RUN, containmentHint, operatorRefusal } from '../../engine/containment.js'
 import { isLinkEntry } from '../../engine/realPath.js'
+import { failedOutput, formatBashFailure } from '../../engine/tools/impl/bash.js'
+import { stripTrailingStderrMerge } from '../../engine/tools/shellInfo.js'
 import * as integrity from '../../engine/integrity.js'
 
 // The wave-7 runner fixes (RH, RS, T4): read through the module namespace, so that a case whose helper is
@@ -800,8 +802,15 @@ describe('T2.17 R5 liveOutcome: the table', () => {
     ['decoys-gone through toolExec after bashSafety, decoys intact', { kind: 'mission', expect: 'decoys-gone', isError: false, output: '', decoys: 'intact', blocked: true }, 'did not act'],
     ['decoys-gone through toolExec after bashSafety, decoys gone', { kind: 'mission', expect: 'decoys-gone', isError: false, output: '', decoys: 'gone', blocked: true }, 'contained'],
     ['shell-error form that ran without error and left the decoys', { kind: 'mission', expect: 'shell-error', ...ok, decoys: 'intact' }, 'did not act'],
-    ['git-bash that could not start', { kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: 'NtCreateDirectoryObject failed', decoys: 'intact' }, 'did not start (msys)'],
-    ['either, no error', { kind: 'mission', expect: 'either', ...ok, decoys: 'intact' }, 'contained'],
+    // Changed on purpose in wave 10d (F5): the output was the bare word, typed by hand; MSYS now reads the engine's whole
+    // signature (MSYS_SIGNATURE), so the row carries the runtime's own line. The bare word is a row of T2.17f.
+    ['git-bash that could not start', { kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: '      0 [main] bash 1234 NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1): 0xC0000022', decoys: 'intact' }, 'did not start (msys)'],
+    // Changed on purpose in wave 10c (C7): this row asked for decoys and found them intact, so the form did not act
+    // (as decoys-gone reads it); before, no error alone read contained. A form with no decoy set keeps that reading.
+    ['either, no error', { kind: 'mission', expect: 'either', ...ok, decoys: 'intact' }, 'did not act'],
+    ['either, no error, no decoy set asked', { kind: 'mission', expect: 'either', ...ok }, 'contained'],
+    ['either, no error, decoys partly gone', { kind: 'mission', expect: 'either', ...ok, decoys: 'partly' }, 'contained'],
+    ['either, no error, decoys intact but it made what it was to make', { kind: 'mission', expect: 'either', ...ok, decoys: 'intact', made: [{ path: 'S\\x', real: 'S\\x', where: 'run' }] }, 'contained'],
     ['either, an error and decoys intact', { kind: 'mission', expect: 'either', isError: true, output: 'x', decoys: 'intact' }, 'did not act'],
     ['either, an error and decoys gone', { kind: 'mission', expect: 'either', isError: true, output: 'x', decoys: 'partly' }, 'contained'],
     // lands-in-sandbox
@@ -830,12 +839,996 @@ describe('T2.17 R5 liveOutcome: the table', () => {
     ['literal, the python literal with no denial', { kind: 'literal', tool: 'Bash', isError: false, output: `${LITERAL_DENIALS} 0`, lost: [], madeInHome: [] }, 'not proven'],
   ]
   for (const [name, o, want] of rows) it(name, () => expect(liveOutcome(o).outcome).toBe(want))
+  it('C7: either, no error and every decoy intact says so', () => {
+    expect(liveOutcome(rows.find(r => r[0] === 'either, no error')[1]).detail).toBe('it ran without an error and left every decoy')
+  })
   it('a FAILED landing names where the thing really lands', () => {
     expect(liveOutcome(rows.find(r => r[0] === 'lands-in-sandbox, made elsewhere in the test root')[1]).detail).toMatch(/R\\profile/)
   })
   it('RH1: a literal that is not denied says what the child answered, or that it answered nothing', () => {
     expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: false, output: '', lost: [], madeInHome: [] }).detail).toMatch(/no output/)
     expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: 'Blocked: x', lost: [], madeInHome: [] }).detail).toMatch(/bashSafety/)
+  })
+})
+
+// The repeat live-fire run of 2026-11-24 (live-2) came back INCOMPLETE: Windows PowerShell 5.1 wraps an error at
+// 119 columns, the kernel's denial arrived as "Access to the path is" / "denied." on two lines, and eight denials
+// read "not proven". Each output below is that run's own, as its evidence file shows it: the first 200 characters,
+// with a line break where the evidence prints ' | '. `<DOT>` stands for the fake home's desk-tools folder, which the
+// catalog names once (TARGET_DOT_FOLDER); it is put back below, so each text is the run's own.
+const LIVE2_WRAPPED = [
+  ['write-dot-folder powershell literal', String.raw`Set-Content : Access to the path
+'C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\<DOT>\cynco-acceptance-lit-24c3dcfc.txt' is
+denied.
+At line:1 char:56`],
+  ['rm-home-cynco powershell literal', String.raw`Remove-Item : Cannot remove item C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\.cynco\authoring\a
+1\.git\hooks\applypatch-msg.sample: Access to the path is denied.
+At line:1`],
+  ['appdata-walk powershell literal Local', String.raw`Remove-Item : Cannot remove item
+C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\AppData\Local\GameLauncher\cache\a.bin: Access to
+the path is denied.
+At line:1 char:56`],
+  ['appdata-walk powershell literal Roaming', String.raw`Remove-Item : Cannot remove item
+C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\AppData\Roaming\NoteKeeper\prefs.json: Access to
+the path is denied.
+At line:1 char:56`],
+  ['rm-all-dot powershell literal', String.raw`Remove-Item : Cannot remove item
+C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\<DOT>\projects\p1\t.jsonl: Access to the path is
+denied.
+At line:1 char:56`],
+  ['ps-pipeline powershell literal', String.raw`Remove-Item : Cannot remove item
+C:\cynco-recovery-2026-11-22\acceptance\live-2\profile\Users\tester\<DOT>\projects\p1\t.jsonl: Access to the path is
+denied.
+At line:1 char:171`],
+  ['protected-folder delete the latch', String.raw`Remove-Item : Cannot remove item C:\cynco-recovery-2026-11-22\acceptance\live-2\guard\HALT.json: Access to the path is
+denied.
+At line:1 char:56`],
+  ['protected-folder delete the audit file', String.raw`Remove-Item : Cannot remove item C:\cynco-recovery-2026-11-22\acceptance\live-2\audit\2026-11-24.jsonl: Access to the
+path is denied.
+At line:1 char:56`],
+].map(([name, text]) => [name, text.replace('<DOT>', TARGET_DOT_FOLDER)])
+
+describe('T2.17c live-2: a denial that PowerShell wrapped across lines is read as the denial it is', () => {
+  const literal = (output) => liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output, lost: [], madeInHome: [] })
+  for (const [name, text] of LIVE2_WRAPPED) {
+    for (const [ending, output] of [['LF', text], ['CRLF', text.replace(/\n/g, '\r\n')]]) {
+      it(`${name} (${ending})`, () => {
+        // The premise: the denial's words are not on one line in the first, third and later outputs.
+        expect(output).toMatch(/\n/)
+        const o = literal(output)
+        expect(o.outcome).toBe('denied')
+        // The entry shows the words it was read from.
+        expect(flatText(o.detail.replace(/ \| /g, ' '))).toMatch(/Access to the path( '.*')? is denied/)
+      })
+    }
+  }
+  // D11 (wave 10b): the two break points an emulation of the wrap found and live-2 did not show, each with the
+  // trailing space PowerShell leaves at the end of a wrapped line, and CRLF.
+  const D11 = [
+    ['the break after "Access"', 'Remove-Item : Cannot remove item C:\\r\\profile\\Users\\tester\\AppData\\Local\\GameLauncher\\cache\\a.bin: Access \r\nto the path is denied.\r\nAt line:1 char:56'],
+    ['the break after "path"', 'Remove-Item : Cannot remove item C:\\r\\profile\\Users\\tester\\AppData\\Local\\GameLauncher\\a.bin: Access to the path \r\nis denied.\r\nAt line:1 char:56'],
+  ]
+  for (const [name, output] of D11) {
+    it(`D11 ${name}, with the trailing space and CRLF`, () => {
+      expect(output).toMatch(/ \r\n/)
+      const o = literal(output)
+      expect(o.outcome).toBe('denied')
+      expect(denialWords(output)).toBe('Access to the path is denied')
+      expect(flatText(o.detail.replace(/ \| /g, ' '))).toMatch(/Access to the path is denied/)
+    })
+  }
+  it('the same sentence unwrapped, with nothing between "path" and "is" (Remove-Item names the path first)', () => {
+    expect(literal('Remove-Item : Cannot remove item C:\\r\\h\\x: Access to the path is denied.').outcome).toBe('denied')
+    expect(denialWords('Remove-Item : Cannot remove item C:\\r\\h\\x: Access to the path is denied.')).toBe('Access to the path is denied')
+  })
+  it('the junction form and the Write form read a wrapped denial the same way', () => {
+    expect(liveOutcome({ kind: 'junction-literal', isError: true, lost: [], name: 'S\\out', linkMade: false, output: 'New-Item : Access to the path\r\n\'S\\out\' is\r\ndenied.' }).outcome).toBe('denied')
+    expect(liveOutcome({ kind: 'write', isError: true, made: false, rewrote: false, refused: false, output: 'Error: Access\nis denied.' }).outcome).toBe('denied')
+  })
+  // The other direction: joining the lines must not turn an answer that is no denial into one.
+  const notDenials = [
+    ['a path that is not there, wrapped', 'Remove-Item : Cannot find path\r\n\'C:\\r\\h\\.cynco\\gone\' because it does not\r\nexist.\r\nAt line:1 char:56'],
+    ['a program that never started, wrapped', "python : The term 'python' is not recognized as the name of a cmdlet, function, script file, or operable\r\nprogram. Check the spelling of the name."],
+    ['PowerShell refusing POSIX text', "Remove-Item : A parameter cannot be found that matches parameter name 'rf'.\r\nAt line:1 char:59"],
+    ['a file in use', 'Remove-Item : Cannot remove item C:\\r\\h\\x.db: The process cannot access the file\r\n\'C:\\r\\h\\x.db\' because it is being used by another process.'],
+    ['the words in two unrelated sentences', 'The access list was read.\r\nNothing is\r\ndenied here by name.'],
+    ['white space only', ' \r\n \t\r\n'],
+  ]
+  for (const [name, output] of notDenials) it(`not a denial: ${name}`, () => {
+    expect(denialWords(output)).toBe(null)
+    expect(literal(output).outcome).toBe('not proven')
+  })
+  it('a bashSafety block that was not rerun stays not proven, whatever words it carries', () => {
+    expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: 'Blocked: rm -rf on a home folder;\r\nAccess is\r\ndenied', lost: [], madeInHome: [] }).outcome).toBe('not proven')
+  })
+  it('a loss is FAILED whatever the child said', () => {
+    expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: LIVE2_WRAPPED[0][1], lost: ['R\\h\\.cynco'], madeInHome: [] }).outcome).toBe('FAILED')
+    expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: LIVE2_WRAPPED[0][1], lost: [], madeInHome: ['R\\h\\x'] }).outcome).toBe('FAILED')
+  })
+  it('a denied entry shows the denial\'s words when the first 200 characters do not hold them (cmd echoes its command first)', () => {
+    const long = `C:\\r\\mission>rd /s /q "C:\\r\\h\\AppData\\Local\\${'GameLauncher'.repeat(20)}"\r\nC:\\r\\h\\AppData\\Local\\GameLauncher\\cache\\a.bin - Access is denied.`
+    const o = literal(long)
+    expect(o.outcome).toBe('denied')
+    // Changed on purpose in wave 10b (D3): the detail is at most 180 characters now, words included, so the
+    // premise is asserted on the output (its first 180 characters do not hold the words), not on the detail.
+    expect(flatText(long).slice(0, 180)).not.toMatch(/denied/)
+    expect(o.detail.length).toBeLessThanOrEqual(180)
+    // Changed on purpose in wave 10d (F11): the appended words are read with the lines joined, and the detail says so.
+    expect(o.detail).toMatch(/\[\.\.\.\] lines joined: Access is denied$/)
+    // And nothing is added when they are already there.
+    expect(literal('Access is denied.').detail).toBe('Access is denied.')
+  })
+  it('the mission forms read a wrapped answer too: PowerShell\'s refusal of POSIX text, and Git Bash that did not start', () => {
+    const wrapped = "Remove-Item : A parameter cannot be found that matches parameter\r\nname 'rf'."
+    expect(liveOutcome({ kind: 'mission', expect: 'shell-error', isError: true, output: wrapped, decoys: 'intact' }).outcome).toBe('shell error')
+    const cmdlet = "rm : The term 'rm' is not recognized as the name of a\r\ncmdlet, function, script file"
+    expect(liveOutcome({ kind: 'mission', expect: 'shell-error', isError: true, output: cmdlet, decoys: 'intact' }).outcome).toBe('shell error')
+    // Changed on purpose in wave 10b (D6): the text was typed by hand ("programs of its kind"); MSYS now reads
+    // the engine's own hint (MSYS_IN_CONTAINED_RUN, "programs of Git"), so the case carries that hint, wrapped.
+    const msys = `[containment] ${MSYS_IN_CONTAINED_RUN.replace('the other programs', 'the other\r\nprograms')}`
+    expect(liveOutcome({ kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: msys, decoys: 'intact' }).outcome).toBe('did not start (msys)')
+  })
+  it('flatText joins every run of white space and trims', () => {
+    expect(flatText(' a\r\n  b\t\tc \n')).toBe('a b c')
+    expect(flatText(null)).toBe('')
+    expect(flatText(undefined)).toBe('')
+  })
+})
+
+// Wave 10b (the review of the denial reading, decisions D1 to D10): read through the module namespace, as the
+// wave-7 helpers are, so that a case whose helper is missing fails on its own.
+const { entryLine, fileProbePlan, printedPath, rerunRefusedBy, withStderrMerged } = acceptance
+
+describe('T2.17d wave 10b: a refusal is never a denial; the denial is bounded, read from both streams and printed whole', () => {
+  const lit = (o) => liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, lost: [], madeInHome: [], ...o })
+  const jx = (o) => liveOutcome({ kind: 'junction-literal', isError: true, lost: [], name: 'S\\out', linkMade: false, ...o })
+  const DENIED = "Remove-Item : Access to the path 'C:\\r\\h\\.cynco' is denied."
+  const LAYERS = ['containment', 'protected path', 'audit', 'integrity']
+
+  describe('D1 a refusal before anything ran is never denied', () => {
+    it('a literal or junction form refused before it ran reads not proven, whatever words its answer carries', () => {
+      for (const layer of LAYERS) {
+        const o = lit({ output: `Refused [${layer}]: x (EPERM)\n${DENIED}`, refusedBy: layer })
+        expect(o.outcome).toBe('not proven')
+        expect(o.detail).toMatch(new RegExp(`^refused by ${layer} before it ran, so the form shows nothing: Refused \\[`))
+        expect(lit({ output: DENIED, refusedBy: layer, blocked: true }).outcome).toBe('not proven')
+        expect(jx({ output: DENIED, refusedBy: layer }).outcome).toBe('not proven')
+      }
+      // No refusal: the same words are a denial, as before.
+      expect(lit({ output: DENIED, refusedBy: null }).outcome).toBe('denied')
+      expect(jx({ output: DENIED }).outcome).toBe('denied')
+    })
+    it('a loss, a thing made and a link made stay FAILED with refusedBy set', () => {
+      expect(lit({ output: DENIED, refusedBy: 'containment', lost: ['R\\h\\.cynco'] }).outcome).toBe('FAILED')
+      expect(lit({ output: DENIED, refusedBy: 'containment', madeInHome: ['R\\h\\x'] }).outcome).toBe('FAILED')
+      expect(jx({ output: DENIED, refusedBy: 'containment', lost: ['R\\h\\.cynco'] }).outcome).toBe('FAILED')
+      expect(jx({ output: DENIED, refusedBy: 'containment', linkMade: true, landed: 'R\\h' }).outcome).toBe('FAILED')
+    })
+    it('Bun that could not load its script at low integrity: the form never ran, with or without refusedBy', () => {
+      const hint = 'x\n[containment] Bun at low integrity could not load C:\\r\\s.ts (EPERM): a Bun script outside the folders this run may write cannot be run'
+      const line = 'error: EPERM reading "C:\\r\\s.ts"'
+      for (const output of [hint, line, `${line}\r\n`, `before\r\n${line}\r\n`]) {
+        for (const o of [lit({ output }), lit({ output, blocked: true }), jx({ output })]) {
+          expect(o.outcome).toBe('not proven')
+          expect(o.detail).toMatch(/^the program could not load its script: the form never ran/)
+        }
+      }
+      // EPERM that is not Bun's line is a denial, as before.
+      expect(lit({ output: "EPERM: operation not permitted, unlink 'C:\\r\\h\\x'" }).outcome).toBe('denied')
+    })
+    it('the Write form: a refusal by the path check is a layer that judged the file; one by another layer shows nothing', () => {
+      const w = (o) => liveOutcome({ kind: 'write', isError: true, made: false, rewrote: false, refused: null, ...o })
+      // Changed on purpose in wave 10c (C5): the path check is switched off in live fire, so its refusal shows the
+      // switch did not take, not a layer that judged the file: not proven.
+      expect(w({ output: 'Refused [protected path]: x', refused: 'protected path' }).outcome).toBe('not proven')
+      for (const layer of ['containment', 'audit', 'integrity']) {
+        const o = w({ output: `Refused [${layer}]: x (EACCES)`, refused: layer })
+        expect(o.outcome).toBe('not proven')
+        expect(o.detail).toMatch(new RegExp(`^refused by ${layer} before the tool ran`))
+      }
+      expect(w({ output: "EPERM: operation not permitted, open 'x'" }).outcome).toBe('denied')
+      // Made or rewritten stays an exposure whatever refused says.
+      expect(w({ output: 'x', refused: 'containment', made: true }).outcome).toBe('exposure')
+    })
+    it('rerunRefusedBy: the rerun through toolExec was refused when toolExec says so, or when the launcher\'s own line starts a line of its stderr', () => {
+      expect(rerunRefusedBy({ refused: new Error('x'), stderr: '' })).toBe('containment')
+      expect(rerunRefusedBy({ refused: null, stderr: '[containment] refused: the token could not be lowered (EPERM)\r\n' })).toBe('containment')
+      expect(rerunRefusedBy({ refused: null, stderr: 'a\r\n[containment] child ended: no status (EACCES)' })).toBe('containment')
+      expect(rerunRefusedBy({ refused: null, stderr: "Remove-Item : Access to the path 'x' is denied." })).toBeNull()
+      expect(rerunRefusedBy({ refused: null, stderr: 'x [containment] refused: not at the start of a line' })).toBeNull()
+      expect(rerunRefusedBy({ refused: null, stderr: undefined })).toBeNull()
+    })
+    it('the callers fill it: fireBash returns it, fireForm\'s literal branches and fireProtected pass it on, the Write branch passes the layer', () => {
+      const src = fnSource('async function liveFire(')
+      const fb = src.slice(src.indexOf('const fireBash = async'), src.indexOf('const removeMade ='))
+      // Changed on purpose in wave 10c (C6): the Bash tool's branch reads the launcher's own line too, through the
+      // one helper the rerun uses (refusedByOf), with refusalLayerOf as its first reading.
+      expect(fb).toMatch(/refusedBy: refusedByOf\(\{ output: r\.output, layerOf: R\.E\.C\.refusalLayerOf \}\)/)
+      expect(fb).toMatch(/refusedBy: rerunRefusedBy\(again\)/)
+      const form = src.slice(src.indexOf('const fireForm = async'), src.indexOf('const fireProtected = async'))
+      expect(form).toMatch(/liveOutcome\(\{ kind: 'junction-literal', [^\n]*refusedBy: f\.refusedBy/)
+      expect(form).toMatch(/liveOutcome\(\{ kind: 'literal', [^\n]*refusedBy: f\.refusedBy/)
+      expect(form).toMatch(/liveOutcome\(\{ kind: 'write', [^\n]*refused: R\.E\.C\.refusalLayerOf\(r\.output\), /)
+      const prot = src.slice(src.indexOf('const fireProtected = async'), src.indexOf('const fireLastAct = async'))
+      expect(prot).toMatch(/liveOutcome\(\{ kind: 'literal', [^\n]*refusedBy: f\.refusedBy/)
+    })
+  })
+
+  describe('D2 the denial pattern is bounded and tightened', () => {
+    it('the words of the sentence in two sentences far apart are not a denial', () => {
+      const t = 'Remove-Item : Access to the path C:\\x was checked.\r\nLater the request is denied by policy.'
+      expect(denialWords(t)).toBeNull()
+      expect(lit({ output: t }).outcome).toBe('not proven')
+    })
+    it('.NET\'s two sentences, cmd\'s and python\'s, read with their own words', () => {
+      expect(denialWords("Set-Content : Access to the path 'C:\\r\\h\\x' is denied.")).toBe("Access to the path 'C:\\r\\h\\x' is denied")
+      expect(denialWords('Cannot remove item C:\\x: Access to the path is denied.')).toBe('Access to the path is denied')
+      expect(denialWords('C:\\r\\h\\x - Access is denied.')).toBe('Access is denied')
+      expect(denialWords("[WinError 5] Access is denied: 'C:\\r\\h\\x'")).toBe('Access is denied')
+    })
+    it('one mebibyte of "Access to the path " is read in well under a second', () => {
+      const s = 'Access to the path '.repeat(Math.ceil(1048576 / 19)).slice(0, 1048576)
+      const t = performance.now()
+      expect(denialWords(s)).toBeNull()
+      expect(performance.now() - t).toBeLessThan(2000)
+    })
+  })
+
+  describe('D3 a denied entry\'s printed line keeps the denial\'s words', () => {
+    const full = (detail, outcome = 'denied') => ({ run: 6, phase: 'mission', id: 'x', variant: 'v', form: 'literal', outcome, detail })
+    const longPath = `C:\\r\\profile\\Users\\tester\\AppData\\Local\\${'GameLauncher\\'.repeat(12)}a.bin`
+    // cmd echoes its command first, so the denial comes after more than 180 characters.
+    const cmdEcho = `C:\\r\\mission>rd /s /q "${longPath}"\r\n${longPath} - Access is denied.`
+    // A denial whose own words are longer than 100 characters, after 300 characters of something else.
+    const setContent = `${'x'.repeat(300)}\r\nSet-Content : Access to the path '${longPath}' is\r\ndenied.\r\nAt line:1 char:56`
+    it('deniedDetail is at most 180 characters and ends with the words; words over 100 characters keep their start and their whole end', () => {
+      const a = lit({ output: cmdEcho })
+      expect(a.outcome).toBe('denied')
+      expect(a.detail.length).toBeLessThanOrEqual(180)
+      // Changed on purpose in wave 10d (F11): the appended words are read with the lines joined, and the detail says so.
+      expect(a.detail).toMatch(/ \[\.\.\.\] lines joined: Access is denied$/)
+      const b = lit({ output: setContent })
+      expect(b.outcome).toBe('denied')
+      expect(b.detail.length).toBeLessThanOrEqual(180)
+      expect(b.detail).toMatch(/ \[\.\.\.\] lines joined: Access to the path '/)
+      expect(b.detail).toMatch(/a\.bin' is denied$/)
+    })
+    it('the printed line, no prefix: the words are in it', () => {
+      const line = entryLine(full(lit({ output: cmdEcho }).detail))
+      expect(line).toMatch(/^\[acceptance\] run 6 mission: x v literal: denied \(/)
+      expect(line).toMatch(/Access is denied\)$/)
+    })
+    it('the printed line, with the rerun\'s via prefix: the words are in it', () => {
+      const o = lit({ output: setContent, blocked: true })
+      const line = entryLine(full(["bashSafety blocks the Bash tool's form; through toolExec: exit 1", o.detail].join('; ')))
+      expect(line).toMatch(/a\.bin' is denied\)$/)
+    })
+    it('the printed line, with the Write branch\'s sentence: the words are in it', () => {
+      const o = liveOutcome({ kind: 'write', isError: true, made: false, rewrote: false, refused: null, output: setContent })
+      expect(o.outcome).toBe('denied')
+      const line = entryLine(full(o.detail))
+      expect(line).toMatch(/the file tools gained a second layer/)
+      expect(line).toMatch(/a\.bin' is denied\)\)$/)
+    })
+  })
+
+  it('D4 oneLine joins a lone carriage return and U+2028 / U+2029: no printed entry carries a line break', () => {
+    const o = lit({ output: 'a\rb\u2028c\u2029d' })
+    expect(o.outcome).toBe('not proven')
+    expect(o.detail).not.toMatch(/[\r\n\u2028\u2029]/)
+    const line = entryLine({ run: 6, phase: 'mission', id: 'x', variant: 'v', form: 'literal', outcome: 'not proven', detail: 'one\rtwo\u2028three\u2029four\r\nfive' })
+    expect(line).not.toMatch(/[\r\n\u2028\u2029]/)
+    expect(line).toMatch(/\(one \| two \| three \| four \| five\)$/)
+  })
+
+  it('D5 fakeRootRefusal refuses a root whose path, as given or real, holds words the stage reads as a child\'s answer', () => {
+    const same = (p) => p
+    expect(fakeRootRefusal({ root: 'C:\\t\\eperm-check', unprotected: [], real: same }))
+      .toMatch(/^\[acceptance\] REFUSED: C:\\t\\eperm-check holds words the stage reads as a child's answer \(eperm\)/)
+    expect(fakeRootRefusal({ root: 'C:\\t\\link', unprotected: [], real: () => 'C:\\t\\Access is denied' })).toMatch(/real path C:\\t\\Access is denied.*\(Access is denied\)/)
+    // Changed on purpose in wave 10d (F5): MSYS reads the engine's whole signature, not the bare word, so the root that
+    // reads as Git Bash that did not start is one that holds the signature.
+    expect(fakeRootRefusal({ root: 'C:\\t\\NtCreateDirectoryObject(\\BaseNamedObjects\\msys-x', unprotected: [], real: same })).toMatch(/\(NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-\)/)
+    expect(fakeRootRefusal({ root: 'C:\\t\\NtCreateDirectoryObject', unprotected: [], real: same })).toBeNull()
+    expect(fakeRootRefusal({ root: 'C:\\t\\Bun at low integrity could not read', unprotected: [], real: same })).toMatch(/\(Bun at low integrity could not read\)/)
+    expect(fakeRootRefusal({ root: 'C:\\t\\permission denied', unprotected: [], real: same })).toMatch(/REFUSED/)
+    expect(fakeRootRefusal({ root: "C:\\t\\The term 'rm' is not recognized as the name of a cmdlet", unprotected: [], real: same })).toMatch(/REFUSED/)
+    expect(fakeRootRefusal({ root: 'C:\\t\\r', unprotected: [], real: same })).toBeNull()
+    // The suite's own temp folder passes, read by its real path.
+    expect(fakeRootRefusal({ root: shared, unprotected: [] })).toBeNull()
+  })
+
+  describe('D6 Git Bash that did not start is its own line, and only when nothing acted', () => {
+    const runtime = '      0 [main] bash 1234 NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1): 0xC0000022'
+    it('the bare token msys- is no longer read as Git Bash that did not start', () => {
+      const out = 'bash.exe: error while loading shared libraries: msys-2.0.dll: cannot open shared object file'
+      expect(liveOutcome({ kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: out, decoys: 'intact' }).outcome).toBe('did not act')
+      expect(twinVerdict({ output: out, isError: true, refusedLayer: null, inRoot: () => true, inHome: () => true }).detail).not.toMatch(/^Git Bash did not start/)
+    })
+    it('the runtime\'s own line and the engine\'s hint still read did not start (msys) when nothing acted', () => {
+      expect(liveOutcome({ kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: runtime, decoys: 'intact' }).outcome).toBe('did not start (msys)')
+      expect(liveOutcome({ kind: 'mission', expect: 'decoys-gone', variant: 'git-bash', isError: true, output: `x\n[containment] ${MSYS_IN_CONTAINED_RUN}.`, decoys: 'intact' }).outcome).toBe('did not start (msys)')
+      expect(liveOutcome({ kind: 'run-folders', expect: 'lands-in-run', variant: 'git-bash', isError: true, output: runtime, made: [] }).outcome).toBe('did not start (msys)')
+      expect(twinVerdict({ output: runtime, isError: true, refusedLayer: null, inRoot: () => true, inHome: () => true }).detail).toMatch(/^Git Bash did not start/)
+    })
+    it('a form that acted is judged by what it did, not by the msys line', () => {
+      expect(liveOutcome({ kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: runtime, decoys: 'partly' }).outcome).toBe('contained')
+      expect(liveOutcome({ kind: 'mission', expect: 'decoys-gone', variant: 'git-bash', isError: true, output: runtime, decoys: 'gone' }).outcome).toBe('contained')
+      expect(liveOutcome({ kind: 'mission', expect: 'lands-in-sandbox', variant: 'git-bash', isError: true, output: runtime, decoys: 'intact', made: [{ path: 'S\\out', real: 'R\\profile', where: 'test-root' }] }).outcome).toBe('FAILED')
+      expect(liveOutcome({ kind: 'run-folders', expect: 'lands-in-run', variant: 'git-bash', isError: true, output: runtime, made: [{ path: 'S\\repo', real: 'S\\home', where: 'run' }] }).outcome).toBe('not proven')
+    })
+  })
+
+  it('D7 only PowerShell refusing the rm -rf text is the expected shell error; a missing program of another name did not act', () => {
+    const se = (output) => liveOutcome({ kind: 'mission', expect: 'shell-error', isError: true, output, decoys: 'intact' }).outcome
+    expect(se("python3 : The term 'python3' is not recognized as the name of a cmdlet, function, script file, or operable\r\nprogram.")).toBe('did not act')
+    expect(se("Remove-Item : A parameter cannot be found that matches parameter name 'Path2'.")).toBe('did not act')
+    expect(se("Remove-Item : A parameter cannot be found that matches parameter name 'rf'.")).toBe('shell error')
+    expect(se("rm : The term 'rm' is not recognized as the name of a cmdlet, function, script file")).toBe('shell error')
+  })
+
+  describe('D8 every literal shell form and protected-folder delete is read from both streams', () => {
+    it('withStderrMerged appends a trailing 2>&1 unless the command already ends with it', () => {
+      expect(withStderrMerged("Remove-Item -Force -LiteralPath 'x'")).toBe("Remove-Item -Force -LiteralPath 'x' 2>&1")
+      expect(withStderrMerged('cmd /c rd /s /q "x"  ')).toBe('cmd /c rd /s /q "x" 2>&1')
+      expect(withStderrMerged('x 2>&1')).toBe('x 2>&1')
+      expect(withStderrMerged('x 2>&1 \r\n')).toBe('x 2>&1 \r\n')
+    })
+    it('fireBash hands the Bash tool the merged text and reruns the text as written through toolExec (which reads both streams); the mission forms are unchanged', () => {
+      const src = fnSource('async function liveFire(')
+      const fb = src.slice(src.indexOf('const fireBash = async'), src.indexOf('const removeMade ='))
+      expect(fb).toMatch(/await call\(ex, 'Bash', \{ \.\.\.input, command: withStderrMerged\(input\.command\) \}\)/)
+      expect(fb).toMatch(/await viaToolExec\(R, input\.command, fake\.mission\)/)
+      const form = src.slice(src.indexOf('const fireForm = async'), src.indexOf('const fireProtected = async'))
+      expect(form).toMatch(/let r = await call\(ex, 'Bash', v\.call\.input\)/)
+      expect(form).toMatch(/v\.call\.tool === 'Bash' \? await fireBash\(v\.call\.input\)/)
+      const prot = src.slice(src.indexOf('const fireProtected = async'), src.indexOf('const fireLastAct = async'))
+      expect(prot).toMatch(/await fireBash\(pc\.call\.input\)/)
+    })
+    // Changed on purpose in wave 10c (C11): the title claimed more than the case asserted (one line each). Under
+    // PowerShell the Bash tool strips the trailing merge from the WHOLE text and returns both streams (F60,
+    // stripTrailingStderrMerge), which is asserted below; under a POSIX shell `a; b 2>&1` would merge b's stderr
+    // alone, so each POSIX form is asserted to be one simple command: no ;, &, | or line break outside quotes.
+    it('the catalog\'s literal shell forms and the two protected deletes: under PowerShell the tool strips the merge from the whole text; under a POSIX shell each is one simple command', () => {
+      const p = { home: fake.home, cwd: fake.mission, scratch: join(shared, 'sandbox-root', 'run', 'scratch'), linked: fake.linked, guard: fake.guard,
+        audit: fake.audit, models: fake.models, sandboxRootOther: join(shared, 'sandbox-root', 'other'), nonce: NONCE }
+      // The text outside single and double quotes (a backslash escapes the next character outside single quotes).
+      const unquoted = (t) => {
+        let out = '', q = null
+        for (let i = 0; i < t.length; i++) {
+          const c = t[i]
+          if (q === "'") { if (c === "'") q = null; continue }
+          if (c === '\\') { i++; continue }
+          if (q === '"') { if (c === '"') q = null; continue }
+          if (c === "'" || c === '"') { q = c; continue }
+          out += c
+        }
+        return out
+      }
+      const n = { powershell: 0, posix: 0 }
+      const check = (shell, command, what) => {
+        expect(command, what).not.toMatch(/[\r\n]/)
+        if (shell === 'powershell') {
+          expect(stripTrailingStderrMerge(withStderrMerged(command), { isPowerShell: true }), what).toEqual({ command: command.replace(/\s+$/, ''), stripped: true })
+        } else {
+          expect(unquoted(command), what).not.toMatch(/[;&|]/)
+        }
+        n[shell]++
+      }
+      for (const shell of ['powershell', 'posix']) {
+        for (const a of attacks({ shell, python: 'python', gitBash: null })) {
+          for (const v of a.variants(p)) {
+            const d = liveDisposition(a.id, v)
+            if (v.form !== 'literal' || v.call.tool !== 'Bash' || !d || !['literal', 'junction-literal'].includes(d.kind)) continue
+            check(shell, v.call.input.command, `${shell} ${a.id} ${v.label}`)
+          }
+        }
+        for (const pc of protectedFolderCalls(p, { shell }).filter(x => x.what === 'delete the latch' || x.what === 'delete the audit file')) {
+          check(shell, pc.call.input.command, `${shell} ${pc.what}`)
+        }
+      }
+      expect(n.powershell).toBeGreaterThan(4)
+      expect(n.posix).toBeGreaterThan(4)
+      // The check itself: a list and a pipeline outside quotes are seen, the same characters inside quotes are not.
+      expect(unquoted("rm -rf 'a'; rm x")).toMatch(/;/)
+      expect(unquoted('python3 -c "a; b | c"')).not.toMatch(/[;&|]/)
+    })
+  })
+
+  describe('D9 the real-profile preflight reads denied from the child\'s own words, never from absence alone', () => {
+    const t = 'C:\\Users\\u\\cynco-containment-probe-n.txt'
+    it('a probe file created: ABORT and delete, as before', () => {
+      const p = fileProbePlan({ target: t, existsAfter: true, refused: null, output: "Access to the path 'x' is denied." })
+      expect(p).toMatchObject({ abort: true, delete: true })
+      expect(p.line).toBe(`ABORT: a contained child CREATED ${t}. Low integrity is not holding there.`)
+    })
+    it('not created, but refused before it ran or with no denial in its answer: ABORT, nothing deleted', () => {
+      for (const o of [{ refused: 'containment', output: "Access to the path 'x' is denied." }, { refused: null, output: '' }, { refused: null, output: "New-Item : Could not find a part of the path 'x'." }]) {
+        const p = fileProbePlan({ target: t, existsAfter: false, ...o })
+        expect(p).toMatchObject({ abort: true, delete: false })
+        expect(p.line).toMatch(/^ABORT: the probe made nothing at C:\\Users\\u\\cynco-containment-probe-n\.txt, but its answer names no access denial.*, so low integrity is not shown to hold there\. No attack was run\./)
+      }
+      expect(fileProbePlan({ target: t, existsAfter: false, refused: 'containment', output: '' }).line).toMatch(/refused by containment before it ran/)
+    })
+    it('not created, and the child names the denial (wrapped): the preflight line carries the denial\'s own words', () => {
+      const p = fileProbePlan({ target: t, existsAfter: false, refused: null, output: `\nNew-Item : Access to the path\r\n'${t}' is\r\ndenied.\r\nAt line:1 char:1` })
+      expect(p).toMatchObject({ abort: false, delete: false })
+      // Changed on purpose in wave 10d (F11): the words are read with the lines joined, and the line says so.
+      expect(p.line).toBe(`preflight: a contained child was denied creating ${t} (lines joined: Access to the path '${t}' is denied)`)
+    })
+    it('registryProbePlan: absent afterwards counts only when reg add itself names the denial (reg.exe prints it on stderr, raw)', () => {
+      const ok = registryProbePlan({ key: 'k', before: false, after: false, refused: null, output: '\nERROR: Access is denied.\r\n' })
+      expect(ok).toMatchObject({ abort: false, delete: false })
+      // Changed on purpose in wave 10d (F11): the words are read with the lines joined, and the line says so.
+      expect(ok.line).toBe('preflight: a contained child was denied creating k (reg query finds no such key; reg add answered, lines joined: Access is denied)')
+      for (const o of [{ refused: null, output: '' }, { refused: 'containment', output: 'ERROR: Access is denied.' }, { refused: null, output: 'ERROR: Invalid syntax.' }]) {
+        const p = registryProbePlan({ key: 'k', before: false, after: false, ...o })
+        expect(p).toMatchObject({ abort: true, delete: false })
+        expect(p.line).toMatch(/^ABORT: the probe made nothing at k, but its answer names no access denial.*No attack was run\./)
+      }
+      // A key made, and a presence that could not be read, are as they were, whatever the answer.
+      expect(registryProbePlan({ key: 'k', before: false, after: true, refused: null, output: 'ERROR: Access is denied.' })).toMatchObject({ abort: true, delete: true })
+      expect(registryProbePlan({ key: 'k', before: false, after: null, refused: null, output: 'ERROR: Access is denied.' })).toMatchObject({ abort: true, delete: false })
+    })
+    it('realBox calls both with the child\'s stdout and stderr and the rerun\'s refusal, and no longer reads a denial from absence alone', () => {
+      const src = fnSource('async function realBox(')
+      expect(src).toContain('fileProbePlan({ target, existsAfter: exists(target), refused: rerunRefusedBy(r), output: `${r.stdout}\\n${r.stderr}` })')
+      expect(src).toContain('registryProbePlan({ key, before: false, after: regPresence(look), refused: rerunRefusedBy(added), output: `${added.stdout}\\n${added.stderr}` })')
+      expect(src).toContain('const added = await viaToolExec(R, `reg add "${key}" /f`, mission)')
+      expect(src).not.toContain('(reg query finds no such key)`)')
+      expect(src).not.toContain("(r.stderr || r.stdout).trim().split(/\\r?\\n/)[0]")
+    })
+  })
+
+  it('D10 printedPath takes a line only when the whole line is a path: a wrapped error record\'s second line is not one', () => {
+    const wrapped = 'Get-Item : Cannot remove item\r\nC:\\r\\h\\AppData\\Local\\GameLauncher\\cache\\a.bin: Access to\r\nthe path is denied.\r\nAt line:1 char:1'
+    expect(printedPath(wrapped, 'win32')).toBe('')
+    expect(printedPath('C:\\r\\sandbox-root\\run\\home\r\n', 'win32')).toBe('C:\\r\\sandbox-root\\run\\home')
+    expect(printedPath('\\\\nas\\home\\x\n', 'win32')).toBe('\\\\nas\\home\\x')
+    expect(printedPath('a hint: C:\\x\nC:\\r\\h', 'win32')).toBe('C:\\r\\h')
+    expect(printedPath('/home/u\n', 'linux')).toBe('/home/u')
+    expect(printedPath('', 'win32')).toBe('')
+  })
+})
+
+// Wave 10c (the second review of the denial reading, decisions C1 to C11): read through the module namespace, so that a
+// case whose helper is missing fails on its own.
+const { childCreateReading, idleCommand, idleVerdict, leftBehindOutcome, notStartedWords, refusedByOf } = acceptance
+
+describe('T2.17e wave 10c: a form that never ran, a canary that shows nothing and a proof line that did not run are never passes', () => {
+  // Measured 2026-11-24 at real low integrity (C:\cynco-recovery-2026-11-22\phase3\w10\scratch\r-missing\psnostart.out.txt):
+  // Windows PowerShell 5.1 that cannot START a native program (a copy of whoami.exe with a deny-execute entry), its
+  // stderr verbatim, exit 1, stdout empty. The program never ran.
+  const PS_NOT_STARTED = "Program 'w.exe' failed to run: Access is deniedAt line:1 char:56\r\n+ ... g']='utf8'; & 'C:\\cynco-recovery-2026-11-22\\phase3\\w10\\scratch\\r-miss ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~.\r\nAt line:1 char:56\r\n+ ... g']='utf8'; & 'C:\\cynco-recovery-2026-11-22\\phase3\\w10\\scratch\\r-miss ...\r\n+                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\r\n    + CategoryInfo          : ResourceUnavailable: (:) [], ApplicationFailedException\r\n    + FullyQualifiedErrorId : NativeCommandFailed\r\n \r\n"
+  const PS_COMMAND = "$PSDefaultParameterValues['Out-File:Encoding']='utf8'; & 'C:\\x\\w.exe' /groups"
+  // The two shapes a literal form's answer arrives in: the Bash tool's on a non-zero exit, and stdout then stderr (the
+  // rerun through toolExec, and the real stage's probes, which join them with a line break).
+  const shapes = (stderr, stdout = '') => [
+    ['the Bash tool\'s failure shape', formatBashFailure(PS_COMMAND, failedOutput(stderr, stdout, 1, 'shell=powershell.exe, signal=none'))],
+    ['stdout followed by stderr', `${stdout}${stderr}`],
+    ['stdout, a line break, stderr', `${stdout}\n${stderr}`],
+  ]
+  const lit = (o) => liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, lost: [], madeInHome: [], refusedBy: null, ...o })
+  const jx = (o) => liveOutcome({ kind: 'junction-literal', isError: true, lost: [], name: 'S\\out', linkMade: false, refusedBy: null, ...o })
+
+  describe('C1 a program that could not be started is not a denial', () => {
+    it('notStartedWords reads PowerShell\'s own record, wrapped or not', () => {
+      expect(notStartedWords(PS_NOT_STARTED)).toBe("Program 'w.exe' failed to run:")
+      // PowerShell cuts a program path longer than a line anywhere; flatText then puts a space at the cut.
+      expect(notStartedWords("Program 'C:\\a\\very\\long\\pa\r\nth\\w.exe' failed to\r\nrun: Access is denied")).toBe("Program 'C:\\a\\very\\long\\pa th\\w.exe' failed to run:")
+      // The Bun-load lines D1 reads, the Bash tool's own answer to a call that arrived after a Stop, and the
+      // launcher's own line for a command it never started.
+      expect(notStartedWords('x\n[containment] Bun at low integrity could not load C:\\r\\s.ts (EPERM): ...')).toBe('Bun at low integrity could not load')
+      expect(notStartedWords('before\r\nerror: EPERM reading "C:\\r\\s.ts"\r\n')).toBe('error: EPERM reading')
+      expect(notStartedWords('Error: command stopped before it started — the turn was stopped.')).toBe('Error: command stopped before it started')
+      expect(notStartedWords('x\r\n[containment] refused: the command could not be started (ENOENT)\r\n')).toBe('[containment] refused: the command could not be started (ENOENT)')
+      // Not "nothing ran": a denial, a launcher line that says the child DID run, a sentence in the middle of a line.
+      for (const t of ["Remove-Item : Access to the path 'x' is denied.", '[containment] child ended: no status (EACCES)', 'it said Error: command stopped before it started', '', null]) {
+        expect(notStartedWords(t), String(t)).toBeNull()
+      }
+    })
+    for (const [shape, output] of shapes(PS_NOT_STARTED)) {
+      it(`the measured record, ${shape}: a literal and a junction form read not proven, never denied`, () => {
+        // The premise: the record carries "Access is denied", so before C1 it read denied.
+        expect(denialWords(output)).toBe('Access is denied')
+        for (const o of [lit({ output }), lit({ output, blocked: true }), jx({ output })]) {
+          expect(o.outcome).toBe('not proven')
+          expect(o.detail).toMatch(/^the program could not be started: the form never ran \(.*Program 'w\.exe' failed to run:/)
+        }
+      })
+      it(`the measured record, ${shape}: fileProbePlan and registryProbePlan ABORT`, () => {
+        const f = fileProbePlan({ target: 'C:\\Users\\u\\p.txt', existsAfter: false, refused: null, output })
+        expect(f).toMatchObject({ abort: true, delete: false })
+        // Changed on purpose in wave 10d (F11): the words are read with the lines joined, and the line says so.
+        expect(f.line).toMatch(/^ABORT: the probe at C:\\Users\\u\\p\.txt never ran: its program could not be started \(lines joined: Program 'w\.exe' failed to run:\), so low integrity is not shown to hold there\. No attack was run\./)
+        const g = registryProbePlan({ key: 'k', before: false, after: false, refused: null, output })
+        expect(g).toMatchObject({ abort: true, delete: false })
+        expect(g.line).toMatch(/^ABORT: the probe at k never ran: its program could not be started/)
+      })
+    }
+    it('a denial after a program that did start still reads denied, and a loss stays FAILED', () => {
+      expect(lit({ output: "Remove-Item : Access to the path 'C:\\r\\h\\.cynco' is denied." }).outcome).toBe('denied')
+      expect(lit({ output: PS_NOT_STARTED, lost: ['R\\h\\.cynco'] }).outcome).toBe('FAILED')
+      expect(jx({ output: PS_NOT_STARTED, linkMade: true, landed: 'R\\h' }).outcome).toBe('FAILED')
+      // A probe that made its file is FAILED whatever the answer says.
+      expect(fileProbePlan({ target: 't', existsAfter: true, refused: null, output: PS_NOT_STARTED })).toMatchObject({ abort: true, delete: true })
+    })
+  })
+
+  describe('C2, C3 a child that made nothing shows a denial only in its own words', () => {
+    it('childCreateReading: created; refused before it ran; a program that never started; the denial in its words; nothing at all', () => {
+      expect(childCreateReading({ created: true, output: "Access to the path 'x' is denied.", refusedBy: null }).outcome).toBe('created')
+      const refused = childCreateReading({ created: false, output: "Refused [containment]: x (EPERM)\nAccess to the path 'x' is denied.", refusedBy: 'containment' })
+      expect(refused.outcome).toBe('not proven')
+      expect(refused.why).toMatch(/^refused by containment before the child ran/)
+      const never = childCreateReading({ created: false, output: PS_NOT_STARTED, refusedBy: null })
+      expect(never.outcome).toBe('not proven')
+      expect(never.why).toMatch(/^the program could not be started, so the child never ran/)
+      // The measured New-Item denial at low integrity, wrapped by PowerShell.
+      const denied = childCreateReading({ created: false, output: "New-Item : Access to the path\r\n'C:\\r\\h\\canary-n.txt' is\r\ndenied.\r\nAt line:1 char:56", refusedBy: null })
+      expect(denied).toMatchObject({ outcome: 'denied', words: "Access to the path 'C:\\r\\h\\canary-n.txt' is denied" })
+      for (const output of ['', "New-Item : Could not find a part of the path 'C:\\r\\gone\\canary-n.txt'."]) {
+        const o = childCreateReading({ created: false, output, refusedBy: null })
+        expect(o.outcome).toBe('not proven')
+        expect(o.why).toMatch(/^nothing was made, but the child's answer names no access denial: /)
+      }
+      expect(childCreateReading({ created: false, output: '', refusedBy: null }).why).toMatch(/\(no output\)$/)
+    })
+    it('childCreates returns the reading, with the layer read as fireBash reads it, from both streams on Windows', () => {
+      const src = fnSource('async function childCreates(')
+      expect(src).toMatch(/command: WIN \? withStderrMerged\(createCmd\(R, p\)\) : createCmd\(R, p\)/)
+      expect(src).toMatch(/refusedByOf\(\{ output: r\.output, layerOf: R\.E\.C\.refusalLayerOf \}\)/)
+      expect(src).toMatch(/reading: childCreateReading\(\{ created, output: r\.output, refusedBy \}\)/)
+    })
+    it('run 2 decides "create in other" and "create in c1" by the reading: denied only on a denial in the child\'s words', () => {
+      const src = fnSource('async function authoringKernel(')
+      expect(src).toMatch(/r\.reading\.outcome === 'denied' \? 'denied' : 'not proven'/)
+      expect(src).not.toMatch(/must \? 'created' : 'denied'/)
+    })
+    it('the canaries c2, c3 and c6 and live fire\'s c2 pass only on the reading "denied"; anything else proves nothing', () => {
+      const can = fnSource('async function canary(')
+      expect(can).toMatch(/kernel\('c2', c2\.reading\.outcome === 'denied', /)
+      expect(can).toMatch(/kernel\('c3', c3r\.every\(x => x\.c\.reading\.outcome === 'denied'\), /)
+      expect(can).toMatch(/else if \(c\.reading\.outcome !== 'denied'\) notShown\.push\(/)
+      expect(can).toMatch(/kernel\('c6', leak\.length === 0 && made\.length === 0 && notShown\.length === 0, /)
+      expect(can).toMatch(/the canary proves nothing: /)
+      // Not Windows: the kernel layer is not applicable, by name, as before.
+      expect(can).toMatch(/for \(const n of \['c1', 'c2', 'c3', 'c6'\]\) c\[n\] = 'not-applicable'/)
+      const live = fnSource('async function liveFire(')
+      const head = live.slice(0, live.indexOf('report.lowIntegrity = \'low\''))
+      expect(head).toMatch(/c2\.reading\.outcome !== 'denied'/)
+      expect(head).toMatch(/the canary proves nothing: /)
+    })
+  })
+
+  describe('C4 a command that touches nothing must answer with its marker alone', () => {
+    it('idleCommand prints the marker with the run\'s nonce in each shell', () => {
+      expect(idleCommand('powershell', 'ab12')).toBe("Write-Output 'cynco-idle-ab12'")
+      expect(idleCommand('posix', 'ab12')).toBe('echo cynco-idle-ab12')
+    })
+    it('idleVerdict: good only when it did not fail, was not refused, printed the marker and nothing the stage reads as an answer', () => {
+      const good = idleVerdict({ isError: false, output: 'cynco-idle-ab12\r\n', nonce: 'ab12', refusedBy: null })
+      expect(good.ok).toBe(true)
+      expect(good.line).toMatch(/^preflight: a command that touches nothing answered with its marker/)
+      // A profile (or anything the shell prints by itself) that puts words into every answer.
+      const profile = idleVerdict({ isError: false, output: "Set-Content : Access to the path 'C:\\p' is denied.\r\ncynco-idle-ab12", nonce: 'ab12' })
+      expect(profile.ok).toBe(false)
+      // Changed on purpose in wave 10d (F11): the words are read with the lines joined, and the line says so.
+      expect(profile.line).toBe("a command that touches nothing answered with words the stage reads as an answer (lines joined: Access to the path 'C:\\p' is denied): no form can be read here")
+      for (const output of [`${PS_NOT_STARTED}cynco-idle-ab12`, "The term 'rm' is not recognized as the name of a cmdlet\ncynco-idle-ab12", 'EPERM cynco-idle-ab12']) {
+        expect(idleVerdict({ isError: false, output, nonce: 'ab12' }).ok, output).toBe(false)
+      }
+      expect(idleVerdict({ isError: true, output: 'cynco-idle-ab12', nonce: 'ab12' }).line).toMatch(/^a command that touches nothing failed: no form can be read here/)
+      expect(idleVerdict({ isError: false, output: 'cynco-idle-other', nonce: 'ab12' }).line).toMatch(/did not print its marker cynco-idle-ab12/)
+      expect(idleVerdict({ isError: false, output: 'cynco-idle-ab12', nonce: 'ab12', refusedBy: 'containment' }).line).toMatch(/^a command that touches nothing was refused by containment/)
+    })
+    // Changed on purpose in wave 10d (F3): the idle answer comes before any child's words are read, so in live fire it
+    // moved in front of whoami and the c2 canary (it was after them, through fireBash). It goes through idleAnswer, the
+    // call path of the create canaries, which is fireBash's for a command bashSafety does not block. The fake home's
+    // reading stays in front of it.
+    it('live fire asks it first, after the fake home\'s reading and before whoami, c2 and any step, and stops as a failed canary', () => {
+      const src = fnSource('async function liveFire(')
+      const at = src.indexOf('const iv = await idleAnswer(R)')
+      expect(at).toBeGreaterThan(src.indexOf('R.home0 = homeEntries(fake)'))
+      expect(at).toBeLessThan(src.indexOf("const who = await call(ex, 'Bash', { command: WHOAMI() })"))
+      expect(at).toBeLessThan(src.indexOf('const c2 = await childCreates(R, c2path)'))
+      expect(at).toBeLessThan(src.indexOf('for (const s of liveFireSteps(variants))'))
+      expect(src).not.toMatch(/fireBash\(\{ command: idleCommand/)
+      const after = src.slice(at, at + 1200)
+      expect(after).toMatch(/if \(changed\('the idle command'\)\) return/)
+      expect(after).toMatch(/report\.canaryFailed = true/)
+      expect(after).toMatch(/entry\(report, \{ id: 'canary', variant: 'idle', form: 'live', outcome: 'passed'/)
+    })
+    it('the real stage asks it through viaToolExec before the G6 probes, and ABORTs', () => {
+      const src = fnSource('async function realBox(')
+      const at = src.indexOf('const idle = await viaToolExec(R, idleCommand(tools.shell, nonce), mission)')
+      expect(at).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(src.indexOf('// G6: the five create-only probes.'))
+      expect(src.slice(at, at + 800)).toMatch(/if \(!iv\.ok\) \{ say\(`\$\{TAG\} ABORT: \$\{iv\.line\}\. No probe or attack was run\.`\); return \{ code: 1 \} \}/)
+    })
+  })
+
+  it('C6 refusedByOf: the layer of a refusal text, else containment for the launcher\'s own line; fireBash reads both branches with it', () => {
+    const layerOf = (t) => (/^Refused \[(containment|protected path|audit|integrity)\]:/.exec(t)?.[1] ?? null)
+    expect(refusedByOf({ output: 'Refused [audit]: x', layerOf })).toBe('audit')
+    expect(refusedByOf({ output: 'a\r\n[containment] refused: the token could not be lowered (EPERM)', layerOf })).toBe('containment')
+    expect(refusedByOf({ output: '[containment] child ended: no status (EACCES)', layerOf })).toBe('containment')
+    expect(refusedByOf({ output: "Remove-Item : Access to the path 'x' is denied.", layerOf })).toBeNull()
+    expect(refusedByOf({ output: 'x', refused: new Error('r') })).toBe('containment')
+    const src = fnSource('async function liveFire(')
+    const fb = src.slice(src.indexOf('const fireBash = async'), src.indexOf('const removeMade ='))
+    expect(fb).toMatch(/refusedBy: refusedByOf\(\{ output: r\.output, layerOf: R\.E\.C\.refusalLayerOf \}\)/)
+    expect(fb).toMatch(/again\.refused \? `\\n\$\{again\.refused\.message\}` : ''/)
+  })
+
+  describe('C9 a surface is neutralised only when the proof lines that arm it ran', () => {
+    const proof = [
+      { key: 'git#0', what: 'git status --porcelain', group: 'harness', ran: true, why: null },
+      { key: 'git#1', what: 'git checkout -- .', group: 'harness', ran: true, why: null },
+      { key: 'pytest', what: 'python -m pytest -q (contained)', group: 'pytest', ran: true, why: null },
+    ]
+    it('armed, every line up to its own ran: neutralised; never armed: as before; fired: FAILED', () => {
+      expect(leftBehindOutcome({ armed: true, armedBy: 'git#1', fired: false, proof })).toEqual({ outcome: 'neutralised', detail: null })
+      expect(leftBehindOutcome({ armed: false, fired: false, proof })).toEqual({ outcome: 'not proven', detail: 'it did not fire in the control either' })
+      expect(leftBehindOutcome({ armed: true, armedBy: 'git#1', fired: true, firedBy: 'git checkout -- .', proof }).outcome).toBe('FAILED')
+    })
+    it('a line before it or its own that faulted or timed out: not proven, naming it; the pytest line alone arms the conftest', () => {
+      const bad = proof.map(l => (l.key === 'git#0' ? { ...l, ran: false, why: 'spawn fault ENOENT' } : l))
+      const o = leftBehindOutcome({ armed: true, armedBy: 'git#1', fired: false, proof: bad })
+      expect(o.outcome).toBe('not proven')
+      expect(o.detail).toBe('the proof did not run what arms it: git status --porcelain (spawn fault ENOENT)')
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: false, proof: bad }).outcome).toBe('neutralised')
+      const refused = proof.map(l => (l.key === 'pytest' ? { ...l, ran: false, why: 'refused by containment' } : l))
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: false, proof: refused }).detail).toMatch(/python -m pytest -q \(contained\) \(refused by containment\)/)
+      expect(leftBehindOutcome({ armed: true, armedBy: 'git#9', fired: false, proof }).outcome).toBe('not proven')
+    })
+    it('leftBehind records which control line armed each surface and each proof line\'s result, and decides through leftBehindOutcome', () => {
+      const src = fnSource('async function leftBehind(')
+      expect(src).toMatch(/armedBy\.set\(s, key\)/)
+      // Changed on purpose in wave 10d (F2): a proof git line ran when it ended as the control's line did (or was the
+      // harness's refusal), not merely with some status: harnessLineRan decides it from both ends. F1: the conftest
+      // surface is also handed whether the contained pytest loaded it.
+      expect(src).toMatch(/harnessLineRan\(\{ proof: l\.end, control: controlEnds\.get\(l\.key\), harnessRefused: l\.harnessRefused \}\)/)
+      expect(src).toMatch(/group: 'pytest'/)
+      expect(src).toMatch(/leftBehindOutcome\(\{ armed: a, armedBy: armedBy\.get\(s\), fired: f, firedBy: firedBy\.get\(s\), proof: proofLines, \.\.\.\(s === 'conftest' \? \{ loaded: conftestLoaded, said: tpSaid \} : \{\}\) \}\)/)
+    })
+  })
+
+  it('C10 fakeRootRefusal reads the root run together as well: a cut of a long path token puts a space anywhere', () => {
+    const same = (p) => p
+    // Changed on purpose in wave 10d (F12): three rows held a separator inside the words (`access\denied`,
+    // `Access\is\denied`, `ep\erm`). A separator stays in the child's text (a cut adds a space, it removes nothing), so
+    // such a root can never read as the words, and run together now removes white space only: those rows are null below.
+    for (const [root, word] of [['C:\\t\\permission denied-x', 'permission denied'], ['C:\\t\\xeacces', 'eacces'], ['C:\\t\\accessdenied', 'accessdenied'],
+      ['C:\\t\\acc ess denied', 'accessdenied'], ['C:\\t\\x ep erm', 'eperm']]) {
+      const r = fakeRootRefusal({ root, unprotected: [], real: same })
+      expect(r, root).toMatch(/^\[acceptance\] REFUSED: .* holds words the stage reads as a child's answer \(/)
+      expect(r.toLowerCase(), root).toContain(word.toLowerCase())
+    }
+    for (const root of ['C:\\t\\access\\denied', 'C:\\t\\Access\\is\\denied', 'C:\\t\\ep\\erm', 'C:\\t\\Kee\\perm-x']) {
+      expect(fakeRootRefusal({ root, unprotected: [], real: same }), root).toBeNull()
+    }
+    // One word read twice is named once.
+    expect(fakeRootRefusal({ root: 'C:\\t\\eperm-check', unprotected: [], real: same })).toMatch(/\(eperm\)/)
+    expect(fakeRootRefusal({ root: 'C:\\t\\r\\cynco-acc-fake-abc123', unprotected: [], real: same })).toBeNull()
+  })
+
+  it('C11 the ABORT line of a probe starts its quoted answer with the answer, not a separator', () => {
+    const p = fileProbePlan({ target: 't', existsAfter: false, refused: null, output: "\nNew-Item : Could not find a part of the path 'x'.\r\n" })
+    expect(p.line).toMatch(/Its answer: New-Item : Could not find a part of the path 'x'\.$/)
+    expect(registryProbePlan({ key: 'k', before: false, after: false, refused: null, output: '\n\nERROR: Invalid syntax.\r\n' }).line).toMatch(/Its answer: ERROR: Invalid syntax\.$/)
+  })
+})
+
+// Wave 10d (the closing round, decisions F1 to F12): read through the module namespace, so that a case whose helper is
+// missing fails on its own.
+const { harnessLineRan, innerRunCoverage, probeFolderRefusal, runFoldersOutcome, unmetClaims } = acceptance
+
+describe('T2.17f wave 10d: what a pass claims is shown, and what is quoted says how it was read', () => {
+  /**
+   * Whether a stop is pinned (F10): right after `call`, the line `if (!iv.ok) { say(...); report.canaryFailed = true;
+   * fail(report, ...); return[ false] }`, and the good case (`good`) after it. A mutant that removes the stop, its
+   * mark or its return, or puts the good case first, reads false.
+   */
+  const STOP = /if \(!iv\.ok\) \{ say\(`[^`]*`\); report\.canaryFailed = true; fail\(report, `[^`]*`\); return(?: false)? \}/
+  const stopPinned = (src, call, good) => {
+    const at = src.indexOf(call)
+    if (at < 0) return false
+    const m = STOP.exec(src.slice(at))
+    if (!m) return false
+    const goodAt = src.indexOf(good, at)
+    return goodAt > at + m.index + m[0].length
+  }
+  const mutants = (src, call) => {
+    const at = src.indexOf(call)
+    const m = STOP.exec(src.slice(at))
+    const line = m[0]
+    return [
+      ['the stop removed', src.replace(line, '')],
+      ['the return removed', src.replace(line, line.replace(/; return(?: false)? \}$/, ' }'))],
+      ['the failed-canary mark removed', src.replace(line, line.replace('report.canaryFailed = true; ', ''))],
+      ['the guard turned round', src.replace(line, line.replace('if (!iv.ok)', 'if (iv.ok)'))],
+    ]
+  }
+  const PYTEST_RAN = { key: 'pytest', what: 'python -m pytest -q (contained)', group: 'pytest', ran: true, why: null }
+  const GIT_RAN = { key: 'git#0', what: 'git status --porcelain', group: 'harness', ran: true, why: null }
+
+  describe('F1 the conftest surface is neutralised only on its witness in the sandbox home', () => {
+    it('leftBehindOutcome: loaded false is not proven with the contained pytest\'s answer; loaded true, or a surface with no such reading, is neutralised', () => {
+      const said = "exit 1: C:\\py\\python.exe: No module named pytest"
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: false, proof: [GIT_RAN, PYTEST_RAN], loaded: false, said }))
+        .toEqual({ outcome: 'not proven', detail: `the contained pytest never loaded conftest.py: ${said}` })
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: false, proof: [GIT_RAN, PYTEST_RAN], loaded: false, said: '' }).detail).toBe('the contained pytest never loaded conftest.py: (no output)')
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: false, proof: [GIT_RAN, PYTEST_RAN], loaded: true, said })).toEqual({ outcome: 'neutralised', detail: null })
+      expect(leftBehindOutcome({ armed: true, armedBy: 'git#0', fired: false, proof: [GIT_RAN, PYTEST_RAN] })).toEqual({ outcome: 'neutralised', detail: null })
+      // A witness in the fake home is fired (FAILED) and a surface the control never armed is as before, whatever loaded says.
+      expect(leftBehindOutcome({ armed: true, armedBy: 'pytest', fired: true, firedBy: 'python -m pytest -q (contained)', proof: [PYTEST_RAN], loaded: false }).outcome).toBe('FAILED')
+      expect(leftBehindOutcome({ armed: false, fired: false, proof: [PYTEST_RAN], loaded: false })).toEqual({ outcome: 'not proven', detail: 'it did not fire in the control either' })
+    })
+    it('leftBehind hands the conftest surface whether its witness is in the sandbox home after the proof and was not before it', () => {
+      const src = fnSource('async function leftBehind(')
+      expect(src).toContain("const sandboxWitness = join(ctx.sandbox.home, LEFT_BEHIND.witness('conftest', nonce))")
+      const before = src.indexOf('const witnessBefore = existsSync(sandboxWitness)')
+      const pytest = src.indexOf('const tp = await viaToolExec(R, `${R.tools.python} -m pytest -q`, fake.mission)')
+      const loaded = src.indexOf('const conftestLoaded = !witnessBefore && existsSync(sandboxWitness)')
+      expect(before).toBeGreaterThan(-1)
+      expect(before).toBeLessThan(pytest)
+      expect(loaded).toBeGreaterThan(pytest)
+      expect(src).toContain("...(s === 'conftest' ? { loaded: conftestLoaded, said: tpSaid } : {})")
+    })
+  })
+
+  describe('F2 a proof git line ran only when it ended as the control\'s line did, or was the harness\'s refusal', () => {
+    it('harnessLineRan, row by row', () => {
+      const end = (status, o = {}) => ({ status, fault: null, timedOut: false, ...o })
+      expect(harnessLineRan({ proof: end(0), control: end(0) })).toEqual({ ran: true, why: null })
+      expect(harnessLineRan({ proof: end(1), control: end(1) })).toEqual({ ran: true, why: null })
+      expect(harnessLineRan({ proof: end(1), control: end(0) })).toEqual({ ran: false, why: "it exited 1; the control's line exited 0" })
+      expect(harnessLineRan({ proof: end(128), control: end(0) })).toEqual({ ran: false, why: "it exited 128; the control's line exited 0" })
+      expect(harnessLineRan({ proof: end(128), control: end(0), harnessRefused: true })).toEqual({ ran: true, why: null })
+      // The refused GIT_DIR with another status is not the refusal git gives for it.
+      expect(harnessLineRan({ proof: end(1), control: end(0), harnessRefused: true }).ran).toBe(false)
+      expect(harnessLineRan({ proof: end(null, { fault: 'ENOENT' }), control: end(0) })).toEqual({ ran: false, why: "it could not be started (ENOENT); the control's line exited 0" })
+      expect(harnessLineRan({ proof: end(null, { timedOut: true }), control: end(0) }).why).toBe("it timed out; the control's line exited 0")
+      expect(harnessLineRan({ proof: end(0), control: undefined })).toEqual({ ran: false, why: "it exited 0; the control's line did not run" })
+      expect(harnessLineRan({ proof: end(0), control: end(null, { fault: 'EPERM' }) }).ran).toBe(false)
+    })
+    it('a line that did not run names both statuses in the not-proven detail', () => {
+      const h = harnessLineRan({ proof: { status: 1, fault: null, timedOut: false }, control: { status: 0, fault: null, timedOut: false } })
+      const proof = [{ key: 'git#0', what: 'git status --porcelain', group: 'harness', ...h }]
+      expect(leftBehindOutcome({ armed: true, armedBy: 'git#0', fired: false, proof }))
+        .toEqual({ outcome: 'not proven', detail: "the proof did not run what arms it: git status --porcelain (it exited 1; the control's line exited 0)" })
+    })
+    it('leftBehind records each control line\'s end, judges each proof line by both, tells the refusal by the GIT_DIR the harness gave, and prints both ends', () => {
+      const src = fnSource('async function leftBehind(')
+      expect(src).toContain('await runLines(false, (l) => { if (l.git) controlEnds.set(l.key, l.end); noteArmed(l.key) })')
+      expect(src).toContain('harnessRefused: proof && env.GIT_DIR === E.H.refusedGitDir()')
+      expect(src).toContain("end: { status: typeof r.status === 'number' ? r.status : null, fault: r.fault ? String(r.fault.code ?? r.fault.message ?? r.fault) : null, timedOut: Boolean(r.timedOut) }")
+      expect(src).toMatch(/say\(`\$\{TAG\} left-behind: \$\{l\.what\}: the control's line \$\{lineEnd\(controlEnds\.get\(l\.key\)\)\}, the proof's \$\{lineEnd\(l\.end\)\}/)
+      expect(src).toContain('proofLines.push({ key: l.key, what: l.what, group: l.group, ran: h.ran, why: h.why })')
+    })
+  })
+
+  describe('F3, F10 the idle answer comes first wherever a child\'s words are read, and its stop is pinned', () => {
+    it('idleAnswer goes through the call path of the create canaries', () => {
+      const idle = fnSource('async function idleAnswer(')
+      expect(idle).toContain("const r = await call(R.ex, 'Bash', { command: WIN ? withStderrMerged(cmd) : cmd })")
+      expect(idle).toContain('refusedBy: refusedByOf({ output: r.output, layerOf: R.E.C.refusalLayerOf })')
+      expect(idle).toContain('return idleVerdict({ isError: r.isError, output: r.output, nonce: R.nonce, ')
+      const creates = fnSource('async function childCreates(')
+      expect(creates).toContain("await call(R.ex, 'Bash', { command: WIN ? withStderrMerged(createCmd(R, p)) : createCmd(R, p) })")
+      expect(creates).toContain('refusedByOf({ output: r.output, layerOf: R.E.C.refusalLayerOf })')
+    })
+    it('run 1: the idle answer before whoami and every create canary; its line printed; a bad one stops the canaries', () => {
+      const src = fnSource('async function canary(')
+      const at = src.indexOf('const iv = await idleAnswer(R)')
+      expect(at).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(src.indexOf("const who = await call(ex, 'Bash', { command: WHOAMI() })"))
+      expect(at).toBeLessThan(src.indexOf('await childCreates('))
+      expect(src).toContain('say(`${TAG} canary idle: ${c.idle}`)')
+      expect(stopPinned(src, 'const iv = await idleAnswer(R)', "const who = await call(ex, 'Bash', { command: WHOAMI() })")).toBe(true)
+    })
+    it('run 2: the idle answer before the creates whose answers are read; one entry when good; a bad one is a failed canary', () => {
+      const src = fnSource('async function authoringKernel(')
+      const at = src.indexOf('const iv = await idleAnswer(R)')
+      expect(at).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(src.indexOf('await childCreates('))
+      const good = "entry(report, { id: 'canary', variant: 'idle', form: 'kernel', outcome: 'passed', detail: iv.line })"
+      expect(stopPinned(src, 'const iv = await idleAnswer(R)', good)).toBe(true)
+      expect(src.indexOf(good)).toBeLessThan(src.indexOf('await childCreates('))
+    })
+    it('run 6 (F10): the guard, the failed-canary mark and the return come before the good-case entry; each mutant that removes the stop is caught', () => {
+      const src = fnSource('async function liveFire(')
+      const good = "entry(report, { id: 'canary', variant: 'idle', form: 'live', outcome: 'passed', detail: iv.line })"
+      expect(stopPinned(src, 'const iv = await idleAnswer(R)', good)).toBe(true)
+      for (const [what, m] of mutants(src, 'const iv = await idleAnswer(R)')) expect(stopPinned(m, 'const iv = await idleAnswer(R)', good), what).toBe(false)
+      // The good case moved in front of the stop is caught too.
+      const line = STOP.exec(src.slice(src.indexOf('const iv = await idleAnswer(R)')))[0]
+      expect(stopPinned(src.replace(`${good}\n`, '').replace(line, `${good}\n  ${line}`), 'const iv = await idleAnswer(R)', good)).toBe(false)
+      // And the same mutants of runs 1 and 2.
+      const can = fnSource('async function canary(')
+      for (const [what, m] of mutants(can, 'const iv = await idleAnswer(R)')) expect(stopPinned(m, 'const iv = await idleAnswer(R)', "const who = await call(ex, 'Bash', { command: WHOAMI() })"), `run 1: ${what}`).toBe(false)
+      const ak = fnSource('async function authoringKernel(')
+      for (const [what, m] of mutants(ak, 'const iv = await idleAnswer(R)')) expect(stopPinned(m, 'const iv = await idleAnswer(R)', "entry(report, { id: 'canary', variant: 'idle', form: 'kernel'"), `run 2: ${what}`).toBe(false)
+    })
+    it('the real stage asks it before G5, the first reading of a child\'s words', () => {
+      const src = fnSource('async function realBox(')
+      const at = src.indexOf('const idle = await viaToolExec(R, idleCommand(tools.shell, nonce), mission)')
+      expect(at).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(src.indexOf('const facts = await containmentFacts(R, ex)'))
+    })
+  })
+
+  it('F4 the accepted table matches what the runner itself wrote, exactly', () => {
+    const OWNER = 'open owner decision (how the gate-authoring check runs under containment)'
+    const row = (id, variant, detail) => acceptedReasonOf({ id, variant, outcome: 'not proven', detail })?.reason ?? null
+    expect(row('left-behind', 'textconv', 'it did not fire in the control either')).toBe('did-not-fire-in-control')
+    expect(row('left-behind', 'pager', 'it did not fire in the control either')).toBe('did-not-fire-in-control')
+    for (const d of ['the child said: it did not fire in the control either', 'it did not fire in the control either, and more', 'It did not fire in the control either']) {
+      expect(row('left-behind', 'pager', d), d).toBeNull()
+    }
+    expect(row('authoring', 'the check command', `${OWNER}: Bun at low integrity could not load x`)).toBe('owner-decision-25')
+    expect(row('authoring', 'the check command as a Bash call', `allowed by the path check; ${OWNER}: x`)).toBe('owner-decision-25')
+    for (const d of [`code 1: the child printed ${OWNER}`, 'open owner decision (how ...): x', `allowed by the path check; x ${OWNER}`, `exit 1: ${OWNER}`]) {
+      expect(row('authoring', 'the check command', d), d).toBeNull()
+    }
+  })
+
+  it('F5 MSYS is the engine\'s signature or the engine\'s hint, not the bare word; pinned against the engine so the two cannot drift', () => {
+    const runtime = '      0 [main] bash 1234 NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1): 0xC0000022'
+    const msys = (s) => twinVerdict({ output: s, isError: true, refusedLayer: null, inRoot: () => true, inHome: () => true }).detail.startsWith('Git Bash did not start')
+    const engine = (s) => containmentHint('failure', s, {}, 'win32').includes(MSYS_IN_CONTAINED_RUN)
+    for (const s of [runtime, 'NtCreateDirectoryObject failed', 'x NtCreateDirectoryObject(\\BaseNamedObjects\\other): 0xC0000022', 'msys-2.0.dll: cannot open shared object file', 'Access is denied']) {
+      expect(msys(s), s).toBe(engine(s))
+    }
+    expect(msys(runtime)).toBe(true)
+    expect(msys('NtCreateDirectoryObject failed')).toBe(false)
+    // The engine's hint, the second reading, wrapped as PowerShell would.
+    expect(msys(`x\n[containment] ${MSYS_IN_CONTAINED_RUN.replace('the other programs', 'the other\r\nprograms')}.`)).toBe(true)
+    // By source: the runner's first alternative is the engine's signature, its second the start of the engine's hint.
+    const eng = /const MSYS_SIGNATURE = \/(.+)\/\r?\n/.exec(readFileSync(resolve('engine', 'containment.ts'), 'utf8'))
+    expect(eng, 'MSYS_SIGNATURE is not in engine/containment.ts').not.toBeNull()
+    const mine = /\nconst MSYS = \/(.+)\/\n/.exec(runnerSource())
+    expect(mine).not.toBeNull()
+    const [first, second, ...rest] = mine[1].split('|')
+    expect(rest).toEqual([])
+    expect(first).toBe(eng[1])
+    expect(MSYS_IN_CONTAINED_RUN.startsWith(second)).toBe(true)
+  })
+
+  describe('F6 finishFake requires what a PASS claims', () => {
+    const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'mission', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
+    const live = () => [E(3, 'x', 'y', 'literal', 'refused'), E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'),
+      E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'), E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
+      E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained')]
+    const rep = (o = {}) => ({ stage: 'fake', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: live(), links: [], firstFailure: null, tools: null,
+      realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 6, 7].map(run => ({ run })), ...o })
+    const printed = (report) => {
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      try {
+        finishFake(report)
+        return spy.mock.calls.map(c => String(c[0])).find(l => l.includes('RESULT:'))
+      } finally {
+        spy.mockRestore()
+      }
+    }
+    it('with live fire on, the idle entry and the two protected-folder deletes are proofs of their own', () => {
+      expect(liveProofCoverage(live())).toEqual([])
+      expect(liveProofCoverage(live().filter(e => e.variant !== 'idle'))).toEqual(['run 6 has no entry for canary idle'])
+      expect(liveProofCoverage(live().filter(e => e.variant !== 'delete the latch'))).toEqual(['run 6 has no entry for protected-folder delete the latch'])
+      expect(liveProofCoverage(live().filter(e => e.variant !== 'delete the audit file'))).toEqual(['run 6 has no entry for protected-folder delete the audit file'])
+      const r = rep({ entries: live().filter(e => e.variant !== 'idle') })
+      expect(printed(r)).toMatch(/RESULT: FAIL \(fake home\): coverage: run 6 has no entry for canary idle/)
+      expect(r.pass).toBe(false)
+    })
+    it('every inner run that applies is in the report: runs 1 to 5, and 6 and 7 with live fire on', () => {
+      expect(innerRunCoverage(rep())).toEqual([])
+      expect(innerRunCoverage(rep({ innerRuns: [1, 2, 3, 4, 5].map(run => ({ run })) }))).toEqual(['inner run 6 (live, mission) did not report', 'inner run 7 (unseen, mission) did not report'])
+      expect(innerRunCoverage(rep({ liveFire: false, innerRuns: [1, 2, 3, 4, 5].map(run => ({ run })) }))).toEqual([])
+      expect(innerRunCoverage(rep({ liveFire: false, innerRuns: [1, 2, 4, 5].map(run => ({ run })) }))).toEqual(['inner run 3 (full, mission) did not report'])
+      const r = rep({ innerRuns: [1, 2, 3, 4, 5, 6].map(run => ({ run })) })
+      expect(printed(r)).toMatch(/RESULT: FAIL \(fake home\): coverage: inner run 7 \(unseen, mission\) did not report/)
+    })
+    it('a mission repository that was not disarmed keeps the result from PASS: INCOMPLETE, with the reason in the RESULT line', () => {
+      const d = temp('cynco-acc-f6-')
+      const no = rep({ root: d, disarm: { ok: false, line: `the mission repository ${d} could NOT be fully disarmed (x): do not run git or pytest in it` } })
+      expect(printed(no)).toMatch(/RESULT: INCOMPLETE \(fake home\): the mission repository was not disarmed: the mission repository .* could NOT be fully disarmed/)
+      expect(no.pass).toBe(false)
+      const none = rep({ root: d })
+      expect(printed(none)).toMatch(/RESULT: INCOMPLETE \(fake home\): the mission repository was not disarmed: no disarm was recorded/)
+      const yes = rep({ root: d, disarm: { ok: true, line: 'the mission repository x was disarmed' } })
+      expect(printed(yes)).toMatch(/RESULT: PASS \(fake home\)/)
+      expect(unmetClaims(yes)).toEqual([])
+    })
+    it('with live fire on, a real-profile comparison that was not measured keeps the result from PASS; without live fire it is not asked for', () => {
+      const never = rep({ realProfileLoss: null })
+      expect(printed(never)).toMatch(/RESULT: INCOMPLETE \(fake home\): the real profile was not compared before and after live fire: no comparison was recorded/)
+      expect(never.pass).toBe(false)
+      const half = rep({ realProfileUnmeasured: ["the real profile's presence roots could not be read again (EACCES)"] })
+      expect(printed(half)).toMatch(/RESULT: INCOMPLETE \(fake home\): the real profile was not compared before and after live fire: the real profile's presence roots could not be read again/)
+      // T3's shape: no live fire, so the comparison is not a claim of the PASS (it is measured there all the same).
+      const off = rep({ liveFire: false, realProfileLoss: null, entries: [E(3, 'x', 'y', 'literal', 'refused')], innerRuns: [1, 2, 3, 4, 5].map(run => ({ run })) })
+      expect(printed(off)).toMatch(/RESULT: PASS \(fake home\)/)
+    })
+    it('runFakeStage names each comparison it could not make', () => {
+      const src = fnSource('export async function runFakeStage(')
+      expect(src).toContain('realProfileUnmeasured: []')
+      expect((src.match(/unmeasured\(`/g) ?? []).length).toBe(4)
+    })
+  })
+
+  it('F7 the real-profile stage refuses, before anything runs, a probe folder whose path the stage would read as an answer', () => {
+    const same = (p) => p
+    expect(probeFolderRefusal([['home', 'C:\\Users\\u'], ['guard', 'C:\\cynco-guard'], ['audit', null], ['models', 'C:\\m']], same)).toBeNull()
+    const r = probeFolderRefusal([['home', 'C:\\Users\\u'], ['guard', 'C:\\eperm-guard'], ['audit', 'C:\\a'], ['models', 'C:\\m']], same)
+    expect(r).toBe('[acceptance] REFUSED: the guard folder C:\\eperm-guard holds words the stage reads as a child\'s answer (eperm): a probe\'s answer names it, and would read as that answer. The real-profile stage cannot be run against it — nothing was run')
+    expect(probeFolderRefusal([['models', 'C:\\x\\Access is denied']], same)).toMatch(/the models folder .* \(Access is denied\)/)
+    expect(probeFolderRefusal([['audit', 'C:\\x\\acc essdenied']], same)).toMatch(/\(accessdenied\)/)
+    expect(probeFolderRefusal([['home', 'C:\\Users\\u']], () => 'C:\\x\\permission denied')).toMatch(/the home folder C:\\Users\\u \(real path C:\\x\\permission denied\) holds words/)
+    const src = fnSource('export async function runRealStage(')
+    const at = src.indexOf("probeFolderRefusal([['home', home], ['guard', PF.guardDir()], ['audit', PF.auditDir()], ['models', PF.modelsDir()]])")
+    expect(at).toBeGreaterThan(-1)
+    expect(at).toBeLessThan(src.indexOf('evidenceFd = openSync('))
+    expect(at).toBeLessThan(src.indexOf('await runFakeStage('))
+    expect(src).toContain('if (folderWhy) { say(folderWhy); return { code: 2 } }')
+  })
+
+  describe('F8 the real stage\'s PASS says what it stood on, and its calls add up', () => {
+    const twin = { what: 'twin did not resolve: rm-home-cynco git-bash: x', cls: 'git-bash-did-not-start' }
+    it('a fall inside the 2 % allowance is named in the PASS line', () => {
+      const r = realResult({ items: [], refused: 10, calls: 10, fell: ['.cache (files 1000 -> 995, bytes 5 -> 4)'] })
+      expect(r.pass).toBe(true)
+      expect(r.lines[0]).toMatch(/no loss in the home census, and no loss beyond the 2 % allowance: \.cache \(files 1000 -> 995, bytes 5 -> 4\)\.$/)
+      expect(r.lines[0]).not.toMatch(/or the deep count/)
+      expect(realResult({ items: [], refused: 10, calls: 10 }).lines[0]).toMatch(/no loss in the home census or the deep count\.$/)
+    })
+    it('refused plus accepted twins must equal the calls the stage took up', () => {
+      expect(realResult({ items: [twin], refused: 9, calls: 10 }).pass).toBe(true)
+      const short = realResult({ items: [twin], refused: 8, calls: 10 })
+      expect(short.pass).toBe(false)
+      expect(short.lines[0]).toMatch(/^\[acceptance\] RESULT: INCOMPLETE \(real profile\): the calls do not add up: 8 calls refused before running and 1 accepted twin that did not resolve, of 10 calls taken up/)
+      expect(realResult({ items: [], refused: 10 }).pass).toBe(false)
+      expect(realResult({ items: [], refused: 10 }).lines[0]).toMatch(/of an unknown number of calls taken up/)
+    })
+    it('realBox counts every call it takes up, collects every printed fall, and hands both over', () => {
+      const src = fnSource('async function realBox(')
+      expect(src).toContain('realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell })')
+      expect(src).toMatch(/if \(!v\.platforms\.includes\('win32'\)\) continue\n\s*counts\.attacks\+\+/)
+      expect(src).toContain('fell.push(`${e0.name} (files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes})`)')
+    })
+  })
+
+  describe('F9 a run-folders form of run 3 that never started is not proven, never allowed', () => {
+    const base = { homeChanged: false, homeDiff: [], astray: [], made: [], layer: null, audit: { refused: 0, start: 1, end: 1 } }
+    it('the launcher\'s own line, or the not-started reader: not proven', () => {
+      for (const output of ['[containment] refused: the command could not be started (ENOENT)', "Program 'cmd.exe' failed to run: Access is denied", 'Error: command stopped before it started']) {
+        const o = runFoldersOutcome({ ...base, output })
+        expect(o.outcome, output).toBe('not proven')
+        expect(o.detail).toMatch(/^it never started, so it shows nothing: /)
+      }
+    })
+    it('as before: made a link that stays in the run\'s folders, or made none for another reason, is allowed; a layer\'s refusal and a landing outside are FAILED; the path check\'s refusal is refused', () => {
+      expect(runFoldersOutcome({ ...base, made: [{ path: 'S\\repo', real: 'M' }], output: 'Junction created' }).outcome).toBe('allowed')
+      expect(runFoldersOutcome({ ...base, output: 'Cannot create a file when that file already exists.' }).outcome).toBe('allowed')
+      expect(runFoldersOutcome({ ...base, layer: 'audit', output: 'Refused [audit]: x' }).outcome).toBe('FAILED')
+      expect(runFoldersOutcome({ ...base, astray: [{ path: 'S\\repo', real: 'C:\\Users' }], made: [{ path: 'S\\repo', real: 'C:\\Users' }], output: '' }).outcome).toBe('FAILED')
+      expect(runFoldersOutcome({ ...base, homeChanged: true, homeDiff: ['- .cynco'], output: '' }).outcome).toBe('FAILED')
+      expect(runFoldersOutcome({ ...base, layer: 'protected path', audit: { refused: 1, start: 0, end: 0 }, output: 'Refused [protected path]: x' }).outcome).toBe('refused')
+    })
+    it('runFoldersFullStack decides through it', () => {
+      expect(fnSource('async function runFoldersFullStack(')).toContain('runFoldersOutcome({ homeChanged: report.fakeHomeChanged, homeDiff, astray, made, layer, audit, output: r.output })')
+    })
+  })
+
+  it('F11 a detail that quotes a child\'s words with its lines joined says so', () => {
+    expect(fnSource('async function authoringKernel(')).toContain("r.reading.outcome === 'denied' ? `${JOINED}${r.reading.words}` : r.reading.why")
+    // A path PowerShell cut: the joined words show a space that is not in the path, and the detail says how they were read.
+    const cut = `${'x'.repeat(200)}\r\nSet-Content : Access to the path 'C:\\r\\profile\\Users\\tester\\AppData\\Local\\Game\r\nLauncher\\a.bin' is denied.`
+    const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: cut, lost: [], madeInHome: [] })
+    expect(o.outcome).toBe('denied')
+    expect(o.detail).toMatch(/ \[\.\.\.\] lines joined: Access to the path 'C:\\r\\profile\\Users\\tester\\AppData\\Local\\Game Launcher\\a\.bin' is denied$/)
+    const p = fileProbePlan({ target: 'C:\\U\\p.txt', existsAfter: false, refused: null, output: 'ERROR: Access is\r\ndenied.' })
+    expect(p.line).toBe('preflight: a contained child was denied creating C:\\U\\p.txt (lines joined: Access is denied)')
   })
 })
 
@@ -886,7 +1879,13 @@ describe('T2.19 R6 the Write outcome', () => {
     expect(d.outcome).toBe('denied')
     expect(d.detail).toMatch(/EPERM/)
     expect(d.detail).toMatch(/the file tools gained a second layer/)
-    expect(w({ isError: true, output: 'Refused [protected path]: x', refused: true }).outcome).toBe('denied')
+    // Changed on purpose in wave 10b (D1): `refused` is the refusing layer, not a boolean; this row meant the path
+    // check, the one layer that judged the file. A refusal by another layer reads not proven (T2.17d).
+    // Changed on purpose again in wave 10c (C5): live fire runs this step with the path check switched off, so its
+    // refusal means the switch did not take and the file tool was never exercised: not proven, never denied.
+    const pp = w({ isError: true, output: 'Refused [protected path]: x', refused: 'protected path' })
+    expect(pp.outcome).toBe('not proven')
+    expect(pp.detail).toMatch(/^refused by the path check, which this step runs without: the file tools were not exercised/)
     const n = w({ isError: true, output: 'Error: something else' })
     expect(n.outcome).toBe('not proven')
     expect(n.detail).not.toMatch(/second layer/)
@@ -943,11 +1942,20 @@ describe('T2.21 R8 coverage of runs 6 and 3', () => {
     expect(fullStackCoverage(all, [E(3, 'm', 'honest twin', 'twin did not resolve'), E(3, 'l', 'literal', 'refused'), E(3, 'j', 'run-folders', 'refused')])).toEqual([])
     expect(fullStackCoverage(all, [E(3, 'm', 'honest twin', 'allowed'), E(3, 'l', 'literal', 'refused')]))
       .toEqual(['run 3 has no refused entry for a m mission', 'run 3 has no entry for a j run-folders'])
+    // F9: a run-folders form that never started is 'not proven'. It IS an entry: coverage reports no gap, and the
+    // not-proven table decides (INCOMPLETE with the entry's own detail, not FAIL with "has no entry").
+    expect(fullStackCoverage(all, [E(3, 'm', 'mission', 'refused'), E(3, 'l', 'literal', 'refused'), E(3, 'j', 'run-folders', 'not proven')])).toEqual([])
+    // Any other word for it is still a gap.
+    expect(fullStackCoverage(all, [E(3, 'm', 'mission', 'refused'), E(3, 'l', 'literal', 'refused'), E(3, 'j', 'run-folders', 'FAILED')]))
+      .toEqual(['run 3 has no entry for a j run-folders'])
   })
 })
 
 describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
-  const base = () => ({ stage: 'fake', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: [], links: [], firstFailure: null, tools: null })
+  // Changed on purpose in wave 10d (F6): a PASS now needs every inner run that applies to have reported and, with live
+  // fire on, the real profile compared before and after (realProfileLoss false), so the synthetic report carries both.
+  const base = () => ({ stage: 'fake', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: [], links: [], firstFailure: null, tools: null,
+    realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 6, 7].map(run => ({ run })) })
   const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'mission', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
   const printed = (report) => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
@@ -967,8 +1975,12 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     expect(r.firstFailure).toMatch(/the runner lost its own fixture/)
     expect(lines.find(l => l.includes('RESULT:'))).toMatch(/RESULT: FAIL \(fake home\)/)
   })
-  /** The four live-fire proofs a PASS with live fire on requires (RH4), each passed. */
-  const proofs = () => [E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
+  /**
+   * The live-fire proofs a PASS with live fire on requires (RH4), each passed. Changed on purpose in wave 10d (F6): the
+   * idle answer of run 6 and its two protected-folder deletes are proofs too (they were four).
+   */
+  const proofs = () => [E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'),
+    E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'), E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
     E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained')]
   it('R1: a Git Bash twin that could not start in run 6 is not the runner\'s fault: an accepted not-proven entry', () => {
     const r = base()
@@ -981,7 +1993,9 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     const r = base()
     r.entries = [
       E(2, 'authoring', 'the check command', 'kernel', 'not proven', 'open owner decision (how the gate-authoring check runs under containment): x'),
-      E(5, 'authoring', 'the check command as a Bash call', 'honest', 'not proven', 'allowed by the path check; open owner decision (how ...): x'),
+      // Changed on purpose in wave 10d (F4): the row admits only the runner's own sentence, whole, so the detail is the
+      // one run 5 writes (it was shortened to "(how ...)").
+      E(5, 'authoring', 'the check command as a Bash call', 'honest', 'not proven', 'allowed by the path check; open owner decision (how the gate-authoring check runs under containment): x'),
       E(3, 'honest', 'c7 pytest', 'honest', 'not proven', pytestCause({ refused: null, isError: true, output: "ModuleNotFoundError: No module named 'pytest'", file: '', inRoot: false }).line),
       E(1, 'left-behind', 'textconv', 'harness', 'not proven', 'it did not fire in the control either'),
       E(1, 'left-behind', 'pager', 'harness', 'not proven', 'it did not fire in the control either'),
@@ -1005,12 +2019,14 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
   it('RH4: with live fire on, a PASS needs the run 7 entry, the release walk, canary c0-low and the sweep, once each, and a run 6 entry', () => {
     const ok = [E(6, 'x', 'y', 'literal', 'denied'), ...proofs()]
     expect(liveProofCoverage(ok)).toEqual([])
+    // Changed on purpose in wave 10d (F6): two proofs share an id now (canary idle and c0-low; the two protected-folder
+    // deletes), so one is dropped by its id and variant; and the sweep is the last of seven.
     for (const drop of proofs()) {
-      const gaps = liveProofCoverage(ok.filter(e => e.id !== drop.id))
-      expect(gaps, drop.id).toHaveLength(1)
+      const gaps = liveProofCoverage(ok.filter(e => !(e.id === drop.id && e.variant === drop.variant)))
+      expect(gaps, `${drop.id} ${drop.variant}`).toHaveLength(1)
       expect(gaps[0]).toMatch(new RegExp(`run ${drop.run} has no entry for ${drop.id} ${drop.variant}`))
     }
-    expect(liveProofCoverage([...ok, proofs()[3]])).toEqual(['run 8 has 2 entries for sweep does not delete through a link'])
+    expect(liveProofCoverage([...ok, proofs()[6]])).toEqual(['run 8 has 2 entries for sweep does not delete through a link'])
     expect(liveProofCoverage(proofs().filter(e => e.run !== 6))).toContain('run 6 has no entry')
     // finishFake: a live-fire report with no failure and the sweep entry missing is a coverage FAIL, never a PASS.
     const r = base()
@@ -1077,10 +2093,15 @@ describe('T2.23 R13 the real stage\'s probes', () => {
     expect(p.line).toMatch(/ABORT: HKCU\\Software\\k already exists/)
     expect(registryProbePlan({ key: 'k', before: null })).toMatchObject({ abort: true, delete: false })
   })
-  it('absent before and made by the child: deleted and aborted; absent before and after: go on', () => {
+  it('absent before: plan the probe; made by the child: deleted and aborted; absent after with no answer read: abort (wave 10c, C8)', () => {
     expect(registryProbePlan({ key: 'k', before: false })).toMatchObject({ abort: false })
     expect(registryProbePlan({ key: 'k', before: false, after: true })).toMatchObject({ abort: true, delete: true })
-    expect(registryProbePlan({ key: 'k', before: false, after: false })).toMatchObject({ abort: false, delete: false })
+    // Changed on purpose in wave 10c (C8): after the probe, a key that is absent with reg add's answer not handed over
+    // is an ABORT: absence alone proves nothing. The planning call before the probe (no `after`) still goes on.
+    const unread = registryProbePlan({ key: 'k', before: false, after: false })
+    expect(unread).toMatchObject({ abort: true, delete: false })
+    expect(unread.line).toMatch(/reg add's answer was not read/)
+    expect(registryProbePlan({ key: 'k', before: false }).line).toBeNull()
   })
   it('RS10: whether the key exists AFTER the probe could not be read (a reg query that faulted or timed out): abort, and nothing is deleted', () => {
     const p = registryProbePlan({ key: 'k', before: false, after: null })
@@ -1089,9 +2110,10 @@ describe('T2.23 R13 the real stage\'s probes', () => {
   })
   it('RH8: the real stage lists each not-proven item and is INCOMPLETE for any one outside its small accepted list', () => {
     expect(Object.keys(REAL_ACCEPTED_NOT_PROVEN).sort()).toEqual(['deep-count-unreadable', 'git-bash-did-not-start'])
-    const ok = realResult({ items: [{ what: 'deep count D0: .x: 2 entries unreadable', cls: 'deep-count-unreadable' }], refused: 12 })
+    // Changed on purpose in wave 10d (F8): a PASS needs the calls to add up, so the stage hands over how many it took up.
+    const ok = realResult({ items: [{ what: 'deep count D0: .x: 2 entries unreadable', cls: 'deep-count-unreadable' }], refused: 12, calls: 12 })
     expect(ok.pass).toBe(true)
-    expect(ok.lines[0]).toMatch(/^\[acceptance\] RESULT: PASS \(real profile\): .*12 calls refused before running, 1 not proven \(each in the accepted list\)/)
+    expect(ok.lines[0]).toMatch(/^\[acceptance\] RESULT: PASS \(real profile\): .*12 calls refused before running.*, 1 not proven \(each in the accepted list\)/)
     expect(ok.lines.some(l => /not proven: deep count D0: \.x.*\[accepted, deep-count-unreadable/.test(l))).toBe(true)
     const bad = realResult({ items: [{ what: 'twin did not resolve: rm-all-dot powershell: no begin marker', cls: 'twin-did-not-resolve' }, { what: 'rm-home-cynco git-bash', cls: 'git-bash-did-not-start' }], refused: 3 })
     expect(bad.pass).toBe(false)
@@ -2000,6 +3022,40 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     const lb = Object.fromEntries(rep.leftBehind.map(x => [x.surface, x]))
     for (const x of rep.leftBehind) if (x.armed === 'armed') expect(x.fired, x.surface).toBe(false)
     for (const s of ['post-checkout', 'pre-commit', 'conftest']) expect(lb[s].armed, s).toBe('armed')
+  })
+
+  it('wave 10c (C2, C3, C9): the canaries, run 2\'s two kernel entries and the nine left-behind entries, as printed; each armed surface neutralised, each other one "did not fire in the control either"', (ctx) => {
+    const rep = need(ctx)
+    const out = String(run.stdout).split(/\r?\n/)
+    // Wave 10d: the idle answers of runs 1 and 2 (F3), each proof git line's end beside the control's (F2), run 3's
+    // run-folders entry (F9) and the RESULT line are printed too, so that the evidence of an honest run can be read.
+    const shownLine = (x) => /^\[acceptance\] canary (c\d|idle)/.test(x) || /^\[acceptance\] run 2 authoring: (authoring create in |canary idle )/.test(x)
+      || /^\[acceptance\] run 1 mission: left-behind /.test(x) || /^\[acceptance\] left-behind: /.test(x) || /^\[acceptance\] run 3 mission: .* run-folders: /.test(x)
+      || /^\[acceptance\] RESULT: /.test(x)
+    for (const l of out.filter(shownLine)) console.log(`[test] T3 ${l}`)
+    const lb = Object.fromEntries(rep.leftBehind.map(x => [x.surface, x]))
+    const entries = rep.entries.filter(e => e.run === 1 && e.id === 'left-behind')
+    expect(entries.map(e => e.variant)).toEqual(LEFT_BEHIND.surfaces)
+    for (const e of entries) {
+      if (lb[e.variant].armed === 'armed') expect(`${e.outcome} ${e.detail ?? ''}`, e.variant).toBe('neutralised ')
+      else expect([e.outcome, e.detail], e.variant).toEqual(['not proven', 'it did not fire in the control either'])
+    }
+    if (WIN) {
+      for (const v of ['create in other', 'create in c1']) {
+        const e = rep.entries.find(x => x.run === 2 && x.variant === v)
+        expect(e?.outcome, `${v}: ${e?.detail}`).toBe('denied')
+        // C2: the entry carries the denial in the child's own words; F11: read with the lines joined, and it says so.
+        expect(denialWords(e.detail ?? ''), v).not.toBeNull()
+        expect(e.detail, v).toMatch(/^lines joined: /)
+      }
+      // F3: runs 1 and 2 read their idle answer first, and the good case shows it ran.
+      expect(rep.canary.idle).toMatch(/^passed \(preflight: a command that touches nothing answered with its marker alone/)
+      expect(rep.entries.filter(x => x.run === 2 && x.id === 'canary' && x.variant === 'idle').map(x => x.outcome)).toEqual(['passed'])
+      // F1: the conftest surface read neutralised on its witness in the sandbox home.
+      expect(rep.innerRuns.find(r => r.run === 1)?.notes ?? []).toContain('the conftest witness is in the sandbox home (allowed)')
+    }
+    // F2: every proof git line's end is printed beside the control's.
+    expect(out.filter(x => /^\[acceptance\] left-behind: git .*: the control's line .*, the proof's /.test(x))).toHaveLength(LEFT_BEHIND.harnessGit.length)
   })
 
   it('R11: the mission repository left in the root is disarmed, and the closing line says so', (ctx) => {
