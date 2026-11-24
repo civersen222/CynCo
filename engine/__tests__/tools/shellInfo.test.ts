@@ -198,6 +198,17 @@ describe('autoTranslateEnvPrefix (rewrite instead of refuse)', () => {
     expect(autoTranslateEnvPrefix('cd proj; FOO=1 pytest; git status', ps51)).toBeNull()
   })
 
+  // An assignment that ends its own statement is not a prefix: it became `$env:t="./build;"; rm -rf "$t"`, a
+  // different command, which the path check then refused as unreadable (ninth review of the path check).
+  it('leaves an assignment that ends its own statement alone', () => {
+    for (const c of ['t=./build; rm -rf "$t"', 'OUT=out/report.txt; python report.py > "$OUT"', 'cd proj; t=./build; rm -rf "$t"']) {
+      expect(autoTranslateEnvPrefix(c, ps51)).toBeNull()
+      expect(translateEnvPrefix(c, ps51)).toBe(c)
+    }
+    // A real prefix after such an assignment is still a prefix.
+    expect(translateEnvPrefix('t=1; FOO=1 pytest', ps51)).toBe('t=1; $env:FOO="1"; pytest')
+  })
+
   it('returns null when there is nothing to translate', () => {
     expect(autoTranslateEnvPrefix('python -m pytest', ps51)).toBeNull()
     expect(autoTranslateEnvPrefix('python -m pytest -k test_x=1', ps51)).toBeNull()

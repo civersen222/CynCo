@@ -57,7 +57,9 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
  * that way. Anchored to the start of a command (string start or after `;`) so an
  * ordinary argument that happens to contain `=` is left alone.
  */
-const ENV_PREFIX = /(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)(?=\S)/
+// A value never holds a `;`: `X=v; cmd` is an assignment that ends its own statement, not a prefix of `cmd`
+// (until the ninth review of the path check it became `$env:X="v;"; cmd`, and the path check refused that).
+const ENV_PREFIX = /(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=[^\s;]*\s+)+)(?=\S)/
 
 /**
  * Rewrite a POSIX env prefix into this shell's dialect, or return the command

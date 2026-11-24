@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync, statSync } from 'fs'
+import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
+import { spawnSync } from 'child_process'
 import { join, dirname, relative, sep } from 'path'
 import { fileURLToPath } from 'url'
+import ts from 'typescript'
 import { DISPATCH_RUN_PREFIX } from '../../containment.js'
 
 /**
@@ -102,6 +104,24 @@ function bindingsOf(src: string): { names: Set<string>; namespaces: Set<string> 
 }
 
 /**
+ * `Bun.$` counted as code only: a file whose text holds the lexical shape is parsed, and only a
+ * property access `Bun.$` in the syntax tree counts, so the shape inside a string, a template's
+ * text or a comment (the path check names that call in its own messages) is not a spawn site.
+ */
+function bunShellCalls(raw: string, src: string): number {
+  if (!OTHER_SHAPES[0]!.test(src)) return 0
+  OTHER_SHAPES[0]!.lastIndex = 0
+  let n = 0
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === 'Bun' && node.name.text === '$') n++
+    ts.forEachChild(node, visit)
+  }
+  visit(ts.createSourceFile('x.ts', raw, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS))
+  return n
+}
+
+/**
  * A file "creates a process" when it imports child_process in any shape (three files hand the
  * function on by reference and call it nowhere by name), takes a spawn helper by name from
  * child_process, `scripts/cynco-spawn.mjs` or `engine/containment.ts`, calls one of the names
@@ -122,7 +142,7 @@ function countOf(raw: string): { creates: boolean; count: number } {
     count += (src.match(new RegExp(`(?<![\\w$])${escapeRe(ns)}\\.(?:${[...HELPERS].join('|')})\\s*\\(`, 'g')) ?? []).length
   }
   let other = 0
-  for (const re of OTHER_SHAPES) other += (src.match(re) ?? []).length
+  for (const re of OTHER_SHAPES) other += re === OTHER_SHAPES[0] ? bunShellCalls(raw, src) : (src.match(re) ?? []).length
   count += other
   return { creates: cp || names.size > 0 || count > 0, count }
 }
@@ -228,6 +248,7 @@ const SPAWN_SITES: Record<string, { count: number; class: SpawnClass; git?: true
   'scripts/cynco-smoke-campaign.mjs': { count: 1, class: 'harness-git', reason: 'git rev-parse in the smoke repository.' },
   'scripts/cynco-gate-author.mjs': { count: 10, class: 'harness-git', reason: 'git in the staging folder; its bun --check child starts in the checkout, and the gate runs inside it are contained by calibrate.' },
   'scripts/cynco-ideation.mjs': { count: 1, class: 'not-contained', reason: 'starts the ideation one-shot engine in the checkout (rule H1) under a daemon-task sandbox it establishes and the engine adopts.' },
+  'scripts/cynco-containment-acceptance.mjs': { count: 14, class: 'not-contained', reason: 'the acceptance harness: it starts its own inner process with a fake-home environment, and establishes a test containment there; it reads the planted git settings back with the harness git before its control runs.' },
   'scripts/cynco-campaign-verdict.mjs': { count: 3, class: 'not-contained', reason: 'git in the CynCo checkout (the verdict commit) and node scripts/supervision-economics.mjs (io.run), from the checkout.' },
   'scripts/cynco-conduct-ab.mjs': { count: 1, class: 'not-contained', reason: 'git init, add and commit (git = runSync) in a folder it has just copied from the template, before any run is dispatched into it.' },
   'scripts/cynco-hindcast.mjs': { count: 4, class: 'not-contained', reason: 'the harness\'s own python retrain script (run = runSync), from the checkout, on datasets the harness wrote.' },
@@ -275,6 +296,9 @@ describe('containment wiring: every process-creating call is classified (F242)',
     expect(one("const { spawn } = Bun\nspawn(['x'])")).toEqual({ creates: true, count: 1 })
     expect(one('io.run("python", [gate], { cwd })\nio.spawnSync("git", [])')).toEqual({ creates: true, count: 2 })
     expect(one('await Bun.$`rm -rf x`')).toEqual({ creates: true, count: 1 })
+    expect(one('const $ = Bun.$\nawait $`rm -rf x`')).toEqual({ creates: true, count: 1 })
+    // The shape named inside a string, a template's text or a comment is not a call.
+    expect(one("const why = 'Bun.$ with a command built at run time'\nconst at = `${via}>Bun.$`\n// Bun's shell (`Bun.$`)")).toEqual({ creates: false, count: 0 })
     expect(one("const m = await import(`node:${'child_process'}`)")).toEqual({ creates: true, count: 1 })
     expect(one("const m = await import(`child_process`)\nm.exec('x')")).toEqual({ creates: true, count: 1 })
     // A `/*` in a line comment or a glob opens no block comment.
@@ -888,5 +912,143 @@ describe('the logs (S8, F242)', () => {
     expect(d).toContain('queueOnFailure: false')
     const shutdown = d.slice(d.indexOf('const shutdown = () => {'))
     expect(shutdown.indexOf('clearInterval(housekeeping)')).toBeGreaterThan(shutdown.indexOf('clearInterval(interval)'))
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// Slice S9 (A20): the acceptance script holds destructive text through its catalog. An inner
+// process may hold it only after `innerSelfCheck` has shown that it sees a fake home; these pins
+// keep the order and the spelling that make that true. Read as text; nothing here is imported or run.
+// ---------------------------------------------------------------------------------------------
+
+describe('the acceptance script cannot hold attack text before it has checked whose home it sees (S9, F242)', () => {
+  const acc = () => read('scripts/cynco-containment-acceptance.mjs')
+
+  /** Every static import statement of a source, single-line or spread over lines, as `[statement, specifier]`. */
+  const staticImports = (src: string): Array<[string, string]> =>
+    [...src.matchAll(/^\s*(?:import|export)\s(?![^;\n]*\bimport\s*\()[\s\S]*?\bfrom\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]/gm)]
+      .filter(m => !/^\s*(?:import|export)\s+type\s/.test(m[0]))
+      .map(m => [m[0], (m[1] ?? m[2])!])
+
+  it('imports nothing from engine/ statically except the mission predicate (a statement spread over lines included)', () => {
+    const offenders = staticImports(acc()).filter(([, spec]) => /^\.\.\/engine\/(?!missionEnv\.js$)/.test(spec)).map(([s]) => s)
+    expect(offenders).toEqual([])
+    // The reading sees the multi-line form the script uses for node:fs, so it would see one for engine/ too.
+    expect(staticImports("import {\n  a,\n  b,\n} from '../engine/containment.js'").map(([, s]) => s)).toEqual(['../engine/containment.js'])
+  })
+
+  it('what its static imports load before the self-check is a pinned set of engine modules with nothing but declarations at their top level', () => {
+    // Through ./cynco-spawn.mjs the script loads engine modules before innerSelfCheck runs. Each was
+    // read for this pin: its top level declares and exports, and calls nothing. A new module in this
+    // set, or a top-level statement that does something, fails here and is read before it lands.
+    const seen = new Set<string>()
+    const fileOf = (spec: string, from: string): string | null => {
+      if (!spec.startsWith('.')) return null
+      const p = join(dirname(from), spec)
+      for (const c of [p, p.replace(/\.js$/, '.ts')]) {
+        try { if (statSync(c).isFile()) return c } catch { continue } // not this spelling: the next is tried
+      }
+      return null
+    }
+    const walk = (abs: string) => {
+      if (seen.has(abs)) return
+      seen.add(abs)
+      for (const [, spec] of staticImports(readFileSync(abs, 'utf-8'))) {
+        const next = fileOf(spec, abs)
+        if (next) walk(next)
+      }
+    }
+    walk(join(repoRoot, 'scripts', 'cynco-containment-acceptance.mjs'))
+    const engineMods = [...seen].map(f => relative(repoRoot, f).split(sep).join('/')).filter(f => f.startsWith('engine/')).sort()
+    expect(engineMods).toEqual(['engine/containment.ts', 'engine/missionEnv.ts', 'engine/paths.ts', 'engine/realPath.ts'])
+    // A declaration, or a parameter of a signature wrapped onto its own line (`ctx: RunContainment | null = ...`).
+    const DECLARATION = /^(?:import |export (?:function|async function|const|let|class|type|interface|\{|\*)|const |let |function |async function |class |type |interface |declare |[\w$]+\??: )/
+    for (const mod of engineMods) {
+      const lines = read(mod).split(/\r?\n/)
+      const loose = lines.map((l, i) => [i + 1, l] as const).filter(([, l]) => /^[^\s}/*)\]]/.test(l) && !DECLARATION.test(l))
+      expect(loose.map(([n, l]) => `${mod}:${n}: ${l}`), `${mod} has a top-level statement that is not a declaration`).toEqual([])
+      const calls = lines.map((l, i) => [i + 1, l] as const).filter(([, l]) => /^(?:export )?(?:const|let) [\w$]+(?:: [^=]+)? = (?:await )?[\w$.]+\(/.test(l))
+      expect(calls.map(([n, l]) => `${mod}:${n}: ${l}`), `${mod} calls a function at its top level`).toEqual([])
+    }
+  })
+
+  it('innerMain calls innerSelfCheck before its first dynamic import', () => {
+    const s = acc()
+    const start = s.indexOf('async function innerMain(')
+    expect(start).toBeGreaterThan(-1)
+    const rest = s.slice(start)
+    const end = rest.search(/\r?\n\}\r?\n/)
+    expect(end).toBeGreaterThan(-1)
+    const body = rest.slice(0, end)
+    const check = body.indexOf('innerSelfCheck(')
+    const firstImport = body.indexOf('await import(')
+    expect(check).toBeGreaterThan(-1)
+    expect(firstImport, 'innerMain imports no engine module at all').toBeGreaterThan(-1)
+    expect(firstImport).toBeGreaterThan(check)
+  })
+
+  it('exports the real-profile flag and variable under the names the tests use', () => {
+    // Built by concatenation, as containmentDefaultsAreNotLive.test.ts builds them: a test file may not spell either.
+    const flag = '--real' + '-profile'
+    const variable = 'LOCALCODE_CONTAINMENT_' + 'REAL_PROFILE'
+    const s = acc()
+    expect(s).toContain(`export const REAL_PROFILE_FLAG = '${flag}'`)
+    expect(s).toContain(`export const REAL_PROFILE_VAR = '${variable}'`)
+  })
+
+  it('removes single entries only: no recursive remove in the script', () => {
+    expect(acc().includes('rmSync(')).toBe(false)
+  })
+})
+
+// ─── dispatch-mission.sh: an engine is confirmed dead only by tasklist's own answer (F242) ───────
+describe('dispatch-mission.sh confirms a dead engine fail-closed (F242)', () => {
+  const sh = () => read('scripts/dispatch-mission.sh').replace(/\r\n/g, '\n')
+  const code = () => sh().split('\n').filter(l => !l.trim().startsWith('#')).join('\n')
+  const fnText = () => {
+    const s = sh()
+    const start = s.indexOf('engine_listing() {')
+    expect(start, 'engine_listing() is gone').toBeGreaterThan(-1)
+    return s.slice(start, s.indexOf('\n}\n', start) + 2)
+  }
+
+  it('no tasklist pipeline decides "dead" any more: both confirmations go through engine_listing', () => {
+    const c = code()
+    // A failed tasklist made `tasklist ... | grep -q` false, and the engine counted as gone.
+    expect(c).not.toMatch(/tasklist[^\n]*\|\s*grep -q/)
+    expect(c.match(/tasklist \/\//g)?.length, 'tasklist is run in one place only, inside engine_listing').toBe(1)
+    const fn = c.slice(c.indexOf('dispatch_abandoned() {'), c.indexOf('trap dispatch_abandoned EXIT'))
+    expect(fn).toContain('engine_listing "$ENGINE_WINPID"')
+    expect(fn).toContain('if [ "$ENGINE_LISTING" = gone ]; then break; fi')
+    // Anything that is not "gone" and not "listed" posts not-confirmed-dead with its reason.
+    expect(fn).toContain('elif [ "$ENGINE_LISTING" != gone ]; then')
+    expect(fn).toContain('--engine-not-confirmed-dead "pid $ENGINE_WINPID after taskkill: ${ENGINE_LISTING#unknown: }"')
+    const watcher = c.slice(c.indexOf('ENGINE_GONE=\n'), c.indexOf('--by dispatch-watcher >>'))
+    expect(watcher).toContain('engine_listing "$ENGINE_WINPID"')
+    expect(watcher).toContain('if [ "$ENGINE_LISTING" = gone ]; then ENGINE_GONE=1; break; fi')
+    expect(watcher).toContain('NOT_DEAD_WHY="pid $ENGINE_WINPID 60 s after mission end: ${ENGINE_LISTING#unknown: }"')
+    // The function is defined before the trap that uses it and before the watcher subshell.
+    expect(c.indexOf('engine_listing() {')).toBeLessThan(c.indexOf('dispatch_abandoned() {'))
+  })
+
+  const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : '/bin/bash'
+  it.skipIf(!existsSync(bash))('engine_listing: "gone" only on the no-match line; a failed, empty or unreadable tasklist is unknown', () => {
+    const fn = fnText()
+    const answer = (stub: string) => {
+      // Under the dispatch script's own `set -euo pipefail`, called as a plain statement the way the
+      // EXIT trap and the watcher call it: a failed tasklist must give an answer, not abort the caller.
+      const script = `set -euo pipefail\ntasklist() { ${stub}; }\n${fn}\nengine_listing 4242\nprintf '%s' "$ENGINE_LISTING"\n`
+      const r = spawnSync(bash, ['-c', script], { encoding: 'utf-8', timeout: 20_000 })
+      expect(r.status, r.stderr).toBe(0)
+      return r.stdout
+    }
+    expect(answer("echo 'INFO: No tasks are running which match the specified criteria.'")).toBe('gone')
+    expect(answer(`printf '"bun.exe","4242","Console","1","10 K"\\r\\n'`)).toBe('listed')
+    expect(answer('return 1')).toBe('unknown: tasklist could not be run or failed (exit 1)')
+    expect(answer('return 127')).toBe('unknown: tasklist could not be run or failed (exit 127)')
+    expect(answer(':')).toBe('unknown: tasklist printed nothing')
+    expect(answer("echo 'ERROR: Invalid argument/option'")).toBe('unknown: tasklist printed what this does not read')
+    // Another pid's row is not this engine's row, and it is not a "no such task" answer either.
+    expect(answer(`printf '"bun.exe","14242","Console","1","10 K"\\r\\n'`)).toBe('unknown: tasklist printed what this does not read')
   })
 })

@@ -194,10 +194,13 @@ describe('constant propagation (2.M1)', () => {
     expect(pathsOf(scan(`python -c "p = r'D:\\x'; import shutil; shutil.rmtree(p)"`), 'delete')).toContain('D:\\x')
     expect(pathsOf(scan(`node -e "const p = 'D:/x'; require('fs').rmSync(p, { recursive: true })"`), 'delete')).toContain('D:\\x')
   })
-  it('a name assigned twice or from a call is unreadable', () => {
+  it('a name assigned twice is each of its values; one from a call is unreadable', () => {
+    // Every value the name ever held, whatever the order (review 2026-11-24, seventh, P13: it was unreadable).
     const twice = scan("$t = 'C:\\a'; $t = 'C:\\b'; Remove-Item $t")
-    expect(pathsOf(twice, 'delete')).toEqual([])
-    expect(twice.unresolvedMutation?.op).toBe('delete')
+    expect(pathsOf(twice, 'delete')).toEqual(['C:\\a', 'C:\\b'])
+    expect(twice.unresolvedMutation).toBeNull()
+    // One value it cannot read makes the name unreadable.
+    expect(scan("$t = 'C:\\a'; $t += 'x'; Remove-Item $t").unresolvedMutation?.op).toBe('delete')
     const call = scan('$t = Get-Content x; Remove-Item $t')
     expect(pathsOf(call, 'delete')).toEqual([])
     expect(call.unresolvedMutation?.op).toBe('delete')
@@ -219,18 +222,26 @@ describe('the whole-argument rule (2.M1)', () => {
     const lit = scan(`python -c "import shutil; shutil.rmtree('build')"`)
     expect(pathsOf(lit, 'delete')).toEqual(['C:\\Users\\u\\proj\\build'])
     expect(lit.unresolvedMutation).toBeNull()
+    // `Path(...).expanduser()` is the same path, read since the sixth review (2026-11-24).
     const exp = scan(`python -c "import shutil; from pathlib import Path; shutil.rmtree(Path('~/.cynco').expanduser())"`)
-    expect(pathsOf(exp, 'delete')).toEqual([])
-    expect(exp.unresolvedMutation?.op).toBe('delete')
-    expect(pathsOf(exp, 'mention')).toContain('C:\\Users\\u\\.cynco')
+    expect(pathsOf(exp, 'delete')).toEqual(['C:\\Users\\u\\.cynco'])
+    expect(exp.unresolvedMutation).toBeNull()
+    // `.parent` and `dirname` are read as a climb written after the path (review 2026-11-24, eighth, C1).
     const par = scan(`python -c "import shutil; from pathlib import Path; shutil.rmtree(Path('.').resolve().parent / '.cynco')"`)
-    expect(par.unresolvedMutation?.op).toBe('delete')
-    expect(par.parentClimb).toBeGreaterThanOrEqual(1)
+    expect(pathsOf(par, 'delete')).toEqual(['C:\\Users\\u\\.cynco'])
+    expect(par.unresolvedMutation).toBeNull()
+    // A method the scan does not fold is still unresolved.
+    const meth = scan(`python -c "import shutil; from pathlib import Path; shutil.rmtree(Path('.').resolve().joinpath(x))"`)
+    expect(meth.unresolvedMutation?.op).toBe('delete')
   })
-  it('os.path.dirname(os.getcwd()) counts one climb', () => {
+  it('os.path.dirname(os.getcwd()) is the parent of the working folder', () => {
     const s = scan(`python -c "import os, shutil; shutil.rmtree(os.path.dirname(os.getcwd()))"`)
-    expect(s.unresolvedMutation?.op).toBe('delete')
-    expect(s.parentClimb).toBe(1)
+    expect(pathsOf(s, 'delete')).toEqual(['C:\\Users\\u'])
+    expect(s.unresolvedMutation).toBeNull()
+    // A climb token beside an unread write still counts it (`dirname` of a name the scan cannot read).
+    const u = scan(`python -c "import os, shutil; shutil.rmtree(os.path.dirname(x))"`)
+    expect(u.unresolvedMutation?.op).toBe('delete')
+    expect(u.parentClimb).toBe(1)
   })
 })
 
@@ -248,10 +259,10 @@ describe('inline code', () => {
   it('doubled backslashes are unescaped', () => {
     expect(pathsOf(scan(`python -c "import os; os.remove('C:\\\\a\\\\b')"`), 'delete')).toEqual(['C:\\a\\b'])
   })
-  it('a concatenation is an unresolved delete and a home mention', () => {
+  it('a concatenation of values the scan reads is the path it makes (sixth review)', () => {
     const s = scan(`node -e "require('fs').rmSync(require('os').homedir()+'/.x',{recursive:true})"`)
-    expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: expect.any(String), recursive: true })
-    expect(pathsOf(s, 'mention')).toContain('C:\\Users\\u')
+    expect(s.unresolvedMutation).toBeNull()
+    expect(pathsOf(s, 'delete')).toContain('C:\\Users\\u\\.x')
   })
 })
 
@@ -351,7 +362,9 @@ describe('program position', () => {
   it('a script is an exec target; -m names nothing', () => {
     expect(pathsOf(scan('python C:\\a\\tool.py'), 'exec')).toEqual(['C:\\a\\tool.py'])
     expect(pathsOf(scan('.\\run.ps1'), 'exec')).toEqual(['C:\\Users\\u\\proj\\run.ps1'])
-    expect(scan('python -m pytest tests/').paths.filter(p => !p.startedIn)).toEqual([])
+    // `-m pytest` is pytest, with its own option table (review 2026-11-24, seventh): its operands are reads.
+    expect(scan('python -m pytest tests/').paths.filter(p => !p.startedIn && p.op !== 'read')).toEqual([])
+    expect(pathsOf(scan('python -m pytest --basetemp=../.cache'), 'delete')).toEqual(['C:\\Users\\u\\.cache'])
   })
 })
 
@@ -496,8 +509,8 @@ describe('the review of 2026-11-23', () => {
     expect(lower(pathsOf(s, 'delete'))).toEqual(expect.arrayContaining(['c:\\users\\u', 'd:\\x']))
     expect(pathsOf(scan('for /r C:\\src %f in (*.pyc) do del %f'), 'mention')).toContain('C:\\src')
     expect(pathsOf(scan('for %f in (a b) do del %f'), 'delete')).toEqual(['C:\\Users\\u\\proj\\a', 'C:\\Users\\u\\proj\\b'])
-    // A modifier, /r and a list that cannot be read keep the variable unread.
-    expect(scan('for /r C:\\src %f in (*.pyc) do del %f').unresolvedMutation?.op).toBe('delete')
+    // `/r ROOT` is every item under ROOT (sixth review); a modifier and a list that cannot be read keep the variable unread.
+    expect(ofOp(scan('for /r C:\\src %f in (*.pyc) do del %f'), 'delete').map(p => [p.path, p.children])).toEqual([['C:\\src', true]])
     expect(scan('for %f in (%NOPE%) do del %f').unresolvedMutation?.op).toBe('delete')
     expect(scan('for %f in (a) do del %~dpf').unresolvedMutation?.op).toBe('delete')
     // a POSIX for is not cmd's
@@ -505,11 +518,14 @@ describe('the review of 2026-11-23', () => {
   })
   it('%X% with a one-letter name and a cmd set binding', () => {
     // cmd expands %X% when it reads the line, before a `set X=` on that line has run (measured, review
-    // 2026-11-23, third): the delete is through a name the scan cannot read, and the value stays beside it.
+    // 2026-11-23, third). A name not defined then is left as written: a folder named `%X%` in the working
+    // folder (review 2026-11-24, seventh). The value stays beside it, judged.
     const same = scan('cmd /c "set X=D:\\v && rd /s /q %X%"')
-    expect(pathsOf(same, 'delete')).toEqual([])
-    expect(same.unresolvedMutation).toEqual({ op: 'delete', verb: 'rd', recursive: true })
+    expect(pathsOf(same, 'delete')).toEqual(['C:\\Users\\u\\proj\\%X%'])
+    expect(same.unresolvedMutation).toBeNull()
     expect(pathsOf(same, 'unclassified')).toEqual(['D:\\v'])
+    // `call` reads the line again, with the value set: not a literal.
+    expect(scan('cmd /c "set X=D:\\v && call rd /s /q %%X%%"').unresolvedMutation?.op).toBe('delete')
     // A PowerShell assignment has run before cmd starts: cmd sees its value.
     expect(pathsOf(scan("$env:X='D:\\v'; cmd /c rd /s /q %X%"), 'delete')).toEqual(['D:\\v'])
   })
@@ -518,7 +534,8 @@ describe('the review of 2026-11-23', () => {
     expect(pathsOf(scan('Remove-Item %SystemDrive%\\x'), 'delete')).toEqual(['C:\\x'])
     expect(pathsOf(scan('Remove-Item $env:PUBLIC\\x'), 'delete')).toEqual(['C:\\Users\\Public\\x'])
     expect(pathsOf(scan('Remove-Item $env:ALLUSERSPROFILE\\x'), 'delete')).toEqual(['C:\\ProgramData\\x'])
-    expect(pathsOf(scan('rm -rf $OneDrive/x', X, XBASE), 'delete')).toEqual([])
+    // POSIX names are case-sensitive: `$OneDrive` is not set there, so the word is the root (sixth review).
+    expect(pathsOf(scan('rm -rf $OneDrive/x', X, XBASE), 'delete')).toEqual(['/'])
   })
   it('a recursive delete through an unset name and a separator is the root of the drive; a bound one is not', () => {
     expect(ofOp(scan('Remove-Item -Recurse "$env:NOPE\\*"'), 'delete').map(p => [p.path, p.children])).toEqual([['C:\\', true]])
@@ -572,9 +589,11 @@ describe('the second review of 2026-11-23: what the scan reads', () => {
     expect(scan("$env:GITX='D:\\DCIM'; echo hi").paths.some(p => p.op === 'mention' && p.path === 'D:\\DCIM')).toBe(true)
   })
   it('the pipeline item after text is a child of that text and an unresolved mutation; first, it inherits', () => {
+    // A value list of plain names feeding the block: the word once per name (sixth review).
     const s = scan("'.cache' | % { Remove-Item \"$HOME\\$_\" -Recurse }")
-    expect(lower(pathsOf(s, 'delete'))).toContain('c:\\users\\u')
-    expect(s.unresolvedMutation?.op).toBe('delete')
+    expect(lower(pathsOf(s, 'delete'))).toEqual(['c:\\users\\u\\.cache'])
+    expect(s.unresolvedMutation).toBeNull()
+    expect(scan("$x | % { Remove-Item \"$HOME\\$_\" -Recurse }").unresolvedMutation?.op).toBe('delete')
     expect(lower(pathsOf(scan('Get-ChildItem build | % { Remove-Item -Recurse "$_\\obj" }'), 'delete'))).toEqual(['c:\\users\\u\\proj\\build'])
   })
   it('a group followed by a member is one unreadable operand, not a path inside the mission folder', () => {
@@ -835,7 +854,7 @@ describe('the fourth review of 2026-11-23', () => {
     ["cmd /c pushd D:\\ '&&' rd /s /q DCIM", 'delete', 'D:\\DCIM'],
     ["cmd /c echo y '|' del /s D:\\DCIM\\*", 'delete', 'D:\\DCIM'],
     ['cmd /c pushd D:\\ --% && rd /s /q DCIM', 'delete', 'D:\\DCIM'],
-    ["wsl cd /mnt/d ';' rm -rf /mnt/d/DCIM", 'delete', 'C:\\mnt\\d\\DCIM'],
+    ["wsl cd /mnt/d ';' rm -rf /mnt/d/DCIM", 'delete', 'D:\\DCIM'],
     // $(Get-Location) and $(Resolve-Path ~) are the anchors
     ['Remove-Item -Recurse -Force "$(Get-Location)\\..\\.cynco"', 'delete', 'C:\\Users\\u\\.cynco'],
     ['Remove-Item -Recurse -Force "$(Resolve-Path ~)\\.ssh"', 'delete', 'C:\\Users\\u\\.ssh'],
@@ -859,6 +878,8 @@ describe('the fourth review of 2026-11-23', () => {
     ['cmd /c "for /d %d in (build\\*) do rd /s /q "%d""', 'delete', 'C:\\Users\\u\\proj\\build'],
     ["'build','dist' | % { Remove-Item \".\\$_\" -Recurse -Force }", 'delete', 'C:\\Users\\u\\proj\\dist'],
     ['Get-ChildItem -Recurse -Filter *.pyc | Remove-Item -Force', 'delete', 'C:\\Users\\u\\proj'],
+    // names a listing hands on with -Name are read against the working folder (review 2026-11-24, seventh)
+    ['Set-Location D:\\; Get-ChildItem C:\\Users\\u\\proj\\fake -Name | Remove-Item -Recurse -Force', 'delete', 'D:\\'],
   ]
   for (const [cmd, op, path] of READS) {
     it(`${op} ${path}: ${JSON.stringify(cmd).slice(0, 90)}`, () => {
@@ -867,7 +888,6 @@ describe('the fourth review of 2026-11-23', () => {
   }
   // [command, op]: a mutation through a target the scan cannot read.
   const UNREAD: Array<[string, string]> = [
-    ['Set-Location D:\\; Get-ChildItem C:\\Users\\u\\proj\\fake -Name | Remove-Item -Recurse -Force', 'delete'],
     ['Get-Item . | & { process { $_.Parent } } | Remove-Item -Recurse -Force', 'delete'],
     ['Get-Item . | . { process { $_.Parent } } | Remove-Item -Recurse -Force', 'delete'],
     ['Get-Item . | ForEach-Object { Remove-Item $_.Parent.FullName -Recurse -Force }', 'delete'],
@@ -917,7 +937,8 @@ describe('the fourth review of 2026-11-23', () => {
     const stale = scan('Set-Location "$((Get-Volume -FileSystemLabel LUMIX).DriveLetter):/"; Remove-Item "$PWD/DCIM" -Recurse -Force')
     expect(ofOp(stale, 'delete').some(p => p.staleBase)).toBe(true)
     expect(scan('Set-Location (Get-PSDrive D).Root; python clean.py').unreadFolder?.verb).toBe('python')
-    expect(scan("$t = [char]68 + ':\\DCIM'; sdelete -s -q $t").unreadOperand?.verb).toBe('sdelete')
+    // sdelete's operands are deletes since the sixth review: one it cannot read is an unread delete.
+    expect(scan("$t = [char]68 + ':\\DCIM'; sdelete -s -q $t").unresolvedMutation?.op).toBe('delete')
     // keywords, expressions and read-only cmdlets are not programs
     for (const c of ['if (-not $?) { exit 1 }', '[Math]::Min($a, $b)', '$x | Select-Object -First $n', '(Get-Date) - $start']) {
       expect(scan(c).unreadOperand, c).toBeNull()
@@ -943,5 +964,47 @@ describe('the fourth review of 2026-11-23', () => {
       expect(s.unresolvedMutation, c).toBeNull()
       expect(s.selfBuilding, c).toBeNull()
     }
+  })
+})
+
+describe('the seventh review of 2026-11-24: what the scan reads', () => {
+  it('PowerShell binds a one-letter name, an alias, a prefix of an alias and a colon then a space', () => {
+    expect(pathsOf(scan('Get-ChildItem -L:C:\\Users\\u -Force | Remove-Item -Recurse -Force'), 'delete')).toEqual(['C:\\Users\\u'])
+    expect(pathsOf(scan('Set-Location -PSP C:\\x; Remove-Item .cache -Recurse'), 'delete')).toEqual(['C:\\x\\.cache'])
+    expect(pathsOf(scan('Copy-Item -Destination: C:\\x\\y .\\a.txt'), 'write')).toEqual(['C:\\x\\y'])
+    expect(ofOp(scan('New-Item -Ty Junction -Path .\\l -Target C:\\x'), 'link').map(p => p.linkTarget)).toEqual(['C:\\x'])
+    expect(pathsOf(scan('Push-Location -StackName s C:\\x; Remove-Item a'), 'delete')).toEqual(['C:\\x\\a'])
+  })
+  it('a braced PowerShell name is the whole text up to its brace, never a POSIX expansion', () => {
+    expect(pathsOf(scan("${x-y} = 'C:\\a'; Remove-Item ${x-y}"), 'delete')).toEqual(['C:\\a'])
+    expect(pathsOf(scan("${C:\\a\\b.txt} = 'x'"), 'write')).toEqual(['C:\\a\\b.txt'])
+    expect(scan("$t = 'a'; $variable:t = 'C:\\x'; Remove-Item $t").paths.some(p => p.op === 'delete' && p.path === 'C:\\x')).toBe(true)
+    expect(scan("$t = 'a'; (Get-Variable t).Value = 'C:\\x'; Remove-Item $t").unresolvedMutation?.op).toBe('delete')
+  })
+  it('an item source of a comma list is one item per path, and a method on a list runs on every element', () => {
+    expect(pathsOf(scan('$d = Get-Item .\\a,C:\\x; Remove-Item $d'), 'delete')).toEqual(['C:\\Users\\u\\proj\\a', 'C:\\x'])
+    expect(pathsOf(scan("$t = '.\\a','C:\\x'; Remove-Item $t.Trim()"), 'delete')).toEqual(['C:\\Users\\u\\proj\\a', 'C:\\x'])
+  })
+  it('a temp name assigned a value in the run is bound; one assigned elsewhere or unread is reported', () => {
+    expect(scan('$env:TEMP = "$env:CYNCO_SCRATCH\\t"; python x.py').tempRedirected).toBeNull()
+    expect(scan('TMPDIR=$(mktemp -d); python x.py').tempRedirected).toBeNull()
+    expect(scan("$env:TEMP = 'C:\\x'; python x.py").tempRedirected).toMatch(/TEMP/)
+    expect(scan('$env:TEMP += "x"; python x.py').tempRedirected).toMatch(/TEMP/)
+    // `$tmp` and POSIX `tmp` are variables, and an env: item that names no temp variable touches none.
+    expect(scan("$tmp = 'C:\\x'; python x.py").tempRedirected).toBeNull()
+    expect(scan('Remove-Item Env:NODE_ENV; python x.py').tempRedirected).toBeNull()
+    expect(scan("Set-Item Env:TMP 'C:\\x'; python x.py").tempRedirected).not.toBeNull()
+  })
+  it('New-Item hands its variable the item it makes', () => {
+    expect(pathsOf(scan('$d = New-Item -ItemType Directory -Force .\\out\\w; Remove-Item $d -Recurse'), 'delete')).toEqual(['C:\\Users\\u\\proj\\out\\w'])
+    expect(ofOp(scan('$d = New-Item -ItemType Directory -Path (Join-Path $env:TEMP (Get-Random)); Remove-Item $d'), 'delete').map(p => p.children)).toEqual([true])
+  })
+  it('find runs a delete body that names more than the item on each root, never skipping it', () => {
+    expect(pathsOf(scan("find . -name x -exec rm -rf ~/.cache/{} \\;"), 'delete').some(p => p.startsWith('C:\\Users\\u\\.cache'))).toBe(true)
+    expect(pathsOf(scan("find . -name '*.pyc' -exec rm -f {} +"), 'delete')).toEqual(['C:\\Users\\u\\proj'])
+  })
+  it('an interpreter option that takes a value does not hide the program after it', () => {
+    expect(pathsOf(scan("python -X utf8 -c \"import shutil; shutil.rmtree('C:/x')\""), 'delete')).toEqual(['C:\\x'])
+    expect(pathsOf(scan("perl -I lib -e \"use File::Path; rmtree('C:/x')\""), 'delete')).toEqual(['C:\\x'])
   })
 })

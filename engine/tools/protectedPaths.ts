@@ -43,7 +43,7 @@ export type PathContext = {
 }
 export type PathRule = 'no-access' | 'self-building' | 'unreadable' | 'device' | 'unprotected-volume' | 'home'
   | 'home-dot' | 'state' | 'ancestor' | 'git-internals' | 'git-config' | 'link-out' | 'outside' | 'unresolved' | 'unclassified'
-export type EscalateNote = { rule: 'root-delete' | 'git-destructive'
+export type EscalateNote = { rule: 'root-delete' | 'git-destructive' | 'inline-unread-write'
   reason: string; targets: string[]; recursive: boolean; isolation: 'verified' | 'overlay' }
 export type PathVerdict =
   | { kind: 'allow' }
@@ -258,6 +258,9 @@ const HINT: Partial<Record<PathRule, string>> = {
   unreadable: 'Write long content to a file with the Write tool, and run a long program from a file in the mission folder.',
 }
 
+/** What the model is told after a volume, disk, partition, shadow-copy or backup operation. */
+const DEVICE_HINT = 'An unattended run never formats, partitions, wipes or relabels a volume, and never deletes shadow copies or backups (a shadow copy is how lost files are restored). If the mission needs one, say in your reply what and why; the owner does it by hand.'
+
 /** The hint for a path found inside an inline program (`python -c`, `node -e`, a here-document fed to one). */
 const INLINE_HINT = 'The check reads an inline program as text and does not know what this call does with that path. If the program only reads it, write the program to a file in the mission folder with the Write tool and run that file (python <file>, node <file>).'
 
@@ -340,6 +343,9 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
 
   named.paths.forEach((n, i) => {
     const order = i + 1
+    // A volume, disk, partition, shadow-copy or backup operation (policy item 5 of the sixth review): no
+    // rewrite in a run makes it safe, and the text names what the owner can do instead.
+    if (n.deviceOp) { add('device', order, () => `this command ${n.deviceOp}`, undefined, DEVICE_HINT, false); return }
     if (n.device) { add('device', order, () => `${n.raw} is a device or volume path`); return }
     const real = realOf(n)
     if (n.source === 'field' && n.op !== 'link') {
@@ -412,7 +418,10 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
       add('unresolved', i + 1, () => `this command names ${shown(n.raw, real)} (${cat}) and also ${OP_VERB[um.op]} through a variable, a pipeline or a computed path that cannot be read before it runs`, real,
         fromInlineProgram(n) ? INLINE_HINT : undefined)
     })
-    if (scan && scan.parentClimb > 0) {
+    // An inline program's own unread write is escalated, not walked up (review 2026-11-24, eighth, C1): a climb
+    // token anywhere in its text (`.parent` of a literal, `dirname` in a print) names no place, and the walk gave a
+    // false reason for a readable target. A delete or a move is still walked.
+    if (scan && scan.parentClimb > 0 && !(um.code === true && um.op === 'write')) {
       const P = pathModule(pc.platform)
       let cur = canonPath(toolCwd, pc.platform)
       for (let k = 0; k < Math.min(scan.parentClimb, 16); k++) {
@@ -433,7 +442,7 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
   // The default-deny rules of the fourth review (each one below, with what it refuses, why, what the model
   // is told to write instead and how to relax it).
   const late = named.paths.length + 64
-  refuseUnreadTarget(named, add, late)
+  refuseUnreadTarget(named, pc, add, late)
   refuseRedirectedAnchor(named, add, late)
   refuseUnreadFolder(named, add, late)
   refuseUnreadOperand(named, add, late)
@@ -458,31 +467,69 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
 
 type AddCandidate = (rule: PathRule, order: number, reason: () => string, target?: string, hint?: string, noRetry?: boolean) => void
 
-/** What the model is told to write instead of a target the check cannot read. */
-const UNREAD_HINT = 'The check runs only what it can read. Spell each target as a literal path relative to the mission folder (Remove-Item -Recurse -Force .\\build), one call per target; to remove what a listing finds, pipe a listing of a literal folder straight into the command (Get-ChildItem .\\build -Filter *.pyc | Remove-Item), or list it in one call and delete the items by name in the next; to write content to a file use the Write tool.'
+/**
+ * What the model is told to write instead of a target the check cannot read, in the shell it wrote (review
+ * 2026-11-24, seventh, rule 4): the literal form, one call per target, a listing of a literal folder for what a
+ * listing finds, a literal path under the scratch folder for temporary work (the brief's own rule), the Write tool
+ * for content. It never says "do not retry": every one of these forms passes.
+ */
+const UNREAD_HINTS: Record<'ps' | 'cmd' | 'posix', string> = {
+  ps: 'The check runs only what it can read. Spell each target as a literal path relative to the mission folder (Remove-Item -Recurse -Force .\\build), one call per target; to remove what a listing finds, pipe a listing of a literal folder straight into the command (Get-ChildItem .\\build -Filter *.pyc | Remove-Item); to rename what a listing finds, give Rename-Item a new name only (Get-ChildItem .\\out\\*.log | Rename-Item -NewName { $_.Name -replace \'\\.log$\', \'.old\' }); for temporary work use a literal path under the scratch folder ("$env:CYNCO_SCRATCH\\work"); to write content to a file use the Write tool.',
+  cmd: 'The check runs only what it can read. Spell each target as a literal path relative to the mission folder (rd /s /q build), one call per target; to remove what a listing finds, name a literal folder and pattern (del /s /q build\\*.pyc); for temporary work use a literal path under the scratch folder (%CYNCO_SCRATCH%\\work); to write content to a file use the Write tool.',
+  posix: 'The check runs only what it can read. Spell each target as a literal path relative to the mission folder (rm -rf ./build), one call per target; to remove what a listing finds, give find a literal folder (find ./build -name \'*.pyc\' -delete); for temporary work use a literal path under the scratch folder ("$CYNCO_SCRATCH/work"); to write content to a file use the Write tool.',
+}
+
+function unreadHint(dialect: 'ps' | 'cmd' | 'posix' | null): string {
+  return UNREAD_HINTS[dialect ?? 'ps']
+}
 
 /**
  * RS1. Refuses a call whose scan found a write, delete, move or link through a target it could not read
  * (a variable, a pipeline element that changes its items, a computed path, a subexpression, an unknown
- * parameter), whatever the operation and whether or not it is recursive. Measured cost: 3 of 3,342 past
- * calls (`fs.writeFileSync(f, ...)` inside a helper of an inline program), each with a literal rewrite. The
- * model is told to spell each target literally (UNREAD_HINT).
+ * parameter), whatever the operation and whether or not it is recursive. The model is told the literal form
+ * in the dialect it wrote (`unreadHint`, or the inline program's hint).
+ *
+ * Except (review 2026-11-24, sixth, policy item 3): a WRITE made by a call inside an inline program (`python
+ * -c`, `node -e`, a here-document fed to one), where computed targets are the norm, is escalated (it runs and
+ * is recorded: `inlineUnreadWrite`) unless the same call also names a protected place or a volume nothing
+ * protects. A delete, a move or a link through an unread target stays refused. To relax it further, drop the
+ * `um.op === 'write'` test; to undo it, delete the `inlineUnreadWrite` return.
  */
-function refuseUnreadTarget(named: NamedCall, add: AddCandidate, order: number): void {
+function refuseUnreadTarget(named: NamedCall, pc: PathContext, add: AddCandidate, order: number): void {
   const um = named.scan?.unresolvedMutation
   if (!um) return
+  if (inlineUnreadWrite(named, pc)) return
   // A call of an inline program's code (`fs.writeFileSync`, `shutil.rmtree`) gets the program's hint, not the shell's (review of wave 5).
   const code = /\.[A-Za-z_]/.test(um.verb)
   add('unresolved', order, () => `this command ${OP_VERB[um.op]} through a target that cannot be read before it runs (${um.verb})`, undefined,
-    code ? `${INLINE_HINT} Or call it with a literal target relative to the mission folder.` : UNREAD_HINT)
+    code ? `${INLINE_HINT} Or call it with a literal target relative to the mission folder.` : unreadHint(named.scan?.unreadDialect ?? null))
+}
+
+/** An unread write that only an inline program's own calls made, in a call that names no protected place. */
+function inlineUnreadWrite(named: NamedCall, pc: PathContext): boolean {
+  const um = named.scan?.unresolvedMutation
+  if (!um || um.code !== true || um.op !== 'write') return false
+  const denied = new Set<PathRule>(['no-access', 'home', 'home-dot', 'state', 'ancestor', 'unprotected-volume'])
+  return !named.paths.some(n => {
+    if (n.source !== 'shell' || n.startedIn) return false
+    const j = judgePath(n.real(), 'write', pc)
+    return !j.allow && denied.has(j.rule)
+  })
 }
 
 /**
  * RS3. Refuses a write-class target spelled through a temp or scratch folder (`[IO.Path]::GetTempPath()`,
- * `tempfile.gettempdir()`, `os.tmpdir()`) when the same command assigns one of those names: the spelling then
- * names wherever the assignment pointed it, not the sandbox's folder. Also a write-class target spelled
- * through the working folder (`$PWD`, `Get-Location`, `os.getcwd()`) after a folder change the scan could
- * not follow. Measured cost: 0 of 3,342 past calls (none assigns a temp name; one reaches an unread folder).
+ * `tempfile.gettempdir()`, `os.tmpdir()`) when the same command points one of those names somewhere the scan
+ * cannot vouch for (`ShellScan.tempRedirected`): the spelling then names wherever the assignment pointed it, not
+ * the sandbox's folder. Since the seventh review (2026-11-24, policy item 4) the scan reads the assignment by
+ * dialect (`$env:TEMP =`, POSIX `TMPDIR=` and `export`, cmd `set TMP=`, `os.environ['TMP'] =`, an env: item whose
+ * operand is a temp name) and judges its value: one that stays in this run's folders (a temp or scratch spelling,
+ * `$(mktemp -d)`, the working folder, a relative path that does not climb) is bound, so the later spellings are
+ * judged where they land and nothing is reported; one elsewhere or unread is reported. `$tmp`, POSIX `tmp` and
+ * `Remove-Item Env:NODE_ENV` set no temp name. Also a write-class target spelled through the working folder
+ * (`$PWD`, `Get-Location`, `os.getcwd()`) after a folder change the scan could not follow. The model is told to
+ * point the name at a folder inside the scratch folder or the mission folder. To relax it, delete its call in
+ * `judgeCall`. Measured cost: 0 of 3,342 past calls.
  */
 function refuseRedirectedAnchor(named: NamedCall, add: AddCandidate, order: number): void {
   const scan = named.scan
@@ -491,11 +538,11 @@ function refuseRedirectedAnchor(named: NamedCall, add: AddCandidate, order: numb
   const temp = scan.tempRedirected !== null ? named.paths.find(n => mut(n) && (n.anchor === 'temp' || n.anchor === 'scratch')) : undefined
   if (temp) {
     add('unresolved', order, () => `this command sets ${scan.tempRedirected} and then ${OP_VERB[temp.op as 'write']} through a temp or scratch folder, which then may not be this run's own`, undefined,
-      'Use the scratch folder by its full path, or a folder inside the mission folder spelled literally, and do not reassign TEMP, TMP or CYNCO_SCRATCH in the same command.')
+      'A temp name may be pointed at a folder inside the scratch folder or the mission folder ($env:TEMP = "$env:CYNCO_SCRATCH\\t", TMPDIR=$(mktemp -d)); a value elsewhere, or one the check cannot read, is refused. Otherwise use the scratch folder by its full path.')
   }
   const stale = named.paths.find(n => mut(n) && n.staleBase)
   if (stale) {
-    add('unresolved', order, () => `this command ${OP_VERB[stale.op as 'write']} through the working folder after a change of folder that cannot be read before it runs`, undefined, UNREAD_HINT)
+    add('unresolved', order, () => `this command ${OP_VERB[stale.op as 'write']} through the working folder after a change of folder that cannot be read before it runs`, undefined, unreadHint(scan.unreadDialect))
   }
 }
 
@@ -525,11 +572,17 @@ function refuseUnreadOperand(named: NamedCall, add: AddCandidate, order: number)
     'Spell what the program is handed as a literal path relative to the mission folder, one call per target, or write the program\'s work as a script in the mission folder and run that file.')
 }
 
+/** msys's and WSL's spelling of a drive in a call's text (`/d/DCIM`, `/mnt/d/`). */
+const MSYS_SPELLING = /(?<![\w./\\-])\/(?:mnt\/)?([A-Za-z])\/(?![\/])/g
+
 /** The drive letters and shares a call's text spells, for RS2. */
 const VOLUME_SPELLINGS = [
   /(?<![A-Za-z0-9])([A-Za-z]):[\\/*?]/g,
   /\bGet-PSDrive\s+(?:-Name\s+|-LiteralName\s+)?['"]?([A-Za-z])['"]?(?![\w:])/gi,
   /['"]([A-Za-z])['"]\s*[,+]\s*['"]:[\\/]/g,
+  // A bare drive in quotes, as WMI and CIM filters spell it (`DriveLetter='D:'`, review 2026-11-24, seventh); a
+  // quoted `'x:'` anywhere else is a label, not a drive.
+  /\b(?:DriveLetter|DeviceID|VolumeName|Name|Caption)\s*=\s*\\?['"]([A-Za-z]):\\?['"]/gi,
 ]
 
 /**
@@ -538,7 +591,10 @@ const VOLUME_SPELLINGS = [
  * a drive letter spelled in its text, unless the call only reads: no write-class operation, no program
  * started, no unresolved mutation, nothing self-building. On such a volume the check is the only layer, and
  * most walk-arounds of the three rounds spelled the volume somewhere in the call. Measured cost: 0 of 3,342
- * past calls. The model is told that a call that only reads there is allowed.
+ * past calls. The model is told that a call that only reads there is allowed, and the reason says what the call
+ * does there (a write, or a program whose effect cannot be read: seventh review). The text net for a drive letter
+ * is switched off only by a real read or listing on that drive, never by a mention (an assignment's value), where a
+ * misread binding hides a delete (seventh review, P12). To relax it, delete its call in `judgeCall`.
  */
 function refuseUnprotectedVolume(toolName: string, named: NamedCall, pc: PathContext, add: AddCandidate, order: number): void {
   const scan = named.scan
@@ -554,20 +610,48 @@ function refuseUnprotectedVolume(toolName: string, named: NamedCall, pc: PathCon
     const d = pc.platform === 'win32' ? driveOf(c) : null
     return d !== null && !pc.drives.includes(d) ? `a drive this run has no folder on (${d}:)` : null
   }
+  // Only in a call that starts no program and has no part it cannot read: there a copy off the volume is the
+  // copy verb's own read; beside a program, what the program does there cannot be read (round 4's RS2 stands).
+  const unread = scan.unresolvedMutation !== null || scan.selfBuilding !== null || scan.ranProgram
+  // The text net below is switched off for a drive only by a real read or listing there, never by a mention (an
+  // assignment's value, a list's element): a mention is where a misread binding hides a delete (review
+  // 2026-11-24, seventh, P12). A mention still does not refuse by itself.
+  const readOnly = (n: NamedPath) => !unread && (n.op === 'read' || n.op === 'list' || n.op === 'mention')
+  const readDrives = new Set<string>()
+  // The reason says what the call does: a write-class operation there, or a program started beside it.
+  const doing = (n: NamedPath) => (WRITE_CLASS.has(n.op) ? 'and does more than read it'
+    : 'and starts a program or does something else whose effect there cannot be read from the command')
   for (const n of named.paths) {
     if (n.source !== 'shell') continue
     const c = canonPath(n.path, pc.platform)
     const detail = foreign(c)
-    if (detail !== null) { add('unprotected-volume', order, () => `this command names ${shown(n.raw, c)}, on ${detail}, and does more than read it`, c, hint, false); return }
+    if (detail === null) continue
+    if (readOnly(n)) { const d = driveOf(c); if (d !== null && n.op !== 'mention') readDrives.add(d); continue }
+    add('unprotected-volume', order, () => `this command names ${shown(n.raw, c)}, on ${detail}, ${doing(n)}`, c, hint, false); return
   }
+  const textReason = unread && !scan.sawWrite ? 'and starts a program or does something else whose effect there cannot be read from the command' : 'and does more than read it'
   if (pc.platform !== 'win32') return
+  // msys's and WSL's spellings (`/d/`, `/mnt/d/`), review 2026-11-24, sixth: only for a letter of a volume
+  // nothing protects, since a short folder name in an inline program's text (`'/a/b'`) is not a drive.
+  const unprotectedLetters = new Set(pc.unprotectedVolumes.map(driveOf).filter((d): d is string => d !== null))
+  for (const t of named.texts) {
+    for (const m of t.matchAll(MSYS_SPELLING)) {
+      const d = m[1].toUpperCase()
+      if (!unprotectedLetters.has(d) || (readDrives.has(d) && !unread)) continue
+      add('unprotected-volume', order, () => `this command spells the drive ${d}: (a volume Windows cannot protect) ${textReason}`, undefined, hint, false)
+      return
+    }
+  }
   for (const t of named.texts) {
     const text = t.replace(/\^/g, '')
     for (const re of VOLUME_SPELLINGS) {
       for (const m of text.matchAll(re)) {
+        // A one-letter option glued to a colon and a wildcard (`expand a.cab -F:* out`) is an option, not a drive
+        // (review 2026-11-24, eighth); a drive is followed by a separator.
+        if (re === VOLUME_SPELLINGS[0] && /[*?]$/.test(m[0]) && /[-/]/.test(text[(m.index ?? 0) - 1] ?? '')) continue
         const d = m[1].toUpperCase()
-        if (pc.drives.includes(d)) continue
-        add('unprotected-volume', order, () => `this command spells the drive ${d}: (a drive this run has no folder on) and does more than read it`, undefined, hint, false)
+        if (pc.drives.includes(d) || (readDrives.has(d) && !unread)) continue
+        add('unprotected-volume', order, () => `this command spells the drive ${d}: (a drive this run has no folder on) ${textReason}`, undefined, hint, false)
         return
       }
     }
@@ -612,6 +696,9 @@ function escalation(toolName: string, named: NamedCall, pc: PathContext): PathVe
   for (const n of named.paths) {
     if (n.inherited || (n.op !== 'delete' && n.op !== 'move')) continue
     if (n.verb !== undefined && /^git\b/.test(n.verb)) continue
+    // A filtered delete of items under the folder (`find . -name '*.pyc' -delete`, `del /s *.pyc`, an item of a
+    // listing) is not the whole folder; `*` alone is (review 2026-11-24, sixth).
+    if (n.children && !/(?:^|[\\/])\*["']?$/.test(n.raw.trim())) continue
     const real = n.real()
     const hit = roots.some(r => same(real, r, pc.platform) || same(real, P.join(r, '.git'), pc.platform))
     if (hit) { rootHits.push(real); recursive ||= n.recursive }
@@ -626,7 +713,12 @@ function escalation(toolName: string, named: NamedCall, pc: PathContext): PathVe
       named.paths.some(n => n.verb !== undefined && /^git\b/.test(n.verb) && n.recursive))
   }
   // A recursive delete or move through a target the scan cannot read was escalated here until the fourth
-  // review of 2026-11-23; it is refused now (RS1, `refuseUnreadTarget`).
+  // review of 2026-11-23; it is refused now (RS1, `refuseUnreadTarget`). An inline program's write to a path it
+  // computes runs and is recorded (sixth review, policy item 3).
+  if (inlineUnreadWrite(named, pc)) {
+    const um = scan?.unresolvedMutation
+    return note('inline-unread-write', `this inline program writes to a path it computes (${um?.verb ?? 'a write'}), which cannot be read before it runs (${toolName})`, [], false)
+  }
   return { kind: 'allow' }
 }
 

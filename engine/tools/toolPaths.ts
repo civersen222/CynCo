@@ -31,6 +31,7 @@ export type NamedPath = {
   unsetName?: string   // the shell word started with this name, which nothing in the command set
   staleBase?: true     // a working-folder spelling read after a folder change the scan could not follow
   startedIn?: true     // the folder a program, a script, an interpreter or git is started in
+  deviceOp?: string    // a volume, disk, partition, shadow-copy or backup operation that names no path
 }
 export type NamedCall = { paths: NamedPath[]; spellings: string[]; texts: string[]; scan: ShellScan | null; faults: string[] }
 export type NameOpts = {
@@ -517,6 +518,7 @@ export function namePaths(toolName: string, input: Record<string, unknown>, cwd:
         if (s.unsetName) n.unsetName = s.unsetName
         if (s.staleBase) n.staleBase = true
         if (s.startedIn) n.startedIn = true
+        if (s.deviceOp) n.deviceOp = s.deviceOp
         paths.push(n)
       }
     }

@@ -116,30 +116,52 @@ PHONE_ENGINE_TASK='CynCo headless engine'
 phone_engine_task_state() { powershell -NoProfile -Command "(Get-ScheduledTask -TaskName '$PHONE_ENGINE_TASK' -ErrorAction SilentlyContinue).State" 2>/dev/null | tr -d '\r'; }
 PHONE_ENGINE_WAS_RUNNING=
 ENGINE_WINPID=
+# F242: is the mission engine still listed? Fail closed. ENGINE_LISTING is "gone" only when tasklist
+# ran and printed its own no-match line; a CSV row naming the pid is "listed"; anything else (a
+# tasklist that cannot be run, exits non-zero, prints nothing or prints what this does not read) is
+# "unknown: <why>", and an engine whose last answer was not "gone" is not confirmed dead.
+engine_listing() {
+  # The status is captured beside the assignment, never on a line of its own: under the script's
+  # `set -euo pipefail` a failed command substitution standing alone would abort the trap or the
+  # watcher that called this, and nothing after it (the guard post, the sandbox release, the
+  # phone engine) would run.
+  _el_rc=0
+  _el_out=$(tasklist //FI "PID eq $1" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null) || _el_rc=$?
+  _el_out=$(printf '%s' "$_el_out" | tr -d '\r')
+  if [ "$_el_rc" -ne 0 ]; then ENGINE_LISTING="unknown: tasklist could not be run or failed (exit $_el_rc)"
+  elif printf '%s\n' "$_el_out" | grep -q "^\"[^\"]*\",\"$1\","; then ENGINE_LISTING=listed
+  elif [ -z "$_el_out" ]; then ENGINE_LISTING="unknown: tasklist printed nothing"
+  elif printf '%s\n' "$_el_out" | grep -qx 'INFO: No tasks are running which match the specified criteria\.'; then ENGINE_LISTING=gone
+  else ENGINE_LISTING="unknown: tasklist printed what this does not read"
+  fi
+}
 # F236: a dispatch that stops before its driver is running (a refused sweep, a
 # port collision, the F91 refusal, a model that never loads) must not leave the
 # dashboard without its engine, or with half a mission's: the engine this
 # dispatch started is stopped, and the phone engine it stopped is started
 # again. Cleared once the driver and the end-of-mission watcher are running.
 dispatch_abandoned() {
-  ENGINE_STILL_LISTED=
+  ENGINE_LISTING=gone
   if [ -n "${ENGINE_WINPID:-}" ]; then
     taskkill //PID "$ENGINE_WINPID" //T //F >/dev/null 2>&1 || true
     echo "[dispatch] stopped before the mission started — the mission engine this dispatch started is stopped"
-    # F242: a taskkill that failed is not a dead engine; asked again after a short wait.
+    # F242: a taskkill that failed is not a dead engine; asked again after a short wait. Only a
+    # tasklist that answered "no such task" confirms it (engine_listing fails closed).
     for _ in 1 2 3 4 5; do
-      if ! tasklist //FI "PID eq $ENGINE_WINPID" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null | grep -q "\"$ENGINE_WINPID\""; then ENGINE_STILL_LISTED=; break; fi
-      ENGINE_STILL_LISTED=1
+      engine_listing "$ENGINE_WINPID"
+      if [ "$ENGINE_LISTING" = gone ]; then break; fi
       sleep 2
     done
   fi
   if [ -n "${BASELINE_TAKEN:-}" ]; then
-    # F242: the engine this dispatch started was killed above; when its pid was never read, or it is
-    # still listed after the kill, it is not confirmed dead.
+    # F242: the engine this dispatch started was killed above; when its pid was never read, it is
+    # still listed after the kill, or tasklist gave no answer this reads, it is not confirmed dead.
     if [ -n "${ENGINE_PID:-}" ] && [ -z "${ENGINE_WINPID:-}" ]; then
       bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "the mission engine's Windows pid was never read" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
-    elif [ -n "$ENGINE_STILL_LISTED" ]; then
+    elif [ "$ENGINE_LISTING" = listed ]; then
       bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID still listed 10 s after taskkill" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+    elif [ "$ENGINE_LISTING" != gone ]; then
+      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID after taskkill: ${ENGINE_LISTING#unknown: }" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     else
       bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     fi
@@ -515,11 +537,14 @@ IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
   # F242, directive 15: the settling compare, after the mission engine is confirmed dead.
   ENGINE_GONE=
   if [ -n "${ENGINE_WINPID:-}" ]; then
+    # Fail closed (engine_listing): only tasklist's own "no such task" answer confirms the engine dead.
     for _ in $(seq 1 30); do
-      if ! tasklist //FI "PID eq $ENGINE_WINPID" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null | grep -q "\"$ENGINE_WINPID\""; then ENGINE_GONE=1; break; fi
+      engine_listing "$ENGINE_WINPID"
+      if [ "$ENGINE_LISTING" = gone ]; then ENGINE_GONE=1; break; fi
       sleep 2
     done
-    NOT_DEAD_WHY="pid $ENGINE_WINPID still listed 60 s after mission end"
+    if [ "$ENGINE_LISTING" = listed ]; then NOT_DEAD_WHY="pid $ENGINE_WINPID still listed 60 s after mission end"
+    else NOT_DEAD_WHY="pid $ENGINE_WINPID 60 s after mission end: ${ENGINE_LISTING#unknown: }"; fi
   else
     NOT_DEAD_WHY="the mission engine's Windows pid was never read"
   fi
