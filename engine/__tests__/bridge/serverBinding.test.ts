@@ -13,7 +13,7 @@ import * as os from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, afterAll } from 'vitest'
 import { LocalCodeWSServer } from '../../bridge/server.js'
 import { loadOrCreateTokens } from '../../security/localToken.js'
 
@@ -21,7 +21,9 @@ import { loadOrCreateTokens } from '../../security/localToken.js'
 // so these tests just need a valid token store to construct the server at all.
 const tokenDir = mkdtempSync(join(tmpdir(), 'cynco-bind-tokens-'))
 const tokens = loadOrCreateTokens(tokenDir)
-process.on('exit', () => rmSync(tokenDir, { recursive: true, force: true }))
+// afterAll, not process.on('exit'): in a vitest worker that handler never ran, so every run left one
+// cynco-bind-tokens-* in the temp folder (about 180 of them had piled up by 2026-11-24).
+afterAll(() => rmSync(tokenDir, { recursive: true, force: true }))
 
 // Ports spaced by 3: the bridge falls back to port+1/+2 on bind failure
 const DEFAULT_PORT = 19180
@@ -78,7 +80,7 @@ describe('bridge server hostname binding', () => {
     }
   })
 
-  test('connection to non-loopback IP is refused when bound to 127.0.0.1', async () => {
+  test('connection to non-loopback IP is refused when bound to 127.0.0.1', async (t) => {
     // Find the first non-internal IPv4 address on this machine
     const ifaces = os.networkInterfaces()
     let externalIP: string | undefined
@@ -93,8 +95,13 @@ describe('bridge server hostname binding', () => {
       if (externalIP) break
     }
 
-    // Skip gracefully if no non-internal IPv4 exists (e.g. CI with only loopback)
-    if (!externalIP) return
+    // No non-internal IPv4 (a runner with only loopback): nothing to connect from, so the test is
+    // marked skipped and says so. It used to return here and report a pass that had checked nothing.
+    if (!externalIP) {
+      console.log('[serverBinding] SKIPPED: this machine has no non-internal IPv4 address, so a refused connection from off loopback cannot be tried')
+      t.skip()
+      return
+    }
 
     const saved = process.env.LOCALCODE_BRIDGE_HOST
     delete process.env.LOCALCODE_BRIDGE_HOST

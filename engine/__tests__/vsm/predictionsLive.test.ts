@@ -8,16 +8,14 @@ import * as path from 'path'
 // @ts-ignore — untyped harness module
 import { createMissionCollector } from '../../../scripts/cynco-ledger.mjs'
 
-// ── Gate ─────────────────────────────────────────────────────────────────────
-// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/predictionsLive.test.ts
-const SKIP = !process.env.CYNCO_INTEGRATION
-
 import type { StreamEvent } from '../../types.js'
 import { defaultConfig, mockProvider, textResponse, toolCall } from '../harness/liveHarness.js'
 
-// ── Gated proving test: H4 opens, completes, and lands in a ledger turn ──────
+// ── Proving test: H4 opens, completes, and lands in a ledger turn ────────────
+// A real loop driven by a scripted model; no live service is reached (the
+// suite's setup refuses fetch to this machine's service ports).
 
-describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () => {
+describe('prediction plumbing — loop level', () => {
   let tempDir = ''
   let tempFile = ''
 
@@ -26,9 +24,16 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     delete process.env._ABLATION_VSM_DISABLED
     // Fresh event bus per test — the singleton accumulates otherwise.
     resetEventBus()
-    // Reset the global contract singleton: auto-created "pending" assertions
-    // can never be satisfied by the mock provider and would block end_turn.
+    // Hold an incomplete contract with enforcement off for the whole session.
+    // Auto-created "pending" assertions can never be satisfied by the mock
+    // provider, and enforcement would turn each done-text into another model
+    // call, eating the next user turn's script. Disabling enforcement BEFORE
+    // the first message does not hold: ContractState.create() re-enables it
+    // (engine/tools/contract.ts, since 193299fe3) and the loop auto-creates a
+    // contract on the first message. An active incomplete contract is kept by
+    // maybeAutoCreateContract, so the switch-off holds for both turns.
     globalContract.clear()
+    globalContract.create('predictions-live', '', ['scripted session ran to its end'])
     globalContract.setEnforcementEnabled(false)
 
     // Real temp file so the scripted Reads SUCCEED — 5 consecutive tool
@@ -41,11 +46,11 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
   })
 
   afterEach(() => {
+    globalContract.clear()
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5 })
   })
 
-  it.skipIf(SKIP)('scripted session opens H4 (3 consecutive Reads) and a completed prediction lands in governance.status and the ledger turn record', async () => {
-    // Dynamically import to avoid blowing up the un-gated suite
+  it('scripted session opens H4 (3 consecutive Reads) and a completed prediction lands in governance.status and the ledger turn record', async () => {
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
     const filePath = tempFile.replace(/\\/g, '/')
@@ -68,7 +73,8 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     //     iter 2: turn=5 → H4 OPENS (trigger=5, window=2, due turn 7); then Edit
     //     iter 3: turn=6 (6 < 7, still open); then Read keeps the loop alive
     //     iter 4: turn=7 → evaluateOpen COMPLETES H4; done-text ends the turn
-    // Spare done-texts follow in case governance nudges add extra model calls.
+    // Spare done-texts follow: a governance nudge that added a model call would
+    // fail on the call count below rather than on an exhausted script.
     const doneText = 'task complete — the file was read three times and edited; the prediction window has elapsed.'
     const responses: Array<() => Generator<StreamEvent>> = [
       // user turn 1
@@ -101,11 +107,32 @@ describe('prediction plumbing — loop level (gated: CYNCO_INTEGRATION=1)', () =
     const completes = events.filter((e: any) => e.type === 'message.complete')
     const halted = completes.filter((e: any) => e.stopReason === 'halted')
     expect(halted.length).toBe(0)
+    // The script and the loop stayed in step: the seven scripted calls of the
+    // timeline above were made, each user turn ended on its done-text, and no
+    // turn ended in an engine error (an exhausted script ends a turn as one).
+    expect(provider.callCount()).toBe(7)
+    expect(completes.map((e: any) => e.stopReason)).toEqual(['end_turn', 'end_turn'])
+    expect(events.filter((e: any) => e.type === 'session.error')).toEqual([])
 
     // Every governance.status event carries the predictions snapshot.
     const statusEvents = events.filter((e: any) => e.type === 'governance.status')
     expect(statusEvents.length).toBeGreaterThan(0)
     for (const s of statusEvents) expect((s as any).predictions).toBeDefined()
+
+    // The dashboard saw the prediction's whole life: none open in user turn 1,
+    // one open from the second iteration of user turn 2 (H4 opening at turn 5),
+    // and at the status where it closes, the one completion is H4's. Any other
+    // hypothesis opening or completing, or H4 opening late or never, changes
+    // this sequence of [open, completed, hypotheses with a completion].
+    expect(statusEvents.map((s: any) => [
+      s.predictions.open,
+      s.predictions.completed,
+      s.predictions.stats.filter((h: any) => h.total >= 1).map((h: any) => h.hypothesis),
+    ])).toEqual([
+      [0, 0, []], [0, 0, []], [0, 0, []], [0, 0, []],
+      [1, 0, []], [1, 0, []],
+      [0, 1, ['H4']],
+    ])
 
     // H4 specifically completed (evaluated either way — correctness is not
     // asserted): an unrelated hypothesis completing must not mask an H4 miss.

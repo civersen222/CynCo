@@ -18,12 +18,19 @@ export default defineConfig({
     // scripts/ is not merely unrun — `npx vitest run <that path>` answers "No
     // test files found, exiting with code 1", which is easy to read as a
     // toolchain hiccup rather than as a suite that never covered the driver.
+    // The last three globs are test folders that sit beside their package
+    // rather than under engine/__tests__: when bun test was replaced by vitest
+    // (8fc8bcea, 2026-05-02) nothing listed them, and their 160 tests went
+    // unrun by every suite run and every CI job until 2026-11-24.
     include: [
       'engine/__tests__/**/*.test.ts',
       'engine/vsm/**/*.test.ts',
       'engine/tools/**/*.test.ts',
       'benchmark/true/**/*.test.ts',
       'scripts/__tests__/**/*.test.mjs',
+      'engine/agents/__tests__/**/*.test.ts',
+      'engine/training/__tests__/**/*.test.ts',
+      'engine/cybernetics-core/tests/**/*.test.ts',
     ],
     // cyncoHome first: it redirects ~/.cynco to a temp dir. F58 was the suite
     // writing 117 session journals into the directory the live engine resumes

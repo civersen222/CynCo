@@ -9,10 +9,6 @@ import { createMissionCollector, buildMissionRecord } from '../../../scripts/cyn
 import { defaultConfig, mockProvider, textResponse, toolCall, rawToolCall } from '../harness/liveHarness.js'
 import type { StreamEvent } from '../../types.js'
 
-// ── Gate ─────────────────────────────────────────────────────────────────────
-// Run with: CYNCO_INTEGRATION=1 npx vitest run engine/__tests__/vsm/phase1Exit.test.ts
-const SKIP = !process.env.CYNCO_INTEGRATION
-
 // ── Phase 1 exit criterion (STATE-AND-VISION-2026-07-12.md, Phase 1 Exit) ────
 // "a scripted 12-turn test session produces a ledger record containing:
 //  ≥1 algedonic signal, ≥1 opened-and-evaluated prediction, persisted S4
@@ -21,8 +17,12 @@ const SKIP = !process.env.CYNCO_INTEGRATION
 //  call is repaired or retried, never silently discarded."
 // The four per-item live tests prove each nerve separately; this test proves
 // they coexist in ONE session and land in ONE buildMissionRecord() record.
+// A real loop driven by a scripted model, in the ordinary suite since
+// 2026-11-24 (before that behind CYNCO_INTEGRATION, where it had gone stale
+// unseen): it writes to a temp folder and the suite's temp CYNCO_HOME, and
+// fetch is stubbed below.
 
-describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRATION=1)', () => {
+describe('Phase 1 exit gate — combined scripted session', () => {
   let tempDir = ''
   let tempFile = ''
   let outFile = ''
@@ -32,9 +32,15 @@ describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRAT
     delete process.env._ABLATION_VSM_DISABLED
     // Fresh event bus per test — the singleton accumulates otherwise.
     resetEventBus()
-    // Reset the global contract singleton: auto-created "pending" assertions
-    // can never be satisfied by the mock provider and would block end_turn.
+    // A contract exists so the loop does not auto-create one, and its
+    // enforcement is off: auto-created "pending" assertions can never be
+    // satisfied by the scripted model, and every end_turn would be re-prompted
+    // (five rounds) until the script ran out inside the first user message.
+    // Switching enforcement off alone is not enough: ContractState.create()
+    // turns it back on for every new contract (193299fe, 2026-07-24, pinned by
+    // contract.test.ts). Same pattern as bridge/operatorNoteWiring.test.ts.
     globalContract.clear()
+    globalContract.create('phase1-exit', '', ['File exit-output.txt exists after changes'])
     globalContract.setEnforcementEnabled(false)
 
     // Real temp file so scripted Reads SUCCEED (5 consecutive failures would
@@ -70,13 +76,15 @@ describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRAT
     vi.unstubAllGlobals()
   })
 
-  it.skipIf(SKIP)('one 12-turn session lands all six signals plus a retried malformed call in a single mission record', async () => {
-    // Dynamically import to avoid blowing up the un-gated suite.
+  it('one 12-turn session lands all six signals plus a retried malformed call in a single mission record', async () => {
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
     const filePath = tempFile.replace(/\\/g, '/')
     const outPath = outFile.replace(/\\/g, '/')
-    const missingPath = `${tempDir.replace(/\\/g, '/')}/nonexistent-exit.txt`
+    // A folder handed to Read: a counted tool failure. A missing file is not one
+    // since F178 (8ee9faac, 2026-10-13): the file tool's answer lists the folder,
+    // so it is no strike, no pain and no failure (`benignWrongPath`).
+    const folderPath = tempDir.replace(/\\/g, '/')
     const events: any[] = []
 
     // Timeline (turn = governance turnCount, increments at each message_stop;
@@ -95,7 +103,7 @@ describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRAT
     //     t7: done-text               → evaluateOpen COMPLETES H4
     //   User turn 3 ("write the summary; check the other file"):
     //     t8: Write outFile            → after-batch snapshot → snapshot.taken
-    //     t9: Read missingPath FAILS   → AlgedonicFired severity=Warning
+    //     t9: Read folderPath FAILS    → AlgedonicFired severity=Warning
     //         (streak=1 — nowhere near the 5-failure halt)
     //     t10: Read with raw args '[1,2,3]' — valid JSON but not an object, so
     //          JSON.parse AND jsonrepair both reject it → callModel marks the
@@ -118,7 +126,7 @@ describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRAT
       () => textResponse(doneText),
       // user turn 3
       () => toolCall(6, 'Write', { file_path: outPath, content: 'summary of findings\n' }),
-      () => toolCall(7, 'Read', { file_path: missingPath }),
+      () => toolCall(7, 'Read', { file_path: folderPath }),
       () => rawToolCall(8, 'Read', '[1,2,3]'),
       () => textResponse(doneText),
       // user turn 4
@@ -152,6 +160,15 @@ describe('Phase 1 exit gate — combined scripted session (gated: CYNCO_INTEGRAT
     // malformed call are both below every kill-switch threshold.
     const halted = events.filter((e: any) => e.type === 'message.complete' && e.stopReason === 'halted')
     expect(halted.length).toBe(0)
+    // The script and the loop stayed in step: the twelve scripted calls of the
+    // timeline above were made, each of the four user turns ended on its
+    // done-text, and no turn ended in an engine error (an exhausted script ends
+    // a turn as one). Without this the whole script could be spent inside the
+    // first user message, as it was while enforcement was not really off.
+    expect(provider.callCount()).toBe(12)
+    expect(events.filter((e: any) => e.type === 'message.complete').map((e: any) => e.stopReason))
+      .toEqual(['end_turn', 'end_turn', 'end_turn', 'end_turn'])
+    expect(events.filter((e: any) => e.type === 'session.error')).toEqual([])
 
     // The Write actually landed (the snapshot hash is of a real change).
     expect(fs.readFileSync(outFile, 'utf8')).toBe('summary of findings\n')

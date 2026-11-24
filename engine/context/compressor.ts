@@ -278,14 +278,26 @@ export class ContextCompressor {
     },
   ): Promise<Message[]> {
     const trimmed = this.tier0Trim(messages)
-    const toCompress = this.selectForCompression(trimmed, cb.keepRecentPairs ?? this.keepRecent)
+    // One count rules both halves: the messages left out of the summary are
+    // exactly the messages kept verbatim. Until 2026-11-24 the selection took
+    // the caller's count (2 pairs from the loop) and compressMessages its own
+    // (4 pairs), so four messages were both summarized and kept, and a
+    // compaction of short text turns sent more context than it started with.
+    // What that costs a mission: the summary prompt carries text blocks only
+    // (buildStructuredSummaryPrompt), so a tool result survives a compaction
+    // only in the verbatim tail. The loop's tail is now 2 pairs, so the 2 most
+    // recent tool results are kept where 4 were, and the 3rd and 4th are gone
+    // apart from their paths in the file tracker. The summarized part is the
+    // same as before: the selection has taken 2 pairs since 350359c3.
+    const keepPairs = cb.keepRecentPairs ?? this.keepRecent
+    const toCompress = this.selectForCompression(trimmed, keepPairs)
     if (toCompress.length === 0) return messages
     const prompt = this.buildStructuredSummaryPrompt(toCompress, fileTracker)
     const summary = await cb.summarize(prompt)
     // Write-before-compact: persist the summary + file ops to the journal
     // BEFORE we drop the source messages, so a crash mid-compaction is safe.
     cb.journal(summary, fileTracker.serialize())
-    const compacted = this.compressMessages(trimmed, summary, fileTracker)
+    const compacted = this.compressMessages(trimmed, summary, fileTracker, keepPairs)
     const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
     // Finding (x): the summary is a paraphrase of the conversation, and the one
     // fact the agent most needs on the far side of a compaction — what it has
@@ -305,8 +317,15 @@ export class ContextCompressor {
     return [compacted[0], ...anchors, ...compacted.slice(1)]
   }
 
-  compressMessages(messages: Message[], summary: string, fileTracker?: FileOperationTracker): Message[] {
-    const keepCount = this.keepRecent * 2
+  compressMessages(
+    messages: Message[],
+    summary: string,
+    fileTracker?: FileOperationTracker,
+    keepRecentPairs: number = this.keepRecent,
+  ): Message[] {
+    // Must be the count selectForCompression was given, or the tail kept here
+    // overlaps the part the summary already covers (runCompaction passes both).
+    const keepCount = keepRecentPairs * 2
     const recent = messages.slice(-keepCount)
     const metadata = fileTracker ? `\n\n[File Operations: ${fileTracker.serialize()}]` : ''
     return [{ role: 'system', content: [{ type: 'text', text: `[Context Summary]\n${summary}${metadata}` }] }, ...recent]

@@ -1,7 +1,13 @@
 /**
  * Shared harness for the live-wiring tests: a real ConversationLoop driven by a scripted model.
- * No live service is involved; "live" is the loop. Most of them run in the ordinary suite; the
- * ones still behind CYNCO_INTEGRATION=1 are listed in docs/NOW.md with why.
+ * No live service is involved; "live" is the loop. All of them run in the ordinary suite (the last
+ * four left the CYNCO_INTEGRATION gate on 2026-11-24).
+ *
+ * Contract enforcement: a test that wants it off creates a contract first and then switches
+ * enforcement off. Switching it off alone does not hold: with no allowedTools and no project, the
+ * loop auto-creates a contract from a user message over 15 characters, and ContractState.create()
+ * switches enforcement back on (193299fe). The loop keeps a live, incomplete contract instead of
+ * auto-creating one (contractAutoCreate.ts, maybeAutoCreateContract).
  *
  * Extracted from the four Phase 1 live tests (algedonicLive, predictionsLive,
  * s4Live, snapshotLive), which each carried an identical copy. NOT named
@@ -46,13 +52,12 @@ export type ScriptedProvider = Provider & { callCount(): number }
 
 /**
  * Provider that replays a scripted response per model call.
- * Default: throws on script exhaustion — misalignment must be loud.
- * `lenient: true`: yields an empty stream instead (algedonicLive Test A relies
- * on this — the halt path stops consuming mid-script).
+ * Throws on script exhaustion — misalignment must be loud. (A `lenient` option
+ * that answered an empty stream instead served only algedonicLive Test A,
+ * which now counts its model calls exactly.)
  */
 export function mockProvider(
   responses: Array<() => Generator<StreamEvent>>,
-  opts: { lenient?: boolean } = {},
 ): ScriptedProvider {
   let callIdx = 0
   return {
@@ -66,7 +71,6 @@ export function mockProvider(
     async *stream(_request: CompletionRequest): AsyncGenerator<StreamEvent> {
       const gen = responses[callIdx++]
       if (!gen) {
-        if (opts.lenient) return
         throw new Error(`mock provider script exhausted at call ${callIdx}`)
       }
       yield* gen()

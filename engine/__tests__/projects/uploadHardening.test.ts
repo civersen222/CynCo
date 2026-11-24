@@ -26,9 +26,22 @@ const WEBP = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x4
 const ZIP = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 20, 0, 0, 0])
 const text = (s: string) => new TextEncoder().encode(s)
 
-function canSymlinkFiles(): boolean {
+/** Why a file symbolic link cannot be made here, or null when it can. Asked once, and said once. */
+function fileLinkRefusal(): string | null {
   const d = mkdtempSync(join(tmpdir(), 'cynco-linkprobe-'))
-  try { writeFileSync(join(d, 't'), 'x'); symlinkSync(join(d, 't'), join(d, 'l')); return true } catch { return false } finally { rmSync(d, { recursive: true, force: true }) }
+  try {
+    writeFileSync(join(d, 't'), 'x')
+    symlinkSync(join(d, 't'), join(d, 'l'))
+    return null
+  } catch (e) {
+    return (e as Error).message
+  } finally {
+    rmSync(d, { recursive: true, force: true })
+  }
+}
+const noFileLinks = fileLinkRefusal()
+if (noFileLinks !== null) {
+  console.log(`[uploadHardening] SKIPPED the three planted-file-link cases: a file symbolic link could not be made here (${noFileLinks}); on Windows that takes Developer Mode or elevation`)
 }
 
 let home: string, outside: string, events: IngestEvent[]
@@ -167,7 +180,7 @@ describe('addKnowledgeApi: where the bytes land', () => {
     expect(readdirSync(outside)).toEqual([])
   })
 
-  it.skipIf(!canSymlinkFiles())('a link planted at the file’s own name is replaced, never written through', async () => {
+  it.skipIf(noFileLinks !== null)('a link planted at the file’s own name is replaced, never written through', async () => {
     const { slug, dir } = project()
     const victim = join(outside, 'victim.txt')
     writeFileSync(victim, 'the owner’s own file')
@@ -189,7 +202,7 @@ describe('addKnowledgeApi: where the bytes land', () => {
     expect(readdirSync(outside)).toEqual([])
   })
 
-  it.skipIf(!canSymlinkFiles())('promoting a link is refused: what it points at, anywhere on this machine, is not copied into knowledge', async () => {
+  it.skipIf(noFileLinks !== null)('promoting a link is refused: what it points at, anywhere on this machine, is not copied into knowledge', async () => {
     const { slug, dir } = project()
     const secret = join(outside, 'secret.txt')
     writeFileSync(secret, 'not the project’s to read')
@@ -201,7 +214,7 @@ describe('addKnowledgeApi: where the bytes land', () => {
     expect(readFileIndex(dir, 'knowledge').files).toEqual({})
   })
 
-  it.skipIf(!canSymlinkFiles())('promoting over a link planted in knowledge/ replaces the link', async () => {
+  it.skipIf(noFileLinks !== null)('promoting over a link planted in knowledge/ replaces the link', async () => {
     const { slug, dir } = project()
     const victim = join(outside, 'victim.txt')
     writeFileSync(victim, 'the owner’s own file')

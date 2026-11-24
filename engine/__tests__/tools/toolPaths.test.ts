@@ -192,8 +192,8 @@ describe('real()', () => {
         symlinkSync(join(root, 'target'), join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
       } catch (e) {
         linkOk = false
+        // Said once, by the test that skips on it.
         why = (e as Error).message
-        console.log(`[toolPaths.test] no directory link could be made: ${why}`)
       }
     })
     afterAll(() => {
@@ -203,8 +203,9 @@ describe('real()', () => {
       }
       rmSync(root, { recursive: true, force: true })
     })
-    it('resolves to the link target and keeps a tail that does not exist', () => {
-      if (!linkOk) { console.log(`[toolPaths.test] skipped: ${why}`); return }
+    // A named skip, not a return: a test that returned here reported a pass that had checked nothing.
+    it('resolves to the link target and keeps a tail that does not exist', t => {
+      if (!linkOk) { console.log(`[toolPaths.test] SKIPPED: no directory link could be made here (${why})`); t.skip() }
       const n = namePaths('Write', { file_path: join(root, 'link', 'new', 'x.txt') }, root, currentHomes(null))
       expect(n.paths[0].real().toLowerCase()).toBe(join(root, 'target', 'new', 'x.txt').toLowerCase())
     })

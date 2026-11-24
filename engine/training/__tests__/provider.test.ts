@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import { OllamaProvider } from '../../ollama/client.js'
 import type { Provider, ModelCapabilities, ModelInfo, CompletionRequest } from '../../provider.js'
 import type { CompletionResponse, StreamEvent } from '../../types.js'
@@ -66,7 +66,9 @@ describe('Provider interface — LoRA adapter methods', () => {
       }
     }
 
-    const mock = new MockAdapterProvider()
+    // A fresh mock for every test: with one shared mock these tests passed only in file order.
+    let mock: MockAdapterProvider
+    beforeEach(() => { mock = new MockAdapterProvider() })
 
     test('activeAdapter returns null before loading', () => {
       expect(mock.activeAdapter()).toBeNull()
@@ -78,6 +80,8 @@ describe('Provider interface — LoRA adapter methods', () => {
     })
 
     test('unloadAdapter clears the active adapter', async () => {
+      await mock.loadAdapter('s3-lora')
+      expect(mock.activeAdapter()).toBe('s3-lora')
       await mock.unloadAdapter()
       expect(mock.activeAdapter()).toBeNull()
     })

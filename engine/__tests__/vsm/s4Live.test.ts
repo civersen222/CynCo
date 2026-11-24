@@ -10,7 +10,7 @@ import { createMissionCollector } from '../../../scripts/cynco-ledger.mjs'
 import type { StreamEvent } from '../../types.js'
 import { defaultConfig, mockProvider, textResponse, toolCall } from '../harness/liveHarness.js'
 
-// ── Gated proving test: S4 reflection fires, scores land in ledger ─────────
+// ── Proving test: S4 reflection fires, scores land in ledger ─────────
 
 describe('S4 reflection plumbing — loop level', () => {
   let tempDir = ''
@@ -21,9 +21,15 @@ describe('S4 reflection plumbing — loop level', () => {
     delete process.env._ABLATION_VSM_DISABLED
     // Fresh event bus per test — the singleton accumulates otherwise.
     resetEventBus()
-    // Reset the global contract singleton: auto-created "pending" assertions
-    // can never be satisfied by the mock provider and would block end_turn.
+    // Contract enforcement off for the session: auto-created "pending"
+    // assertions can never be satisfied by the mock provider, and enforcement
+    // would answer each done-text with another model call. Switching it off on
+    // an empty contract does not hold: the loop auto-creates a contract from the
+    // user message and ContractState.create() switches enforcement back on
+    // (193299fe). The loop keeps a live, incomplete contract instead, so one is
+    // made first and enforcement is switched off after it.
     globalContract.clear()
+    globalContract.create('s4Live', '', ['never checked by this test'])
     globalContract.setEnforcementEnabled(false)
 
     // Real temp file so the scripted Reads SUCCEED — 5 consecutive tool
@@ -63,7 +69,6 @@ describe('S4 reflection plumbing — loop level', () => {
   })
 
   it('scripted session fires S4 reflection at turn 3, scores land in governance.status and the ledger turn record', async () => {
-    // Dynamically import to avoid blowing up the un-gated suite.
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
     const filePath = tempFile.replace(/\\/g, '/')

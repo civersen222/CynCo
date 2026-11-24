@@ -1,4 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterAll } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { checkSpawn, evaluateSpawn, parseNvidiaSmiGpuLine, readHostMemory, spawnRequirementFor, type HostMemory, type GpuMemory } from '../../llama/hostResources.js'
 import { MEASURED_DEFAULT_COST } from '../../llama/checkpointCost.js'
 
@@ -51,14 +56,48 @@ describe('parseNvidiaSmiGpuLine', () => {
   })
 })
 
+// The kernel32 path needs bun:ffi, which vitest's Node does not have, so it is run the way the engine
+// runs it: in a `bun` child, as processTreeJob.test.ts and containmentLauncher.test.ts run theirs.
+// Until 2026-11-24 this test asked whether vitest itself was Bun, which it never is, and so never ran.
+// Bun is found through the shell once, because on this PC `bun` on PATH is npm's bun.cmd shim, and asked
+// for its own executable; the probe below then starts that executable directly. Through the shell a
+// timeout would kill only cmd.exe and leave bun.exe running (F210); started directly, the timeout ends
+// the one process the probe is. The lookup has a timeout of its own so a hung bun cannot hang collection.
+const onWindows = process.platform === 'win32'
+function findBunExe(): string | null {
+  const r = spawnSync('bun', ['--print', 'process.execPath'], { encoding: 'utf-8', shell: true, windowsHide: true, timeout: 15_000 })
+  const exe = r.status === 0 ? r.stdout.trim().split(/\r?\n/).pop() ?? '' : ''
+  return exe !== '' && existsSync(exe) ? exe : null
+}
+const bunExe = onWindows ? findBunExe() : null
+const kernel32Skip = !onWindows
+  ? 'not Windows: there is no kernel32 to read through'
+  : bunExe === null ? 'bun is not on PATH (or did not name its executable within 15 s), so the bun:ffi path the engine uses could not be run' : null
+if (kernel32Skip) console.log(`[hostResources] SKIPPED the kernel32 reading: ${kernel32Skip}`)
+const probeDirs: string[] = []
+afterAll(() => { for (const d of probeDirs) rmSync(d, { recursive: true, force: true }) })
+
 describe('readHostMemory', () => {
   const underBun = typeof (globalThis as any).Bun !== 'undefined' && typeof (globalThis as any).Bun.version === 'string'
-  it.skipIf(process.platform !== 'win32' || !underBun)('reads real numbers through kernel32 under Bun', async () => {
-    const m = await readHostMemory()
-    expect(m.source).toBe('win32-ffi')
+  it.skipIf(kernel32Skip !== null)('reads real numbers through kernel32 under Bun', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-hostmem-'))
+    probeDirs.push(dir)
+    const script = join(dir, 'probe.ts')
+    // The module under test by its absolute path, found from this file rather than the working directory
+    // (vitest may be started elsewhere with --root), forward slashes, so the child imports this checkout's copy.
+    const target = fileURLToPath(new URL('../../llama/hostResources.ts', import.meta.url)).replace(/\\/g, '/')
+    writeFileSync(script, `import { readHostMemory } from ${JSON.stringify(target)}\nconsole.log(JSON.stringify(await readHostMemory()))\n`)
+    const run = spawnSync(bunExe!, [script], { encoding: 'utf-8', windowsHide: true, timeout: 50_000 })
+    expect(run.status, `bun did not run the probe:\n${run.stdout}\n${run.stderr}`).toBe(0)
+    const m = JSON.parse(run.stdout.trim().split('\n').pop()!) as HostMemory
+    expect(m.source, JSON.stringify(m)).toBe('win32-ffi')
+    expect(m.totalPhysMib).toBeGreaterThan(0)
+    expect(m.availPhysMib).toBeGreaterThan(0)
+    expect(m.availPhysMib).toBeLessThanOrEqual(m.totalPhysMib)
     expect(m.commitLimitMib).toBeGreaterThan(m.totalPhysMib)
     expect(m.commitFreeMib).toBeGreaterThan(0)
-  })
+    expect(m.commitFreeMib).toBeLessThanOrEqual(m.commitLimitMib)
+  }, 60_000)
   it.skipIf(underBun)('reports unavailable off the Bun runtime rather than guessing', async () => {
     const m = await readHostMemory()
     expect(['unavailable', 'proc-meminfo']).toContain(m.source)
