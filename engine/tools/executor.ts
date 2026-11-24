@@ -13,6 +13,7 @@ import { withCodeIndexNudge } from './toolHints.js'
 import { isWrongPathAnswer } from './impl/pathHint.js'
 import { toolAudit, containmentFault, type AuditSrc } from '../audit/toolAudit.js'
 import { refusalReasonOf, refusalText, refusalLayerOf } from '../containment.js'
+import { presenceTripwireCheck } from '../integrity.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -331,7 +332,7 @@ export class ToolExecutor {
   }
 
   /**
-   * Every check that runs before a tool, in their order: unknown tool; sealed; immutable;
+   * Every check that runs before a tool, in their order: unknown tool; the presence tripwire; sealed; immutable;
    * secret-refuse; protected paths; grader, or download / secret-approval / approval. A refusal
    * comes back as a result for `execute` to record; otherwise the tool and the path check's
    * escalate note, if it had one.
@@ -342,6 +343,10 @@ export class ToolExecutor {
     if (!tool) {
       return { refusal: { output: `Error: unknown tool "${toolName}"`, isError: true } }
     }
+
+    // F242, directive 17: a contained engine that lost a protected folder runs no further tool.
+    const lost = presenceTripwireCheck()
+    if (lost) return { refusal: { output: refusalText('integrity', lost), isError: true } }
 
     // F37, and BEFORE the immutable check on purpose: that one's refusal says
     // "you may Read it as often as you like", which is right for a brief and

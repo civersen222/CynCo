@@ -169,6 +169,58 @@ export function lowerOwnIntegrity(): string | null {
   }
 }
 
+/**
+ * Makes every handle this process holds non-inheritable, except its three standard handles, which the
+ * child is given its own copies of. The launcher inherits whatever its medium starter left inheritable
+ * (measured: a Git Bash starter's process handles, through which a low child read a live medium bash's
+ * environment block, since a handle's access is not checked again against the integrity label; review of
+ * wave 5). A child started after this inherits none of them. Null on success, else why not (the caller
+ * refuses: a child that could read its starter's environment is not started).
+ */
+export function dropInheritedHandles(): string | null {
+  let ffi: Ffi
+  try {
+    ffi = loadFfi()
+  } catch (e) {
+    return `bun:ffi did not load: ${e instanceof Error ? e.message : String(e)}`
+  }
+  const { dlopen, FFIType: T, ptr } = ffi
+  let k: {
+    GetCurrentProcess: () => number; GetProcessHandleCount: (p: number, out: number) => number
+    GetHandleInformation: (h: number, out: number) => number; SetHandleInformation: (h: number, mask: number, flags: number) => number
+    GetStdHandle: (n: number) => number; GetLastError: () => number
+  }
+  try {
+    k = dlopen('kernel32.dll', {
+      GetCurrentProcess: { args: [], returns: T.ptr },
+      GetProcessHandleCount: { args: [T.ptr, T.ptr], returns: T.i32 },
+      GetHandleInformation: { args: [T.ptr, T.ptr], returns: T.i32 },
+      SetHandleInformation: { args: [T.ptr, T.u32, T.u32], returns: T.i32 },
+      GetStdHandle: { args: [T.u32], returns: T.ptr },
+      GetLastError: { args: [], returns: T.u32 },
+    }).symbols as typeof k
+  } catch (e) {
+    return `bun:ffi did not load: ${e instanceof Error ? e.message : String(e)}`
+  }
+  const count = new Uint32Array(1)
+  if (!k.GetProcessHandleCount(k.GetCurrentProcess(), ptr(count))) return `GetProcessHandleCount failed: ${k.GetLastError()}`
+  // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE as DWORDs (-10, -11, -12).
+  const std = new Set([0xfffffff6, 0xfffffff5, 0xfffffff4].map(n => Number(k.GetStdHandle(n))))
+  const flags = new Uint32Array(1)
+  let seen = 0
+  let failed = 0
+  // Handle values are multiples of 4; the walk stops once every handle the count names has been seen.
+  for (let h = 4; h < 1 << 24 && seen < count[0]; h += 4) {
+    if (!k.GetHandleInformation(h, ptr(flags))) continue
+    seen++
+    if ((flags[0] & HANDLE_FLAG_INHERIT) === 0 || std.has(h)) continue
+    if (!k.SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0)) failed++
+  }
+  return failed > 0 ? `${failed} inheritable handle(s) could not be made non-inheritable` : null
+}
+
+const HANDLE_FLAG_INHERIT = 1
+
 export type LauncherArgs =
   | { mode: 'shell'; runDir: string; cwd: string; env: Record<string, string>; shell: string; command: string; commandFile?: string }
   | { mode: 'exec'; runDir: string; cwd: string; env: Record<string, string>; file: string; args: string[] }
@@ -278,6 +330,10 @@ function main(argv: readonly string[]): never {
     say(1, JSON.stringify({ low: true, outside, inside }))
     process.exit(0)
   }
+
+  // 3b. Nothing this process inherited from its medium starter reaches the child.
+  const dropped = dropInheritedHandles()
+  if (dropped !== null) refuse(`the launcher's inherited handles could not be closed to its child (${dropped})`)
 
   // 4. Only now the child's environment: the pairs are laid over the base before toolEnv runs, so
   //    a pair can neither undo the overlay nor bring back a key toolEnv strips.

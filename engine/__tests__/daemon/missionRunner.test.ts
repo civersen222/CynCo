@@ -1082,13 +1082,27 @@ describe('MissionRunner refuse (S5)', () => {
     expect('priority' in published[0]).toBe(false)
   })
 
-  it('an integrity refusal is recorded and not paged here (the latch paged)', async () => {
-    const { runner, ranTasks, published, ledger } = setup(() => 'integrity: y')
+  it('an integrity refusal by the latch is recorded and not paged here (the latch paged)', async () => {
+    const why = 'integrity: the integrity latch is present at G:/guard/HALT.json (x); only the owner clears it'
+    const { runner, ranTasks, published, ledger } = setup(() => why)
     await runner.tick()
     expect(ranTasks).toEqual([])
-    expect(ledger.recentRuns(1)[0].summary).toBe('REFUSED: integrity: y')
+    expect(ledger.recentRuns(1)[0].summary).toBe(`REFUSED: ${why}`)
     expect(published).toEqual([])
   })
+
+  // Review of wave 5: these refusals write no latch, so nothing else tells the owner; they page like any refusal.
+  for (const why of [
+    'integrity: there is no models hash record G:/guard/models-hashes.json; run bun scripts/cynco-guard.mjs hash-models',
+    'integrity: the guard folder G:/guard does not exist; scripts\cynco-containment-setup.ps1 creates it, a run never does',
+    'integrity: no integrity baseline could be taken (the walk failed)',
+  ]) {
+    it(`an integrity refusal with no latch behind it pages once at normal priority (${why.slice(11, 40)}...)`, async () => {
+      const { runner, published } = setup(() => why)
+      await runner.tick()
+      expect(published).toEqual([{ title: 'CynCo refused a run of mission mfl-dynasty', message: `REFUSED: ${why}` }])
+    })
+  }
 
   it('with refuse absent or answering null, the precheck and the pass run as before', async () => {
     for (const refuse of [undefined, () => null]) {
@@ -1098,4 +1112,44 @@ describe('MissionRunner refuse (S5)', () => {
       expect(ranTasks).toHaveLength(1)
     }
   })
+})
+
+// ─── The integrity latch (F242, slice S7) ───────────────────────────────────────────────────────
+describe('MissionRunner and the integrity latch (S7)', () => {
+  const captureLog = async (fn: () => Promise<void>) => {
+    const lines: string[] = []
+    const orig = console.log
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')) }
+    try { await fn() } finally { console.log = orig }
+    return lines
+  }
+
+  it('the pause line says why: the latch through pauseReason, the control file without it', async () => {
+    for (const [reason, expected] of [
+      [() => 'stopped by the integrity latch (x)', 'stopped by the integrity latch (x) — firing nothing until it clears'],
+      [undefined, 'paused by the control file — firing nothing until it clears'],
+    ] as const) {
+      const { deps, ranTasks } = makeDeps({ isPaused: () => true, ...(reason ? { pauseReason: reason } : {}) })
+      const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      const lines = await captureLog(() => new MissionRunner(ledger, deps as any).tick())
+      expect(ranTasks).toEqual([])
+      expect(lines.some((l) => l.includes(expected))).toBe(true)
+    }
+  })
+
+  for (const error of ['STOPPED: integrity: the integrity latch is present at G:/guard/HALT.json (x)', 'INTEGRITY: 1 change(s) in protected folders (first: PRESENCE)']) {
+    it(`an outcome "${error.slice(0, 20)}..." is a failed run, not parked, and pages no HALT`, async () => {
+      const { deps, published } = makeDeps({ runTask: async () => ({ ok: false, summary: '', recommendations: [], error }) })
+      const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+      ledger.setNextFire('news', new Date(2026, 5, 11, 11, 59).toISOString())
+      ledger.setNextFire('poll', new Date(2026, 5, 12).toISOString())
+      await new MissionRunner(ledger, deps as any).tick()
+      const run = ledger.recentRuns(1)[0]
+      expect(run.ok).toBe(false)
+      expect(ledger.state.paused).toBeUndefined()
+      expect(ledger.state.failureStreak).toBe(1)
+      expect(published.some((p: any) => String(p.title ?? '').startsWith('CynCo HALTED on mission'))).toBe(false)
+    })
+  }
 })

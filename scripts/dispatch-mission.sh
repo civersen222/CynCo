@@ -91,6 +91,10 @@ if [ -n "${CYNCO_MISSION_ALSO_LABEL:-}" ]; then
   done
 fi
 SANDBOX_CREATED=
+BASELINE_TAKEN=
+# F242: under the integrity latch, or with no usable guard folder, nothing is dispatched. A pure check:
+# the trap is not armed and nothing has been stopped.
+GUARD_LINE=$(bun scripts/cynco-guard.mjs status --quiet | tr -d '\r') || { echo "[dispatch] REFUSED: integrity: ${GUARD_LINE:-the integrity guard did not answer} — nothing was dispatched" >&2; exit 1; }
 # F242: no dispatch unless the tool-call audit can be written. Before anything is stopped.
 AUDIT_LINE=$(bun scripts/cynco-audit.mjs check | tr -d '\r') || { echo "[dispatch] REFUSED: audit: $AUDIT_LINE — nothing was dispatched" >&2; exit 1; }
 echo "[dispatch] tool-call audit: $AUDIT_LINE"
@@ -118,9 +122,27 @@ ENGINE_WINPID=
 # dispatch started is stopped, and the phone engine it stopped is started
 # again. Cleared once the driver and the end-of-mission watcher are running.
 dispatch_abandoned() {
+  ENGINE_STILL_LISTED=
   if [ -n "${ENGINE_WINPID:-}" ]; then
     taskkill //PID "$ENGINE_WINPID" //T //F >/dev/null 2>&1 || true
     echo "[dispatch] stopped before the mission started — the mission engine this dispatch started is stopped"
+    # F242: a taskkill that failed is not a dead engine; asked again after a short wait.
+    for _ in 1 2 3 4 5; do
+      if ! tasklist //FI "PID eq $ENGINE_WINPID" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null | grep -q "\"$ENGINE_WINPID\""; then ENGINE_STILL_LISTED=; break; fi
+      ENGINE_STILL_LISTED=1
+      sleep 2
+    done
+  fi
+  if [ -n "${BASELINE_TAKEN:-}" ]; then
+    # F242: the engine this dispatch started was killed above; when its pid was never read, or it is
+    # still listed after the kill, it is not confirmed dead.
+    if [ -n "${ENGINE_PID:-}" ] && [ -z "${ENGINE_WINPID:-}" ]; then
+      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "the mission engine's Windows pid was never read" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+    elif [ -n "$ENGINE_STILL_LISTED" ]; then
+      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID still listed 10 s after taskkill" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+    else
+      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+    fi
   fi
   if [ -n "${SANDBOX_CREATED:-}" ]; then
     bun scripts/cynco-sandbox.mjs release "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
@@ -131,8 +153,17 @@ dispatch_abandoned() {
   fi
 }
 trap dispatch_abandoned EXIT
+# F242: the integrity baseline of this run. `pre` asks the latch again, refuses while an earlier run was
+# never compared, checks the models record and walks the protected folders (about 1.5 s with a warm
+# file cache, 6 to 9 s cold: the held-out folder's ~33,000 entries); it prints its own refusal line.
+# --max-seconds: past the mission's wall clock and three hours more, a baseline still open is an orphan
+# that the daemon compares (and, not confirmed dead, latches).
+bun scripts/cynco-guard.mjs pre "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} --by dispatch --max-seconds "$((TIMEOUT_S + 10800))" || exit 1
+BASELINE_TAKEN=1
 bun scripts/cynco-sandbox.mjs create --run-id "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} || exit 1
 SANDBOX_CREATED=1
+# Old mission logs go only now: every refusal gate has passed (switch, latch, audit, baseline, sandbox).
+bun scripts/cynco-logs.mjs prune-mission-logs --keep "$ENGINE_LOG" --keep "$DRIVER_LOG" || echo "[dispatch] old mission logs not pruned (see above)"
 if [ "$(phone_engine_task_state)" = "Running" ]; then
   PHONE_ENGINE_WAS_RUNNING=1
   echo "[dispatch] stopping the phone engine through its task (started again when the mission is over)"
@@ -481,6 +512,24 @@ IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
   sleep 10
   END_OUT=$(bun scripts/cynco-mission-end.mjs --engine-pid "${ENGINE_WINPID:-0}" ${CYNCO_SKIP_IDLE_ENGINE:+--skip-idle} 2>&1 | tr -d '\r' || true)
   printf '%s\n' "$END_OUT" | grep '^\[mission-end\]' >> "$DRIVER_LOG" || true
+  # F242, directive 15: the settling compare, after the mission engine is confirmed dead.
+  ENGINE_GONE=
+  if [ -n "${ENGINE_WINPID:-}" ]; then
+    for _ in $(seq 1 30); do
+      if ! tasklist //FI "PID eq $ENGINE_WINPID" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null | grep -q "\"$ENGINE_WINPID\""; then ENGINE_GONE=1; break; fi
+      sleep 2
+    done
+    NOT_DEAD_WHY="pid $ENGINE_WINPID still listed 60 s after mission end"
+  else
+    NOT_DEAD_WHY="the mission engine's Windows pid was never read"
+  fi
+  if [ -n "$ENGINE_GONE" ]; then
+    bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher >> "$DRIVER_LOG" 2>&1 || true
+  else
+    bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher --engine-not-confirmed-dead "$NOT_DEAD_WHY" >> "$DRIVER_LOG" 2>&1 || true
+  fi
+  GUARD_NOW=$(bun scripts/cynco-guard.mjs status --quiet 2>/dev/null | tr -d '\r' || true)
+  if [ "$GUARD_NOW" != "clear" ]; then echo "[dispatch] integrity latch present: ${GUARD_NOW:-the integrity guard did not answer}" >> "$DRIVER_LOG"; fi
   bun scripts/cynco-audit.mjs verify --run "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   bun scripts/cynco-sandbox.mjs release "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   case "$(printf '%s\n' "$END_OUT" | sed -n 's/^ACTION //p' | tail -1)" in

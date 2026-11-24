@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS } from '../cynco-campaign.mjs'
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS, dispatchRunId } from '../cynco-campaign.mjs'
+import { DISPATCH_RUN_PREFIX } from '../../engine/containment.js'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
@@ -123,6 +124,14 @@ defaultIo.datasetsHome = () => TEST_HOME
 // that leaves them out (one that does not spread inertTriples) gets the inert ones.
 defaultIo.exportGateLines = () => ({ rows: [], summary: null })
 defaultIo.exportGateOutcomes = () => ({ rows: [], outPath: null })
+// Containment (F242): no case in this file reads the real guard folder or walks the real protected
+// folders. A case that tests the integrity wiring passes its own `integrity` on an injected io.
+const realIntegrity = defaultIo.integrity
+defaultIo.integrity = {
+  refusal: () => null,
+  early: async () => ({ changed: false, settled: false, changeCount: 0, firstClass: null, firstRoot: null, publicSummary: '', summary: '', latchPath: null }),
+  halt: async () => ({ latchPath: null }),
+}
 
 // Final review M5 (T7-M3): the fault path computes a board too, and without
 // these seams it falls through to defaultIo — the ~160 MB shard walk and the
@@ -1866,7 +1875,8 @@ describe('main routes the authoring verbs before it loads a campaign spec', () =
     expect(s.calls).toHaveLength(1)
     expect(s.calls[0].argv).toEqual(['--author', 'c12'])
     // the runner's own helpers are what travel over, not an import back
-    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
+    // `integrity` (F242): the authoring dispatch is refused under the latch through this seam.
+    expect(Object.keys(s.calls[0].io.helpers).sort()).toEqual(['appendLog', 'applyProposalDecision', 'dispatchEnv', 'dispatchRaw', 'integrity', 'missionIdFrom', 'notify', 'readRow', 'releaseLock', 'seatAuthority', 'takeLock', 'waitForDriver'])
   })
 
   it('--author takes the id from the argv path when none is named', async () => {
@@ -2946,5 +2956,346 @@ describe('main --autopoiesis', () => {
     const code = await withHome(home, () => main([specPath, '--autopoiesis'], { readLedgerRows: () => [] }))
     expect(code).toBe(2)
     expect(existsSync(join(home, 'campaigns'))).toBe(false)
+  })
+})
+
+// ─── The integrity layer (F242, slice S7) ───────────────────────────────────────────────────────
+// Every case passes its own `integrity` on an injected io; the override at the top of this file keeps
+// defaultIo's from reading the real guard folder. `fetch` is never called by any case in this file.
+describe('the integrity layer of a wave (F242)', () => {
+  const realFetch = globalThis.fetch
+  let fetchCalls = 0
+  beforeAll(() => { globalThis.fetch = async (...a) => { fetchCalls++; throw new Error(`fetch was called in a unit test: ${String(a[0])}`) } })
+  afterAll(() => {
+    globalThis.fetch = realFetch
+    expect(fetchCalls, 'a campaign unit test called fetch').toBe(0)
+  })
+
+  const RUN = 'dispatch-20261123T101010-ab12'
+  const row = (missionId) => ({ missionId, exitReason: 'timeout', durationS: 100, commitRange: { base: '1d03308', head: 'h' }, outcome: 'landed', markerSeen: true, toolStats: { total: 10, commits: 1, byClass: { sourceEdit: 2, fileWrite: 0, inspect: 8 }, byName: {} } })
+  const integ = (over = {}) => {
+    const calls = { refusal: 0, early: [], halt: [] }
+    return {
+      calls,
+      seam: {
+        refusal: () => { calls.refusal++; return over.refusal ?? null },
+        early: async (runId, context) => { calls.early.push({ runId, context }); if (over.earlyThrows) throw new Error(over.earlyThrows); return over.early ?? { changed: false, settled: false, changeCount: 0, firstClass: null, firstRoot: null, publicSummary: '', latchPath: null } },
+        halt: async (what) => { calls.halt.push(what); return { latchPath: 'G:/guard/HALT.json' } },
+      },
+    }
+  }
+  const waveIo = (seam, over = {}) => {
+    const seen = { patched: [], graded: 0, wrote: 0, dispatched: 0 }
+    const io = {
+      writeBrief: (p) => { seen.wrote++; return p },
+      dispatch: async () => { seen.dispatched++; return { driverLog: 'C:/tmp/d.log', runId: RUN } },
+      waitForDriver: async () => ({ exited: true, missionId: 'c8-wave1-1' }),
+      readRow: (missionId) => row(missionId),
+      commitsBetween: () => [{ sha: 'h', subject: 'C8 commit 1' }],
+      grade: async () => { seen.graded++; return g() }, checkIdentity: okIdentity,
+      salvageOf: () => null,
+      ideate: async () => ({ ideation: null }),
+      patchRow: (missionId, fields) => { seen.patched.push({ missionId, fields }) },
+      commit: () => ({ sha: 'v1' }),
+      notify: async () => true,
+      economics: () => [],
+      appendLog: () => {},
+      ...inertTriples,
+      ...faultIo(),
+      integrity: seam,
+      ...over,
+    }
+    return { io, seen }
+  }
+  const changed = { changed: true, settled: false, changeCount: 3, firstClass: 'PRESENCE', firstRoot: 'H:/home', publicSummary: '3 change(s) in protected folders (first: PRESENCE)', latchPath: 'G:/guard/HALT.json' }
+
+  it('decide: a row whose integrity changed is a fault before anything else, even on a PASS grade', () => {
+    const passing = g({ verified: true, gate: { ...g().gate, terminator: 'PASS', fails: [], exit: 0 } })
+    const d = decide({ grade: passing, state: { waveCount: 1, consecutiveNoProgress: 0, lastFails: null }, spec, commitsLanded: 3, row: { integrity: { changed: true, changeCount: 2, firstClass: 'FROZEN' } } })
+    expect(d.kind).toBe('fault')
+    expect(d.why).toMatch(/^integrity: a protected folder changed during the wave \(2 change\(s\), first: FROZEN\)/)
+    expect(decide({ grade: passing, state: { waveCount: 1, consecutiveNoProgress: 0, lastFails: null }, spec, commitsLanded: 3, row: { integrity: { changed: false } } }).kind).toBe('pass')
+  })
+
+  it('dispatchRunId reads the id after the dispatch prefix, and null for a malformed id or no line', () => {
+    expect(dispatchRunId(`[dispatch] something\r\n${DISPATCH_RUN_PREFIX}${RUN}\r\nmore`)).toBe(RUN)
+    expect(dispatchRunId(`${DISPATCH_RUN_PREFIX}not a run id`)).toBeNull()
+    expect(dispatchRunId('no such line')).toBeNull()
+    expect(dispatchRunId(undefined)).toBeNull()
+  })
+
+  it('a refusal is a STOP: no brief, no dispatch, no wave spent, the roadmap line not moved', async () => {
+    const state = freshState()
+    const roadmapPath = join(mkdtempSync(join(tmpdir(), 'roadmap-')), 'roadmap.json')
+    const roadmapText = JSON.stringify({ lines: [{ id: 'c8', name: 'n', bar: 'b', base: '1d03308', status: 'sealed' }] }, null, 2) + '\n'
+    writeFileSync(roadmapPath, roadmapText)
+    const { calls, seam } = integ({ refusal: 'the integrity latch is present at G:/guard/HALT.json (x)' })
+    const { io, seen } = waveIo(seam)
+    const rec = await runWave(spec, state, io, { roadmapPath })
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toMatch(/^integrity: the integrity latch is present .* — nothing was dispatched$/)
+    expect(seen.wrote).toBe(0)
+    expect(seen.dispatched).toBe(0)
+    expect(state.state.waveCount ?? 0).toBe(0)
+    expect(readFileSync(roadmapPath, 'utf8')).toBe(roadmapText)
+    expect(calls.refusal).toBe(1)
+  })
+
+  it('the early reading reports a change: no halt (it tripped by itself), the row gets the five keys, a fault with missionId, no grade', async () => {
+    const state = freshState()
+    const { calls, seam } = integ({ early: changed })
+    const { io, seen } = waveIo(seam)
+    const rec = await runWave(spec, state, io)
+    expect(calls.halt).toEqual([])
+    expect(calls.early).toEqual([{ runId: RUN, context: { campaignId: 'c8', wave: 1, cwd: spec.repo } }])
+    expect(seen.patched).toEqual([{ missionId: 'c8-wave1-1', fields: { integrity: { changed: true, changeCount: 3, firstClass: 'PRESENCE', firstRoot: 'H:/home', latchPath: 'G:/guard/HALT.json' } } }])
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toBe('integrity: 3 change(s) in protected folders (first: PRESENCE); the paths are in the integrity latch')
+    expect(rec.missionId).toBe('c8-wave1-1')
+    expect(seen.graded).toBe(0)
+  })
+
+  it('the early reading clean: inFlight carried the run id, the record says unchanged, the decision is as before, no halt', async () => {
+    const state = freshState()
+    const { calls, seam } = integ()
+    let inFlightRunId = null
+    const { io } = waveIo(seam, { waitForDriver: async () => { inFlightRunId = state.state.inFlight?.runId ?? null; return { exited: true, missionId: 'c8-wave1-1' } } })
+    const rec = await runWave(spec, state, io)
+    expect(inFlightRunId).toBe(RUN)
+    expect(rec.integrity).toEqual({ changed: false, changeCount: 0, firstClass: null, firstRoot: null, latchPath: null })
+    expect(rec.decision.kind).toBe('next')
+    expect(calls.halt).toEqual([])
+    // The seam has no settle: the runner only reads; the dispatch watcher closes the baseline.
+    expect(calls.early).toHaveLength(1)
+    expect(Object.keys(seam).sort()).toEqual(['early', 'halt', 'refusal'])
+  })
+
+  // Review of wave 5 (finding 9): a latch set while the wave ran, by anyone, is a fault, and the wave is not graded.
+  it('a latch that appeared during the wave: a fault, not graded, whatever the reading found', async () => {
+    const state = freshState()
+    const LATCH = 'the integrity latch is present at G:/guard/HALT.json (x, set a by b); only the owner clears it'
+    let asked = 0
+    const { calls, seam } = integ()
+    seam.refusal = () => { asked++; return asked > 1 ? LATCH : null }
+    const { io, seen } = waveIo(seam)
+    const rec = await runWave(spec, state, io)
+    expect(seen.dispatched).toBe(1)
+    expect(seen.graded).toBe(0)
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toBe(`integrity: ${LATCH} — the wave was not graded`)
+    expect(calls.halt).toEqual([])
+  })
+
+  it('a mission the driver stopped under the latch (exitReason integrity-latch): a fault, not graded', async () => {
+    const state = freshState()
+    const { seam } = integ()
+    const { io, seen } = waveIo(seam, { readRow: (missionId) => ({ ...row(missionId), exitReason: 'integrity-latch' }) })
+    const rec = await runWave(spec, state, io)
+    expect(seen.graded).toBe(0)
+    expect(rec.decision.why).toBe('integrity: the mission driver stopped the mission under the integrity latch — the wave was not graded')
+  })
+
+  it('the reading waits for the dispatch watcher\'s settle (the authority), and a settle that never comes is the latch', async () => {
+    const state = freshState()
+    const { calls, seam } = integ()
+    let polls = 0
+    const slept = []
+    seam.settled = () => { polls++; return polls > 2 }
+    seam.sleep = async (ms) => { slept.push(ms) }
+    seam.settleWaitMs = 60_000
+    const { io, seen } = waveIo(seam)
+    const rec = await runWave(spec, state, io)
+    expect(slept).toEqual([10_000, 10_000])
+    expect(calls.early).toHaveLength(1)
+    expect(seen.graded).toBe(1)
+    expect(rec.decision.kind).toBe('next')
+
+    const state2 = freshState()
+    const b = integ()
+    b.seam.settled = () => false
+    b.seam.sleep = async () => {}
+    b.seam.settleWaitMs = 0
+    const w2 = waveIo(b.seam)
+    const rec2 = await runWave(spec, state2, w2.io)
+    expect(w2.seen.graded).toBe(0)
+    expect(b.calls.halt).toHaveLength(1)
+    expect(b.calls.halt[0]).toMatchObject({ reason: 'engine-not-confirmed-dead' })
+    expect(b.calls.halt[0].detail).toBe(`the dispatch watcher had not compared run ${RUN} 0 min after the driver's exit`)
+    expect(rec2.decision.kind).toBe('fault')
+  })
+
+  const notDeadCases = [
+    ['the driver did not exit within the wall clock', { waitForDriver: async () => ({ exited: false }) }, /driver did not exit within the wall clock/],
+    ['the driver pid was unseen', { waitForDriver: async () => ({ exited: false, pidUnseen: 7 }) }, /driver pid 7 was already invisible/],
+    ['the dispatch timed out', { dispatch: async () => { throw new Error('dispatch timed out after 9 ms (cap 9 ms): x') } }, /dispatch or wait failed: dispatch timed out/],
+    ['the wait threw', { waitForDriver: async () => { throw new Error('the wait broke') } }, /dispatch or wait failed: the wait broke/],
+  ]
+  for (const [name, over, detail] of notDeadCases) {
+    it(`not confirmed dead (${name}): halt with reason engine-not-confirmed-dead`, async () => {
+      const state = freshState()
+      const { calls, seam } = integ()
+      const { io } = waveIo(seam, over)
+      const rec = await runWave(spec, state, io)
+      expect(calls.halt).toHaveLength(1)
+      expect(calls.halt[0].reason).toBe('engine-not-confirmed-dead')
+      expect(calls.halt[0].detail).toMatch(detail)
+      expect(calls.early).toEqual([])
+      expect(rec.decision.kind).toBe('fault')
+      expect(rec.decision.why).toMatch(/^integrity: the mission engine is not confirmed dead \(.*\); the integrity latch is set$/)
+    })
+  }
+
+  it('a dispatch that failed with an exit status started nothing: no halt, the old why', async () => {
+    const state = freshState()
+    const { calls, seam } = integ()
+    const { io } = waveIo(seam, { dispatch: async () => { throw new Error('dispatch failed (exit 1): refused') } })
+    const rec = await runWave(spec, state, io)
+    expect(calls.halt).toEqual([])
+    expect(rec.decision.why).toBe('dispatch or wait failed: dispatch failed (exit 1): refused')
+  })
+
+  it('an early reading that throws, and a dispatch with no run id, each halt once with manifest-error', async () => {
+    {
+      const state = freshState()
+      const { calls, seam } = integ({ earlyThrows: 'the seam broke' })
+      const rec = await runWave(spec, state, waveIo(seam).io)
+      expect(calls.halt.map(h => h.reason)).toEqual(['manifest-error'])
+      expect(calls.halt[0].detail).toMatch(/the integrity check could not be completed \(the seam broke\)/)
+      expect(rec.decision.kind).toBe('fault')
+      expect(rec.decision.why).toBe('integrity: the integrity check could not be completed; the paths are in the integrity latch')
+    }
+    {
+      const state = freshState()
+      const { calls, seam } = integ()
+      const rec = await runWave(spec, state, waveIo(seam, { dispatch: async () => ({ driverLog: 'C:/tmp/d.log' }) }).io)
+      expect(calls.early).toEqual([])
+      expect(calls.halt.map(h => h.reason)).toEqual(['manifest-error'])
+      expect(calls.halt[0].detail).toMatch(/the dispatch printed no run id/)
+      expect(rec.decision.kind).toBe('fault')
+    }
+  })
+
+  it('a driver that exited without a row and an early reading that found a change: the why is the integrity one', async () => {
+    const state = freshState()
+    const { seam } = integ({ early: changed })
+    const rec = await runWave(spec, state, waveIo(seam, { waitForDriver: async () => ({ exited: true }), readRow: () => null, missionIdFrom: () => null }).io)
+    expect(rec.decision.why).toMatch(/^integrity: 3 change\(s\) in protected folders/)
+  })
+
+  it('an io with no integrity member takes no reading and asks nothing', async () => {
+    const state = freshState()
+    const { calls, seam } = integ({ refusal: 'would refuse' })
+    const { io } = waveIo(seam)
+    delete io.integrity
+    const rec = await runWave(spec, state, io)
+    expect(rec.decision.kind).toBe('next')
+    expect(calls.refusal).toBe(0)
+    expect(rec.integrity).toBeNull()
+  })
+
+  describe('adoptInFlight reads the record of the dispatch watcher', () => {
+    const inFlight = (state, over = {}) => {
+      state.state.inFlight = { wave: 2, missionId: null, briefFile: 'b.txt', pidFile: 'C:/tmp/p.pid', driverLog: 'C:/tmp/d.log', dispatchedAt: '2026-09-17T01:02:03.000Z', runId: RUN, ...over }
+      state.save()
+      return state
+    }
+    const adoptIo = (seam, over = {}) => ({ missionIdFrom: () => 'c8-wave2-1', pidAlive: () => false, notify: async () => true, patchRow: () => {}, ...faultIo(), integrity: seam, ...over })
+
+    it('a clean settled record adopts as before', async () => {
+      const { seam } = integ({ early: { changed: false, settled: true, changeCount: 0, latchPath: null } })
+      const r = await adoptInFlight(spec, inFlight(freshState()), adoptIo(seam))
+      expect(r).toEqual({ kind: 'adopted', missionId: 'c8-wave2-1' })
+    })
+    it('a settled record that changed is a fault with missionId kept, and no second halt', async () => {
+      const { calls, seam } = integ({ early: { ...changed, settled: true, latchPath: null } })
+      const patched = []
+      const r = await adoptInFlight(spec, inFlight(freshState()), adoptIo(seam, { patchRow: (id, f) => patched.push({ id, f }) }))
+      expect(r.kind).toBe('fault')
+      expect(r.record.missionId).toBe('c8-wave2-1')
+      expect(r.record.decision.why).toMatch(/^integrity: 3 change\(s\)/)
+      expect(calls.halt).toEqual([])
+      expect(patched[0].f.integrity.changed).toBe(true)
+    })
+    it('an unsettled clean reading is unsettled; an unsettled changed reading faults without a halt', async () => {
+      const a = integ()
+      expect(await adoptInFlight(spec, inFlight(freshState()), adoptIo(a.seam))).toEqual({ kind: 'unsettled', runId: RUN })
+      const b = integ({ early: changed })
+      const r = await adoptInFlight(spec, inFlight(freshState()), adoptIo(b.seam))
+      expect(r.kind).toBe('fault')
+      expect(b.calls.halt).toEqual([])
+    })
+    it('an early that throws halts with manifest-error and faults', async () => {
+      const { calls, seam } = integ({ earlyThrows: 'boom' })
+      const r = await adoptInFlight(spec, inFlight(freshState()), adoptIo(seam))
+      expect(r.kind).toBe('fault')
+      expect(calls.halt.map(h => h.reason)).toEqual(['manifest-error'])
+    })
+    it('a record without runId adopts as before, and a live driver with no row is alive before any reading', async () => {
+      const a = integ({ early: changed })
+      expect((await adoptInFlight(spec, inFlight(freshState(), { runId: undefined }), adoptIo(a.seam))).kind).toBe('adopted')
+      expect(a.calls.early).toEqual([])
+      const b = integ({ early: changed })
+      expect((await adoptInFlight(spec, inFlight(freshState()), adoptIo(b.seam, { missionIdFrom: () => null, pidAlive: () => true }))).kind).toBe('alive')
+      expect(b.calls.early).toEqual([])
+    })
+  })
+
+  describe('main', () => {
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+    const setup = () => {
+      const home = mkdtempSync(join(tmpdir(), 'home-'))
+      const specPath = join(mkdtempSync(join(tmpdir(), 'spec-')), 'c8.campaign.json')
+      writeFileSync(specPath, JSON.stringify({ ...spec, repo: '.', base: head, suiteBaseline: join(HELDOUT, 'suite_baseline.txt') }))
+      // A wave in flight: a refusal that came after the in-flight block would print the in-flight line instead.
+      const stateDir = join(home, 'campaigns', 'c8')
+      mkdirSync(stateDir, { recursive: true })
+      writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ waveCount: 1, inFlight: { wave: 2, dispatchedAt: '2026-09-17T01:02:03.000Z', driverLog: 'C:/tmp/d.log', pidFile: 'C:/tmp/p.pid', briefFile: 'b.txt' } }))
+      return { home, specPath }
+    }
+    const git = (args) => {
+      if (args[0] === 'branch' && args[1] === '--show-current') return { status: 0, stdout: 'campaign/c8\n' }
+      if (args[0] === 'rev-parse' && args[1] === '--verify') return { status: 0, stdout: '' }
+      return { status: 1, stdout: '' }
+    }
+    const run = async (home, fn) => {
+      const prevHome = process.env.CYNCO_HOME, prevInteg = defaultIo.integrity
+      const errors = [], logs = []
+      const oe = console.error, ol = console.log
+      console.error = (m) => errors.push(String(m)); console.log = (m) => logs.push(String(m))
+      process.env.CYNCO_HOME = home
+      defaultIo.integrity = { ...prevInteg, refusal: () => 'the integrity latch is present at G:/guard/HALT.json (x)' }
+      try { return { code: await fn(), errors: errors.join('\n'), logs: logs.join('\n') } }
+      finally {
+        console.error = oe; console.log = ol
+        defaultIo.integrity = prevInteg
+        if (prevHome === undefined) delete process.env.CYNCO_HOME; else process.env.CYNCO_HOME = prevHome
+      }
+    }
+
+    it('returns 2 with [campaign] REFUSED: integrity after the lock, before the in-flight block and calibration', async () => {
+      const { home, specPath } = setup()
+      const { code, errors } = await run(home, () => main([specPath, '--waves', '1'], { bashExe: () => 'bash', git }))
+      expect(errors).toMatch(/\[campaign\] REFUSED: integrity: the integrity latch is present .* — nothing was dispatched/)
+      expect(errors).not.toMatch(/in flight since/)
+      expect(code).toBe(2)
+    })
+
+    it('--scoreboard still answers under a refusal', async () => {
+      const { home, specPath } = setup()
+      const { code, errors } = await run(home, () => main([specPath, '--scoreboard'], { readLedgerRows: () => [], economics: () => null }))
+      expect(errors).not.toMatch(/REFUSED: integrity/)
+      expect(code).toBe(0)
+    })
+  })
+
+  it('the default io carries the integrity seam, and defaultIo.ideate hands runIdeation its baseline pair', () => {
+    expect(typeof realIntegrity.refusal).toBe('function')
+    expect(typeof realIntegrity.early).toBe('function')
+    expect(typeof realIntegrity.halt).toBe('function')
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    expect(src).toMatch(/ideate: \(args\) => runIdeation\(\{ \.\.\.args, integrity: \{/)
+    expect(src).toMatch(/takeBaseline\(\{ runId, cwd, by: 'ideation', holderPid: process\.pid \}\)/)
+    expect(typeof realIntegrity.settled).toBe('function')
+    expect(realIntegrity.settleWaitMs).toBe(300_000)
   })
 })

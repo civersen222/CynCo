@@ -253,15 +253,55 @@ describe('appendCapped', () => {
   })
 })
 
+describe('pruneOldFiles: dry run, keepIf and the cap (review of wave 5)', () => {
+  it('a dry run names what would go and deletes nothing; keepIf keeps; maxDeletes stops and counts the rest', () => {
+    const dir = root()
+    const old = NOW - 10 * DAY
+    for (const n of ['engine_a.log', 'engine_b.log', 'engine_c.log', 'engine_cited.log']) {
+      writeFileSync(join(dir, n), 'x')
+      utimesSync(join(dir, n), new Date(old), new Date(old))
+    }
+    const dry = pruneOldFiles(dir, MISSION_LOG_RE, 2, { now: NOW, dryRun: true, keepIf: (n) => n.includes('cited') })
+    expect(dry.deleted.sort()).toEqual(['engine_a.log', 'engine_b.log', 'engine_c.log'])
+    expect(readdirSync(dir).sort()).toEqual(['engine_a.log', 'engine_b.log', 'engine_c.log', 'engine_cited.log'])
+    const capped = pruneOldFiles(dir, MISSION_LOG_RE, 2, { now: NOW, maxDeletes: 2, keepIf: (n) => n.includes('cited') })
+    expect(capped.deleted).toHaveLength(2)
+    expect(capped.left).toBe(1)
+    expect(readdirSync(dir)).toHaveLength(2)
+    expect(readdirSync(dir)).toContain('engine_cited.log')
+  })
+})
+
+describe('appendCapped: the handle is the file the look found (review of wave 5)', () => {
+  it('a file replaced between the look and the open is not written', () => {
+    const dir = root()
+    const p = join(dir, '.cynco-stream.log')
+    writeFileSync(p, 'mine\n')
+    // The same name, a different file: what a swap between lstat and open looks like to the handle.
+    const other = join(dir, 'other.log')
+    writeFileSync(other, 'PRECIOUS')
+    const realOpen = fs.openSync
+    vi.spyOn(fs, 'openSync').mockImplementation(((path: fs.PathLike, flags: number) => realOpen(path === p ? other : path, flags)) as typeof fs.openSync)
+    syncBuiltinESMExports()
+    expect(() => appendCapped(p, 'x', 1000)).toThrow(/changed between the look and the open; it is not written/)
+    vi.restoreAllMocks()
+    syncBuiltinESMExports()
+    expect(readFileSync(other, 'utf-8')).toBe('PRECIOUS')
+    expect(readFileSync(p, 'utf-8')).toBe('mine\n')
+  })
+})
+
 describe('oversizedLogs', () => {
-  it('lists only *.log regular files over the threshold', () => {
+  it('lists only *.log (and the one previous *.log.1) regular files over the threshold', () => {
     const dir = root()
     writeFileSync(join(dir, 'big.log'), 'x'.repeat(200))
+    writeFileSync(join(dir, 'big.log.1'), 'x'.repeat(300))
+    writeFileSync(join(dir, 'big.log.2'), 'x'.repeat(300))
     writeFileSync(join(dir, 'small.log'), 'x'.repeat(10))
     writeFileSync(join(dir, 'big.txt'), 'x'.repeat(200))
     mkdirSync(join(dir, 'x.log'))
-    const r = oversizedLogs(dir, 100)
-    expect(r).toEqual([{ path: join(dir, 'big.log'), bytes: 200 }])
+    const r = oversizedLogs(dir, 100).sort((a, b) => (a.path < b.path ? -1 : 1))
+    expect(r).toEqual([{ path: join(dir, 'big.log'), bytes: 200 }, { path: join(dir, 'big.log.1'), bytes: 300 }])
   })
 
   it('returns [] for a folder that does not exist, and does not throw', () => {

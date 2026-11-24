@@ -1975,3 +1975,90 @@ describe('authorCampaign at earned authority', () => {
     expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
   })
 })
+
+// ─── The integrity layer (F242, slice S7) ───────────────────────────────────────────────────────
+describe('authorCampaign and sealGate under the integrity layer (S7)', () => {
+  const LATCH = 'the integrity latch is present at G:/guard/HALT.json (x)'
+
+  // Review of wave 5: the refusal comes first, before the staging, the roadmap change and the staged check's re-run.
+  it('authorCampaign: a refusal starts and spends nothing: no staging, no run, no roadmap change, no brief, no attempt', async () => {
+    const { files } = staged(home)
+    const { io, dispatched, disk } = makeIo({ home, files, over: { integrity: { refusal: () => LATCH } } })
+    const runs = []
+    const made = []
+    const saved = []
+    const run = io.run
+    io.run = (...a) => { runs.push(a); return run(...a) }
+    const mkdir = io.mkdir
+    io.mkdir = (p) => { made.push(p); return mkdir(p) }
+    const save = io.saveRoadmap
+    io.saveRoadmap = (...a) => { saved.push(a); return save?.(...a) }
+    const before = Object.keys(disk).length
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const roadmap = ROADMAP()
+    const status = roadmap.lines?.find?.(l => l.id === ID)?.status
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.ok).toBe(false)
+    expect(r.why).toBe(`integrity: ${LATCH} — nothing was started`)
+    expect(dispatched).toEqual([])
+    expect(runs).toEqual([])
+    expect(made).toEqual([])
+    expect(saved).toEqual([])
+    expect(Object.keys(disk).length).toBe(before)
+    expect(roadmap.lines?.find?.(l => l.id === ID)?.status).toBe(status)
+    expect(state.state.authoring?.c9?.attempts ?? 0).toBe(0)
+  })
+
+  // Review of wave 5 (finding 10): an authoring mission engine that may still run is the latch, as in a wave.
+  it('authorCampaign: a driver that did not come back, or a dispatch that threw unarmed, writes the latch with the run id', async () => {
+    for (const [over, detail] of [
+      [{ waitForDriver: async () => ({ exited: false }) }, 'driver did not exit within the wall clock'],
+      [{ dispatch: async () => { throw new Error('dispatch timed out after 9 ms') } }, 'dispatch or wait failed: dispatch timed out after 9 ms'],
+    ]) {
+      const { files } = staged(home)
+      const halts = []
+      const dispatch = over.dispatch ?? (async (a) => ({ driverLog: a.env.DRIVER_LOG, runId: 'dispatch-20261124T010101-ab12' }))
+      const { io } = makeIo({ home, files, over: { ...over, dispatch, integrity: { refusal: () => null, halt: async (w) => { halts.push(w); return { latchPath: 'G:/guard/HALT.json' } } } } })
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+      expect(halts).toHaveLength(1)
+      expect(halts[0]).toMatchObject({ by: 'gate-author', reason: 'engine-not-confirmed-dead', detail })
+      expect(halts[0].run).toBe(over.dispatch ? `${ID}-author` : 'dispatch-20261124T010101-ab12')
+    }
+    // A dispatch that failed with its trap armed left nothing running: no latch.
+    const { files } = staged(home)
+    const halts = []
+    const { io } = makeIo({ home, files, over: { dispatch: async () => { throw new Error('dispatch failed (exit 1): boom') }, integrity: { refusal: () => null, halt: async (w) => { halts.push(w) } } } })
+    await authorCampaign({ id: ID, roadmap: ROADMAP(), state: new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load(), io })
+    expect(halts).toEqual([])
+  })
+
+  it('authorCampaign: an io with no integrity member, or one that answers null, dispatches as before', async () => {
+    for (const over of [{}, { integrity: { refusal: () => null } }]) {
+      const { files } = staged(home)
+      const { io, dispatched } = makeIo({ home, files, over })
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+      expect(dispatched).toHaveLength(1)
+    }
+  })
+
+  it('sealGate: an open baseline refuses with its sentence; nothing is made, copied or renamed', async () => {
+    const { stagingDir, files } = staged(home)
+    const why = 'a mission or daemon task is running (r1); this would change a protected folder and stop it. Try again when it has ended.'
+    const made = []
+    const { io, copied, renamed } = makeIo({ home, files, over: { frozenWriteRefusal: () => why } })
+    const mkdir = io.mkdir
+    io.mkdir = (p) => { made.push(p); return mkdir(p) }
+    const roadmap = ROADMAP(); roadmap.lines.find(l => l.id === 'c9').status = 'proposed'
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
+    const r = await sealGate({ id: ID, state, roadmap, io })
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual([why])
+    expect(made).toEqual([])
+    expect(copied).toEqual([])
+    expect(renamed).toEqual([])
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
+  })
+})

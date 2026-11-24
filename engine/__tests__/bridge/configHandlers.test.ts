@@ -135,3 +135,39 @@ describe('handleProfileWrite', () => {
     expect((event as any).ok).toBe(false)
   })
 })
+
+// F242, entry 4.M5: the profiles folder is FROZEN while a mission or a daemon task runs.
+describe('handleProfileWrite while an integrity baseline is open (S7)', () => {
+  const okYaml = 'name: t\nprovider: ollama\nmodel: m\n'
+
+  it('refuses with the frozenWriteRefusal sentence and writes nothing; an empty or missing guard folder writes as before', () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } = require('fs') as typeof import('fs')
+    const { tmpdir } = require('os') as typeof import('os')
+    const { join } = require('path') as typeof import('path')
+    const root = mkdtempSync(join(tmpdir(), 'cynco-profile-frozen-'))
+    const saved = process.env.LOCALCODE_GUARD_DIR
+    try {
+      const guard = join(root, 'guard')
+      const profiles = join(root, 'profiles')
+      mkdirSync(join(guard, 'manifests'), { recursive: true })
+      process.env.LOCALCODE_GUARD_DIR = guard
+      expect(handleProfileValidate(okYaml).ok).toBe(true)
+      {
+        writeFileSync(join(guard, 'manifests', 'daemon-m-t-20261123T120000-ab12.before.json'), '{}')
+        const refused = handleProfileWrite('frozen', okYaml, profiles)
+        expect(refused).toEqual({ type: 'profile.validation', ok: false, errors: [expect.stringMatching(/^a mission or daemon task is running \(daemon-m-t-20261123T120000-ab12\); this would change a protected folder and stop it\./)] })
+        expect(existsSync(join(profiles, 'frozen.yml'))).toBe(false)
+
+        rmSync(join(guard, 'manifests', 'daemon-m-t-20261123T120000-ab12.before.json'))
+        expect(handleProfileWrite('free', okYaml, profiles).type).toBe('profile.written')
+        // A guard folder that does not exist (as the suite's default): writes as today.
+        process.env.LOCALCODE_GUARD_DIR = join(root, 'no-such-guard')
+        expect(handleProfileWrite('free2', okYaml, profiles).type).toBe('profile.written')
+      }
+    } finally {
+      if (saved === undefined) delete process.env.LOCALCODE_GUARD_DIR
+      else process.env.LOCALCODE_GUARD_DIR = saved
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})

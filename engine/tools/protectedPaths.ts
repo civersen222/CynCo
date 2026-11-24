@@ -43,7 +43,7 @@ export type PathContext = {
 }
 export type PathRule = 'no-access' | 'self-building' | 'unreadable' | 'device' | 'unprotected-volume' | 'home'
   | 'home-dot' | 'state' | 'ancestor' | 'git-internals' | 'git-config' | 'link-out' | 'outside' | 'unresolved' | 'unclassified'
-export type EscalateNote = { rule: 'root-delete' | 'git-destructive' | 'unresolved-recursive-delete'
+export type EscalateNote = { rule: 'root-delete' | 'git-destructive'
   reason: string; targets: string[]; recursive: boolean; isolation: 'verified' | 'overlay' }
 export type PathVerdict =
   | { kind: 'allow' }
@@ -370,6 +370,16 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
     if (n.op === 'exec' || n.op === 'unclassified') {
       const j = judgePath(real, n.op, pc)
       if (j.allow) return
+      // RS4 (review 2026-11-23, fourth): the folder a program, a script, an interpreter or git starts in is
+      // where its relative writes land, so it is judged on the always-denied set like any operand handed to
+      // a program (`cd D:\; python clean.py`, `cd ~; git clean -fdx`). Measured cost: 0 of 3,342 past calls.
+      if (n.startedIn) {
+        const cat = CATEGORY[j.rule] ?? j.rule
+        const rule: PathRule = j.rule === 'no-access' || j.rule === 'unprotected-volume' ? j.rule : 'unclassified'
+        add(rule, order, () => `this command starts ${n.verb ?? 'a program'} in ${shown(n.raw, real)} (${cat}), where what it writes cannot be read from the command`, real,
+          'Start programs from the mission folder (Set-Location back to it first, or name it with Push-Location / -WorkingDirectory), and hand them any other folder as an operand.', false)
+        return
+      }
       const inline = fromInlineProgram(n) ? INLINE_HINT : undefined
       // A volume nothing protects is refused whatever the program does with it: the inline hint is not given
       // there. The operand was guessed, not read as a target, so the text does not forbid a retry (the
@@ -420,11 +430,148 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
     }
   }
 
+  // The default-deny rules of the fourth review (each one below, with what it refuses, why, what the model
+  // is told to write instead and how to relax it).
+  const late = named.paths.length + 64
+  refuseUnreadTarget(named, add, late)
+  refuseRedirectedAnchor(named, add, late)
+  refuseUnreadFolder(named, add, late)
+  refuseUnreadOperand(named, add, late)
+  refuseUnprotectedVolume(toolName, named, pc, add, late)
+
   if (cands.length) {
     cands.sort((a, b) => (PRECEDENCE.indexOf(a.rule) - PRECEDENCE.indexOf(b.rule)) || (a.order - b.order))
     return cands[0].make()
   }
   return escalation(toolName, named, pc)
+}
+
+// ─── Default deny for what the scan cannot read (review 2026-11-23, fourth) ───────────────────
+//
+// Until the fourth review a mutation whose target the scan could not read was refused only beside a
+// protected spelling, and escalated (allowed, with a log line) when it was recursive. Three review rounds
+// that day found 178, 50 and 47 walk-arounds, most of them that shape, on drives where the check is the only
+// layer (D:, exFAT, FAT, shares). Each rule below turns one unread case into a refusal. The cost of each was
+// measured on the 3,342 Bash calls of past runs (the session journals): the numbers are in the report of the
+// fourth review and in `engine/tools/CLAUDE.md`. To relax one, delete its call in `judgeCall`; nothing else
+// depends on it.
+
+type AddCandidate = (rule: PathRule, order: number, reason: () => string, target?: string, hint?: string, noRetry?: boolean) => void
+
+/** What the model is told to write instead of a target the check cannot read. */
+const UNREAD_HINT = 'The check runs only what it can read. Spell each target as a literal path relative to the mission folder (Remove-Item -Recurse -Force .\\build), one call per target; to remove what a listing finds, pipe a listing of a literal folder straight into the command (Get-ChildItem .\\build -Filter *.pyc | Remove-Item), or list it in one call and delete the items by name in the next; to write content to a file use the Write tool.'
+
+/**
+ * RS1. Refuses a call whose scan found a write, delete, move or link through a target it could not read
+ * (a variable, a pipeline element that changes its items, a computed path, a subexpression, an unknown
+ * parameter), whatever the operation and whether or not it is recursive. Measured cost: 3 of 3,342 past
+ * calls (`fs.writeFileSync(f, ...)` inside a helper of an inline program), each with a literal rewrite. The
+ * model is told to spell each target literally (UNREAD_HINT).
+ */
+function refuseUnreadTarget(named: NamedCall, add: AddCandidate, order: number): void {
+  const um = named.scan?.unresolvedMutation
+  if (!um) return
+  // A call of an inline program's code (`fs.writeFileSync`, `shutil.rmtree`) gets the program's hint, not the shell's (review of wave 5).
+  const code = /\.[A-Za-z_]/.test(um.verb)
+  add('unresolved', order, () => `this command ${OP_VERB[um.op]} through a target that cannot be read before it runs (${um.verb})`, undefined,
+    code ? `${INLINE_HINT} Or call it with a literal target relative to the mission folder.` : UNREAD_HINT)
+}
+
+/**
+ * RS3. Refuses a write-class target spelled through a temp or scratch folder (`[IO.Path]::GetTempPath()`,
+ * `tempfile.gettempdir()`, `os.tmpdir()`) when the same command assigns one of those names: the spelling then
+ * names wherever the assignment pointed it, not the sandbox's folder. Also a write-class target spelled
+ * through the working folder (`$PWD`, `Get-Location`, `os.getcwd()`) after a folder change the scan could
+ * not follow. Measured cost: 0 of 3,342 past calls (none assigns a temp name; one reaches an unread folder).
+ */
+function refuseRedirectedAnchor(named: NamedCall, add: AddCandidate, order: number): void {
+  const scan = named.scan
+  if (!scan) return
+  const mut = (n: NamedPath) => n.source === 'shell' && WRITE_CLASS.has(n.op)
+  const temp = scan.tempRedirected !== null ? named.paths.find(n => mut(n) && (n.anchor === 'temp' || n.anchor === 'scratch')) : undefined
+  if (temp) {
+    add('unresolved', order, () => `this command sets ${scan.tempRedirected} and then ${OP_VERB[temp.op as 'write']} through a temp or scratch folder, which then may not be this run's own`, undefined,
+      'Use the scratch folder by its full path, or a folder inside the mission folder spelled literally, and do not reassign TEMP, TMP or CYNCO_SCRATCH in the same command.')
+  }
+  const stale = named.paths.find(n => mut(n) && n.staleBase)
+  if (stale) {
+    add('unresolved', order, () => `this command ${OP_VERB[stale.op as 'write']} through the working folder after a change of folder that cannot be read before it runs`, undefined, UNREAD_HINT)
+  }
+}
+
+/**
+ * RS4 (its unread half; the folder a program starts in is judged with the other paths, `startedIn`).
+ * Refuses a call that starts a program, a script, an interpreter or git in a folder the scan cannot read
+ * (after a `cd` to a computed folder, or a `cwd=` it cannot evaluate). Measured cost: 1 of 3,342 past calls
+ * (`cwd='.' if False else '.'`, rewritten `cwd='.'`).
+ */
+function refuseUnreadFolder(named: NamedCall, add: AddCandidate, order: number): void {
+  const f = named.scan?.unreadFolder
+  if (!f) return
+  add('unresolved', order, () => `this command starts ${f.verb} in a folder that cannot be read before it runs`, undefined,
+    'Change folder with a literal path (Set-Location .\\sub, or cwd=\'sub\' in code), or start the program from the mission folder with the folder as a literal operand.')
+}
+
+/**
+ * T6c. Refuses a call that hands a program the tables do not know an operand the scan cannot read (`sdelete
+ * $t`, `ffmpeg -i in.mp4 $t`): what the program does with it cannot be read. Keywords, expressions and the
+ * cmdlets that read, filter, format or wait are not programs here (`NOT_A_PROGRAM`, `shellPaths.ts`);
+ * interpreters' script arguments are not judged by this rule. Measured cost: 0 of 3,342 past calls.
+ */
+function refuseUnreadOperand(named: NamedCall, add: AddCandidate, order: number): void {
+  const o = named.scan?.unreadOperand
+  if (!o) return
+  add('unresolved', order, () => `this command hands ${o.verb} an operand that cannot be read before it runs`, undefined,
+    'Spell what the program is handed as a literal path relative to the mission folder, one call per target, or write the program\'s work as a script in the mission folder and run that file.')
+}
+
+/** The drive letters and shares a call's text spells, for RS2. */
+const VOLUME_SPELLINGS = [
+  /(?<![A-Za-z0-9])([A-Za-z]):[\\/*?]/g,
+  /\bGet-PSDrive\s+(?:-Name\s+|-LiteralName\s+)?['"]?([A-Za-z])['"]?(?![\w:])/gi,
+  /['"]([A-Za-z])['"]\s*[,+]\s*['"]:[\\/]/g,
+]
+
+/**
+ * RS2. Refuses a Bash call that names a volume Windows cannot protect (an unprotected volume of the context,
+ * a network share, a drive the run has no folder on), by any path the scan found, a mention included, or by
+ * a drive letter spelled in its text, unless the call only reads: no write-class operation, no program
+ * started, no unresolved mutation, nothing self-building. On such a volume the check is the only layer, and
+ * most walk-arounds of the three rounds spelled the volume somewhere in the call. Measured cost: 0 of 3,342
+ * past calls. The model is told that a call that only reads there is allowed.
+ */
+function refuseUnprotectedVolume(toolName: string, named: NamedCall, pc: PathContext, add: AddCandidate, order: number): void {
+  const scan = named.scan
+  if (toolName !== 'Bash' || scan === null) return
+  const onlyReads = !scan.sawWrite && !scan.ranProgram && scan.unresolvedMutation === null && scan.selfBuilding === null
+    && named.paths.every(n => !WRITE_CLASS.has(n.op) && n.op !== 'exec' && n.op !== 'unclassified')
+  if (onlyReads) return
+  const hint = 'A volume Windows cannot protect (a removable or camera drive, a drive this run has no folder on, a network share) is read-only to an unattended run: a call that only reads there (Get-ChildItem, Get-Content) is allowed, and one that also writes, deletes, moves, runs a program or computes a path is refused, because there this check is the only protection.'
+  const foreign = (c: string): string | null => {
+    if (isUnc(c)) return 'a network share'
+    const vol = pc.unprotectedVolumes.find(v => insidePath(v, c, pc.platform))
+    if (vol) return `a volume Windows cannot protect (${vol})`
+    const d = pc.platform === 'win32' ? driveOf(c) : null
+    return d !== null && !pc.drives.includes(d) ? `a drive this run has no folder on (${d}:)` : null
+  }
+  for (const n of named.paths) {
+    if (n.source !== 'shell') continue
+    const c = canonPath(n.path, pc.platform)
+    const detail = foreign(c)
+    if (detail !== null) { add('unprotected-volume', order, () => `this command names ${shown(n.raw, c)}, on ${detail}, and does more than read it`, c, hint, false); return }
+  }
+  if (pc.platform !== 'win32') return
+  for (const t of named.texts) {
+    const text = t.replace(/\^/g, '')
+    for (const re of VOLUME_SPELLINGS) {
+      for (const m of text.matchAll(re)) {
+        const d = m[1].toUpperCase()
+        if (pc.drives.includes(d)) continue
+        add('unprotected-volume', order, () => `this command spells the drive ${d}: (a drive this run has no folder on) and does more than read it`, undefined, hint, false)
+        return
+      }
+    }
+  }
 }
 
 function insideRoots(real: string, pc: PathContext): boolean {
@@ -478,10 +625,8 @@ function escalation(toolName: string, named: NamedCall, pc: PathContext): PathVe
     return note('git-destructive', `this git command throws away work that is not committed (${toolName})`, targets,
       named.paths.some(n => n.verb !== undefined && /^git\b/.test(n.verb) && n.recursive))
   }
-  const um = scan?.unresolvedMutation
-  if (um && (um.op === 'delete' || um.op === 'move') && um.recursive) {
-    return note('unresolved-recursive-delete', `this command ${OP_VERB[um.op]} recursively through a target that cannot be read before it runs (${um.verb})`, [], true)
-  }
+  // A recursive delete or move through a target the scan cannot read was escalated here until the fourth
+  // review of 2026-11-23; it is refused now (RS1, `refuseUnreadTarget`).
   return { kind: 'allow' }
 }
 

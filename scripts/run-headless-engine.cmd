@@ -16,4 +16,5 @@ rem Tell the phone when an approval or a question waits with nobody connected (e
 rem Same ntfy the daemon uses, on the doorman; set CYNCO_NTFY_URL to another address to move it.
 if "%CYNCO_NTFY_URL%"=="" set CYNCO_NTFY_URL=http://100.110.117.10:8090
 cd /d C:\Users\civer\localcode
+call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\engine-headless.log"
 bun engine\main.ts >> "%USERPROFILE%\.cynco\engine-headless.log" 2>&1

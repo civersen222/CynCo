@@ -1037,7 +1037,8 @@ export function buildMissionRecord(collector, meta) {
     // F57: how the driver came to believe the run was over, and whether it was.
     //
     // `exitReason` is one of 'engine_error' | 'engine_closed_the_turn' |
-    // 'quiet_heuristic' | 'timeout' | 'never_dispatched'. The distinction the
+    // 'quiet_heuristic' | 'timeout' | 'never_dispatched' | 'integrity-latch' (F242: the driver's poll met
+    // the integrity latch and tore the mission down). The distinction the
     // ledger needs is between the second and the third: one is the engine
     // saying it closed the turn, the other is this script inferring it from
     // silence. Every row before this field was written was the third kind and

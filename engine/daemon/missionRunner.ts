@@ -44,6 +44,9 @@ export function sanitizePrecheckLine(line: string): string {
     .slice(0, PRECHECK_LINE_MAX)
 }
 
+/** A refusal whose reason is the integrity latch itself (`haltState`'s summary), which has already paged. */
+const LATCH_REFUSAL = /^REFUSED: integrity: the integrity latch is present /
+
 export interface MissionRunnerDeps {
   runTask: (input: TaskFileInput) => Promise<TaskOutcome>
   publish: (p: { title: string; message: string; priority?: number }) => Promise<boolean>
@@ -57,6 +60,8 @@ export interface MissionRunnerDeps {
   runPrecheck?: (command: string, cwd?: string, id?: string) => Promise<{ code: number | null; stdout: string }>
   /** The control file says pause: fire nothing, resume nothing (control.ts). */
   isPaused?: () => boolean
+  /** Why the daemon fires nothing, for the one log line; null = not paused (F242: the integrity latch or the control file). */
+  pauseReason?: () => string | null
   /** Why no unattended run may start now ('<layer>: <reason>'), or null. Asked before a trigger's precheck. */
   refuse?: () => string | null
 }
@@ -191,7 +196,7 @@ export class MissionRunner {
   async tick(): Promise<void> {
     const now = this.deps.now()
     if (this.deps.isPaused?.()) {
-      if (!this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] paused by the control file — firing nothing until it clears`)
+      if (!this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] ${this.deps.pauseReason?.() ?? 'paused by the control file'} — firing nothing until it clears`)
       this.pauseLogged = true
       return
     }
@@ -467,8 +472,10 @@ export class MissionRunner {
           message: outcome.error ?? 'halted',
           priority: 5,
         })
-      } else if (refusedLayer && refusedLayer !== 'integrity') {
-        // A refused run is told at once, at normal priority. Not for `integrity`: the latch paged at top priority.
+      } else if (refusedLayer && !LATCH_REFUSAL.test(outcome.error ?? '')) {
+        // A refused run is told at once, at normal priority. Not when the integrity latch refused it: the latch
+        // paged at top priority. Every other integrity refusal (no models record, an unusable guard folder, a
+        // baseline that could not be taken) writes no latch, so this page is the only word the owner gets.
         await this.deps.publish({
           title: `CynCo refused a run of mission ${this.ledger.config.id}`,
           message: outcome.error ?? 'refused',

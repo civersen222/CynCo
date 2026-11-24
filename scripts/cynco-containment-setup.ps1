@@ -185,6 +185,12 @@ foreach ($r in $roots) {
       Say 'TODO' "the audit folder $path has no .cynco-audit marker. -Apply writes it."
     }
   }
+  if ($r.Var -eq 'LOCALCODE_GUARD_DIR') {
+    # Every unattended run is refused without the models hash record; this script does not take it.
+    $record = Join-Path $path 'models-hashes.json'
+    if (Test-Path -LiteralPath $record) { Say 'ok' "the models hash record $record exists" }
+    else { Say 'TODO' "there is no models hash record $record. After -Apply, and after every change to the models folder: bun scripts/cynco-guard.mjs hash-models, then bun scripts/cynco-guard.mjs status (docs/containment-setup.md section 8, C0)." }
+  }
 }
 
 # -- 3. The models folder ------------------------------------------------------------------------------

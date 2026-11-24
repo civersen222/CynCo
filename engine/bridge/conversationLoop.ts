@@ -116,6 +116,7 @@ import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 import { runContainment } from '../containment.js'
 import { harnessGitEnv } from '../harnessGit.js'
+import { appendCapped, STREAM_LOG_MAX_BYTES } from '../logCap.js'
 import type { ProjectBinding } from '../projects/binding.js'
 import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
@@ -3982,11 +3983,11 @@ export class ConversationLoop {
 
               // Stream debug log
               try {
-                const fs = require('fs')
                 const path = require('path')
-                fs.appendFileSync(
+                appendCapped(
                   path.join(this.debugDir(), '.cynco-stream.log'),
-                  `\n--- Iteration ${i + 1} | tokens=${tokenCount} reasoning=${reasoningTokenCount} stop=${stopReason} ---\n${streamedText}\n`
+                  `\n--- Iteration ${i + 1} | tokens=${tokenCount} reasoning=${reasoningTokenCount} stop=${stopReason} ---\n${streamedText}\n`,
+                  STREAM_LOG_MAX_BYTES,
                 )
               } catch {}
             }

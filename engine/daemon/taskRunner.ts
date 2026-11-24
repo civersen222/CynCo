@@ -7,7 +7,7 @@ import { clearGpuBusy, writeGpuBusy } from './gpuBusyFile.js'
 import { activity as processActivity, type ActivityRegistry } from '../power/activity.js'
 import { ownProcessTree, type OwnedTree } from '../processTree.js'
 import type { TaskFileInput, TaskOutcome } from './types.js'
-import type { RunContainment } from '../containment.js'
+import { mintRunId, type RunContainment } from '../containment.js'
 
 export class GpuBusyError extends Error {
   constructor() { super('GPU busy: an interactive llama-server is running') }
@@ -111,11 +111,30 @@ export interface TaskRunnerOptions {
   giveGpuBack?: () => Promise<void>
   /** Asked after the paused check and before the GPU is taken: `<layer>: <reason>` refuses the run, null lets it go on. */
   refuse?: () => string | null
-  /** After the busy check: make the run's sandbox (engine/containment.ts). A refusal is a failed run, never an uncontained one. */
-  contain?: (input: TaskFileInput) => { ok: true; containment: RunContainment } | { ok: false; reason: string }
+  /**
+   * After the busy check and the integrity baseline: make the run's sandbox (engine/containment.ts) under the run id
+   * `run()` minted, which keys the baseline, the sandbox and the task file. A refusal is a failed run, never an uncontained one.
+   */
+  contain?: (input: TaskFileInput, runId: string) => { ok: true; containment: RunContainment } | { ok: false; reason: string }
   /** After the child has exited, however it ended: give the mission folder its label back. */
   release?: (c: RunContainment) => { relabelled: boolean; note: string }
+  /** Polled with shouldPause. A sentence kills the run; it is NOT parked, so clearing the latch does not relaunch it. */
+  halted?: () => string | null
+  /**
+   * The integrity pair (F242, engine/integrity.ts). `before` may throw (the run is then not started); `after` never
+   * throws and returns the sentence when a protected folder changed, having already written the latch. Neither goes
+   * through hook(), which swallows.
+   */
+  integrity?: {
+    before: (runId: string, cwd: string | undefined, timeoutMs: number) => void
+    /** `notConfirmedDead`: why the one-shot's tree is not known to be dead; the settle then latches whatever it finds. */
+    after: (runId: string, notConfirmedDead?: string) => Promise<string | null>
+  }
+  /** How long the settle waits for the child's exit after its tree was killed (default 10 s). Tests shorten it. */
+  deadWaitMs?: number
 }
+
+type Hook = (name: string, fn?: () => Promise<void>) => Promise<void>
 
 /** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
 const JOURNAL_LINE = /\[session\] Journal: .*?(session-\d+)\.jsonl/
@@ -140,7 +159,7 @@ export class TaskRunner {
       return { ok: false, summary: '', recommendations: [], error: `REFUSED: ${refusal}` }
     }
     // A hook that fails must not stop a run or hide a deferral: say so and go on.
-    const hook = async (name: string, fn?: () => Promise<void>) => {
+    const hook: Hook = async (name, fn) => {
       try { await fn?.() } catch (e) { console.log(`[task:${input.triggerId}] ${name} failed: ${e instanceof Error ? e.message : String(e)}`) }
     }
     await hook('taking the GPU', this.opts.takeGpu ? () => this.opts.takeGpu!(input.triggerId) : undefined)
@@ -150,11 +169,55 @@ export class TaskRunner {
       await hook('giving the GPU back', this.opts.giveGpuBack)
       throw new GpuBusyError()
     }
+    // F242: one run id keys the integrity baseline, the sandbox and the task file. The baseline is taken
+    // before the sandbox is made, and settled once the child tree is dead, on every path out of this method.
+    const runId = mintRunId(`daemon-${input.missionId}-${input.triggerId}`)
+    let baselineTaken = false
+    if (this.opts.integrity) {
+      try {
+        this.opts.integrity.before(runId, input.cwd, input.timeoutMs)
+        baselineTaken = true
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e)
+        console.log(`[task:${input.triggerId}] REFUSED: integrity: no integrity baseline could be taken (${why}) — nothing was run`)
+        await hook('giving the GPU back', this.opts.giveGpuBack)
+        return { ok: false, summary: '', recommendations: [], error: `REFUSED: integrity: no integrity baseline could be taken (${why})` }
+      }
+    }
+    // A holder object, not a `let`: the strict type-check narrows a `let` that only a closure assigns.
+    const pair: { settled: boolean; tripped: string | null } = { settled: false, tripped: null }
+    // Runs once, after the child tree is dead (or when no child was started), before the sandbox is given back.
+    const settle = async (notConfirmedDead?: string): Promise<void> => {
+      if (pair.settled || !baselineTaken || !this.opts.integrity) return
+      pair.settled = true
+      pair.tripped = await this.opts.integrity.after(runId, notConfirmedDead)
+    }
+    let outcome: TaskOutcome | null = null
+    let thrown: unknown = null
+    let threw = false
+    try {
+      outcome = await this.spawnAndWait(input, hook, runId, settle)
+    } catch (e) {
+      thrown = e
+      threw = true
+    }
+    await settle()   // a path that left before the child was started
+    if (pair.tripped) {
+      console.log(`[task:${input.triggerId}] INTEGRITY: ${pair.tripped}`)
+      return { ok: false, summary: '', recommendations: [], error: `INTEGRITY: ${pair.tripped}` }
+    }
+    if (threw) throw thrown
+    return outcome!
+  }
+
+  /** From the sandbox to the child's end: everything that has a child tree to wait for. `settle` runs once that tree is dead. */
+  private async spawnAndWait(input: TaskFileInput, hook: Hook, runId: string, settle: (notConfirmedDead?: string) => Promise<void>): Promise<TaskOutcome> {
     // F242: the sandbox is made only for a run that will start (a deferral builds none). A refusal is a
     // failed run: nothing is spawned and what was taken for it is given back.
-    const est = this.opts.contain?.(input)
+    const est = this.opts.contain?.(input, runId)
     if (est && !est.ok) {
       console.log(`[task:${input.triggerId}] REFUSED: containment: ${est.reason} — nothing was run`)
+      await settle()
       await hook('giving the GPU back', this.opts.giveGpuBack)
       return { ok: false, summary: '', recommendations: [], error: `REFUSED: containment: ${est.reason}` }
     }
@@ -229,13 +292,19 @@ export class TaskRunner {
       // folder whose label was just set back to medium.
       if (startedChild !== undefined) {
         console.log(`[task:${input.triggerId}] the one-shot was started and then setup failed: ${e instanceof Error ? e.message : String(e)} — ending it`)
-        await this.killTree(startedChild, new Promise<number | null>(resolve => {
+        const startedExited = new Promise<number | null>(resolve => {
           if (startedChild!.exitCode !== null) return resolve(startedChild!.exitCode)
           startedChild!.once('exit', code => resolve(code))
           startedChild!.once('error', () => resolve(null))
-        }), startedTree ?? ownProcessTree(undefined))
+        })
+        const startedOwned = startedTree ?? ownProcessTree(undefined)
+        await this.killTree(startedChild, startedExited, startedOwned)
+        const deadWhy = await this.confirmDead(startedChild, startedExited, startedOwned)
         startedTree?.release()
+        // The baseline is settled before anything is given back; a tree not known dead latches.
+        await settle(deadWhy ?? undefined)
       }
+      await settle()
       activityEnd?.()
       try {
         clearGpuBusy(busyPath)
@@ -246,6 +315,11 @@ export class TaskRunner {
       releaseSandbox()
       throw e
     }
+    // Made before the try, so the finally waits on the same exit (a spawn error fires once, and is not seen again).
+    const exited = new Promise<number | null>((resolve) => {
+      child.on('exit', (code) => resolve(code))
+      child.on('error', () => resolve(null))
+    })
     try {
     let sessionId: string | undefined
     child.stdout?.on('data', (d: Buffer) => {
@@ -256,20 +330,17 @@ export class TaskRunner {
     })
     child.stderr?.on('data', (d: Buffer) => console.log(`[task:${input.triggerId}] ${d.toString().trim()}`))
 
-    const exited = new Promise<number | null>((resolve) => {
-      child.on('exit', (code) => resolve(code))
-      child.on('error', () => resolve(null))
-    })
     const started = Date.now()
     let timer: ReturnType<typeof setTimeout> | null = null
     let poll: ReturnType<typeof setInterval> | null = null
-    const ended = await Promise.race<'exit' | 'timeout' | 'pause'>([
+    const ended = await Promise.race<'exit' | 'timeout' | 'pause' | 'halt'>([
       exited.then(() => 'exit' as const),
       new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), input.timeoutMs) }),
-      new Promise<'pause'>((r) => {
-        const ask = this.opts.shouldPause
-        if (!ask) return
-        poll = setInterval(() => { if (ask()) r('pause') }, this.opts.pausePollMs ?? 5000)
+      new Promise<'pause' | 'halt'>((r) => {
+        const ask = this.opts.shouldPause, halted = this.opts.halted
+        if (!ask && !halted) return
+        // F242: the integrity latch first; a run it stops is killed, never parked.
+        poll = setInterval(() => { if (halted?.()) r('halt'); else if (ask?.()) r('pause') }, this.opts.pausePollMs ?? 5000)
       }),
     ])
     if (timer !== null) clearTimeout(timer)
@@ -277,6 +348,11 @@ export class TaskRunner {
 
     if (ended !== 'exit') {
       await this.killTree(child, exited, tree)
+      if (ended === 'halt') {
+        const why = this.opts.halted?.() ?? 'the integrity latch is present'
+        console.log(`[task:${input.triggerId}] STOPPED: integrity: ${why}`)
+        return { ok: false, summary: '', recommendations: [], error: `STOPPED: integrity: ${why}` }
+      }
       if (ended === 'pause') {
         const elapsedMs = Date.now() - started
         console.log(`[task:${input.triggerId}] paused on request after ${Math.round(elapsedMs / 60000)} min${sessionId ? ` (journal ${sessionId})` : ' (no journal announced yet — it will restart)'}`)
@@ -292,7 +368,12 @@ export class TaskRunner {
     }
     return outcome
     } finally {
+      // F242: nothing of a one-shot outlives it. Releasing a Job Object kills nothing (engine/processTree.ts),
+      // so its tree is ended first, and the settling compare is told when the tree is not known to be dead
+      // (no Job Object, or no exit seen); it then latches whatever it finds.
+      const deadWhy = await this.confirmDead(child, exited, tree)
       tree.release()
+      await settle(deadWhy ?? undefined)
       // The child has exited or been killed (killTree, or `await exited`): its sandbox can be given back.
       releaseSandbox()
       endActivity()
@@ -304,6 +385,34 @@ export class TaskRunner {
       // After the claim is cleared: giving back reads it, and must find the GPU free.
       await hook('giving the GPU back', this.opts.giveGpuBack)
     }
+  }
+
+  /**
+   * Ends whatever of the one-shot's tree is still alive and waits, bounded, for the child's exit. Null when the
+   * tree is known to be dead; otherwise why not. Never throws.
+   */
+  private async confirmDead(child: ReturnType<typeof spawn>, exited: Promise<number | null>, tree: OwnedTree): Promise<string | null> {
+    try {
+      if (process.platform === 'win32' && tree.kind === 'job') await tree.kill()
+      else if (process.platform !== 'win32' && child.pid) {
+        // The process group: anything the child left behind.
+        try { process.kill(-child.pid, 'SIGKILL') } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'ESRCH') console.log(`[task] the one-shot's process group could not be killed: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    } catch (e) {
+      return `the one-shot's tree could not be ended (${e instanceof Error ? e.message : String(e)})`
+    }
+    const waitMs = this.opts.deadWaitMs ?? 10_000
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const gone = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>((r) => { timer = setTimeout(() => r(false), waitMs) }),
+    ])
+    if (timer !== null) clearTimeout(timer)
+    if (!gone) return `the one-shot (pid ${child.pid ?? '?'}) had not exited ${Math.round(waitMs / 1000)} s after its tree was ended`
+    if (process.platform === 'win32' && tree.kind !== 'job') return 'the one-shot\'s tree had no Job Object, so a process it started may still run'
+    return null
   }
 
   /** Kill bun and the llama-server it spawned (the owned tree on Windows, the process group elsewhere). */

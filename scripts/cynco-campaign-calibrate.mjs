@@ -8,6 +8,7 @@ import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
 import { campaignHome } from './cynco-campaign-home.mjs'
 import { harnessGitEnv } from '../engine/harnessGit.js'
 import { harnessAudit } from '../engine/audit/toolAudit.js'
+import { frozenWriteRefusal } from '../engine/integrity.js'
 
 export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
@@ -156,7 +157,10 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // repository with no pytest suite (`suiteTarget: null`) has no baseline to take.
   let suiteBaselineCreated = false
   const { suiteTarget } = campaignHome(spec)
-  if (ok && suiteTarget !== null && !io.exists(spec.suiteBaseline)) {
+  // The baseline file lands in the held-out folder, which is FROZEN while any run is open (F242, entry 4.M5).
+  const frozenWhy = ok && suiteTarget !== null && !io.exists(spec.suiteBaseline) ? (io.frozenWriteRefusal ?? frozenWriteRefusal)() : null
+  if (frozenWhy) problems.push(`suite baseline not written: ${frozenWhy}`)
+  if (ok && !frozenWhy && suiteTarget !== null && !io.exists(spec.suiteBaseline)) {
     const py = io.run('python', ['-m', 'pytest', suiteTarget, '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
     // Entry 1.B2 part 3: a baseline run that never ran, or never finished, measured nothing. Writing
     // its (empty) failure list would read as "no standing failures" and launder every one of them
@@ -191,7 +195,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   }
 
   return {
-    ok,
+    ok: ok && problems.length === 0,
     problems,
     gateSha256: io.sha256(spec.gate),
     perturbSha256: io.sha256(spec.perturb),

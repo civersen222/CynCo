@@ -12,6 +12,7 @@ rem The engine's own rule (modelsDir in engine\paths.ts) also follows CYNCO_HOME
 rem it serves the logon task, which has none. The value is quoted wherever it is set or used (a folder
 rem name may hold & or ^), and one that is not a full path below a drive letter is refused, as the
 rem engine refuses it. The embedding GGUF sits in the root of that folder.
+call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\embed-server.log"
 if not defined LOCALCODE_MODELS_DIR set "LOCALCODE_MODELS_DIR=%USERPROFILE%\.cynco\models"
 if not "%LOCALCODE_MODELS_DIR:~1,2%"==":\" goto not_full
 set "CYNCO_EMBED_MODEL=%LOCALCODE_MODELS_DIR%\nomic-embed-text-v1.5.f16.gguf"
@@ -23,4 +24,9 @@ echo [embed] REFUSING to start: LOCALCODE_MODELS_DIR "%LOCALCODE_MODELS_DIR%" is
 exit /b 1
 :model_ok
 echo [embed] model "%CYNCO_EMBED_MODEL%" >> "%USERPROFILE%\.cynco\embed-server.log"
-"%USERPROFILE%\.cynco\bin\llama-server.exe" --embeddings -m "%CYNCO_EMBED_MODEL%" --host 127.0.0.1 --port 9165 --pooling mean -c 2048 -b 2048 -ub 2048 -ngl 0 --threads 4 --no-webui >> "%USERPROFILE%\.cynco\embed-server.log" 2>&1
+rem F242: with the prompt cache on (default 8192 MiB) every embedding request printed the whole
+rem cache list, 12,059 lines a request by the time this log reached 26 GB. An embedding server has
+rem no use for that cache, so it is off (--cache-ram 0); -lv 2 keeps warnings and errors.
+rem F91 (--ctx-size, --ctx-checkpoints and --cache-ram are one decision) governs the chat server;
+rem this server has no checkpoints, so 0 here is not a hand-set budget.
+"%USERPROFILE%\.cynco\bin\llama-server.exe" --embeddings -m "%CYNCO_EMBED_MODEL%" --host 127.0.0.1 --port 9165 --pooling mean -c 2048 -b 2048 -ub 2048 -ngl 0 --threads 4 --no-webui --cache-ram 0 -lv 2 >> "%USERPROFILE%\.cynco\embed-server.log" 2>&1

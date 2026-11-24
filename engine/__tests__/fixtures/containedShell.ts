@@ -22,7 +22,8 @@
  * JSON line: `{ ok, establish, cases: { <name>: {...} } }`. A case that throws is reported with
  * its error; the test decides what passes.
  */
-import { execFileSync, execSync, spawnSync, type ChildProcess, type ExecException } from 'node:child_process'
+import { execFileSync, execSync, spawn, spawnSync, type ChildProcess, type ExecException } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
@@ -551,6 +552,257 @@ await step('forgedLauncherLines', async () => {
   } finally {
     setContainmentFaultSink(null)
     setRunContainment(ctx)
+  }
+})
+
+// The launcher's seal, MEASURED (review of slice S5). The seal is in the launcher's own environment
+// and memory, and in the starter's; the claim is that a low child cannot read either. From inside a
+// contained child, every route a command has: its own environment, the environment blocks of its
+// launcher and of the starter read from their PEBs (OpenProcess with VM_READ and QUERY_INFORMATION or
+// QUERY_LIMITED_INFORMATION, NtQueryInformationProcess, ReadProcessMemory), what a MAXIMUM_ALLOWED
+// open is granted, the launcher's command line (class 60 and Win32_Process), Get-Process StartInfo,
+// and the Process handles in its own table. The same PEB read of its own block is the control that
+// the route works where it is allowed. While the child waits, a medium process reads the labels and
+// token levels of both, and the launcher's block. Only booleans and error lines are reported: the
+// blocks hold the environment, which is never printed.
+const SEAL_PROBE_CS = `using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class SealProbe {
+  public const uint VM_READ = 0x0010, QUERY_INFORMATION = 0x0400, QUERY_LIMITED = 0x1000, DUP_HANDLE = 0x0040, READ_CONTROL = 0x00020000, MAXIMUM_ALLOWED = 0x02000000;
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, IntPtr size, out IntPtr read);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetHandleInformation(IntPtr h, out uint flags);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern int GetProcessId(IntPtr h);
+  [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr h, int cls, byte[] buf, int len, out int ret);
+  [DllImport("ntdll.dll")] static extern int NtQueryObject(IntPtr h, int cls, IntPtr buf, int len, out int ret);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern uint GetSecurityInfo(IntPtr h, int objType, uint secInfo, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr sd, uint rev, uint secInfo, out IntPtr str, out uint len);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr tok);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr tok, int cls, IntPtr buf, int len, out int ret);
+  [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool ConvertSidToStringSidW(IntPtr sid, out IntPtr str);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr h, int flags, StringBuilder buf, ref int size);
+  [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+
+  static string Err() { return "error " + Marshal.GetLastWin32Error(); }
+
+  public static int ParentOf(int pid) {
+    IntPtr h = OpenProcess(QUERY_LIMITED, false, pid);
+    if (h == IntPtr.Zero) return -1;
+    try {
+      byte[] b = new byte[48]; int r;
+      if (NtQueryInformationProcess(h, 0, b, b.Length, out r) != 0) return -2;
+      return (int)BitConverter.ToInt64(b, 40);
+    } finally { CloseHandle(h); }
+  }
+
+  public static string Open(int pid, uint access) {
+    IntPtr h = OpenProcess(access, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    CloseHandle(h);
+    return "opened";
+  }
+
+  public static string Granted(int pid) {
+    IntPtr h = OpenProcess(MAXIMUM_ALLOWED, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    try {
+      IntPtr buf = Marshal.AllocHGlobal(56);
+      try {
+        int r;
+        int st = NtQueryObject(h, 0, buf, 56, out r);
+        if (st != 0) return "NtQueryObject 0x" + st.ToString("X8");
+        return "0x" + ((uint)Marshal.ReadInt32(buf, 4)).ToString("X8");
+      } finally { Marshal.FreeHGlobal(buf); }
+    } finally { CloseHandle(h); }
+  }
+
+  public static string ReadEnv(int pid, uint access) {
+    IntPtr h = OpenProcess(access, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    try { return ReadEnvVia(h); } finally { CloseHandle(h); }
+  }
+
+  public static string ReadEnvVia(IntPtr h) {
+    byte[] pbi = new byte[48]; int r;
+    int st = NtQueryInformationProcess(h, 0, pbi, 48, out r);
+    if (st != 0) return "NtQueryInformationProcess 0x" + st.ToString("X8");
+    IntPtr peb = new IntPtr(BitConverter.ToInt64(pbi, 8));
+    byte[] p8 = new byte[8]; IntPtr got;
+    if (!ReadProcessMemory(h, peb + 0x20, p8, (IntPtr)8, out got)) return "ReadProcessMemory(PEB) " + Err();
+    IntPtr pp = new IntPtr(BitConverter.ToInt64(p8, 0));
+    if (!ReadProcessMemory(h, pp + 0x80, p8, (IntPtr)8, out got)) return "ReadProcessMemory(ProcessParameters) " + Err();
+    IntPtr env = new IntPtr(BitConverter.ToInt64(p8, 0));
+    if (!ReadProcessMemory(h, pp + 0x3F0, p8, (IntPtr)8, out got)) return "ReadProcessMemory(EnvironmentSize) " + Err();
+    long size = BitConverter.ToInt64(p8, 0);
+    if (size <= 0 || size > (1 << 24)) return "EnvironmentSize " + size;
+    byte[] block = new byte[size];
+    if (!ReadProcessMemory(h, env, block, (IntPtr)size, out got)) return "ReadProcessMemory(Environment) " + Err();
+    return "read:" + Encoding.Unicode.GetString(block);
+  }
+
+  public static string CommandLine(int pid) {
+    IntPtr h = OpenProcess(QUERY_LIMITED, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    try {
+      byte[] b = new byte[65536]; int r;
+      int st = NtQueryInformationProcess(h, 60, b, b.Length, out r);
+      if (st != 0) return "NtQueryInformationProcess 0x" + st.ToString("X8");
+      return "read:" + Encoding.Unicode.GetString(b, 16, BitConverter.ToUInt16(b, 0));
+    } finally { CloseHandle(h); }
+  }
+
+  public static string[] OwnProcessHandles(int[] targets) {
+    List<string> found = new List<string>();
+    IntPtr buf = Marshal.AllocHGlobal(1024);
+    try {
+      for (long v = 4; v < 0x8000; v += 4) {
+        IntPtr h = new IntPtr(v); uint flags; int r;
+        if (!GetHandleInformation(h, out flags)) continue;
+        if (NtQueryObject(h, 2, buf, 1024, out r) != 0) continue;
+        if (Marshal.PtrToStringUni(Marshal.ReadIntPtr(buf, 8), Marshal.ReadInt16(buf, 0) / 2) != "Process") continue;
+        int pid = GetProcessId(h);
+        string line = "0x" + v.ToString("X") + "=" + pid;
+        if (NtQueryObject(h, 0, buf, 56, out r) == 0) line += " access=0x" + ((uint)Marshal.ReadInt32(buf, 4)).ToString("X") + " inherit=" + (flags & 1);
+        StringBuilder img = new StringBuilder(1024); int isz = 1024;
+        line += " image=" + (QueryFullProcessImageNameW(h, 0, img, ref isz) ? System.IO.Path.GetFileName(img.ToString()) : "?") + " alive=" + (WaitForSingleObject(h, 0) == 0x102);
+        if (Array.IndexOf(targets, pid) >= 0 || (flags & 1) == 1) { string e = ReadEnvVia(h); line += e.StartsWith("read:") ? " env=read" : " env=" + e; }
+        found.Add(line);
+      }
+    } finally { Marshal.FreeHGlobal(buf); }
+    return found.ToArray();
+  }
+
+  public static string Label(int pid) {
+    IntPtr h = OpenProcess(READ_CONTROL, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    try {
+      IntPtr sd;
+      uint rc = GetSecurityInfo(h, 6, 0x10, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd);
+      if (rc != 0) return "GetSecurityInfo error " + rc;
+      try {
+        IntPtr s; uint n;
+        if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 0x10, out s, out n)) return "Convert " + Err();
+        string text = Marshal.PtrToStringUni(s);
+        LocalFree(s);
+        return text;
+      } finally { LocalFree(sd); }
+    } finally { CloseHandle(h); }
+  }
+
+  public static string TokenLevel(int pid) {
+    IntPtr h = OpenProcess(QUERY_LIMITED, false, pid);
+    if (h == IntPtr.Zero) return "OpenProcess " + Err();
+    try {
+      IntPtr tok;
+      if (!OpenProcessToken(h, 0x0008, out tok)) return "OpenProcessToken " + Err();
+      try {
+        IntPtr buf = Marshal.AllocHGlobal(256);
+        try {
+          int r; IntPtr s;
+          if (!GetTokenInformation(tok, 25, buf, 256, out r)) return "GetTokenInformation " + Err();
+          if (!ConvertSidToStringSidW(Marshal.ReadIntPtr(buf, 0), out s)) return "ConvertSid " + Err();
+          string text = Marshal.PtrToStringUni(s);
+          LocalFree(s);
+          return text;
+        } finally { Marshal.FreeHGlobal(buf); }
+      } finally { CloseHandle(tok); }
+    } finally { CloseHandle(h); }
+  }
+}
+`
+await step('sealUnreadable', async () => {
+  const cs = join(dir, 'sealProbe.cs')
+  writeFileSync(cs, SEAL_PROBE_CS)
+  // The probe needs PowerShell's Add-Type (the C# compiler of .NET Framework); where it cannot compile,
+  // the step is skipped by name.
+  const compiles = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-Command', `Add-Type -Path '${cs}'; 'compiled'`], { encoding: 'utf-8', windowsHide: true, timeout: 120_000 })
+  if (String(compiles.stdout ?? '').trim() !== 'compiled') {
+    return { skipped: `PowerShell Add-Type could not compile the probe (${`${compiles.stderr ?? ''}`.trim().split(/\r?\n/)[0] ?? compiles.status})` }
+  }
+  const mark = randomBytes(8).toString('hex')
+  const pidFile = join(ctx.sandbox.scratch, 'seal-pids.txt'), goFile = join(ctx.sandbox.scratch, 'seal-go.txt')
+  const NL = '[string][char]10'
+  const childCmd = [
+    `Add-Type -Path '${cs}'`,
+    '$r = [ordered]@{}',
+    '$me = $PID; $launcher = [SealProbe]::ParentOf($me); $engine = [SealProbe]::ParentOf($launcher)',
+    '$r.pids = "$me $launcher $engine"',
+    `$r.ownEnv = 'read:' + (([Environment]::GetEnvironmentVariables().GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ${NL})`,
+    '$rw = [SealProbe]::VM_READ -bor [SealProbe]::QUERY_INFORMATION; $rl = [SealProbe]::VM_READ -bor [SealProbe]::QUERY_LIMITED',
+    '$r.ownPeb = [SealProbe]::ReadEnv($me, $rw)',
+    '$r.launcherPeb = [SealProbe]::ReadEnv($launcher, $rw)',
+    '$r.launcherPebLimited = [SealProbe]::ReadEnv($launcher, $rl)',
+    '$r.enginePeb = [SealProbe]::ReadEnv($engine, $rw)',
+    `$r.launcherOpen = (@('VM_READ', 'QUERY_INFORMATION', 'QUERY_LIMITED', 'DUP_HANDLE', 'READ_CONTROL') | ForEach-Object { "$_=" + [SealProbe]::Open($launcher, [SealProbe]::$_) }) -join '; '`,
+    '$r.launcherGranted = [SealProbe]::Granted($launcher)',
+    '$r.engineGranted = [SealProbe]::Granted($engine)',
+    '$r.launcherCmdLine = [SealProbe]::CommandLine($launcher)',
+    '$r.engineCmdLine = [SealProbe]::CommandLine($engine)',
+    `$r.cimCmdLines = 'read:' + "$((Get-CimInstance Win32_Process -Filter "ProcessId=$launcher").CommandLine)|$((Get-CimInstance Win32_Process -Filter "ProcessId=$engine").CommandLine)"`,
+    `try { $p = Get-Process -Id $launcher -ErrorAction Stop; $r.startInfo = 'read:' + (($p.StartInfo.EnvironmentVariables.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ${NL}) } catch { $r.startInfo = "threw: $($_.Exception.Message)" }`,
+    '$r.handles = ([SealProbe]::OwnProcessHandles(@($launcher, $engine)) -join \'; \')',
+    '$r.launcherLabel = [SealProbe]::Label($launcher)',
+    `Set-Content -LiteralPath '${pidFile}' -Value "$me $launcher $engine"`,
+    `$t = 0; while (-not (Test-Path -LiteralPath '${goFile}') -and $t -lt 600) { Start-Sleep -Milliseconds 100; $t++ }`,
+    '$r | ConvertTo-Json -Compress',
+  ].join('\r\n')
+  const c = containedCommand({ file: childCmd, args: [], shell: PS }, { ctx, cwd: mission, extraEnv: { CYNCO_SEAL_PROBE_MARK: mark } })
+  const seal = c.seal ?? ''
+  let out = '', errText = ''
+  const child = spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true })
+  const tree = ownProcessTree(child.pid)
+  child.stdout?.on('data', d => { out += String(d) })
+  child.stderr?.on('data', d => { errText += String(d) })
+  const exited = new Promise<number | null>(r => child.on('close', code => r(code)))
+  const giveUp = Date.now() + 120_000
+  while (!existsSync(pidFile) && Date.now() < giveUp) await sleep(100)
+  let medium: Record<string, unknown> = { notRead: 'the child wrote no pid file' }
+  const pids = existsSync(pidFile) ? readFileSync(pidFile, 'utf-8').trim().split(/\s+/).map(Number) : []
+  if (pids.length === 3) {
+    const [self, launcher] = pids
+    // No seal on this command line: a low process can read a command line (class 60), and the child is still running.
+    const m = spawnSync(PS, ['-NoProfile', '-NonInteractive', '-Command',
+      `Add-Type -Path '${cs}'; @{ launcherLabel = [SealProbe]::Label(${launcher}); launcherToken = [SealProbe]::TokenLevel(${launcher}); ` +
+      `childLabel = [SealProbe]::Label(${self}); childToken = [SealProbe]::TokenLevel(${self}); ` +
+      `launcherEnv = [SealProbe]::ReadEnv(${launcher}, [SealProbe]::VM_READ -bor [SealProbe]::QUERY_INFORMATION) } | ConvertTo-Json -Compress`],
+    { encoding: 'utf-8', windowsHide: true, timeout: 120_000 })
+    try {
+      const j = JSON.parse(String(m.stdout ?? '').trim()) as Record<string, string>
+      const env = String(j.launcherEnv ?? '')
+      medium = { launcherLabel: j.launcherLabel, launcherToken: j.launcherToken, childLabel: j.childLabel, childToken: j.childToken, launcherEnvRead: env.startsWith('read:'), launcherEnvHasSeal: seal !== '' && env.includes(seal) }
+    } catch (e) {
+      medium = { notRead: `${(e as Error).message}: ${String(m.stderr ?? '').trim().slice(0, 300)}` }
+    }
+  }
+  writeFileSync(goFile, 'go')
+  const timer = setTimeout(() => { void tree.kill() }, 90_000)
+  const code = await exited
+  clearTimeout(timer)
+  tree.release()
+  if (c.commandFile && existsSync(c.commandFile)) unlinkSync(c.commandFile)
+  const routes: Record<string, { hasSeal: boolean; hasMark: boolean; head: string }> = {}
+  let handles: string[] = []
+  try {
+    const j = JSON.parse(out.trim().split(/\r?\n/).pop() ?? '') as Record<string, string>
+    for (const [k, v] of Object.entries(j)) {
+      const t = String(v ?? '')
+      routes[k] = { hasSeal: seal !== '' && t.includes(seal), hasMark: t.includes(mark), head: t.startsWith('read:') ? `read: ${t.length - 5} characters` : t.slice(0, 300) }
+    }
+    handles = String(j.handles ?? '').split('; ').filter(Boolean)
+  } catch (e) {
+    return { seal, code, error: `the child printed no report (${(e as Error).message})`, stderr: errText.slice(0, 600) }
+  }
+  const [, launcherPid, enginePid] = pids
+  return {
+    seal, code, stderr: errText.slice(0, 600), routes, medium,
+    pidsAsExpected: launcherPid === child.pid && enginePid === process.pid,
+    handlesToLauncherOrEngine: handles.filter(h => { const pid = Number((/=(\d+)/.exec(h) ?? [])[1]); return pid === launcherPid || pid === enginePid }),
+    handles,
   }
 })
 

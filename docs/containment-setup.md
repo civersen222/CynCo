@@ -14,7 +14,7 @@ Three folders outside the home folder, none of which a run, the daemon or a test
 | Folder | Default | Moved by |
 |---|---|---|
 | Sandbox root: one sandbox per unattended run | `C:\cynco-sandbox` | `LOCALCODE_SANDBOX_ROOT` |
-| Guard folder: the integrity latch, manifests, the models hash record, unsent pages (written from slice S7 on; until then the folder only exists) | `C:\cynco-guard` | `LOCALCODE_GUARD_DIR` |
+| Guard folder: the integrity latch, manifests, the models hash record, unsent pages | `C:\cynco-guard` | `LOCALCODE_GUARD_DIR` |
 | Audit folder: the tool-call audit of unattended runs | `C:\cynco-audit` | `LOCALCODE_AUDIT_DIR` |
 
 Leave the three variables unset. A process that loses a variable would otherwise look in the default
@@ -33,8 +33,8 @@ Nothing unattended may be running: no dispatch, no campaign, no daemon task, no 
 - A process started before a variable is set keeps its old environment.
 - `engine/paths.ts` is part of what the gate-authoring check fingerprints, so an authoring run in flight
   when this change lands sees a changed harness.
-- From slice S7 on, any change to the models folder while a run is open writes the integrity latch. Until
-  then nothing watches the folder: keep it unchanged while a run is open all the same.
+- Any change to the models folder while a run is open writes the integrity latch (section 13): keep it
+  unchanged while a run is open, and take the hash record again afterwards (`hash-models`).
 
 Use an ordinary, non-elevated PowerShell for everything except the optional read-only step of
 section 7. The script refuses an elevated one with a STOP line: with a separate administrator account its
@@ -153,8 +153,9 @@ scripts\cynco-containment-setup.ps1 -AcknowledgeVolumes X: -Apply
 ```
 
 This sets `LOCALCODE_UNPROTECTED_VOLUMES_OK` (several volumes: `X:;Y:`). Acknowledging does not protect
-the volume. It stays refused as a write target by the path check (and, from slice S7 on, its top level is
-watched), but a script a run writes and then runs is not read by that check.
+the volume. It stays refused as a write target by the path check, and its top level is compared before and
+after each run (not watched during it: the in-run tripwire leaves every volume root out), but a script a
+run writes and then runs is not read by that check.
 
 ## 6. Moving the models out of the home folder
 
@@ -180,6 +181,11 @@ Every step but M2 only reads.
 - **M3, read-only (optional).** Section 7, now.
 - **M4, the variable.** `scripts\cynco-containment-setup.ps1 -ModelsDir <models folder> -Apply`, then open a
   new terminal and check that `$env:LOCALCODE_MODELS_DIR` prints the new folder.
+- **M5, the hash record.** Take the hash record: `bun scripts/cynco-guard.mjs hash-models`. It prints the
+  folder it hashed; check that it is the new one. It takes a few minutes. From now on every dispatch, daemon
+  task and contained engine compares the models folder with this record (the folder's place, and each
+  file's name, size and time) and refuses on a difference. `bun scripts/cynco-guard.mjs verify --deep`
+  re-reads every file and compares the hashes.
 
 ## 7. Read-only models (optional)
 
@@ -209,6 +215,11 @@ binaries and adapters live under the CynCo home.
 
 ## 8. Start check
 
+- **C0 (every machine, whether or not the models moved).** The guard folder and the models record: run
+  `bun scripts/cynco-guard.mjs hash-models` once, then `bun scripts/cynco-guard.mjs status` must print `clear`
+  as its first line and `[guard] models record: ok (<n> files, taken <time>)`. Without the record every
+  unattended run is refused (`there is no models hash record ...`), the daemon's refusals page at normal
+  priority, and the engine refuses at boot step 6.
 - **C1.** `scripts\cynco-services.ps1 start embed`. In the embed log the last line that starts `[embed]` is
   `[embed] model "<models folder>\nomic-embed-text-v1.5.f16.gguf"` (the server's own lines follow it);
   `http://127.0.0.1:9165/health` answers 200.
@@ -235,8 +246,7 @@ robocopy <models folder> <backup share>\models /E /COPY:DAT /DCOPY:T /XJ /R:3 /W
 outside the home folder, not in the guard or audit folder. Never `/MIR`, `/PURGE`, `/MOV` or `/MOVE`:
 nothing is ever deleted at the source or on the share. An exit code below 8 is success. Verify by reading
 back: the SHA-256 of each file on the share equals the hashes in the guard folder's record, and the share
-holds exactly those files. Until slice S7 writes that record, compare with hashes you took yourself
-(`Get-FileHash -Algorithm SHA256`) before the copy.
+holds exactly those files (`<guard folder>\models-hashes.json`, taken in step M5 of section 6).
 
 A share carries no integrity labels, so a contained run that can reach it can delete it. What protects
 the copy is the share itself: snapshots on the share, or an account whose password is not stored in your
@@ -244,8 +254,11 @@ session.
 
 ## 10. Changing the models later
 
-Only while no mission, campaign or daemon task is running: from slice S7 on, a change in the models
-folder during a run writes the latch and pages you. From an elevated shell when the folder is read-only.
+Only while no mission, campaign or daemon task is running: a change in the models folder during a run
+writes the integrity latch and pages you. From an elevated shell when the folder is read-only.
+
+Re-take the record with `bun scripts/cynco-guard.mjs hash-models` after every change to the models folder.
+Until you do, every unattended run refuses and names the file.
 
 ## 11. Undoing the move
 
@@ -265,3 +278,38 @@ run refuses until `LOCALCODE_SANDBOX_ROOT`, `LOCALCODE_GUARD_DIR` and `LOCALCODE
 folders outside the home folder (the audit folder with an empty file named `.cynco-audit` in it), set in
 the environment of whatever starts the engine and the dispatch. There is no setup script and no kernel
 layer there: the engine reports `contained-overlay`.
+
+## 13. Pages and the integrity latch
+
+A campaign started from a terminal pages you only when that terminal has `CYNCO_NTFY_URL`. Set it yourself
+as a user variable (its value is an address you may not want in a script's output, so the setup script
+neither reads nor sets it). Without it a page is kept in the guard folder and the daemon delivers it when it
+runs. `bun scripts/cynco-guard.mjs status` shows whether the latch is present and whether pages are waiting;
+`bun scripts/cynco-guard.mjs clear`, typed at a terminal, removes the latch once you have looked.
+`scripts\cynco-services.ps1` (no action) prints one `integrity` line with the same answer.
+
+What `clear` does, in order, after you type `CLEAR`: it moves the latch into `cleared/`; it withdraws every
+page still waiting in `unsent/` into `cleared/pages/` (you have read them: none is sent late afterwards);
+and it compares, at the desk and with no page, every open baseline whose run was never compared (its starter
+is gone, its time limit passed, or the machine restarted since) and the run of a latch that said its engine
+was not confirmed dead, prints what it found, and closes those baselines. So do not tidy up first: clear,
+read what it printed, then tidy up. A baseline of a run that may still be running is left open, and `clear`
+says so with the `post` command to use once it is not.
+
+Do not tidy the home folder's dot-entries (for example `.localcode-leftovers-...`, or a tool's backup copy of its settings file)
+or edit a profile while a run is open: the settling compare reads that as a change and latches. A page about
+a change says so: `If you changed it yourself while a run was open ..., it is your own change: clear the latch`.
+
+`clear` needs a console. In a Git Bash (mintty) window Bun's input is a pipe, not a console: run
+`winpty bun scripts/cynco-guard.mjs clear`, or run it from PowerShell or Windows Terminal (not measured in
+the owner's window yet; the refusal names this remedy).
+
+The services script does not start the daemon while a latch stands (ruling 4.M1), and the daemon is the
+only process on this PC that has the doorman's ntfy address: under a latch, a page a campaign or a dispatch
+could not send waits until the daemon runs. Whether the daemon should start under a latch (it fires nothing
+then, and would deliver the page) is an open owner decision.
+
+The embedding server's log: the first start of the embed service after this change renames
+`%USERPROFILE%\.cynco\embed-server.log` (26 GB today) to `embed-server.log.1`, and the next rotation, at a
+later start when the new log is over 50 MiB, replaces that `.1`, which deletes it. Delete or keep it
+yourself before then; the daemon pages once a day about a `.log.1` over 1 GiB.

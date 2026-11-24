@@ -30,6 +30,7 @@
  * either way. This makes the capability reachable and its absence audible; it
  * does not conjure an embedding model that isn't running.
  */
+import { runContainment } from '../containment.js'
 
 export type EmbedDialect = 'ollama' | 'openai'
 
@@ -233,7 +234,11 @@ export class EmbedClient {
         const wanted = this.model
         console.log(`[embed] "${wanted}" unavailable — falling back to ${this.fallbackModel}`)
         this.model = this.fallbackModel
-        if (!this.pullAttempted && this.dialectOrder()[0] === 'ollama') {
+        if (runContainment() !== null) {
+          // F242, entry 4.M5: a background pull writes ~/.ollama/models, which is FROZEN during this run.
+          if (!this.pullAttempted) console.log(`[embed] "${wanted}" is not pulled in the background: this is a contained run and a pull would change a protected folder`)
+          this.pullAttempted = true
+        } else if (!this.pullAttempted && this.dialectOrder()[0] === 'ollama') {
           this.pullAttempted = true
           // Fire-and-forget: pull the configured model in the background so a
           // later session gets it. THIS call is served by the fallback below.

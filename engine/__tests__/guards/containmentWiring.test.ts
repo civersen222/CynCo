@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'fs'
 import { join, dirname, relative, sep } from 'path'
 import { fileURLToPath } from 'url'
+import { DISPATCH_RUN_PREFIX } from '../../containment.js'
 
 /**
  * BLOCKING wire-check for mission containment (F242).
@@ -689,5 +690,203 @@ describe('the tool-call audit (S5, F242)', () => {
     expect(loop.indexOf('ciAudit.end(ciStarted.call', call)).toBeGreaterThan(call)
     // No other `.execute(` on a tool object in the loop.
     expect(loop.match(/codeIndexTool\.execute\(/g)?.length).toBe(1)
+  })
+})
+
+// ─── Slice S7: the integrity manifest, the latch and the tripwire (04 section 5.2) ──────────────
+describe('the integrity layer (S7, F242)', () => {
+  const src = (rel: string) => read(rel).replace(/\r\n/g, '\n')
+  const after = (text: string, a: string, b: string) => {
+    const i = text.indexOf(a), j = text.indexOf(b)
+    expect(i, a).toBeGreaterThan(-1)
+    expect(j, b).toBeGreaterThan(-1)
+    return j > i
+  }
+  /** Every non-test source file under engine/ and scripts/, as [repo-relative path, text]. */
+  const sources = (): Array<[string, string]> => {
+    const files: string[] = []
+    walk(join(repoRoot, 'engine'), files)
+    walk(join(repoRoot, 'scripts'), files)
+    return files.map(f => [relative(repoRoot, f).split(sep).join('/'), readFileSync(f, 'utf-8')])
+  }
+
+  it('(1) dispatch-mission.sh: the guard before the trap, the baseline after it, the two settles where the engine is dead', () => {
+    const sh = src('scripts/dispatch-mission.sh')
+    const trap = sh.indexOf('trap dispatch_abandoned EXIT')
+    expect(sh.indexOf('cynco-guard.mjs status --quiet')).toBeLessThan(trap)
+    const pre = sh.indexOf('cynco-guard.mjs pre')
+    expect(pre).toBeGreaterThan(trap)
+    expect(pre).toBeLessThan(sh.indexOf('cynco-services.ps1 stop engine'))
+    expect(pre).toBeLessThan(sh.indexOf('cynco-sandbox.mjs create'))
+    const fn = sh.slice(sh.indexOf('dispatch_abandoned() {'), trap)
+    expect(fn.indexOf('--by dispatch-abandoned')).toBeGreaterThan(fn.indexOf('taskkill //PID "$ENGINE_WINPID"'))
+    const watcher = sh.indexOf('--by dispatch-watcher')
+    expect(watcher).toBeGreaterThan(sh.indexOf('bun scripts/cynco-mission-end.mjs'))
+    expect(watcher).toBeLessThan(sh.indexOf('cynco-audit.mjs verify'))
+    expect(watcher).toBeLessThan(sh.indexOf('cynco-sandbox.mjs release "$RUN_ID" >>'))
+    expect(watcher).toBeLessThan(sh.indexOf("sed -n 's/^ACTION //p'"))
+    // Ruling 3.3: the line the script prints and the line the runner reads share one constant.
+    expect(sh).toContain('echo "' + DISPATCH_RUN_PREFIX + '$RUN_ID"')
+    expect(src('scripts/cynco-campaign.mjs')).toContain('line.startsWith(DISPATCH_RUN_PREFIX)')
+  })
+
+  it('(2) the driver asks the latch before it adopts, and its poll ends the mission as integrity-latch', () => {
+    const driver = src('scripts/cynco-mission-driver.mjs')
+    expect(after(driver, 'haltRefusal(', 'adoptContainment(')).toBe(true)
+    expect(driver).toContain("exitReason = 'integrity-latch'")
+  })
+
+  it('(3) the campaign: decide asks integrity first; main refuses under the latch before the in-flight block', () => {
+    const c = src('scripts/cynco-campaign.mjs')
+    const decide = c.slice(c.indexOf('export function decide('))
+    const firstStatement = decide.split('\n')[1]!
+    expect(firstStatement).toContain('row?.integrity?.changed')
+    const main = c.slice(c.indexOf('export async function main('))
+    expect(after(main, 'defaultIo.integrity.refusal()', 'if (state.state.inFlight)')).toBe(true)
+  })
+
+  it('(4) the daemon: isPaused is the control file or a standing latch; TaskRunner is given the control file alone', () => {
+    const d = src('engine/daemon/main.ts')
+    const line = d.split('\n').find(l => /^const isPaused = /.test(l))
+    expect(line).toBeDefined()
+    // Review of wave 5: an unusable guard folder is not a pause (it refuses each run, which pages); only a latch pauses.
+    expect(line).toContain('latchStands()')
+    expect(d).toContain("const latchStands = (): string | null => { const s = haltState(); return s.state === 'latched' ? s.summary : null }")
+    expect(d).toContain('halted: latchWhy')
+    expect(d).toContain('shouldPause: controlPaused')
+  })
+
+  it('(5) the task runner: the integrity calls are not hooks', () => {
+    const tr = src('engine/daemon/taskRunner.ts')
+    const hooks = tr.match(/\bhook\([^\n]*/g) ?? []
+    expect(hooks.length).toBeGreaterThan(0)
+    for (const h of hooks) expect(h, h).not.toContain('integrity')
+  })
+
+  it('(6) cynco-services.ps1: the exit code is read on the line that collects, with no pipe; only the daemon is refused', () => {
+    const ps = src('scripts/cynco-services.ps1')
+    const line = ps.split('\n').find(l => l.includes('& bun') && l.includes('cynco-guard.mjs'))
+    expect(line).toBeDefined()
+    expect(line!.indexOf('$guardExit = $LASTEXITCODE')).toBeGreaterThan(line!.indexOf('& bun'))
+    expect(line).not.toContain('|')
+    const refusal = ps.split('\n').find(l => l.includes('start REFUSED: integrity'))
+    expect(refusal).toContain("$s.Name -eq 'daemon'")
+  })
+
+  it('(7) the boot: the latch and the tripwire before the model loads', () => {
+    const main = src('engine/main.ts')
+    const load = main.indexOf('await bootstrapProvider(')
+    expect(main.indexOf('haltRefusal(')).toBeGreaterThan(-1)
+    expect(main.indexOf('haltRefusal(')).toBeLessThan(load)
+    expect(main.indexOf('startPresenceTripwire(')).toBeGreaterThan(-1)
+    expect(main.indexOf('startPresenceTripwire(')).toBeLessThan(load)
+  })
+
+  it('(8) the executor: the tripwire is the first check of preRun, before the sealed check', () => {
+    const ex = src('engine/tools/executor.ts')
+    const pre = ex.slice(ex.indexOf('private async preRun('))
+    expect(pre.indexOf('presenceTripwireCheck()')).toBeGreaterThan(-1)
+    expect(pre.indexOf('presenceTripwireCheck()')).toBeLessThan(pre.indexOf('callTouchesSealed('))
+  })
+
+  it('(9) LOCALCODE_GUARD_DIR is read in exactly one file under engine/ and in none under scripts/', () => {
+    const READ = /\b(?:process\.)?env\.LOCALCODE_GUARD_DIR\b/
+    const readers = sources().filter(([, text]) => READ.test(text)).map(([rel]) => rel)
+    expect(readers).toEqual(['engine/paths.ts'])
+  })
+
+  it('(10) no file but engine/integrity.ts writes, renames, removes or opens the latch', () => {
+    const OP = /writeFileSync|renameSync|unlinkSync|rmSync|openSync/
+    const offenders: string[] = []
+    for (const [rel, text] of sources()) {
+      if (rel === 'engine/integrity.ts') continue
+      for (const l of text.split('\n')) if ((l.includes('HALT.json') || l.includes('LATCH_FILE')) && OP.test(l)) offenders.push(`${rel}: ${l.trim()}`)
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
+// ─── Slice S8: the logs (03 section 8.1) ────────────────────────────────────────────────────────
+describe('the logs (S8, F242)', () => {
+  const src = (rel: string) => read(rel).replace(/\r\n/g, '\n')
+  /** The target of a `>>` redirect on a line, quotes kept, or null. */
+  const appendTarget = (line: string): string | null => {
+    const m = />>\s*("[^"]+"|[^\s"]+)/.exec(line)
+    return m ? m[1]! : null
+  }
+
+  it('every scripts/run-*.cmd that appends to a log rotates that same log first', () => {
+    const launchers = readdirSync(join(repoRoot, 'scripts')).filter(n => /^run-.*\.cmd$/i.test(n)).sort()
+    const appending: string[] = []
+    for (const name of launchers) {
+      const lines = src(`scripts/${name}`).split('\n')
+      const targets = new Map<string, number>()
+      lines.forEach((l, i) => {
+        if (/^\s*rem\b/i.test(l)) return
+        const t = appendTarget(l)
+        if (t !== null && !targets.has(t)) targets.set(t, i)
+      })
+      if (targets.size === 0) continue
+      appending.push(name)
+      for (const [target, first] of targets) {
+        const call = lines.findIndex(l => l.trim() === `call "%~dp0rotate-log.cmd" ${target}`)
+        expect(call, `${name}: no rotate-log.cmd call for ${target}`).toBeGreaterThan(-1)
+        expect(call, `${name}: the rotation of ${target} comes after a line that appends to it`).toBeLessThan(first)
+      }
+    }
+    expect(appending).toEqual(['run-box-reporter.cmd', 'run-daemon.cmd', 'run-embed-server.cmd', 'run-headless-engine.cmd'])
+  })
+
+  it('the default cap in scripts/rotate-log.cmd is a number below 2147483647', () => {
+    const m = /^if "%MAX%"=="" set "MAX=(\d+)"$/m.exec(src('scripts/rotate-log.cmd'))
+    expect(m).not.toBeNull()
+    const cap = Number(m![1])
+    expect(cap).toBeGreaterThan(0)
+    expect(cap).toBeLessThan(2147483647)
+  })
+
+  it('the daemon row of scripts/cynco-services.ps1 registers scripts\\run-daemon.cmd', () => {
+    const row = src('scripts/cynco-services.ps1').split('\n').find(l => l.includes("Name = 'daemon';"))
+    expect(row).toBeDefined()
+    expect(row).toMatch(/Register = @\{ Action = \(Join-Path \$repo 'scripts\\run-daemon\.cmd'\)/)
+    expect(row).toContain("Match = 'engine\\\\daemon\\\\main'")
+  })
+
+  it('dispatch-mission.sh prunes old mission logs only after every gate and before the phone engine is stopped', () => {
+    const sh = src('scripts/dispatch-mission.sh')
+    const PRUNE = 'bun scripts/cynco-logs.mjs prune-mission-logs'
+    const prune = sh.indexOf(PRUNE)
+    expect(prune).toBeGreaterThan(-1)
+    expect(sh.indexOf('prune-mission-logs', prune + PRUNE.length)).toBe(-1)
+    expect(prune).toBeGreaterThan(sh.indexOf('trap dispatch_abandoned EXIT'))
+    expect(prune).toBeGreaterThan(sh.indexOf('cynco-guard.mjs pre'))
+    expect(prune).toBeGreaterThan(sh.indexOf('cynco-sandbox.mjs create'))
+    expect(prune).toBeLessThan(sh.indexOf('cynco-services.ps1 stop engine'))
+    // It keeps this dispatch's own two logs, and a failure never ends the dispatch.
+    const line = sh.slice(prune, sh.indexOf('\n', prune))
+    expect(line).toContain('--keep "$ENGINE_LOG" --keep "$DRIVER_LOG"')
+    expect(line).toContain('|| echo "[dispatch] old mission logs not pruned (see above)"')
+    expect(line).not.toContain('--dir')
+  })
+
+  it('the stream debug log is written only through appendCapped, inside its try', () => {
+    const loop = src('engine/bridge/conversationLoop.ts')
+    const at = loop.indexOf("'.cynco-stream.log'")
+    expect(at).toBeGreaterThan(-1)
+    expect(loop.indexOf("'.cynco-stream.log'", at + 1)).toBe(-1)
+    const before = loop.slice(loop.lastIndexOf('try {', at), at)
+    expect(before).toContain('appendCapped(')
+    expect(before).not.toContain('appendFileSync')
+    expect(loop.slice(at, loop.indexOf('} catch', at))).toContain('STREAM_LOG_MAX_BYTES')
+  })
+
+  it('the daemon starts the hourly housekeeping and stops it on shutdown', () => {
+    const d = src('engine/daemon/main.ts')
+    expect(d).toContain("import { runHousekeeping } from './housekeeping.js'")
+    expect(d).toContain('const housekeeping = setInterval(housekeep, 3_600_000)')
+    expect(d).toContain('logsDir: cyncoHome()')
+    expect(d).toContain('queueOnFailure: false')
+    const shutdown = d.slice(d.indexOf('const shutdown = () => {'))
+    expect(shutdown.indexOf('clearInterval(housekeeping)')).toBeGreaterThan(shutdown.indexOf('clearInterval(interval)'))
   })
 })

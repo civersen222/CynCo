@@ -19,7 +19,9 @@ const X: HomeMap = { home: '/home/u', appData: '/home/u/AppData/Roaming', localA
 const XBASE = '/work/proj'
 
 const scan = (cmd: string, homes: HomeMap = W, base = BASE): ShellScan => scanShellText(cmd, base, homes, { platform: homes === W ? 'win32' : 'posix' })
-const ofOp = (s: ShellScan, ...ops: string[]): ShellPath[] => s.paths.filter(p => ops.includes(p.op))
+// The folder a program is started in (`startedIn`, review 2026-11-23, fourth) has its own tests; the operand
+// tables below read the operands only.
+const ofOp = (s: ShellScan, ...ops: string[]): ShellPath[] => s.paths.filter(p => ops.includes(p.op) && !p.startedIn)
 const pathsOf = (s: ShellScan, ...ops: string[]): string[] => ofOp(s, ...ops).map(p => p.path as string)
 const lower = (xs: string[]) => xs.map(x => x.toLowerCase())
 
@@ -151,10 +153,12 @@ describe('grouped expressions', () => {
     expect(pathsOf(scan('Remove-Item -Recurse ($env:USERPROFILE)'), 'delete')).toEqual(['C:\\Users\\u'])
   })
   it('a command group is a subexpression: unresolved, with its own paths read', () => {
-    const s = scan("Remove-Item (Join-Path $env:USERPROFILE 'x') -Recurse")
+    const s = scan("Remove-Item (Get-Content $env:USERPROFILE\\list.txt) -Recurse")
     expect(pathsOf(s, 'delete')).toEqual([])
     expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: 'remove-item', recursive: true })
-    expect(pathsOf(s, 'read')).toContain('C:\\Users\\u')
+    expect(pathsOf(s, 'read')).toContain('C:\\Users\\u\\list.txt')
+    // `Join-Path` over two words is read as the path it makes (review 2026-11-23, fourth).
+    expect(pathsOf(scan("Remove-Item (Join-Path $env:USERPROFILE 'x') -Recurse"), 'delete')).toEqual(['C:\\Users\\u\\x'])
   })
   it('inside an inline program a call argument is not an operand of the call before it', () => {
     const s = scan(`python -c "import os; open('out/x.txt','w').write(os.path.expanduser('~'))"`)
@@ -194,9 +198,11 @@ describe('constant propagation (2.M1)', () => {
     const twice = scan("$t = 'C:\\a'; $t = 'C:\\b'; Remove-Item $t")
     expect(pathsOf(twice, 'delete')).toEqual([])
     expect(twice.unresolvedMutation?.op).toBe('delete')
-    const call = scan('$t = Get-Item x; Remove-Item $t')
+    const call = scan('$t = Get-Content x; Remove-Item $t')
     expect(pathsOf(call, 'delete')).toEqual([])
     expect(call.unresolvedMutation?.op).toBe('delete')
+    // An item source bound to a name is the item (review 2026-11-23, fourth).
+    expect(pathsOf(scan('$t = Get-Item x; Remove-Item $t'), 'delete')).toEqual(['C:\\Users\\u\\proj\\x'])
   })
   it('an assignment to an anchor name rebinds it', () => {
     const [p] = ofOp(scan("$env:TEMP = 'C:\\x'; Remove-Item $env:TEMP\\* -Recurse"), 'delete')
@@ -339,13 +345,13 @@ describe('copy, move and redirects', () => {
 describe('program position', () => {
   it('an .exe or extensionless program is not a target', () => {
     for (const cmd of ['& "C:\\Users\\x\\.bun\\bin\\bun.exe" test', 'C:\\Py\\python.exe -m pytest', 'Start-Process C:\\Py\\python.exe -ArgumentList x']) {
-      expect(scan(cmd).paths).toEqual([])
+      expect(scan(cmd).paths.filter(p => !p.startedIn)).toEqual([])
     }
   })
   it('a script is an exec target; -m names nothing', () => {
     expect(pathsOf(scan('python C:\\a\\tool.py'), 'exec')).toEqual(['C:\\a\\tool.py'])
     expect(pathsOf(scan('.\\run.ps1'), 'exec')).toEqual(['C:\\Users\\u\\proj\\run.ps1'])
-    expect(scan('python -m pytest tests/').paths).toEqual([])
+    expect(scan('python -m pytest tests/').paths.filter(p => !p.startedIn)).toEqual([])
   })
 })
 
@@ -358,8 +364,8 @@ describe('git through scanShellText', () => {
     expect(pathsOf(scan('git clone . C:\\x'), 'write')).toEqual(['C:\\x'])
     expect(pathsOf(scan('git format-patch -o C:\\x'), 'write')).toEqual(['C:\\x'])
     expect(pathsOf(scan('git apply C:\\tmp\\p.patch'), 'read')).toEqual(['C:\\tmp\\p.patch'])
-    expect(scan('git commit -m "fix ~/.cynco handling"').paths).toEqual([])
-    expect(scan('git commit -am "~/.cache cleanup"').paths).toEqual([])
+    expect(scan('git commit -m "fix ~/.cynco handling"').paths.filter(p => !p.startedIn)).toEqual([])
+    expect(scan('git commit -am "~/.cache cleanup"').paths.filter(p => !p.startedIn)).toEqual([])
   })
   it('destructive subcommands set gitDestructive and name their path operands', () => {
     const cases: Array<[string, string[]]> = [
@@ -464,10 +470,11 @@ describe('the review of 2026-11-23', () => {
     expect(scan('Get-Content data.txt | python tool.py').selfBuilding).toBeNull()
   })
   it('a parameter followed by a group takes the group, never the next parameter', () => {
-    const s = scan("Remove-Item -Path (Join-Path 'D:\\' 'Video') -Recurse")
+    const s = scan("Remove-Item -Path (Resolve-Path 'D:\\Video' | Split-Path) -Recurse")
     expect(pathsOf(s, 'delete')).toEqual([])
     expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: 'remove-item', recursive: true })
-    expect(pathsOf(s, 'read')).toContain('D:\\')
+    expect(pathsOf(s, 'read')).toContain('D:\\Video')
+    expect(pathsOf(scan("Remove-Item -Path (Join-Path 'D:\\' 'Video') -Recurse"), 'delete')).toEqual(['D:\\Video'])
     expect(pathsOf(scan('Remove-Item -Path -Recurse'), 'delete')).toEqual([])
     expect(pathsOf(scan('Remove-Item -Path build -Recurse'), 'delete')).toEqual([`${BASE}\\build`])
   })
@@ -482,12 +489,17 @@ describe('the review of 2026-11-23', () => {
     expect(pathsOf(c, 'delete')).toEqual([])
     expect(c.unresolvedMutation?.op).toBe('delete')
   })
-  it("cmd's for loop: the list is a mention, the variable cannot be read, the body is a command", () => {
+  it("cmd's for loop: the list is a mention, the body is a command read once per element of a literal list", () => {
     const s = scan('for /d %d in (%USERPROFILE%\\.*, D:\\x) do @rd /s /q "%d"')
     expect(lower(pathsOf(s, 'mention'))).toEqual(expect.arrayContaining(['c:\\users\\u', 'd:\\x']))
-    expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: 'rd', recursive: true })
+    // Each element of a literal list is the variable (review 2026-11-23, fourth).
+    expect(lower(pathsOf(s, 'delete'))).toEqual(expect.arrayContaining(['c:\\users\\u', 'd:\\x']))
     expect(pathsOf(scan('for /r C:\\src %f in (*.pyc) do del %f'), 'mention')).toContain('C:\\src')
-    expect(pathsOf(scan('for %f in (a b) do del %f'), 'delete')).toEqual([])
+    expect(pathsOf(scan('for %f in (a b) do del %f'), 'delete')).toEqual(['C:\\Users\\u\\proj\\a', 'C:\\Users\\u\\proj\\b'])
+    // A modifier, /r and a list that cannot be read keep the variable unread.
+    expect(scan('for /r C:\\src %f in (*.pyc) do del %f').unresolvedMutation?.op).toBe('delete')
+    expect(scan('for %f in (%NOPE%) do del %f').unresolvedMutation?.op).toBe('delete')
+    expect(scan('for %f in (a) do del %~dpf').unresolvedMutation?.op).toBe('delete')
     // a POSIX for is not cmd's
     expect(pathsOf(scan('for d in ~/.*/; do rm -rf "$d"; done', X, XBASE), 'unclassified')).toContain('/home/u')
   })
@@ -512,7 +524,8 @@ describe('the review of 2026-11-23', () => {
     expect(ofOp(scan('Remove-Item -Recurse "$env:NOPE\\*"'), 'delete').map(p => [p.path, p.children])).toEqual([['C:\\', true]])
     expect(pathsOf(scan('rm -rf "$NOPE"/*', X, XBASE), 'delete')).toEqual(['/'])
     expect(pathsOf(scan('Remove-Item "$env:NOPE\\x"'), 'delete')).toEqual([])            // not recursive
-    expect(pathsOf(scan('$d = Get-Location; Remove-Item -Recurse "$d\\x"'), 'delete')).toEqual([])
+    // `Get-Location` bound to a name is the current folder (review 2026-11-23, fourth).
+    expect(pathsOf(scan('$d = Get-Location; Remove-Item -Recurse "$d\\x"'), 'delete')).toEqual(['C:\\Users\\u\\proj\\x'])
     expect(pathsOf(scan('foreach ($d in $list) { Remove-Item -Recurse "$d\\x" }'), 'delete')).toEqual([])
     expect(pathsOf(scan('Remove-Item -Recurse $nope'), 'delete')).toEqual([])
   })
@@ -565,9 +578,12 @@ describe('the second review of 2026-11-23: what the scan reads', () => {
     expect(lower(pathsOf(scan('Get-ChildItem build | % { Remove-Item -Recurse "$_\\obj" }'), 'delete'))).toEqual(['c:\\users\\u\\proj\\build'])
   })
   it('a group followed by a member is one unreadable operand, not a path inside the mission folder', () => {
-    const s = scan('Remove-Item (Get-ChildItem D:\\ -Directory).FullName -Recurse')
+    const s = scan('Remove-Item (Get-Item D:\\Video).Parent -Recurse')
     expect(pathsOf(s, 'delete')).toEqual([])
     expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: 'remove-item', recursive: true })
+    // The path members of a literal listing are the items inside the folder listed (review 2026-11-23, fourth).
+    const items = ofOp(scan('Remove-Item (Get-ChildItem D:\\ -Directory).FullName -Recurse'), 'delete')
+    expect(items.map(p => [p.path, p.children])).toEqual([['D:\\', true]])
   })
   it('code calls are read in the order of the text: a chdir holds for the calls after it', () => {
     expect(pathsOf(scan(`python -c "import os, shutil; os.chdir('D:/'); shutil.rmtree('Video')"`), 'delete')).toEqual(['D:\\Video'])
@@ -575,7 +591,7 @@ describe('the second review of 2026-11-23: what the scan reads', () => {
   })
   it('the shell reading of an inline program keeps only the verb table: a division, `as f:` and an arrow are not paths', () => {
     for (const c of [`python -c "print(10 / 3)"`, `python -c "with open('a.txt') as f: print(f.read())"`, `node -e "[1].filter(l=>/x/.test(l))"`]) {
-      expect(scan(c).paths.filter(p => p.op !== 'read' && p.op !== 'mention')).toEqual([])
+      expect(scan(c).paths.filter(p => !p.startedIn && p.op !== 'read' && p.op !== 'mention')).toEqual([])
     }
   })
   it('a PowerShell expression statement names no program operand', () => {
@@ -701,7 +717,7 @@ describe('the third review of 2026-11-23', () => {
     expect(lower(pathsOf(scan("Start-Process powershell -ArgumentList '-c','Remove-Item ~\\.cache -Recurse'"), 'delete'))).toEqual(['c:\\users\\u\\.cache'])
     expect(pathsOf(scan("Start-Process cmd -ArgumentList '/c','dir' -RedirectStandardOutput D:\\out.txt"), 'write')).toEqual(['D:\\out.txt'])
     const honest = scan("Start-Process -FilePath python -ArgumentList '-c','print(1)' -Wait")
-    expect(honest.paths.filter(p => p.op !== 'mention')).toEqual([])
+    expect(honest.paths.filter(p => p.op !== 'mention' && !p.startedIn)).toEqual([])
   })
   it("git's -c core.worktree is the work tree, as --work-tree is; GIT_CONFIG_* in the environment is not read", () => {
     expect(pathsOf(scan('git -c core.worktree=D:/DCIM clean -fdx'), 'write')).toContain('D:\\DCIM')
@@ -755,6 +771,177 @@ describe('the third review of 2026-11-23', () => {
       expect(scanArgv(['git', 'status'], BASE, W, { platform: 'win32' }).faults.some(f => /took longer than \d+ ms to read/.test(f))).toBe(true)
     } finally {
       performance.now = real
+    }
+  })
+})
+
+// The fourth review of 2026-11-23: what the scan itself reads now. Each row is a walk-around of the review,
+// read here as the shell runs it (the verdicts are in protectedPaths.test.ts, FOURTH_ATTACKS).
+describe('the fourth review of 2026-11-23', () => {
+  const lines = (n: number, last: string) => `@'\n${Array.from({ length: n }, (_, i) => `f${i}.txt`).join('\n')}\n${last}\n'@`
+  // [command, op, path]: the path is read with that operation.
+  const READS: Array<[string, string, string]> = [
+    // an opener in a comment or at the end of a closed string is not a here-string
+    ["Write-Output 'mail me @'\nRemove-Item -Recurse -Force D:\\DCIM\n'@'", 'delete', 'D:\\DCIM'],
+    ["Write-Output 1 # @'\nRemove-Item -Recurse -Force D:\\DCIM\n'@'", 'delete', 'D:\\DCIM'],
+    ["git log --author='bot@'\nRemove-Item -Recurse -Force C:\\Users\\u\\.cynco\n'@' | Out-Null", 'delete', 'C:\\Users\\u\\.cynco'],
+    ['$a = 1 # <<A\nRemove-Item -Recurse -Force D:\\DCIM\nA', 'delete', 'D:\\DCIM'],
+    ["bash -c 'echo x # <<EOF\nrm -rf /d/DCIM\nEOF'", 'delete', 'D:\\DCIM'],
+    // cmd has no single quotes
+    ['cmd /c "echo \' & rd /s /q D:\\DCIM & echo \'"', 'delete', 'D:\\DCIM'],
+    ['cmd /c "echo it\'s & rd /s /q C:\\Users\\u\\.cynco & echo done\'s"', 'delete', 'C:\\Users\\u\\.cynco'],
+    // Start-Process: a spaced comma list, the common parameters, a group, a variable, a cd in the payload
+    ["Start-Process cmd '/c', 'rd /s /q D:\\DCIM'", 'delete', 'D:\\DCIM'],
+    ["Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Remove-Item D:\\DCIM -Recurse -Force' -Wait", 'delete', 'D:\\DCIM'],
+    ["Start-Process -ErrorAction SilentlyContinue cmd '/c rd /s /q D:\\DCIM'", 'delete', 'D:\\DCIM'],
+    ["Start-Process -ev e cmd '/c rd /s /q C:\\Users\\u\\.cache'", 'delete', 'C:\\Users\\u\\.cache'],
+    ["Start-Process cmd @('/c','rd /s /q D:\\DCIM')", 'delete', 'D:\\DCIM'],
+    ["$a = '/c','rd','/s','/q','D:\\DCIM'; Start-Process cmd -ArgumentList $a", 'delete', 'D:\\DCIM'],
+    ["$a = '/c rd /s /q C:\\Users\\u\\.ssh'; Start-Process cmd $a", 'delete', 'C:\\Users\\u\\.ssh'],
+    ["Start-Process cmd -ArgumentList '/c pushd D:\\ && rd /s /q DCIM'", 'delete', 'D:\\DCIM'],
+    ["Start-Process powershell '-c cd C:\\Users\\u; Remove-Item -Recurse -Force .ssh'", 'delete', 'C:\\Users\\u\\.ssh'],
+    // a group handed to an interpreter as its payload
+    ['cmd /c ("rd /s /q " + "D:\\DCIM")', 'delete', 'D:\\DCIM'],
+    ['cmd /c $("rd /s /q D:\\DCIM")', 'delete', 'D:\\DCIM'],
+    ['powershell -Command ("Remove-Item C:\\Users\\u\\.ssh -Recurse")', 'delete', 'C:\\Users\\u\\.ssh'],
+    // a here-string value is read to its last line
+    [`Remove-Item ${lines(99, 'D:\\DCIM')} -Recurse -Force`, 'delete', 'D:\\DCIM'],
+    [`$l = ${lines(99, 'C:\\Users\\u\\.ssh')}\nRemove-Item $l -Recurse -Force`, 'delete', 'C:\\Users\\u\\.ssh'],
+    // a list continued on the next line
+    ["$a = 'x',\n'D:\\DCIM'; Remove-Item $a[1] -Recurse -Force", 'delete', 'D:\\DCIM'],
+    // a drive-relative literal on a drive the run has no folder on
+    ['python -c "import shutil as s; f = getattr(s, \'rmtree\'); f(\'D:DCIM\')"', 'unclassified', 'D:\\DCIM'],
+    // -f with spaces, in an assignment, at the head of a pipeline; Join-Path over two words
+    ["Remove-Item ('{0}:\\{1}' -f 'D', 'DCIM') -Recurse -Force", 'delete', 'D:\\DCIM'],
+    ["$p = '{0}:\\{1}' -f 'D','DCIM'; Remove-Item $p -Recurse -Force", 'delete', 'D:\\DCIM'],
+    ["'{0}:\\DCIM' -f 'D' | Remove-Item -Recurse", 'delete', 'D:\\DCIM'],
+    ["Remove-Item (Join-Path $HOME '.cynco') -Recurse", 'delete', 'C:\\Users\\u\\.cynco'],
+    ['$p = Join-Path $PWD out; Remove-Item $p -Recurse -Force', 'delete', 'C:\\Users\\u\\proj\\out'],
+    // POSIX expansions and Deno's environment
+    ["bash -c 'rm -rf \"${NOPE#x}/c/Users/u/.ssh\"'", 'delete', 'C:\\'],
+    ["bash -c 'rm -rf \"${X-$HOME/.ssh}\"'", 'delete', 'C:\\Users\\u\\.ssh'],
+    ["deno eval \"Deno.removeSync(Deno.env.get('USERPROFILE')+'/.ssh',{recursive:true})\"", 'mention', 'C:\\Users\\u'],
+    // always-empty subexpressions
+    ['Remove-Item "$([string]::Empty)\\Users\\u\\.ssh" -Recurse -Force', 'delete', 'C:\\'],
+    ["Remove-Item \"$(''+'')\\Users\\u\\.ssh\" -Recurse -Force", 'delete', 'C:\\'],
+    // the subexpressions of an expandable body run
+    ['$x = @"\n$(Remove-Item -Recurse D:\\DCIM)\n"@', 'delete', 'D:\\DCIM'],
+    ["bash -c 'cat <<EOF\n$(rm -rf /d/DCIM)\nEOF'", 'delete', 'D:\\DCIM'],
+    // PowerShell's own whitespace and quotes
+    [`Remove-Item${String.fromCharCode(0xa0)}-Recurse${String.fromCharCode(0xa0)}D:\\DCIM`, 'delete', 'D:\\DCIM'],
+    ['Write-Output ok\rRemove-Item -Recurse -Force C:\\Users\\u\\.ssh', 'delete', 'C:\\Users\\u\\.ssh'],
+    [`Remove-Item -Recurse ${String.fromCharCode(0x201c)}D:\\DCIM${String.fromCharCode(0x201d)}`, 'delete', 'D:\\DCIM'],
+    // a native program's arguments as PowerShell builds them
+    ["cmd /c pushd D:\\ '&&' rd /s /q DCIM", 'delete', 'D:\\DCIM'],
+    ["cmd /c echo y '|' del /s D:\\DCIM\\*", 'delete', 'D:\\DCIM'],
+    ['cmd /c pushd D:\\ --% && rd /s /q DCIM', 'delete', 'D:\\DCIM'],
+    ["wsl cd /mnt/d ';' rm -rf /mnt/d/DCIM", 'delete', 'C:\\mnt\\d\\DCIM'],
+    // $(Get-Location) and $(Resolve-Path ~) are the anchors
+    ['Remove-Item -Recurse -Force "$(Get-Location)\\..\\.cynco"', 'delete', 'C:\\Users\\u\\.cynco'],
+    ['Remove-Item -Recurse -Force "$(Resolve-Path ~)\\.ssh"', 'delete', 'C:\\Users\\u\\.ssh'],
+    // a payload that is one string-literal subexpression
+    ["cmd /c \"$('rd /s /q D:\\DCIM')\"", 'delete', 'D:\\DCIM'],
+    // an option with its value glued on
+    ['python clean.py --target=C:\\Users\\u\\.ssh', 'unclassified', 'C:\\Users\\u\\.ssh'],
+    ['foo -oD:\\b', 'unclassified', 'D:\\b'],
+    ['foo /out:C:\\Users\\u\\.gitconfig', 'unclassified', 'C:\\Users\\u\\.gitconfig'],
+    ['tar -xf a.tar -CD:\\', 'write', 'D:\\'],
+    // cmd /k with nothing after it reads standard input
+    ["'rd /s /q C:\\Users\\u\\.ssh' | cmd /q /k", 'delete', 'C:\\Users\\u\\.ssh'],
+    // a script written and run by the same command
+    ["Set-Content run.cmd 'rd /s /q C:\\Users\\u\\.ssh'; cmd /c run.cmd", 'delete', 'C:\\Users\\u\\.ssh'],
+    ['cmd /c "echo rd /s /q C:\\Users\\u\\.ssh>x.cmd&x"', 'delete', 'C:\\Users\\u\\.ssh'],
+    // git: where it writes
+    ['$env:GIT_INDEX_FILE = "$HOME\\.idx"; git add .', 'write', 'C:\\Users\\u\\.idx'],
+    ['$env:GIT_OBJECT_DIRECTORY = "D:\\o"; git add .', 'write', 'D:\\o'],
+    // the bindings that keep honest shapes read: a loop over a listing, a cmd for over a literal list
+    ['foreach ($d in Get-ChildItem build) { Remove-Item -Recurse "$d\\obj" }', 'delete', 'C:\\Users\\u\\proj\\build'],
+    ['cmd /c "for /d %d in (build\\*) do rd /s /q "%d""', 'delete', 'C:\\Users\\u\\proj\\build'],
+    ["'build','dist' | % { Remove-Item \".\\$_\" -Recurse -Force }", 'delete', 'C:\\Users\\u\\proj\\dist'],
+    ['Get-ChildItem -Recurse -Filter *.pyc | Remove-Item -Force', 'delete', 'C:\\Users\\u\\proj'],
+  ]
+  for (const [cmd, op, path] of READS) {
+    it(`${op} ${path}: ${JSON.stringify(cmd).slice(0, 90)}`, () => {
+      expect(lower(pathsOf(scan(cmd), op)), cmd).toContain(path.toLowerCase())
+    })
+  }
+  // [command, op]: a mutation through a target the scan cannot read.
+  const UNREAD: Array<[string, string]> = [
+    ['Set-Location D:\\; Get-ChildItem C:\\Users\\u\\proj\\fake -Name | Remove-Item -Recurse -Force', 'delete'],
+    ['Get-Item . | & { process { $_.Parent } } | Remove-Item -Recurse -Force', 'delete'],
+    ['Get-Item . | . { process { $_.Parent } } | Remove-Item -Recurse -Force', 'delete'],
+    ['Get-Item . | ForEach-Object { Remove-Item $_.Parent.FullName -Recurse -Force }', 'delete'],
+    ['Get-Item . | Where-Object { Remove-Item $_.Parent -Recurse -Force }', 'delete'],
+    ['Get-Item . | % PSParentPath | Remove-Item -Recurse -Force', 'delete'],
+    ['git -c core.worktree=$(Split-Path $PWD) clean -fdx', 'write'],
+    ['git -C $(Split-Path $PWD) clean -fdx', 'delete'],
+    ["$env:WT='..'; git --config-env=core.worktree=WT clean -fdx", 'write'],
+    ["('a;D:\\DCIM' -split ';')[1] | Remove-Item -Recurse", 'delete'],
+    ["('C:\\Users\\u\\proj' -replace 'proj','.ssh') | Remove-Item -Recurse", 'delete'],
+    ["Set-Variable -Name p -Value ('{0}:\\DCIM' -f 'D'); Remove-Item $p -Recurse", 'delete'],
+    ['Start-Process -Foo x cmd', 'write'],
+    ["Clear-Content ([char]68 + ':\\DCIM\\*')", 'delete'],
+  ]
+  for (const [cmd, op] of UNREAD) {
+    it(`unread ${op}: ${JSON.stringify(cmd).slice(0, 90)}`, () => {
+      expect(scan(cmd).unresolvedMutation?.op, cmd).toBe(op)
+    })
+  }
+  const SELF: string[] = [
+    'Set-Alias Get-Content Remove-Item; Get-Content D:\\DCIM -Recurse',
+    'New-Item -Path alias:cat -Value Remove-Item -Force; cat D:\\DCIM -Recurse',
+    'Set-Item alias:cat Remove-Item -Force; cat D:\\DCIM -Recurse',
+    'Import-Alias x.csv; gci ~ -Force | d2 -Recurse',
+    'function Sort-Object { process { $_.Parent } }; Get-Item . | Sort-Object | Remove-Item -Recurse -Force',
+    "[Environment]::SetEnvironmentVariable('GIT_CONFIG_COUNT','1'); git clean -fdx",
+    '$env:GIT_EXEC_PATH = "$PWD"; git status',
+    'git clone --config core.fsmonitor=x.cmd https://example.invalid/r r',
+    "Start-Process cmd @('/c', $x)",
+    "python -c (Get-Content .\\p.txt -Raw)",
+    'bash -c "$(cat c.sh)"',
+    "Register-ScheduledTask -TaskName x -Action (New-ScheduledTaskAction -Execute cmd -Argument '/c rd /s /q D:\\DCIM')",
+    "Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd /c rd /s /q D:\\DCIM'",
+    "Set-ItemProperty HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run x 'cmd /c rd /s /q D:\\DCIM'",
+    'schtasks /run /tn x',
+  ]
+  for (const cmd of SELF) {
+    it(`self-building: ${JSON.stringify(cmd).slice(0, 90)}`, () => {
+      expect(scan(cmd).selfBuilding, cmd).not.toBeNull()
+    })
+  }
+  it('the facts the policy judges: a temp name reassigned, a folder that cannot be read, an unread operand', () => {
+    const t = scan("$env:TEMP = 'D:\\DCIM'; Remove-Item -Recurse -Force ([IO.Path]::GetTempPath())")
+    expect(t.tempRedirected).toMatch(/TEMP/)
+    expect(ofOp(t, 'delete').some(p => p.anchor === 'temp')).toBe(true)
+    expect(scan('Remove-Item -Recurse -Force ([IO.Path]::GetTempPath())').tempRedirected).toBeNull()
+    const stale = scan('Set-Location "$((Get-Volume -FileSystemLabel LUMIX).DriveLetter):/"; Remove-Item "$PWD/DCIM" -Recurse -Force')
+    expect(ofOp(stale, 'delete').some(p => p.staleBase)).toBe(true)
+    expect(scan('Set-Location (Get-PSDrive D).Root; python clean.py').unreadFolder?.verb).toBe('python')
+    expect(scan("$t = [char]68 + ':\\DCIM'; sdelete -s -q $t").unreadOperand?.verb).toBe('sdelete')
+    // keywords, expressions and read-only cmdlets are not programs
+    for (const c of ['if (-not $?) { exit 1 }', '[Math]::Min($a, $b)', '$x | Select-Object -First $n', '(Get-Date) - $start']) {
+      expect(scan(c).unreadOperand, c).toBeNull()
+    }
+  })
+  it('the folder a program, a script, an interpreter or git is started in is one of its operands', () => {
+    const started = (c: string, base = BASE) => scanShellText(c, base, W, { platform: 'win32' }).paths.filter(p => p.startedIn).map(p => p.path)
+    expect(started('cd D:\\; python C:\\Users\\u\\proj\\clean.py')).toEqual(['D:\\'])
+    expect(started('cd C:\\Users\\u; git status')).toEqual(['C:\\Users\\u'])
+    expect(started('npm test')).toEqual([BASE])
+    expect(started("Start-Process python -ArgumentList 'C:\\Users\\u\\proj\\clean.py' -WorkingDirectory D:\\")).toEqual(['D:\\'])
+    expect(started('Get-ChildItem | Select-Object Name')).toEqual([])
+  })
+  it('honest shapes stay readable: no unread target and no self-building marker', () => {
+    for (const c of [
+      'cmd /c "echo it\'s done"', "git log --author='bot@example' -5", "Write-Output 'mail me @'",
+      "$dirs = 'build',\n  'dist'\nRemove-Item $dirs -Recurse -Force", "Remove-Item ('{0}\\{1}' -f 'build', 'cache') -Recurse -Force",
+      '$t = Get-Item x; Remove-Item $t', 'Get-ChildItem tests -Filter *.py | ForEach-Object { python -m pytest $_.FullName -q }',
+      "Get-ChildItem -Recurse -Filter *.py | ForEach-Object { (Get-Content $_.FullName) -replace 'a','b' | Set-Content $_.FullName }",
+      "Set-Content src\\save.py @'\nfrom pathlib import Path\np = Path.home() / '.civkings'\n'@",
+    ]) {
+      const s = scan(c)
+      expect(s.unresolvedMutation, c).toBeNull()
+      expect(s.selfBuilding, c).toBeNull()
     }
   })
 })

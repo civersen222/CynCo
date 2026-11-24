@@ -355,3 +355,27 @@ describe('calibrate runs contained, and a baseline run that did not complete wri
     expect(failing.writes.length).toBe(1)
   })
 })
+
+// F242, slice S7, entry 4.M5: the suite baseline lands in the held-out folder, FROZEN while a run is open.
+describe('calibrate while an integrity baseline is open', () => {
+  it('no pytest run, no write, ok false, and the problem says why', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const why = 'a mission or daemon task is running (r1); this would change a protected folder and stop it. Try again when it has ended.'
+    const fake = { ...io({ perturbLog, baselineExists: false }), frozenWriteRefusal: () => why }
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual([`suite baseline not written: ${why}`])
+    expect(r.suiteBaselineCreated).toBe(false)
+    expect(fake.writes).toEqual([])
+    expect(fake.ran.some(k => k.includes('pytest'))).toBe(false)
+  })
+
+  it('an existing suite baseline is not a write, so an open baseline does not refuse calibration', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    let asked = 0
+    const fake = { ...io({ perturbLog, baselineExists: true }), frozenWriteRefusal: () => { asked++; return 'running' } }
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(true)
+    expect(asked).toBe(0)
+  })
+})

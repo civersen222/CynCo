@@ -29,6 +29,8 @@ export type NamedPath = {
   anchor: Anchor; device: boolean; linkTarget?: string | null
   verb?: string
   unsetName?: string   // the shell word started with this name, which nothing in the command set
+  staleBase?: true     // a working-folder spelling read after a folder change the scan could not follow
+  startedIn?: true     // the folder a program, a script, an interpreter or git is started in
 }
 export type NamedCall = { paths: NamedPath[]; spellings: string[]; texts: string[]; scan: ShellScan | null; faults: string[] }
 export type NameOpts = {
@@ -416,22 +418,23 @@ function fieldPathsWith(toolName: string, input0: Record<string, unknown>, cwd: 
 
 // ─── The scan memo (Bash and Git only) ────────────────────────────────────────────────────────
 
-type MemoEntry = { tool: string; cwd: string; homes: HomeMap; platform: Platform; keys: string[]; scan: ShellScan; texts: string[] }
+type MemoEntry = { tool: string; cwd: string; homes: HomeMap; platform: Platform; drives: string; keys: string[]; scan: ShellScan; texts: string[] }
 const memo = new WeakMap<object, MemoEntry[]>()
 const MEMO_PER_INPUT = 4
 
-function shellScanOf(toolName: 'Bash' | 'Git', input: Record<string, unknown>, cwd: string, homes: HomeMap, platform: Platform)
+function shellScanOf(toolName: 'Bash' | 'Git', input: Record<string, unknown>, cwd: string, homes: HomeMap, platform: Platform, drives: string[])
   : { scan: ShellScan; texts: string[] } {
+  const driveKey = drives.join(',')
   const keys = toolName === 'Bash'
     ? [String(input.command ?? '')]
     : [String(input.subcommand ?? ''), String(input.args ?? '')]
   const list = memo.get(input) ?? []
-  const hit = list.find(e => e.tool === toolName && e.cwd === cwd && e.homes === homes && e.platform === platform
+  const hit = list.find(e => e.tool === toolName && e.cwd === cwd && e.homes === homes && e.platform === platform && e.drives === driveKey
     && e.keys.length === keys.length && e.keys.every((k, i) => k === keys[i]))
   if (hit) return { scan: hit.scan, texts: hit.texts }
   let made: { scan: ShellScan; texts: string[] }
   if (toolName === 'Bash') {
-    const scan = scanShellText(keys[0], cwd, homes, { platform })
+    const scan = scanShellText(keys[0], cwd, homes, { platform, drives })
     made = { scan, texts: scan.texts }
   } else {
     // The argv the Git tool itself builds, in its own order (engine/tools/impl/git.ts, `execute`).
@@ -440,13 +443,41 @@ function shellScanOf(toolName: 'Bash' | 'Git', input: Record<string, unknown>, c
     const subTokens = tokenizeArgs(rawSub)
     const sub = subTokens[0] ?? rawSub
     const argTokens = [...subTokens.slice(1), ...tokenizeArgs(args)]
-    const scan = scanArgv(['git', ...buildArgv(sub, argTokens)], cwd, homes, { platform })
+    const scan = scanArgv(['git', ...buildArgv(sub, argTokens)], cwd, homes, { platform, drives })
     made = { scan, texts: [`git ${rawSub} ${args}`.trim()] }
   }
-  list.unshift({ tool: toolName, cwd, homes, platform, keys, ...made })
+  list.unshift({ tool: toolName, cwd, homes, platform, drives: driveKey, keys, ...made })
   if (list.length > MEMO_PER_INPUT) list.length = MEMO_PER_INPUT
   memo.set(input, list)
   return made
+}
+
+/** The text of one call's input this check reads at most (the Bash command's own limit is the same). */
+const MAX_INPUT_TEXT = 1024 * 1024
+/** The most field paths one call may name (MultiEdit's edits, a patch's file headers). */
+const MAX_FIELD_PATHS = 512
+
+/** Keys whose text the check never reads (a file's new content): a long file written with Write stays allowed. */
+const CONTENT_KEYS = new Set(['content', 'old_string', 'new_string', 'new_body', 'new_source'])
+
+/**
+ * Why an input is too large to read, or null: the length of the strings the check reads (every string but
+ * a file's content), counted until the limit is passed.
+ */
+function inputTooLarge(input: unknown): string | null {
+  let total = 0
+  const stack: unknown[] = [input]
+  let seen = 0
+  while (stack.length) {
+    const v = stack.pop()
+    if (++seen > 1_000_000) return 'an input with more than a million values'
+    if (typeof v === 'string') { total += v.length; if (total > MAX_INPUT_TEXT) return 'an input longer than 1 MiB' }
+    else if (Array.isArray(v)) { for (const x of v) stack.push(x) }
+    else if (v !== null && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (!CONTENT_KEYS.has(k)) stack.push(x)
+    }
+  }
+  return null
 }
 
 /**
@@ -462,12 +493,17 @@ export function namePaths(toolName: string, input: Record<string, unknown>, cwd:
   try {
     const h = homes ?? currentHomes()
     const r = resolverOf(cwd, h, opts)
+    // An input too large to read in the time a call may take on the event loop is refused unread (review
+    // 2026-11-23, fourth: 20 MB of patch headers or 200,000 edits were read for seconds, F225).
+    const big = inputTooLarge(input)
+    if (big !== null) { faults.push(big); return { paths, spellings, texts, scan, faults } }
     const fp = fieldPathsWith(toolName, input, cwd, r)
+    if (fp.paths.length > MAX_FIELD_PATHS) { faults.push(`more than ${MAX_FIELD_PATHS} paths in one call`); return { paths, spellings, texts, scan, faults } }
     paths.push(...fp.paths)
     spellings.push(...fp.spellings)
     const special = TOOL_PATH_TABLE[toolName]?.special
     if ((special === 'bash' || special === 'git') && input && typeof input === 'object') {
-      const made = shellScanOf(special === 'bash' ? 'Bash' : 'Git', input, cwd, h, r.platform)
+      const made = shellScanOf(special === 'bash' ? 'Bash' : 'Git', input, cwd, h, r.platform, r.drives)
       scan = made.scan
       texts = made.texts
       faults.push(...scan.faults)
@@ -479,6 +515,8 @@ export function namePaths(toolName: string, input: Record<string, unknown>, cwd:
         }
         if (s.linkTarget !== undefined) n.linkTarget = s.linkTarget
         if (s.unsetName) n.unsetName = s.unsetName
+        if (s.staleBase) n.staleBase = true
+        if (s.startedIn) n.startedIn = true
         paths.push(n)
       }
     }

@@ -101,6 +101,7 @@ import { toolAudit } from '../engine/audit/toolAudit.js'
 import { missionRunId } from '../engine/missionEnv.js'
 import { harnessGitBin, harnessGitEnv } from '../engine/harnessGit.js'
 import { withFixedRule } from '../engine/missionRule.js'
+import { haltRefusal } from '../engine/integrity.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 // The repository is named, never assumed: a default of the CivKings repo sent
@@ -118,6 +119,12 @@ const cwdError = workspaceError(CWD)
 if (cwdError) {
   console.error(`[driver] ${cwdError} — nothing was dispatched`)
   console.error('[driver] spell the path with forward slashes, e.g. C:/Users/civer/casino')
+  process.exit(2)
+}
+// F242: under the integrity latch nothing is dispatched.
+const latchAtStart = haltRefusal()
+if (latchAtStart) {
+  console.error(operatorRefusal('[driver]', 'integrity', latchAtStart, 'dispatched'))
   process.exit(2)
 }
 // F242: the driver runs the mission's check and probe commands, so it adopts the same sandbox the
@@ -667,6 +674,16 @@ let checkOrdinal = 0
 const remainingS = () => TIMEOUT_S - (Date.now() - start) / 1000
 while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
+  // F242, entry 4.M2: a latch written while this mission runs (by its own engine's tripwire, by another
+  // run's compare, by the daemon) ends it. The existing code below aborts the open turn, records the row
+  // and tears the engine down.
+  const latchNow = haltRefusal(runContainment().folders.guard)
+  if (latchNow) {
+    console.log(`[driver] INTEGRITY LATCH: ${latchNow}. The mission ends here: the turn is aborted and the engine is torn down.`)
+    if (!engineError) engineError = `integrity: ${latchNow}`
+    exitReason = 'integrity-latch'
+    break
+  }
   if (!workBegun && (Date.now() - start) / 1000 >= SILENCE_S) {
     // Not a stall — a non-event. Nothing was ever accepted, so there is no run
     // to wait for and no budget that would have helped (F32).

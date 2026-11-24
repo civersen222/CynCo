@@ -144,7 +144,7 @@ describe('pre and post', () => {
     put(join(m.state, 'profiles', 'planted.yaml'))
     o = io(m)
     expect(await main(['post', id2, '--by', 'dispatch-watcher'], o.deps)).toBe(3)
-    expect(o.lines[0]).toMatch(/^\[guard\] INTEGRITY: 1 change\(s\) in protected folders; first: FROZEN .*planted\.yaml added$/)
+    expect(o.lines[0]).toMatch(/^\[guard\] INTEGRITY: 1 change\(s\) in protected folders; first: FROZEN .*planted\.yaml added\. If you changed it yourself while a run was open \(open runs: bun scripts\/cynco-guard\.mjs status\), it is your own change: clear the latch, and the next run's baseline takes the folders as they are then$/)
     expect(o.lines[1]).toBe(`[guard] latch: ${join(m.guard, 'HALT.json')}`)
     expect(latchOf(m)).toMatchObject({ run: id2, reason: 'integrity-change', by: 'dispatch-watcher' })
     expect(o.pages).toHaveLength(1)
@@ -194,6 +194,44 @@ describe('clear', () => {
   })
 })
 
+// Review of wave 5 (findings 11 and 13): the owner's natural order (clear, tidy up, post) re-latched and
+// paged twice, and the waiting page was sent late after the clear.
+describe('clear after an engine that was not confirmed dead', () => {
+  const terminal = (answer) => Object.assign(Readable.from([`${answer}\n`]), { isTTY: true })
+
+  it('(9) clear withdraws the waiting page, compares the run at the desk with no page, closes its baseline, and a later tidy-up latches nothing', async () => {
+    const m = await ready(machine())
+    const id = await pre(m)
+    rmSync(join(m.home, '.config'), { recursive: true })
+    const down = io(m, { page: async () => false })
+    expect(await main(['post', id, '--engine-not-confirmed-dead', 'pid 4242 still listed'], down.deps)).toBe(3)
+    expect(readdirSync(join(m.guard, 'unsent'))).toHaveLength(1)
+    const o = io(m, { stdin: terminal('CLEAR') })
+    expect(await main(['clear'], o.deps)).toBe(0)
+    expect(o.lines).toContain(`[guard] 1 unsent page(s) about this latch withdrawn (kept in ${join(m.guard, 'cleared', 'pages')})`)
+    const said = o.lines.find(l => l.startsWith(`[guard] run ${id} (the latch you cleared said its engine was not confirmed dead): compared now, `))
+    expect(said, o.lines.join('\n')).toMatch(/1 change\(s\) in protected folders; first: PRESENCE .*\.config gone/)
+    expect(o.lines).toContain('[guard] nothing was latched: you are at the desk; look at these before the next run')
+    expect(o.pages).toEqual([])
+    expect(existsSync(join(m.guard, 'HALT.json'))).toBe(false)
+    expect(existsSync(join(m.guard, 'manifests', `${id}.before.json`))).toBe(false)
+    expect(readdirSync(join(m.guard, 'unsent'))).toEqual([])
+    // The owner tidies up afterwards: nothing is open, so nothing latches and nothing pages.
+    put(join(m.home, '.leftover', 'x'))
+    rmSync(join(m.home, '.leftover'), { recursive: true })
+    const s = io(m)
+    expect(await main(['status', '--quiet'], s.deps)).toBe(0)
+  })
+
+  it('(10) without a console it names the remedy for a Git Bash window', async () => {
+    const m = await ready(machine())
+    writeFileSync(join(m.guard, 'HALT.json'), JSON.stringify({ schema: 1, publicSummary: 'p', summary: 's', at: 'a', by: 'b', run: 'r', reason: 'integrity-change', changes: [], changeCount: 0 }))
+    const o = io(m, { stdin: Readable.from(['CLEAR\n']) })
+    expect(await main(['clear'], o.deps)).toBe(3)
+    expect(o.errs).toContain('[guard] (its input is not a console here: in a Git Bash window run it as winpty bun scripts/cynco-guard.mjs clear, or run it from PowerShell or Windows Terminal)')
+  })
+})
+
 describe('hash-models and verify', () => {
   it('(8) verify is ok after hash-models, names a touched file, and --deep finds a content change', async () => {
     const m = await ready(machine())
@@ -223,6 +261,41 @@ describe('usage', () => {
       expect(o.errs.join('\n')).toContain(USAGE)
     }
     expect(readdirSync(m.guard)).toEqual([])
+  })
+})
+
+describe('an unusable guard folder (review finding 14)', () => {
+  it('(10) hash-models refuses a guard folder inside the home and writes nothing', async () => {
+    const m = use(machine())
+    const inHome = join(m.home, 'guard-in-home')
+    mkdirSync(inHome)
+    const o = io(m, { guard: inHome })
+    expect(await main(['hash-models'], o.deps)).toBe(3)
+    expect(o.errs[0]).toBe(`[guard] the models record was not written: the guard folder ${inHome} resolves inside the home folder ${m.home}`)
+    expect(readdirSync(inHome)).toEqual([])
+  })
+
+  it.skipIf(!isWin)('(11) hash-models refuses a guard folder without a drive letter', async () => {
+    const m = use(machine())
+    const o = io(m, { guard: m.guard.slice(2) })
+    expect(await main(['hash-models'], o.deps)).toBe(3)
+    expect(o.errs[0]).toMatch(/does not start with a drive letter/)
+    expect(readdirSync(m.guard)).toEqual([])
+  })
+
+  it('(12) status does not move kept pages in an unusable folder; post says on stderr why the folder is wrong', async () => {
+    const m = use(machine())
+    const inHome = join(m.home, 'guard-in-home')
+    mkdirSync(join(inHome, 'unsent'), { recursive: true })
+    writeFileSync(join(inHome, 'unsent', 'a.json'), JSON.stringify({ title: 't', message: 'kept', priority: 5, at: '2026-01-01T00:00:00.000Z' }))
+    let o = io(m, { guard: inHome, env: { CYNCO_NTFY_URL: 'http://example.invalid' } })
+    expect(await main(['status'], o.deps)).toBe(3)
+    expect(o.lines).toContain('[guard] unsent pages were not re-sent: the guard folder cannot be used')
+    expect(o.pages).toEqual([])
+    expect(readdirSync(join(inHome, 'unsent'))).toEqual(['a.json'])
+    o = io(m, { guard: inHome })
+    expect(await main(['post', mintRunId('cli')], o.deps)).toBe(3)
+    expect(o.errs[0]).toBe(`[guard] the guard folder ${inHome} resolves inside the home folder ${m.home}`)
   })
 })
 

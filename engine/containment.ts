@@ -27,7 +27,7 @@ import {
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { auditDir, cyncoHome, modelsDir, sandboxRoot } from './paths.js'
+import { auditDir, cyncoHome, guardDir, modelsDir, sandboxRoot } from './paths.js'
 import { isContainedRun, RUN_ID_RE } from './missionEnv.js'
 import { isInside, realPathOf } from './realPath.js'
 
@@ -185,9 +185,13 @@ export const LAUNCHER_CHILD_GONE_EXIT = 198
  * builds the child's (and `toolEnv` strips the key for every child), and the launcher ends its own
  * 197 and 198 with `[containment] sealed <seal> <status>` on stderr. The child shares that stderr and
  * passes its status through, so without the seal a command could print the refused line, exit 197
- * and have its own call booked as one that never ran. The child's environment never holds the value,
- * and a low-integrity process cannot read the memory of the medium-integrity processes that do
- * (Windows' no-read-up policy on process objects; not measured here).
+ * and have its own call booked as one that never ran. The child's environment never holds the value.
+ * Measured (containmentLauncher.test.ts, "the seal ... (MEASURED)"): the low child cannot open its
+ * launcher or the engine for reading. It could read the environment block of a live medium Git Bash
+ * through a process handle it INHERITED (a handle's access is not checked again against the integrity
+ * label), so the launcher makes every handle it inherited non-inheritable before it starts the child
+ * (`dropInheritedHandles`, engine/lowIntegrityLauncher.ts; review of wave 5); the same case now asserts
+ * that the child holds no inherited handle and reads no environment through one.
  */
 export const LAUNCHER_SEAL_ENV = 'CYNCO_LAUNCHER_SEAL'
 export const LAUNCHER_SEAL_PREFIX = '[containment] sealed '
@@ -945,15 +949,15 @@ function probe(runner: ContainmentRunner | undefined, runDir: string, labelled: 
 // ─── establishContainment ────────────────────────────────────────────────────────────────────
 
 function defaultFolders(): RunContainment['folders'] {
-  return { state: cyncoHome(), models: modelsDir(), guard: 'C:/cynco-guard', audit: auditDir() }
+  return { state: cyncoHome(), models: modelsDir(), guard: guardDir(), audit: auditDir() }
 }
 
 /** Rules M1 to M9 for one folder; null when it may be a write root of the run. */
 function folderRefusal(input: string, word: string, o: {
   kind: ContainmentKind; checkout: string; home: string; folders: RunContainment['folders']; sandboxRoot: string
-  unprotected: string[]; checkGit: boolean; checkHardLinks: boolean
+  unprotected: string[]; checkGit: boolean; checkHardLinks: boolean; isFolder: (p: string) => boolean
 }): string | null {
-  if (!isDir(input)) return `${word} ${input} does not exist or is not a folder`
+  if (!o.isFolder(input)) return `${word} ${input} does not exist or is not a folder`
   const p = real(input)
   if (within(o.checkout, p) || within(p, o.checkout)) return `${word} ${p} is, contains or is inside the checkout this engine runs from (${o.checkout})`
   if (within(p, o.home)) return `${word} ${p} is the home folder ${o.home} or contains it`
@@ -1076,6 +1080,8 @@ export function establishContainment(a: {
   probe?: boolean; platform?: NodeJS.Platform
   run?: ContainmentRunner
   now?: () => Date
+  /** Test seam for rule M1: whether a mission folder or extra root is an existing folder (default: a stat). */
+  isFolder?: (path: string) => boolean
 }): { ok: true; containment: RunContainment; ms: number } | { ok: false; reason: string } {
   const t0 = Date.now()
   const now = a.now ?? (() => new Date())
@@ -1142,7 +1148,7 @@ export function establishContainment(a: {
   // M1 to M9: the mission folder and each extra root.
   const folders: RunContainment['folders'] = { ...defaultFolders(), ...(a.folders ?? {}) }
   const labelCwd = a.labelCwd !== false && win
-  const common = { kind: a.kind, checkout, home, folders, sandboxRoot: root, unprotected, checkHardLinks: labelCwd }
+  const common = { kind: a.kind, checkout, home, folders, sandboxRoot: root, unprotected, checkHardLinks: labelCwd, isFolder: a.isFolder ?? isDir }
   const missionWhy = folderRefusal(a.missionCwd, 'the mission folder', { ...common, checkGit: a.kind === 'mission' })
   if (missionWhy) return { ok: false, reason: missionWhy }
   for (const extra of a.extraRoots ?? []) {

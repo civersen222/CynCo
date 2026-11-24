@@ -8,4 +8,5 @@ rem The watcher's address: LOCALCODE_WATCHER_URL, the doorman's tailnet address 
 rem Registered/started/stopped by scripts\cynco-services.ps1 (service name: watch).
 if "%LOCALCODE_WATCHER_URL%"=="" set LOCALCODE_WATCHER_URL=http://100.110.117.10:9171
 cd /d C:\Users\civer\localcode
+call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\box-reporter.log"
 bun engine\power\reporter\main.ts >> "%USERPROFILE%\.cynco\box-reporter.log" 2>&1

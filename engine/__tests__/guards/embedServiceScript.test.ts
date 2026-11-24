@@ -35,6 +35,24 @@ describe('embed service', () => {
     // Ruling 3.21: the log rotation, once it exists, runs before the evidence line.
     if (cmd.includes('rotate-log.cmd')) expect(cmd.indexOf('rotate-log.cmd')).toBeLessThan(cmd.indexOf('[embed] model'))
   })
+  it('starts with no prompt cache and warnings only, after rotating its log first (F242, slice S8)', () => {
+    const lines = cmd.split(/\r?\n/)
+    const launch = lines.findIndex(l => l.includes('llama-server.exe') && l.includes('--embeddings'))
+    expect(launch).toBeGreaterThan(-1)
+    // The prompt cache printed its whole listing on every request: the measured cause of the 26 GB log.
+    expect(lines[launch]).toMatch(/--no-webui --cache-ram 0 -lv 2 >> /)
+    const rotate = lines.findIndex(l => l === 'call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\embed-server.log"')
+    expect(rotate).toBeGreaterThan(-1)
+    // First: before the models-folder lines, before every line that appends to the log, before the launch.
+    expect(rotate).toBeLessThan(lines.findIndex(l => l.includes('LOCALCODE_MODELS_DIR') && !/^rem\b/i.test(l)))
+    expect(rotate).toBeLessThan(lines.findIndex(l => l.includes('>> "%USERPROFILE%\\.cynco\\embed-server.log"')))
+    expect(rotate).toBeLessThan(launch)
+    expect(lines.slice(0, rotate).every(l => l === '@echo off' || /^rem\b/i.test(l))).toBe(true)
+    // The launch line stays the last line, so the server's exit code reaches Task Scheduler.
+    expect(lines.filter(l => l !== '').pop()).toBe(lines[launch])
+    // F91's one-decision rule is the chat server's; the reason 0 is not a hand-set budget is on the file.
+    expect(cmd).toContain('rem this server has no checkpoints, so 0 here is not a hand-set budget.')
+  })
   it.skipIf(process.platform !== 'win32')('refuses without its GGUF and names the model it starts with (run for real in a temporary profile)', () => {
     const P = mkdtempSync(join(tmpdir(), 'cynco-embed-profile-'))
     const M = mkdtempSync(join(tmpdir(), 'cynco-embed-models-'))

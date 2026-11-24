@@ -7,7 +7,7 @@ The code index: a SQLite-backed store (`sqlite-vec` when available) plus an embe
 | File | Role |
 |---|---|
 | `chunker.ts` | Regex-based chunker (Python/TS/generic) plus tree-sitter-first `chunkFileAsync`; also extracts import/extends relationships. |
-| `embedClient.ts` | Dual-dialect (ollama `/api/embed` / openai `/v1/embeddings`) embedding HTTP client with model fallback, deadline racing, and endpoint resolution. |
+| `embedClient.ts` | Dual-dialect (ollama `/api/embed` / openai `/v1/embeddings`) embedding HTTP client with model fallback, deadline racing, and endpoint resolution. In a contained run (`runContainment()` set) a missing model is served by the fallback and never pulled in the background: a pull writes the local model store, which is FROZEN during the run (F242, slice S7). |
 | `hybridRank.ts` | Fuses vector and keyword `IndexResult` lists via BM25 + Reciprocal Rank Fusion. |
 | `indexer.ts` | `ProjectIndexer`: build/incremental-reindex/query/searchFormatted/repo-map, plus the open-indexer registry. |
 | `repoMapBuilder.ts` | Resolves import specifiers to indexed files and builds the PageRank `RepoGraph` for the repo map. |

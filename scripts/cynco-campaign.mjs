@@ -17,8 +17,11 @@ import { fileURLToPath } from 'node:url'
 import { writeFileSync, readFileSync, existsSync, appendFileSync, unlinkSync, openSync, writeSync, closeSync, readdirSync, mkdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { homedir } from 'node:os'
-import { cyncoHome } from '../engine/paths.js'
+import { cyncoHome, guardDir } from '../engine/paths.js'
 import { harnessGitEnv } from '../engine/harnessGit.js'
+import { haltRefusal, checkModelsRecord, compareRun, tripHalt, takeBaseline, settleRun, openBaselines, flushUnsentPages } from '../engine/integrity.js'
+import { RUN_ID_RE } from '../engine/missionEnv.js'
+import { operatorRefusal, DISPATCH_RUN_PREFIX } from '../engine/containment.js'
 import { bashExe, runSync, faultSummary } from './cynco-spawn.mjs'
 import { loadCampaignSpec, checkIdentity } from './cynco-campaign-spec.mjs'
 import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
@@ -86,6 +89,8 @@ export function claimedSurvivors(survived, spec) {
  * The stop rule, pure so it can be argued with in a test rather than in a log.
  *
  * Order matters and is not arbitrary:
+ *   0. integrity — a protected folder changed during the wave (F242): whatever the grade says, the
+ *      wave did something it could not be allowed to do, and the latch already stopped everything.
  *   1. invariantsRejected — the engine refused the mission's invariants block,
  *      so whatever the wave did, it did NOT do it under the terms the campaign
  *      set. A green gate under rejected invariants measures a different
@@ -101,6 +106,7 @@ export function claimedSurvivors(survived, spec) {
  * that is already green can only burn the budget.
  */
 export function decide({ grade, state, spec, commitsLanded, row }) {
+  if (row?.integrity?.changed === true) return { kind: 'fault', why: `integrity: a protected folder changed during the wave (${row.integrity.changeCount ?? '?'} change(s), first: ${row.integrity.firstClass ?? 'unknown'}); the paths are in the integrity latch` }
   if (row?.invariantsRejected === true) return { kind: 'fault', why: 'the wave ran without its invariants (block rejected by the engine)' }
   if (grade.verified === null) return { kind: 'fault', why: grade.gate.harnessFault ?? grade.suite.harnessFault ?? 'harness fault' }
   const green = grade.gate.terminator === 'PASS' && grade.suite.exit === 0
@@ -285,6 +291,20 @@ export const fileInCheckout = (path) => {
   return rel === '' || rel.startsWith('..') || /^[A-Za-z]:/.test(rel) || rel.startsWith('/') ? [] : [rel]
 }
 
+/** dispatch-mission.sh prints DISPATCH_RUN_PREFIX, then the run id, on a line of its own (ruling 3.3). */
+export function dispatchRunId(stdout) {
+  for (const line of String(stdout ?? '').split(/\r?\n/)) {
+    if (!line.startsWith(DISPATCH_RUN_PREFIX)) continue
+    const id = line.slice(DISPATCH_RUN_PREFIX.length).trim()
+    if (RUN_ID_RE.test(id)) return id
+  }
+  return null
+}
+/** dispatch-mission.sh exits non-zero only with its trap armed (the engine it started is killed and
+ *  its baseline settled) or before it started anything: nothing of that dispatch is still running. */
+export const dispatchLeftNothingRunning = (e) => /^dispatch failed \(exit \d+\)/.test(String(e?.message ?? ''))
+const pageOwner = (p) => notify(p.message, process.env, globalThis.fetch, { title: p.title, priority: p.priority })
+
 export const defaultIo = {
   writeBrief: (path, text, sidecar) => { mkdirSync(resolve(path, '..'), { recursive: true }); writeFileSync(path, text, 'utf8'); writeFileSync(sidecarPath(path), JSON.stringify(sidecar, null, 2) + '\n'); return path },
   dispatch: async ({ spec, briefFile, invariants, timeoutS, pidFile, driverLog }) => {
@@ -294,11 +314,11 @@ export const defaultIo = {
     // and PID it started; runDispatch re-emits them — those three lines are the
     // only unattended evidence that the wave was given its orders and that the
     // PID we are about to wait on is the driver's.
-    runDispatch(args, env)
+    const r = runDispatch(args, env)
     // dispatch-mission.sh backgrounds the driver, so the missionId does not
     // exist yet: it is read out of the driver log by missionIdFrom once the
-    // driver has written its ledger line.
-    return { driverLog }
+    // driver has written its ledger line. The run id keys the integrity baseline (F242).
+    return { driverLog, runId: dispatchRunId(r.stdout) }
   },
   // The same launcher, called with the pieces spelled out rather than read off
   // a campaign spec. The AUTHORING mission (scripts/cynco-gate-author.mjs) has
@@ -307,8 +327,9 @@ export const defaultIo = {
   // `dispatch` above is left exactly as it was: the wave path is the measured
   // one and must not change behaviour to make room for this.
   dispatchRaw: async ({ briefFile, marker, cwd, timeoutS, checkCmd, env }) => {
-    runDispatch([briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], env)
-    return { driverLog: env?.DRIVER_LOG ?? null }
+    const r = runDispatch([briefFile, marker, cwd, String(timeoutS), checkCmd ?? ''], env)
+    // The run id keys the integrity baseline (F242): the authoring mission latches on it when its engine is not confirmed dead.
+    return { driverLog: env?.DRIVER_LOG ?? null, runId: dispatchRunId(r?.stdout) }
   },
   // The LEDGER LINE is the authority, not the pid. The driver writes its row
   // and then tears down (engine shutdown, snapshots, the odd orphan); a pid
@@ -387,10 +408,35 @@ export const defaultIo = {
   // card is taken — any answer, even a 404, proves something is listening.
   engineLive: async () => { try { await fetch(ENGINE_URL, { signal: AbortSignal.timeout(ENGINE_PROBE_TIMEOUT_MS) }); return true } catch { return false } },
   grade: (spec, row) => gradeWave(spec, row),
-  ideate: (args) => runIdeation(args),
+  // F242: the ideation one-shot is an unattended engine; its starter takes and settles its integrity baseline.
+  ideate: (args) => runIdeation({ ...args, integrity: {
+    refusal: () => haltRefusal() ?? checkModelsRecord(),
+    // The runner names itself the holder: a runner killed mid-ideation leaves an orphan the next starter finds.
+    before: (runId, cwd) => { takeBaseline({ runId, cwd, by: 'ideation', holderPid: process.pid }) },
+    after: async (runId, notConfirmedDead) => {
+      const c = await settleRun(runId, { by: 'ideation', page: pageOwner, notConfirmedDead })
+      return (c.changed || c.notConfirmedDead) ? c.publicSummary : null
+    },
+  } }),
   patchRow: (missionId, fields) => patchLedgerRow(missionId, fields),
   commit: (args) => commitVerdict(args),
   notify: (t) => notify(t),
+  // F242. `refusal`: why no wave may be dispatched now, or null (cheap: the latch and the models record).
+  // `early`: a reading of the open baseline. It writes the latch and pages by itself on a change, and
+  // never closes the baseline (the dispatch watcher's compare does).
+  // `halt`: write the integrity latch and page, for what no compare can say (an engine not confirmed dead).
+  // `settled`: true once the run's baseline is closed (the dispatch watcher's settle, the authority by rule 9);
+  // a folder that cannot be listed reads as not settled.
+  integrity: {
+    refusal: () => haltRefusal() ?? checkModelsRecord(),
+    early: (runId, context) => compareRun(runId, { by: 'campaign', page: pageOwner, context }),
+    halt: (what) => tripHalt({ ...what, page: pageOwner }),
+    settled: (runId) => {
+      try { return !openBaselines().some(b => b.runId === runId) } catch (e) { console.error(`[campaign] ${e?.message ?? e}`); return false }
+    },
+    settleWaitMs: 300_000,
+    sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+  },
   // Capped (ECONOMICS_TIMEOUT_MS) and null when the script did not run — the
   // same reader `--scoreboard` uses; it was an uncapped spawnSync before Phase 5.
   economics: (hooks) => scoreboardEconomics(hooks),
@@ -580,11 +626,42 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // `progressNote` says why there is none, so the verdict's `- Progress:` line
   // names the reason instead of printing an empty reading as a measurement.
   let tracker = null, progressNote = null
+  // F242: the dispatch's run id (it keys the integrity baseline) and what the ledger row carries.
+  let runId = null, integrity = null
+  const integ = io.integrity ?? (io === defaultIo ? defaultIo.integrity : null)
   // `retriedSpawns` (P-F155): how many of the probe's git spawns hit bun's
   // stale deadline and were retried this wave — on the record only when the
   // runner waited with a tracker.
   const progressFields = () => ({ progress: tracker ? tracker.progress : null, shadowDecisions: tracker ? tracker.shadowDecisions : null,
     progressNote: tracker ? tracker.note() : progressNote, ...(tracker ? { retriedSpawns: tracker.retriedSpawns() } : {}) })
+  // F242. null = nothing to report; otherwise the fault sentence. Sets `integrity` (what the ledger row
+  // carries). Never throws.
+  const integrityReading = async ({ notDead = null } = {}) => {
+    if (!integ) return null
+    const context = { by: 'campaign', run: runId ?? `unknown (${spec.id} wave ${wave})`, campaignId: spec.id, wave, cwd: spec.repo }
+    if (notDead) {
+      let t = null
+      try { t = await integ.halt({ ...context, reason: 'engine-not-confirmed-dead', detail: notDead }) }
+      catch (e) { console.error(`[campaign] the integrity latch step failed: ${e?.message ?? e}`) }
+      integrity = { changed: true, changeCount: 0, firstClass: null, firstRoot: null, latchPath: t?.latchPath ?? null }
+      return `integrity: the mission engine is not confirmed dead (${notDead}); the integrity latch is set`
+    }
+    let c
+    try {
+      if (!runId) throw new Error('the dispatch printed no run id')
+      c = await integ.early(runId, { campaignId: spec.id, wave, cwd: spec.repo })   // trips by itself on a change
+    } catch (e) {
+      // No run id, or a seam that threw: a compare that cannot be done is a change (rule 7).
+      const why = `the integrity check could not be completed (${e?.message ?? e})`
+      let t = null
+      try { t = await integ.halt({ ...context, reason: 'manifest-error', detail: why }) }
+      catch (e2) { console.error(`[campaign] the integrity latch step failed: ${e2?.message ?? e2}`) }
+      // The reason can name a path; what reaches the ledger row and the record names none (rule 15).
+      c = { changed: true, changeCount: 0, firstClass: null, firstRoot: null, publicSummary: 'the integrity check could not be completed', latchPath: t?.latchPath ?? null }
+    }
+    integrity = { changed: Boolean(c.changed), changeCount: c.changeCount ?? 0, firstClass: c.firstClass ?? null, firstRoot: c.firstRoot ?? null, latchPath: c.latchPath ?? null }
+    return c.changed ? `integrity: ${c.publicSummary}; the paths are in the integrity latch` : null
+  }
 
   if (s.adoptedRow) {
     // ADOPT (scripts/cynco-campaign-adopt.mjs): this wave already RAN — it was
@@ -661,6 +738,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     const instruments = [spec.gate, spec.perturb, spec.positive].filter(Boolean).map(p => basename(String(p).replace(/\\/g, '/')))
     const leak = /heldout|gate_c\d|perturb_/.exec(text) ?? (instruments.find(f => text.includes(f)) ? [instruments.find(f => text.includes(f))] : null)
     if (leak) return stopWave(spec, state, io, { wave, base, why: `the generated brief names the sealed instrument "${leak[0]}" — refusing to write it (the S4 ideation section is the likely source)` })
+    // F242: a latch or a models record that does not match is a STOP: nothing is written, the roadmap
+    // line is not moved, no wave is spent. Here, after the ideation one-shot (which can itself trip
+    // the latch) and before the brief is written and the roadmap line moved.
+    const refused = integ ? integ.refusal() : null
+    if (refused) return stopWave(spec, state, io, { wave, base, why: `integrity: ${refused} — nothing was dispatched` })
     briefFile = resolve(home.briefsDir, `${spec.id}-wave${wave}.txt`)
     io.writeBrief(briefFile, text, sidecarFor(spec))
     waveFiles = [...fileInCheckout(briefFile), ...fileInCheckout(sidecarPath(briefFile))]
@@ -675,10 +757,11 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
     let waited
     try {
       const dispatched = await io.dispatch({ spec, briefFile, invariants: effectiveInvariants(spec, s), timeoutS: spec.budget.hoursPerWave * 3600, pidFile, driverLog })
+      runId = dispatched?.runId ?? null
       // Persist BEFORE waiting, the daemon's missionLedger discipline: from here
       // on a mission is out there on the GPU, and a runner that dies in the wait
       // must not let the NEXT invocation dispatch a second one on top of it.
-      s.inFlight = { wave, missionId: null, briefFile, pidFile, driverLog, dispatchedAt }
+      s.inFlight = { wave, missionId: null, briefFile, pidFile, driverLog, dispatchedAt, runId }
       state.save()
       // Phase 6 ruling 2: gate progress, measured by the runner mid-wave and
       // never shown to the model — the readings reach this wave's record and
@@ -701,14 +784,42 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
       row = missionId ? io.readRow(missionId) : null
     } catch (e) {
       console.error(`[campaign] wave ${wave} dispatch/wait failed: ${e?.stack ?? e}`)
+      // F242: a dispatch that timed out or faulted may have started a driver; a wait that threw leaves one running.
+      const tripped = dispatchLeftNothingRunning(e) ? null : await integrityReading({ notDead: `dispatch or wait failed: ${e?.message ?? e}` })
       return faultWave(spec, state, io, { wave, missionId: null, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(),
-        why: `dispatch or wait failed: ${e?.message ?? e}` })
+        why: tripped ?? `dispatch or wait failed: ${e?.message ?? e}` })
     }
     if (!row) {
-      const why = waited.exited ? 'driver exited without a ledger row'
+      const said = waited.exited ? 'driver exited without a ledger row'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
-      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(), why })
+      const tripped = await integrityReading(waited.exited ? {} : { notDead: said })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], progressFields: progressFields(), why: tripped ?? said })
+    }
+    // F242 (review of wave 5): the dispatch watcher's settling compare is the authority (rule 9). The wave is
+    // graded only after it, bounded: the reading below then returns that settle's record, so the ledger row
+    // and the wave record carry what the settle found, not an earlier clean reading. A watcher that has not
+    // settled within the bound leaves an engine not confirmed dead: the latch.
+    let watcherSettled = true
+    if (integ?.settled && runId) {
+      const until = Date.now() + (integ.settleWaitMs ?? 300_000)
+      while (!integ.settled(runId) && Date.now() < until) await (integ.sleep ?? ((ms) => new Promise(r => setTimeout(r, ms))))(10_000)
+      watcherSettled = integ.settled(runId)
+    }
+    // F242, entry 4.B1: the reading. It trips on a change and never closes the baseline.
+    const tripped = await integrityReading(watcherSettled ? {} : { notDead: `the dispatch watcher had not compared run ${runId} ${Math.round((integ.settleWaitMs ?? 300_000) / 60_000)} min after the driver's exit` })
+    if (tripped) {
+      io.patchRow(missionId, { integrity })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], rowDurationS: row.durationS ?? null, progressFields: progressFields(), why: tripped })
+    }
+    // A latch set during the wave by anyone (another run's settle, the daemon, the driver's own teardown
+    // under it) is a fault: the wave is spent but not graded, and its record says why.
+    const latched = row.exitReason === 'integrity-latch' ? 'the mission driver stopped the mission under the integrity latch'
+      : (integ ? integ.refusal() : null)
+    if (latched) {
+      if (integrity) io.patchRow(missionId, { integrity })
+      return faultWave(spec, state, io, { wave, missionId, briefFile, base, dispatchedAt, files: [...waveFiles, ...roadmapFiles], rowDurationS: row.durationS ?? null, progressFields: progressFields(),
+        why: `integrity: ${latched} — the wave was not graded` })
     }
   }
 
@@ -732,7 +843,8 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // one that was never retried (a reading carries `retried` on mutationSweep).
   io.patchRow(missionId, { verified: grade.verified, ...(grade.sweep ? { mutationSweep: grade.sweep } : {}), sweepFault: grade.sweepFault ?? null, sweepWhy: grade.sweepWhy ?? null, sweepRetried: grade.sweepRetried ?? false,
     gate: { sha: grade.sha, gateSha256, terminator: grade.gate.terminator, fails: grade.gate.fails.map(f => f.line), passes: grade.gate.passes.length, priorRegressions: grade.gate.priorRegressions, suiteRegressions: grade.suite.regressions, harnessFault: grade.gate.harnessFault ?? grade.suite.harnessFault ?? null },
-    posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved } })
+    posiwid: { divergence: grade.posiwid.divergence, verdict: grade.posiwid.verdict, dominantObserved: grade.posiwid.dominantObserved },
+    ...(integrity ? { integrity } : {}) })
 
   // I2: the wave record goes on the record FIRST, before anything that reads
   // the record set. The export must include the wave it is the verdict for —
@@ -749,6 +861,8 @@ export async function runWave(spec, state, io = defaultIo, opts = {}) {
   // `spec.author` is already defaulted to 'human' by loadCampaignSpec; the
   // fallback here is for an adopted or hand-built spec that never went through it.
   const rec = { wave, missionId, briefFile, base, head: grade.sha, gateSha256, dispatchedAt, gradedAt: new Date().toISOString(), gate: { ...grade.gate, author: spec.author ?? 'human' }, suite: grade.suite, sweep: grade.sweep, sweepFault: grade.sweepFault ?? null, sweepWhy: grade.sweepWhy ?? null, sweepRetried: grade.sweepRetried ?? false, posiwid: grade.posiwid, verified: grade.verified,
+    // F242: what the early reading found (five keys, no path); null when no reading was taken.
+    integrity: integrity ?? null,
     // Phase 5 ruling 2: the scoreboard's per-wave inputs, kept on the record so
     // a board is recomputable without the ledger — the wave's GPU seconds and
     // the runner's own commitsBetween count (not toolStats.commits).
@@ -1194,6 +1308,28 @@ export async function adoptInFlight(spec, state, io = defaultIo) {
   if (!f) return { kind: 'none' }
   let missionId = null
   try { missionId = io.missionIdFrom(f.driverLog) } catch { missionId = null }
+  if (!missionId && io.pidAlive(f.pidFile)) return { kind: 'alive' }
+  // F242: the watcher's settling compare must have closed this run's baseline; the runner's reading never does.
+  const integ = io.integrity ?? (io === defaultIo ? defaultIo.integrity : null)
+  if (integ && f.runId) {
+    let c
+    try { c = await integ.early(f.runId, { campaignId: spec.id, wave: f.wave, cwd: spec.repo }) }
+    catch (e) {
+      const why = `the integrity check could not be completed (${e?.message ?? e})`
+      const t = await integ.halt({ by: 'campaign', run: f.runId, campaignId: spec.id, wave: f.wave, cwd: spec.repo, reason: 'manifest-error', detail: why })
+      c = { changed: true, settled: false, changeCount: 0, publicSummary: 'the integrity check could not be completed', latchPath: t?.latchPath ?? null }
+    }
+    const fields = { changed: Boolean(c.changed), changeCount: c.changeCount ?? 0, firstClass: c.firstClass ?? null, firstRoot: c.firstRoot ?? null, latchPath: c.latchPath ?? null }
+    if (c.changed) {
+      // A recorded settle that tripped was latched and paged when it happened, and the owner has cleared it since
+      // (main refuses under a latch before it reaches this function). A live reading that trips has just latched.
+      if (missionId) io.patchRow(missionId, { integrity: fields })
+      const rec = await faultWave(spec, state, io, { wave: f.wave, missionId, briefFile: f.briefFile, base: state.state.lastBase ?? spec.base, dispatchedAt: f.dispatchedAt, adopted: true,
+        why: `integrity: ${c.publicSummary}; the paths are in the integrity latch` })
+      return { kind: 'fault', record: rec }
+    }
+    if (!c.settled) return { kind: 'unsettled', runId: f.runId }
+  }
   if (missionId) {
     state.state.adoptedRow = missionId
     delete state.state.inFlight
@@ -1201,7 +1337,6 @@ export async function adoptInFlight(spec, state, io = defaultIo) {
     console.log(`[campaign] --adopt-inflight: wave ${f.wave} wrote ledger row ${missionId} — grading it`)
     return { kind: 'adopted', missionId }
   }
-  if (io.pidAlive(f.pidFile)) return { kind: 'alive' }
   const rec = await faultWave(spec, state, io, { wave: f.wave, missionId: null, briefFile: f.briefFile, base: state.state.lastBase ?? spec.base, dispatchedAt: f.dispatchedAt, adopted: true,
     why: `driver is gone and wrote no ledger row (see ${f.driverLog})` })
   return { kind: 'fault', record: rec }
@@ -1370,6 +1505,8 @@ function authorIoBase(author) {
     // campaign that gathered the evidence, never into the fresh one being
     // authored, so the seat's authority has to be read across all of them.
     applyProposalDecision, notify: defaultIo.notify,
+    // F242: read when this function is called, so a test's override applies.
+    integrity: defaultIo.integrity,
     seatAuthority: () => author.gateAuthorAuthorityAcrossCampaigns(join(cyncoHome(), 'campaigns')) })
 }
 
@@ -1490,6 +1627,13 @@ export async function main(argv, deps = {}) {
       console.error(`[campaign] --author ${named} was given alongside ${specPath} — name one campaign, not two`); return 2
     }
     if (!needGitBash()) return 2
+    // F242 (review of wave 5): nothing of an authoring mission is started or spent under the latch.
+    const authorWhy = defaultIo.integrity.refusal()
+    if (authorWhy) {
+      console.error(operatorRefusal('[campaign]', 'integrity', authorWhy, 'run'))
+      await flushUnsentPages(guardDir(), pageOwner).catch((e) => console.error(`[campaign] unsent pages not flushed: ${e?.message ?? e}`))
+      return 2
+    }
     const author = await loadAuthor()
     // `--note <file>` rides through: a supervisor refusal's CONTENT belongs in the
     // next resume's brief, and this is the only path that writes one.
@@ -1669,6 +1813,15 @@ export async function main(argv, deps = {}) {
   const lock = takeLock(state.dir)
   if (!lock.ok) { console.error(`[campaign] another runner holds ${lock.path} (pid ${lock.pid}) — one runner per campaign`); return 2 }
   process.on('exit', () => releaseLock(state.dir))
+  // F242: under the integrity latch, or with a models record that does not match, nothing is dispatched,
+  // adopted or calibrated (calibration runs the repository's tests). The report verbs returned above.
+  const integrityWhy = defaultIo.integrity.refusal()
+  if (integrityWhy) {
+    console.error(operatorRefusal('[campaign]', 'integrity', integrityWhy, 'dispatched'))
+    // A page the watcher could not send (dispatches run with ntfy stripped) goes out from here when this runner can send.
+    await flushUnsentPages(guardDir(), pageOwner).catch((e) => console.error(`[campaign] unsent pages not flushed: ${e?.message ?? e}`))
+    return 2
+  }
   // Where this campaign lives, said once: the evidence a run used the spec's
   // home and not CivKings' (`default` marks a key the spec left out).
   const said = (k, v) => `${k} ${v ?? 'none'}${home.defaulted.includes(k) ? ' (default)' : ''}`
@@ -1684,6 +1837,7 @@ export async function main(argv, deps = {}) {
     const r = await adoptInFlight(spec, state)
     if (r.kind === 'alive') { console.error(`[campaign] --adopt-inflight refused: the driver (pid file ${state.state.inFlight.pidFile}) is still alive and wrote no ledger row`); return 2 }
     if (r.kind === 'fault') { console.error(`[campaign] wave ${r.record.wave} recorded as a fault: ${r.record.decision.why}`); return 1 }
+    if (r.kind === 'unsettled') { console.error(`[campaign] --adopt-inflight refused: the integrity baseline of run ${r.runId} is still open, so nothing has compared the protected folders since that mission's engine stopped. When no mission engine is running: bun scripts/cynco-guard.mjs post ${r.runId} --by owner, then --adopt-inflight again`); return 2 }
   }
   if (flag('--waves') !== -1) {
     const n = Number(argv[flag('--waves') + 1])

@@ -357,6 +357,63 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.ends).toEqual([197, 198])
   })
 
+  // MEASURED, 2026-11-23, Windows 11 26200, Bun 1.3.13, PowerShell 5.1: the seal rests on Windows'
+  // no-read-up policy on process objects. The launcher lowers its own TOKEN after it was created, and
+  // its process object keeps the label it was created with, medium with no-read-up and no-write-up
+  // (S:AI(ML;;NWNR;;;ME)); so its low child is refused every right that reads its memory (error 5),
+  // and so is the starter. A MAXIMUM_ALLOWED open is granted SYNCHRONIZE, QUERY_LIMITED_INFORMATION
+  // and TERMINATE only (0x00101001): the child can end its launcher, which yields an unsealed status,
+  // never a forged "did not run". The command line carries no seal, the child's own environment
+  // holds none, its handle table holds no handle to either process, and the launcher's own block no
+  // longer holds it either once the launcher has taken it out (read by a medium process).
+  // ALSO MEASURED, and not a property of this code: the child inherits every inheritable handle of
+  // the chain it was started from. Started from Git Bash, it held four Process handles msys had made
+  // inheritable (SYNCHRONIZE | QUERY_LIMITED_INFORMATION | VM_READ | VM_OPERATION), and through the
+  // one to a live medium bash.exe it READ that process's environment block: a handle's granted access
+  // is not checked against the integrity label again. The seal stays out of reach only because no
+  // process that holds a seal (the starter, a launcher) is ever the target of an inheritable handle;
+  // the case pins that, and logs the rest.
+  it('the seal: a contained child cannot learn its launcher\'s seal by any route a command has (MEASURED)', (t) => {
+    const v = ok('sealUnreadable')
+    if (v.skipped) {
+      console.log(`[containmentLauncher] seal case skipped: ${v.skipped}`)
+      t.skip()
+      return
+    }
+    expect(v.error, JSON.stringify(v)).toBeUndefined()
+    expect(v.seal).toMatch(/^[0-9a-f]{32}$/)
+    expect(v.code, v.stderr).toBe(0)
+    expect(v.pidsAsExpected, JSON.stringify(v.routes.pids)).toBe(true)
+    const r = v.routes as Record<string, { hasSeal: boolean; hasMark: boolean; head: string }>
+    // The controls: where the child may read, the same reads find the marker its starter passed it.
+    expect(r.ownEnv.hasMark).toBe(true)
+    expect(r.ownPeb.head, 'the PEB read of its own block').toMatch(/^read: \d+ characters$/)
+    expect(r.ownPeb.hasMark).toBe(true)
+    for (const [name, route] of Object.entries(r)) expect(route.hasSeal, `route ${name}: ${route.head}`).toBe(false)
+    for (const name of ['launcherPeb', 'launcherPebLimited', 'enginePeb', 'launcherLabel']) expect(r[name].head, name).toBe('OpenProcess error 5')
+    expect(r.launcherOpen.head).toBe('VM_READ=OpenProcess error 5; QUERY_INFORMATION=OpenProcess error 5; QUERY_LIMITED=opened; DUP_HANDLE=OpenProcess error 5; READ_CONTROL=OpenProcess error 5')
+    // VM_READ, VM_WRITE, VM_OPERATION, QUERY_INFORMATION, DUP_HANDLE, READ_CONTROL, WRITE_DAC: none granted.
+    for (const name of ['launcherGranted', 'engineGranted']) {
+      expect(r[name].head, name).toMatch(/^0x[0-9A-F]{8}$/)
+      expect(parseInt(r[name].head, 16) & (0x10 | 0x20 | 0x8 | 0x400 | 0x40 | 0x20000 | 0x40000), `${name} ${r[name].head}`).toBe(0)
+    }
+    expect(v.handlesToLauncherOrEngine, JSON.stringify(v.handles)).toEqual([])
+    // Review of wave 5: through an inheritable handle to its medium Git Bash starter the low child read that
+    // shell's environment block. The launcher now makes every handle it inherited non-inheritable before it
+    // starts the child, so the child holds no inherited process handle at all, and reads no environment through one.
+    expect(v.handles.filter((h: string) => / inherit=1/.test(h)), JSON.stringify(v.handles)).toEqual([])
+    expect(v.handles.filter((h: string) => / env=read/.test(h)), JSON.stringify(v.handles)).toEqual([])
+    // Read by a medium process while the child waited: the launcher's token is low, its process
+    // object keeps the medium label it was created with; the child's object is labelled low.
+    expect(v.medium.launcherToken, JSON.stringify(v.medium)).toBe('S-1-16-4096')
+    expect(v.medium.launcherLabel).toMatch(/\(ML;;NWNR;;;ME\)/)
+    expect(v.medium.childToken).toBe('S-1-16-4096')
+    expect(v.medium.childLabel).toMatch(/\(ML;;NWNR;;;LW\)/)
+    expect(v.medium.launcherEnvRead, 'the medium control reads the launcher\'s block').toBe(true)
+    expect(v.medium.launcherEnvHasSeal).toBe(false)
+    console.log(`[containmentLauncher] seal: launcher granted ${r.launcherGranted.head} to its child; label ${v.medium.launcherLabel}; startInfo: ${r.startInfo.head}; handles ${JSON.stringify(v.handles)}`)
+  })
+
   // S2c, entry 1.B2 (06 entry A7): the authoring check inside an authoring mission's containment.
   it('authoring check: a contained child writes the BASE archive (an extra root) and runs its tests there; release leaves no Low label', () => {
     const v = ok('authoringCheck')

@@ -26,6 +26,7 @@ import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
 import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../engine/missionRule.js'
 import { harnessGitEnv } from '../engine/harnessGit.js'
+import { frozenWriteRefusal } from '../engine/integrity.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { lintGate } from './cynco-gate-lint.mjs'
@@ -38,6 +39,10 @@ import { CampaignState } from './cynco-campaign-state.mjs'
 import { GATE_AUTHOR_MIN_LINES, GATE_AUTHOR_HELD_FLOOR } from './cynco-signal-validation.mjs'
 import { readCampaigns } from './cynco-triples.mjs'
 import { seatAuthority } from './cynco-proposals.mjs'
+
+/** The twin of `dispatchLeftNothingRunning` in scripts/cynco-campaign.mjs (this module does not import the
+ *  runner): dispatch-mission.sh exits non-zero only with its trap armed or before it started anything. */
+const DISPATCH_LEFT_NOTHING_RUNNING = /^dispatch failed \(exit \d+\)/
 
 // 4 h and 1200 iterations: the authoring mission writes four files and runs a
 // check that costs two gate runs, so it is sized well below a wave's 8 h/2000.
@@ -1092,6 +1097,14 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   if (next && next.id !== id) {
     return refusal(`roadmap line ${next.id} is still "${next.status}" — author the roadmap in order, ${next.id} before ${id}`)
   }
+  // F242 (review of wave 5): under the integrity latch, or with a models record that does not match,
+  // nothing is started or spent: no staging, no roadmap change, no re-run of the staged check. The same
+  // question is asked again before the brief is written.
+  const integrityFirst = io.integrity ? io.integrity.refusal() : null
+  if (integrityFirst) {
+    console.error(`[author] ${id}: REFUSED: integrity: ${integrityFirst} — nothing was started`)
+    return refusal(`integrity: ${integrityFirst} — nothing was started`)
+  }
   const s = state.state
   s.authoring = s.authoring ?? {}
   const prevId = previousLineId(roadmap, id)
@@ -1172,6 +1185,14 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
       check, sealed: null, dispatched: false }
   }
 
+  // F242: nothing is written or dispatched under the integrity latch or with a models record that does not match.
+  const integrityWhy = io.integrity ? io.integrity.refusal() : null
+  if (integrityWhy) {
+    console.error(`[author] ${id}: REFUSED: integrity: ${integrityWhy} — nothing was dispatched`)
+    return { ok: false, why: `integrity: ${integrityWhy} — nothing was dispatched`, proposal: null, missionId: prev.missionId ?? null, verified: prev.verified ?? null,
+      check: null, sealed: null, dispatched: false }
+  }
+
   const text = authoringBrief({ line, id, prevId, baseDir, stagingDir, exemplar: exemplarFor({ prevId, io }),
     previousCheck: livePreviousCheck({ stagingDir, lastCheck: resumeCheck, io }), restoreNote,
     packageMap: readPackageMap({ baseDir, io }), timeoutS, supervisorNote })
@@ -1225,8 +1246,11 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   state.save()
 
   let missionId = null, verified = null, fault = null, driverExited = false
+  // F242: the dispatch's run id (it keys the integrity baseline), and why its engine is not known to be dead.
+  let runId = null, notDead = null
   try {
-    await io.dispatch({ briefFile, marker: `gate ${id} authored`, cwd: stagingDir, timeoutS, checkCmd: checkCommand(stagingDir, baseDir), env })
+    const dispatched = await io.dispatch({ briefFile, marker: `gate ${id} authored`, cwd: stagingDir, timeoutS, checkCmd: checkCommand(stagingDir, baseDir), env })
+    runId = dispatched?.runId ?? null
     const waited = await io.waitForDriver({ pidFile, driverLog, timeoutMs: (timeoutS + 3600) * 1000 })
     missionId = waited.exited ? (waited.missionId ?? io.missionIdFrom?.(driverLog) ?? null) : null
     driverExited = Boolean(waited.exited)
@@ -1242,10 +1266,20 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
       fault = waited.exited ? 'driver exited without a ledger row — the triple was graded from disk'
         : waited.pidUnseen ? `driver pid ${waited.pidUnseen} was already invisible on the first probe — the PID handoff is broken and the mission may still be running unwatched (see ${driverLog})`
           : 'driver did not exit within the wall clock'
+      if (!waited.exited) notDead = fault
     }
   } catch (e) {
     fault = `dispatch or wait failed: ${e?.message ?? e}`
     console.error(`[author] ${id}: ${e?.stack ?? e}`)
+    if (!DISPATCH_LEFT_NOTHING_RUNNING.test(String(e?.message ?? ''))) notDead = fault
+  }
+  // F242, rule 8: a mission engine that may still be running is the integrity latch, as in a wave (runWave).
+  if (notDead && io.integrity?.halt) {
+    try {
+      await io.integrity.halt({ by: 'gate-author', run: runId ?? `${id}-author`, reason: 'engine-not-confirmed-dead', detail: notDead, cwd: stagingDir })
+    } catch (e) {
+      console.error(`[author] ${id}: the integrity latch step failed: ${e?.message ?? e}`)
+    }
   }
 
   // Whenever the driver came back at all, the triple on disk gets graded — a
@@ -1496,6 +1530,9 @@ export async function sealGate({ id, state, roadmap, io }) {
   // above already proved the gate is identical) copies in place instead: the
   // directory holds a suite baseline the campaign measured, and a rename would
   // take it with it.
+  // Sealing writes into the held-out folder, which is FROZEN while any run is open (F242, entry 4.M5).
+  const frozenWhy = (io.frozenWriteRefusal ?? frozenWriteRefusal)()
+  if (frozenWhy) return { ok: false, problems: [frozenWhy], check }
   const sealedAt = io.now()
   const tmpDir = `${homeOf(io)}/heldout/${HELDOUT_FAMILY}/${id}.sealing-${sealedAt.replace(/[^0-9]/g, '')}`
   io.mkdir(tmpDir)
@@ -1621,6 +1658,7 @@ export function defaultAuthorIo(helpers = {}) {
     // a seal nobody decided is a seal nobody can audit.
     applyProposalDecision: helpers.applyProposalDecision ?? (() => { throw new Error('io.applyProposalDecision was not supplied by the runner — run --author through scripts/cynco-campaign.mjs') }),
     notify: helpers.notify ?? null,
+    integrity: helpers.integrity ?? null,
     // What the SEAT has earned, read across every campaign — see
     // `gateAuthorAuthorityAcrossCampaigns`. A seam because the campaigns dir is
     // a real directory and the auto-approve tests must point it somewhere else.

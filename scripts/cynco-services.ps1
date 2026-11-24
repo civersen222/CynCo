@@ -4,10 +4,11 @@
 # and to start, stop or register them without hunting through Task Scheduler.
 #
 #   scripts\cynco-services.ps1                 status (default)
-#   scripts\cynco-services.ps1 start           start every stopped service
+#   scripts\cynco-services.ps1 start           start every stopped service (under the integrity latch the daemon is not started: bun scripts\cynco-guard.mjs status)
+#   scripts\cynco-services.ps1 start -WhatIf   say what start would do, and start nothing
 #   scripts\cynco-services.ps1 stop            stop every running service
 #   scripts\cynco-services.ps1 start engine    start/stop one by its short name
-#   scripts\cynco-services.ps1 register engine create the logon task when it is missing (engine, embed, watch;
+#   scripts\cynco-services.ps1 register engine create the logon task when it is missing (engine, embed, daemon, watch;
 #                                              the dynasty tasks are owned by fantasyman\dynasty\ops)
 #
 # Status reads the task's own state (Running/Ready), the process behind it when
@@ -17,24 +18,53 @@ param(
   [string] $Only = '',
   # A process never to match: the desk engine passes its own pid, since it is a `bun engine\main.ts` too
   # (engine/power/siblingEngine.ts) and must not read itself as the phone engine or stop itself.
-  [int] $ExcludePid = 0
+  [int] $ExcludePid = 0,
+  # Exercise the start branch against the task list without starting a task (used by the test of the
+  # integrity latch refusal). start only.
+  [switch] $WhatIf
 )
 
 $repo = 'C:\Users\civer\localcode'
 $services = @(
   @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
   @{ Name = 'embed';    Task = 'CynCo embed server';        Match = 'llama-server.*--embeddings'; Log = "$env:USERPROFILE\.cynco\embed-server.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-embed-server.cmd'); Description = 'CynCo embedding server: llama-server --embeddings on 127.0.0.1:9165 (nomic-embed-text, CPU) for every engine''s project and code index' } },
-  @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log" },
+  @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-daemon.cmd'); Description = 'CynCo liveness daemon: triggers, one-shots, phone commands, and the hourly page for an oversized service log' } },
   @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Goodbye = 'engine\power\reporter\main.ts'; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
   @{ Name = 'ntfy';     Remote = '100.110.117.10'; Port = 8090; Note = 'on the doorman (docker compose, /opt/doorman/ntfy)' },
   @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Log = '' }
 )
 if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, embed, daemon, watch, ntfy, listener)"; exit 2 } }
 
+if ($WhatIf -and $Action -ne 'start') { Write-Error '-WhatIf applies to start only'; exit 2 }
+# F242: under the integrity latch (or with no usable guard folder) the daemon is not started. Every
+# other service starts, with one warning line: the dashboard must be reachable exactly then.
+$guardRefusal = $null
+$daemonRefused = $false
+# The plain status shows the integrity latch too (review of wave 5): with the daemon down, nothing else
+# on this PC says that a latch stands.
+if ($Action -eq 'start' -or $Action -eq 'status') {
+  $guardLine = ''; $guardExit = 3
+  try {
+    # Collect first, read the exit code afterwards: after a pipe that closes early $LASTEXITCODE is -1.
+    $out = & bun (Join-Path $PSScriptRoot 'cynco-guard.mjs') status --quiet 2>&1; $guardExit = $LASTEXITCODE
+    $guardLine = ($out | Select-Object -First 1)
+  } catch { $guardLine = "the guard check did not run ($($_.Exception.Message))" }
+  if ($Action -eq 'status') {
+    $shown = if ($guardLine) { "$guardLine" } else { "the guard check did not answer (exit $guardExit)" }
+    Write-Output ("{0,-9} {1}" -f 'integrity', $shown)
+  } elseif ($guardExit -ne 0) {
+    $guardRefusal = "$guardLine"
+    if (-not $guardRefusal) { $guardRefusal = "the guard check did not answer (exit $guardExit)" }
+    Write-Output "warning: $guardRefusal"
+  }
+}
+
 $procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $ExcludePid }
 
 foreach ($s in $services) {
   if ($s.Remote) {
+    # -WhatIf touches nothing, the network included.
+    if ($WhatIf) { Write-Output "$($s.Name): runs on the doorman; not asked (-WhatIf)"; continue }
     # A service that lives on the doorman: no task here, only reachability over the tailnet.
     $up = $false
     try { $c = New-Object Net.Sockets.TcpClient; $up = $c.ConnectAsync($s.Remote, $s.Port).Wait(1500) -and $c.Connected; $c.Close() } catch {}
@@ -55,8 +85,10 @@ foreach ($s in $services) {
       Write-Output "$($s.Name): registered '$($s.Task)' (at logon)"
     }
     'start' {
+      if ($guardRefusal -and $s.Name -eq 'daemon') { Write-Output "daemon: start REFUSED: integrity: $guardRefusal"; $daemonRefused = $true; break }
       if ($proc) { Write-Output "$($s.Name): already running (pid $($proc.ProcessId))"; break }
       if (-not $task) { Write-Output "$($s.Name): task '$($s.Task)' not registered" + $(if ($s.Register) { " - run: cynco-services.ps1 register $($s.Name)" } else { '' }); break }
+      if ($WhatIf) { Write-Output "$($s.Name): would start (-WhatIf)"; break }
       Start-ScheduledTask -TaskName $s.Task
       Write-Output "$($s.Name): started"
     }
@@ -82,3 +114,4 @@ foreach ($s in $services) {
     }
   }
 }
+if ($daemonRefused) { exit 3 }

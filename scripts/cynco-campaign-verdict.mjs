@@ -244,14 +244,14 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   return lines.join('\n') + '\n'
 }
 
-export async function notify(message, env = process.env, fetchImpl = globalThis.fetch) {
+export async function notify(message, env = process.env, fetchImpl = globalThis.fetch, opts = {}) {
   const base = env.CYNCO_NTFY_URL
   if (!base) return false
   try {
     const r = await fetchImpl(`${base.replace(/\/$/, '')}/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(env.CYNCO_NTFY_TOKEN ? { Authorization: `Bearer ${env.CYNCO_NTFY_TOKEN}` } : {}) },
-      body: JSON.stringify({ topic: env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts', title: 'CynCo campaign', message, priority: 3 }),
+      body: JSON.stringify({ topic: env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts', title: opts.title ?? 'CynCo campaign', message, priority: opts.priority ?? 3 }),
       signal: AbortSignal.timeout(10000),
     })
     return Boolean(r.ok)

@@ -222,3 +222,84 @@ describe('cap proposals and effective invariants', () => {
     expect(capProposal(null, spec, { invariantOverrides: {}, proposals: [] })).toBeNull()
   })
 })
+
+// F242, slice S7: the ideation one-shot's integrity baseline pair (04 section 4.6).
+describe('runIdeation integrity pair', () => {
+  const spec = { id: 'c8', repo: process.cwd(), work: [] }
+  const okTask = async (repoRoot, taskPath) => {
+    const task = JSON.parse(readFileSync(taskPath, 'utf8'))
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(task.outcomePath, JSON.stringify({ ok: true, summary: 's', recommendations: [{ id: 'r', actionType: 'hypothesis', summary: 'C8.1a', detail: 'x | firstEdit: a.py' }] }))
+    return 0
+  }
+
+  it('a baseline that cannot be taken: REFUSED: integrity, no task run, the containment released once', async () => {
+    const seams = containSeams()
+    const ran = []
+    const r = await runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: async (...a) => { ran.push(a); return 0 }, contain: seams.contain, release: seams.release },
+      integrity: { before: () => { throw new Error('the guard folder G:/x does not exist') }, after: async () => null } })
+    expect(r.error).toBe('REFUSED: integrity: no integrity baseline could be taken (the guard folder G:/x does not exist)')
+    expect(r.ideation).toBeNull()
+    expect(ran).toEqual([])
+    expect(seams.calls.release).toHaveLength(1)
+  })
+
+  it('before and after get the containment run id, after runs before the release, and a change is INTEGRITY:', async () => {
+    const seams = containSeams()
+    const order = []
+    const ids = []
+    const r = await runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: okTask, contain: seams.contain, release: (c) => { order.push('release'); return seams.release(c) } },
+      integrity: {
+        before: (runId, cwd) => { order.push('before'); ids.push(runId); expect(cwd).toBe(spec.repo) },
+        after: async (runId, notDead) => { order.push('after'); ids.push(runId); expect(notDead).toBeUndefined(); return '1 change(s) in protected folders (first: PRESENCE)' },
+      } })
+    expect(r.error).toBe('INTEGRITY: 1 change(s) in protected folders (first: PRESENCE)')
+    expect(r.ideation).toBeNull()
+    expect(ids).toEqual([seams.ctx.runId, seams.ctx.runId])
+    expect(order).toEqual(['before', 'after', 'release'])
+  })
+
+  it('a child that did not die after its kill: after gets the not-dead sentence, and exitCode is null', async () => {
+    const seams = containSeams()
+    const seen = []
+    const r = await runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: async () => 'not-dead', contain: seams.contain, release: seams.release },
+      integrity: { before: () => {}, after: async (runId, notDead) => { seen.push(notDead); return null } } })
+    expect(seen).toEqual(['the ideation engine did not exit within 10 s of being killed'])
+    expect(r.exitCode).toBeNull()
+  })
+
+  // Review of wave 5: a throw after the baseline left it open with nothing to compare it.
+  it('a runner that throws after the engine started: after is told it was not seen to end, before the release; the throw reaches the caller', async () => {
+    const seams = containSeams()
+    const order = []
+    const seen = []
+    await expect(runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: async () => { throw new Error('the runner broke') }, contain: seams.contain, release: (c) => { order.push('release'); return seams.release(c) } },
+      integrity: { before: () => {}, after: async (runId, notDead) => { order.push('after'); seen.push(notDead); return null } } })).rejects.toThrow('the runner broke')
+    expect(seen).toEqual(["the ideation engine's end was not seen (its runner threw)"])
+    expect(order).toEqual(['after', 'release'])
+  })
+
+  it('under the latch nothing is made: no sandbox, no baseline, REFUSED: integrity', async () => {
+    const seams = containSeams()
+    const r = await runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: async () => 0, contain: seams.contain, release: seams.release },
+      integrity: { refusal: () => 'the integrity latch is present at G:/guard/HALT.json (x)', before: () => { throw new Error('must not be asked') }, after: async () => null } })
+    expect(r.error).toBe('REFUSED: integrity: the integrity latch is present at G:/guard/HALT.json (x)')
+    expect(seams.calls.contain ?? []).toHaveLength(0)
+    expect(seams.calls.release).toHaveLength(0)
+  })
+
+  it('a clean pair leaves the result as it was', async () => {
+    const seams = containSeams()
+    const r = await runIdeation({ spec, fails: [], prior: null, briefText: 'B', stateDir: tempState(),
+      io: { runTask: okTask, contain: seams.contain, release: seams.release },
+      integrity: { before: () => {}, after: async () => null } })
+    expect(r.error).toBeUndefined()
+    expect(r.exitCode).toBe(0)
+    expect(r.ideation.order).toEqual(['C8.1a'])
+  })
+})

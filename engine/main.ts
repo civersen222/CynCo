@@ -116,6 +116,8 @@ try {
 // and throw `Task file missing required field: triggerId`. Validate before the
 // model, so a typo fails in milliseconds instead of after a full load.
 let oneShotTask: import('./daemon/types.js').TaskFileInput | null = null
+// F242: the in-run tripwire aborts the active turn through this, once the loop below exists.
+let abortActiveTurn: ((why: string) => void) | null = null
 {
   const idx = process.argv.indexOf('--run-task')
   if (idx !== -1) {
@@ -166,7 +168,12 @@ import { bootstrapProvider } from './bootstrapProvider.js'
     }
     // step 1: the switch is never honoured for a run
     if (c.containmentSwitch().raw !== null) refuseBoot('containment', c.SWITCH_IN_UNATTENDED)
-    // step 2 (S7): the integrity latch
+    {
+      // step 2 (F242): under the integrity latch, or with no usable guard folder, no unattended engine boots.
+      const { haltRefusal } = await import('./integrity.js')
+      const latch = haltRefusal()
+      if (latch) refuseBoot('integrity', latch)
+    }
     // step 3: adopt
     if (oneShotTask && !oneShotTask.cwd) {
       refuseBoot('containment', `this task names no cwd, so it would work in the engine's own checkout ${c.engineCheckout()}; give the mission a cwd`)
@@ -196,7 +203,38 @@ import { bootstrapProvider } from './bootstrapProvider.js'
         if (why) refuseBoot('audit', why)
       }
     }
-    // step 6 (S7): models record, tripwire
+    {
+      // step 6 (F242): the models record, then the in-run tripwire. The baseline was taken by the starter.
+      const { checkModelsRecord, startPresenceTripwire, tripHalt } = await import('./integrity.js')
+      const { containmentFault } = await import('./audit/toolAudit.js')
+      const { NtfyChannel, ntfyOptionsFromEnv } = await import('./daemon/ntfyChannel.js')
+      const ctx = c.runContainment()
+      if (!ctx) refuseBoot('containment', c.NO_CONTAINMENT)
+      else {
+        const modelsWhy = checkModelsRecord({ root: ctx.folders.models, guard: ctx.folders.guard })
+        if (modelsWhy) refuseBoot('integrity', modelsWhy)
+        // A mission engine normally has no ntfy settings (the starters strip them); the page is then kept in
+        // <guard>/unsent and sent by the next process that has a sender.
+        const ntfy = ntfyOptionsFromEnv(process.env)
+        const page = ntfy
+          ? (p: { title: string; message: string; priority: number }) => new NtfyChannel(ntfy).publish(p, { queueOnFailure: false })
+          : async () => false
+        const tripwire = startPresenceTripwire({
+          ctx,
+          onLoss: (loss) => {
+            console.error(`[integrity] ${loss.publicSummary}: this run is stopped`)
+            // The latch is on disk when this call returns (tripHalt's first two steps are synchronous).
+            if (loss.kind === 'presence') {
+              void tripHalt({ by: 'engine-tripwire', run: ctx.runId, reason: 'presence-lost', compare: loss.compare ?? undefined, detail: loss.summary, guard: ctx.folders.guard, cwd: ctx.missionCwd, page })
+            }
+            abortActiveTurn?.('a protected folder was lost during this run (integrity)')
+            containmentFault('integrity', loss.publicSummary)
+          },
+        })
+        if (!tripwire.ok) refuseBoot('integrity', tripwire.reason)
+        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every 60 s and before a tool call (at most once in 10 s)`)
+      }
+    }
   }
 }
 // Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
@@ -532,6 +570,8 @@ const loop = new ConversationLoop({
   } : null,
   images: imageService,
 })
+// F242: the in-run tripwire aborts the turn that is running when a protected folder is lost.
+abortActiveTurn = (why) => loop.abort(why)
 
 // Projects mode deps: the embedding client, model name and emit sink every
 // /api/projects route (Task 8) and the `project.open` command below share.

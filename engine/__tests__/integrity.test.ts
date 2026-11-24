@@ -9,7 +9,8 @@ import {
   appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync,
   symlinkSync, unlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
+import { tmpdir, userInfo } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as I from '../integrity.js'
@@ -18,7 +19,7 @@ import { canSymlinkFiles } from './imagegen/mockComfy.js'
 
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 }) })
-afterEach(() => I.stopPresenceTripwire())
+afterEach(() => I.resetPresenceTripwireForTests())
 
 const tmp = (label: string) => { const d = mkdtempSync(join(tmpdir(), `cynco-integrity-${label}-`)); dirs.push(d); return d }
 /** Every file starts at a whole second, so a test can put a time back exactly. */
@@ -137,7 +138,21 @@ describe('FROZEN: what changed means', () => {
     expect(kinds(diffOf(roots, () => rmSync(f, { recursive: true })))).toEqual([':root-gone'])
   })
 
-  it.skipIf(!canSymlinkFiles())('(4) a link is recorded as a link and not followed; retargeting it trips', () => {
+  it('(4) a directory junction is recorded as a link and not followed; retargeting it trips (no privilege needed)', () => {
+    const t = fresh()
+    const other = join(t.f, 'sub2')
+    put(join(other, 'c.txt'))
+    symlinkSync(join(t.f, 'sub'), join(t.f, 'jn'), 'junction')
+    const m = snap(t.roots)
+    const entry = m.frozen[0]!.entries.find(e => e[0] === 'jn')!
+    expect(entry[1]).toBe('l')
+    expect(resolve(entry[4]!)).toBe(resolve(t.f, 'sub'))
+    expect(m.frozen[0]!.entries.some(e => e[0].startsWith('jn/'))).toBe(false)
+    const d = diffOf(t.roots, () => { unlinkSync(join(t.f, 'jn')); symlinkSync(other, join(t.f, 'jn'), 'junction') })
+    expect(d.changes[0]).toMatchObject({ path: 'jn', kind: 'modified', detail: 'link target' })
+  })
+
+  it.skipIf(!canSymlinkFiles())('(4b) a file link is recorded as a link and not followed; retargeting it trips', () => {
     const t = fresh()
     symlinkSync(join(t.f, 'a.txt'), join(t.f, 'link'))
     const m = snap(t.roots)
@@ -240,9 +255,12 @@ describe('protectedRoots', () => {
     const models = join(base, 'models')
     const r = I.protectedRoots({ home, cynco: other, models, volumes: [{ root: join(base, 'D'), kind: 'removable' }, { root: join(base, 'N'), kind: 'network' }] })
     const frozen = r.frozen.map(f => f.path)
-    for (const p of [join(home, '.cynco', 'profiles'), join(home, '.cynco', 'heldout'), join(other, 'profiles'), join(other, 'heldout'), models, join(home, '.ssh'), join(home, '.ollama', 'models')]) {
+    for (const p of [join(home, '.cynco', 'profiles'), join(home, '.cynco', 'heldout'), join(other, 'profiles'), join(other, 'heldout'), models, join(home, '.ssh')]) {
       expect(frozen).toContain(resolve(p))
     }
+    // Review of wave 5: the local model store is loss-only and counted (a pull outside any run must not latch).
+    expect(frozen).not.toContain(resolve(home, '.ollama', 'models'))
+    expect(r.presence.find(p => p.path === resolve(home, '.ollama', 'models'))).toMatchObject({ counts: true, files: false, volume: false })
     expect(r.frozen.find(f => f.path === resolve(home, '.ssh'))!.mutable).toEqual(['known_hosts', 'known_hosts.old'])
     expect(r.presence.find(p => p.path === resolve(home))).toMatchObject({ dotOnly: true, files: true, counts: true })
     // The desk tools' folder: the one dot-folder of the home watched by sub-folder name alone.
@@ -250,7 +268,7 @@ describe('protectedRoots', () => {
     expect(desk).toHaveLength(1)
     expect(desk[0]).toMatchObject({ dotOnly: false, files: false, counts: false, volume: false })
     expect(r.presence.find(p => p.path === resolve(other, 'authoring'))).toMatchObject({ counts: true })
-    expect(r.presence.find(p => p.path === resolve(base, 'D'))).toMatchObject({ volume: true, network: false, files: true })
+    expect(r.presence.find(p => p.path === resolve(base, 'D'))).toMatchObject({ volume: true, network: false, files: true, counts: true })
     expect(r.presence.find(p => p.path === resolve(base, 'N'))).toMatchObject({ volume: true, network: true })
     const same = I.protectedRoots({ home, cynco: join(home, '.cynco'), models, volumes: [] })
     const paths = [...same.frozen.map(f => f.path), ...same.presence.map(p => p.path)]
@@ -382,7 +400,7 @@ describe('the early reading and the settling compare (entry 4.B1)', () => {
     put(join(w.state, 'heldout', 'g', 'planted.py'))
     const s = await I.settleRun(id, opts(w, pg.fn))
     expect(s.changed).toBe(true)
-    expect(s.summary).toMatch(/^1 change\(s\) in protected folders; first: FROZEN .*heldout\/g\/planted\.py added$/)
+    expect(s.summary).toMatch(/^1 change\(s\) in protected folders; first: FROZEN .*heldout\/g\/planted\.py added\. If you changed it yourself while a run was open/)
     expect(s.publicSummary).toBe('1 change(s) in protected folders (first: FROZEN)')
     expect(existsSync(join(w.guard, I.LATCH_FILE))).toBe(true)
     expect(pg.calls).toHaveLength(1)
@@ -419,6 +437,24 @@ describe('the early reading and the settling compare (entry 4.B1)', () => {
     expect(kinds(s2)).toEqual(['p.yaml:removed'])
   })
 
+  it('(20b) a path that differs on both walks counts even when its kind of change differs between them', async () => {
+    // FROZEN: removed on the first walk, a folder of that name on the second (kind-changed).
+    const w = world()
+    const id = baseline(w)
+    const gate = join(w.state, 'heldout', 'g', 'gate.py')
+    unlinkSync(gate)
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => mkdirSync(gate) }))
+    expect(s.changed).toBe(true)
+    expect(kinds(s)).toEqual(['g/gate.py:kind-changed'])
+
+    // PRESENCE: gone on the first walk, back empty on the second (emptied, 2 -> 0).
+    const w2 = world()
+    const id2 = baseline(w2)
+    rmSync(join(w2.home, '.config'), { recursive: true })
+    const s2 = await I.settleRun(id2, opts(w2, pager().fn, { sleep: () => mkdirSync(join(w2.home, '.config')) }))
+    expect(s2.changes.map(c => `${c.path}:${c.kind}:${c.detail}`)).toEqual(['.config:emptied:2 -> 0'])
+  })
+
   it('(21) no baseline and no record latches manifest-error; not-confirmed-dead latches on a clean tree and keeps the baseline', async () => {
     const w = world()
     const s = await I.settleRun(rid(), opts(w, pager().fn))
@@ -435,16 +471,42 @@ describe('the early reading and the settling compare (entry 4.B1)', () => {
     expect(checkLines(w2).map(l => l.kind)).toEqual(['reading'])
   })
 
-  it('(22) a settle whose rename meets ENOENT returns the recorded line', async () => {
+  it('(22) a settle whose rename meets ENOENT: a clean walk returns the recorded line; a change this walk saw is returned and latches', async () => {
+    const otherSettler = (w: World, id: string, changed: boolean) => () => {
+      renameSync(before(w, id), join(w.base, `moved-${id}.json`))
+      appendFileSync(join(w.guard, 'checks.jsonl'), JSON.stringify({ run: id, kind: 'settle', baselineTakenAt: null, at: 'earlier', by: 'the other settler', changed, changeCount: changed ? 1 : 0, publicSummary: changed ? '1 change(s) in protected folders (first: FROZEN)' : 'no change in protected folders', ms: 1 }) + '\n')
+    }
+    // Clean walk: the other caller's record is the answer. The sleep only runs when a walk differs,
+    // so the first walk is made to differ and the confirming walk to agree with the baseline.
     const w = world()
     const id = baseline(w)
-    put(join(w.state, 'profiles', 'new.yaml'))
-    const other = () => {
-      renameSync(before(w, id), join(w.base, 'moved.json'))
-      appendFileSync(join(w.guard, 'checks.jsonl'), JSON.stringify({ run: id, kind: 'settle', baselineTakenAt: null, at: 'earlier', by: 'the other settler', changed: true, changeCount: 1, publicSummary: '1 change(s) in protected folders (first: FROZEN)', ms: 1 }) + '\n')
-    }
-    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: other }))
-    expect(s).toMatchObject({ from: 'recorded', by: 'the other settler', settled: true })
+    const file = join(w.state, 'profiles', 'p.yaml')
+    unlinkSync(file)
+    const move = otherSettler(w, id, false)
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => { put(file, 'p'); move() } }))
+    expect(s).toMatchObject({ from: 'recorded', by: 'the other settler', settled: true, changed: false })
+
+    // A change on both walks, while the other caller recorded clean: before the fix this returned
+    // the clean record, and `cynco-guard post` printed "integrity unchanged" with HALT.json on disk.
+    const w2 = world()
+    const id2 = baseline(w2)
+    put(join(w2.state, 'profiles', 'new.yaml'))
+    const pg = pager()
+    const s2 = await I.settleRun(id2, opts(w2, pg.fn, { sleep: otherSettler(w2, id2, false) }))
+    expect(s2).toMatchObject({ from: 'live', changed: true, settled: true, latchPath: join(w2.guard, I.LATCH_FILE) })
+    expect(s2.notes).toContain('another caller closed the baseline first; this walk found a change')
+    expect(existsSync(join(w2.guard, I.LATCH_FILE))).toBe(true)
+    expect(pg.calls).toHaveLength(1)
+  })
+
+  it('(22b) a close that fails with anything but ENOENT leaves the baseline open and says settled: false', async () => {
+    const w = world()
+    const id = baseline(w)
+    mkdirSync(join(w.guard, 'manifests', 'last-clean.json', 'in-the-way'), { recursive: true })
+    const s = await I.settleRun(id, opts(w, pager().fn))
+    expect(s).toMatchObject({ changed: false, settled: false })
+    expect(s.notes.some(n => n.startsWith('the baseline could not be closed ('))).toBe(true)
+    expect(existsSync(before(w, id))).toBe(true)
   })
 })
 
@@ -563,10 +625,11 @@ describe('the integrity latch', () => {
 
   it('(28) clearHalt archives the latch into cleared/ and logs it; with no latch it clears nothing', async () => {
     const w = world()
-    expect(I.clearHalt(w.guard, { by: 'test' })).toEqual({ cleared: false, latch: null, archivedTo: null })
+    const atDesk = { terminal: { isTTY: true }, typed: 'CLEAR' }
+    expect(I.clearHalt(w.guard, { by: 'test', ...atDesk })).toEqual({ cleared: false, latch: null, archivedTo: null })
     const run = rid()
     await I.tripHalt({ by: 'test', run, reason: 'integrity-change', guard: w.guard, page: pager().fn })
-    const r = I.clearHalt(w.guard, { by: 'owner', now: () => new Date('2026-11-23T01:02:03Z') })
+    const r = I.clearHalt(w.guard, { by: 'owner', now: () => new Date('2026-11-23T01:02:03Z'), ...atDesk })
     expect(r.cleared).toBe(true)
     expect(r.latch!.run).toBe(run)
     expect(r.archivedTo).toBe(join(w.guard, 'cleared', 'HALT-20261123T010203.json'))
@@ -687,7 +750,7 @@ describe('the presence tripwire (directive 17)', () => {
 
   it('(34) looks at most once in the gap; a removed dot-folder is a loss, reported once and sticky', () => {
     const t = wired()
-    const r = I.startPresenceTripwire({ ctx: t.ctx, onLoss: t.onLoss, timer: false, now: () => 0 })
+    const r = I.startPresenceTripwire({ ctx: t.ctx, onLoss: t.onLoss, timer: false, now: () => 0, minGapMs: 10_000 })
     expect(r).toMatchObject({ ok: true, roots: 1 })
     expect((r as { folders: number }).folders).toBe(2)
     expect(I.presenceTripwireCheck(1_000)).toBeNull()
@@ -732,5 +795,536 @@ describe('the presence tripwire (directive 17)', () => {
 
   it('(38) not started: the check is null', () => {
     expect(I.presenceTripwireCheck()).toBeNull()
+  })
+})
+
+// ─── The review of 2026-11-23 (w4/integrity-findings.json): one case per finding ────────────────
+
+const icacls = (...a: string[]) => spawnSync('icacls', a, { encoding: 'utf-8', windowsHide: true })
+/** A pid no process has: `process.kill(pid, 0)` answers ESRCH. */
+function deadPid(): number {
+  for (let p = 4_194_000; p < 4_194_300; p++) {
+    try { process.kill(p, 0) } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ESRCH') return p }
+  }
+  throw new Error('no unused pid found')
+}
+const driveOf = (p: string) => `${resolve(p).slice(0, 2).toUpperCase()}\\`
+
+describe('review: a FROZEN root that is a link (finding 1, decision a)', () => {
+  it('(39) a FROZEN root that is a junction refuses the baseline; a root replaced by one after the baseline latches', async () => {
+    const w = world()
+    const real = join(w.base, 'real-profiles')
+    put(join(real, 'p.yaml'))
+    rmSync(join(w.state, 'profiles'), { recursive: true })
+    symlinkSync(real, join(w.state, 'profiles'), 'junction')
+    let err: unknown = null
+    try { baseline(w) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(I.ManifestError)
+    expect((err as Error).message).toMatch(/^the frozen folder .*profiles is a link to .*real-profiles.*; a protected folder must be a real folder$/)
+
+    const w2 = world()
+    const id = baseline(w2)
+    const moved = join(w2.base, 'moved-heldout')
+    renameSync(join(w2.state, 'heldout'), moved)
+    symlinkSync(moved, join(w2.state, 'heldout'), 'junction')
+    const s = await I.settleRun(id, { by: 'test', page: pager().fn, guard: w2.guard, sleep: noSleep })
+    expect(s.changed).toBe(true)
+    expect(s.error).toMatch(/is a link to/)
+    expect(latchOf(w2.guard).reason).toBe('manifest-error')
+    expect(existsSync(before(w2, id))).toBe(true)
+  })
+})
+
+describe('review: the top of a volume (findings 2, 15, 16; decisions b, c)', () => {
+  function camera() {
+    const w = world()
+    const vol = join(w.base, 'vol')
+    put(join(vol, 'DCIM', '100_PANA', 'a.jpg')); put(join(vol, 'DCIM', '101_PANA', 'b.jpg'))
+    put(join(vol, 'recovery-x', 'f.txt'))
+    mkdirSync(join(vol, 'System Volume Information'))
+    const roots = I.protectedRoots({ home: w.home, cynco: w.state, models: w.models, volumes: [{ root: vol, kind: 'local' }] })
+    return { w, vol, roots }
+  }
+  const settle = (w: World, id: string, page: I.Pager) => I.settleRun(id, { by: 'test', page, guard: w.guard, sleep: noSleep })
+
+  it('(40) a top-level folder emptied in place is seen (DCIM 2 -> 0)', async () => {
+    const c = camera()
+    const id = baseline(c.w, rid(), { roots: c.roots })
+    for (const d of ['100_PANA', '101_PANA']) rmSync(join(c.vol, 'DCIM', d), { recursive: true })
+    const s = await settle(c.w, id, pager().fn)
+    expect(s.changes.map(x => `${x.path}:${x.kind}:${x.detail}:${x.volume}`)).toEqual(['DCIM:emptied:2 -> 0:true'])
+  })
+
+  it('(41) a loss only at the top of a drive latches, pages one step below top priority, and names the drive and the folder plainly', async () => {
+    const c = camera()
+    const id = baseline(c.w, rid(), { roots: c.roots })
+    rmSync(join(c.vol, 'recovery-x'), { recursive: true })
+    const pg = pager()
+    const s = await settle(c.w, id, pg.fn)
+    const drive = `${resolve(c.vol)}\\`
+    expect(s.summary).toBe(`1 change(s) in protected folders, all at the top of drives without integrity labels; first: drive ${drive}, top-level folder "recovery-x" gone. If you removed or emptied it yourself while a run was open, this is your own change, not an attack: look at the drive, then clear the latch`)
+    expect(s.publicSummary).toBe('1 change(s) at the top of drives without integrity labels (first: PRESENCE)')
+    expect(existsSync(join(c.w.guard, I.LATCH_FILE))).toBe(true)
+    expect(pg.calls).toHaveLength(1)
+    expect(pg.calls[0]).toMatchObject({ title: 'CynCo integrity latch', priority: 4 })
+    expect(pg.calls[0]!.message).toBe(`test ${id}: ${s.summary}. Nothing unattended runs until you clear it at the desk: bun scripts/cynco-guard.mjs clear`)
+
+    // The same loss together with a lost dot-folder of the home: top priority, the ordinary sentence.
+    const c2 = camera()
+    const id2 = baseline(c2.w, rid(), { roots: c2.roots })
+    rmSync(join(c2.vol, 'recovery-x'), { recursive: true })
+    rmSync(join(c2.w.home, '.config'), { recursive: true })
+    const pg2 = pager()
+    const s2 = await settle(c2.w, id2, pg2.fn)
+    expect(s2.summary).toMatch(/^2 change\(s\) in protected folders; first: /)
+    expect(pg2.calls[0]!.priority).toBe(5)
+  })
+
+  it('(42) the tripwire lists no volume root, network or not; the settle still sees the loss there', async () => {
+    const c = camera()
+    const id = baseline(c.w, rid(), { roots: c.roots })
+    const sb = join(c.w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: c.w.mission, home: c.w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: c.w.state, models: c.w.models, guard: c.w.guard, audit: null },
+    })
+    const losses: unknown[] = []
+    const r = I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false })
+    expect(r.ok).toBe(true)
+    expect((r as { roots: number }).roots).toBe(c.roots.presence.filter(p => !p.volume).length)
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    expect(I.presenceTripwireCheck(100_000)).toBeNull()
+    expect(losses).toEqual([])
+    expect(kinds(await settle(c.w, id, pager().fn))).toEqual(['DCIM:gone'])
+  })
+
+  it('(43) an empty sub-folder removed from a root without counts is not a loss; a full one is', () => {
+    const fresh = () => {
+      const h = tmp('desk')
+      mkdirSync(join(h, 'paste-cache'))
+      put(join(h, 'projects', 'p'))
+      return { h, roots: { frozen: [], presence: [P(h)] } as I.Roots }
+    }
+    let t = fresh()
+    expect(snap(t.roots).presence[0]!.entries).toEqual({ 'paste-cache': { k: 'd', n: 0 }, projects: { k: 'd', n: null } })
+    expect(diffOf(t.roots, () => rmSync(join(t.h, 'paste-cache'), { recursive: true })).changed).toBe(false)
+    t = fresh()
+    expect(kinds(diffOf(t.roots, () => rmSync(join(t.h, 'projects'), { recursive: true })))).toEqual(['projects:gone'])
+  })
+})
+
+describe('review: the guard folder (findings 6, 7, 14; decision d)', () => {
+  it.skipIf(!isWin)('(44) a guard folder without a drive letter, a share, a link, or on an unprotected drive is unusable', () => {
+    const w = world()
+    const noDrive = w.guard.slice(2)
+    expect(I.haltRefusal(noDrive, w.home)).toBe(`the guard folder ${noDrive} does not start with a drive letter; set LOCALCODE_GUARD_DIR to a folder on a local NTFS drive, such as C:/cynco-guard`)
+    expect(I.haltRefusal('\\\\localhost\\share\\cynco-guard', w.home)).toMatch(/does not start with a drive letter/)
+    const link = join(w.base, 'guard-link')
+    symlinkSync(w.guard, link, 'junction')
+    expect(I.haltRefusal(link, w.home)).toBe(`the guard folder ${link} is a link; the guard folder must be a real folder`)
+    const drive = driveOf(w.guard)
+    expect(I.haltRefusal(w.guard, w.home, { unprotectedVolumes: [drive] })).toBe(`the guard folder ${w.guard} is on ${drive}, which carries no integrity labels; set LOCALCODE_GUARD_DIR to a folder on a local NTFS drive, outside the home folder`)
+    let err: unknown = null
+    try { baseline(w, rid(), { volumes: () => [{ root: drive, kind: 'local' }] }) } catch (e) { err = e }
+    expect(err).toBeInstanceOf(I.ManifestError)
+    expect((err as I.ManifestError).kind).toBe('refusal')
+    expect((err as Error).message).toMatch(/carries no integrity labels/)
+    expect(existsSync(join(w.guard, 'manifests'))).toBe(false)
+    expect(I.haltRefusal(w.guard, w.home, { unprotectedVolumes: ['Q:\\'] })).toBeNull()
+  })
+
+  it('(45) anything named HALT.json is the latch, a dangling junction included; nothing is created through it, and clear moves the link itself', async () => {
+    const w = world()
+    const outside = join(w.base, 'outside-target')
+    symlinkSync(outside, join(w.guard, I.LATCH_FILE), 'junction')
+    const st = I.haltState(w.guard, w.home)
+    expect(st.state).toBe('latched')
+    expect((st as { summary: string }).summary).toContain('(latch unreadable: it is a link)')
+    const pg = pager()
+    const r = await I.tripHalt({ by: 'test', run: rid(), reason: 'integrity-change', guard: w.guard, page: pg.fn })
+    expect(r).toMatchObject({ latched: true, alreadyLatched: true })
+    expect(existsSync(outside)).toBe(false)
+    expect(pg.calls).toHaveLength(1)
+    const c = I.clearHalt(w.guard, { by: 'owner', terminal: { isTTY: true }, typed: 'CLEAR' })
+    expect(c.cleared).toBe(true)
+    expect(I.haltState(w.guard, w.home)).toEqual({ state: 'clear' })
+    expect(existsSync(outside)).toBe(false)
+  })
+
+  it('(46) a sub-folder of the guard folder that is a link is never written through', async () => {
+    const w = world()
+    const elsewhere = join(w.base, 'elsewhere')
+    mkdirSync(elsewhere)
+    symlinkSync(elsewhere, join(w.guard, 'unsent'), 'junction')
+    const r = await I.tripHalt({ by: 'test', run: rid(), reason: 'integrity-change', guard: w.guard, page: pager(false).fn })
+    expect(r.latched).toBe(true)
+    expect(readdirSync(elsewhere)).toEqual([])
+  })
+})
+
+describe('review: the baseline pair (findings 8, 9, 13)', () => {
+  it('(47) a baseline whose content is another run\'s does not settle; it latches as a compare that cannot be done', async () => {
+    const w = world()
+    const id1 = baseline(w)
+    const id2 = rid('copy')
+    writeFileSync(before(w, id2), readFileSync(before(w, id1)))
+    put(join(w.state, 'profiles', 'planted.yaml'))
+    const s = await I.settleRun(id2, { by: 'test', page: pager().fn, guard: w.guard, sleep: noSleep })
+    expect(s.changed).toBe(true)
+    expect(s.error).toBe(`the integrity baseline of run ${id2} cannot be read (it is the baseline of run ${id1})`)
+    expect(latchOf(w.guard).reason).toBe('manifest-error')
+  })
+
+  it('(48) a compare that cannot be done names no path in its public summary, in the latch or in the refusal sentence', async () => {
+    const w = world()
+    const id = baseline(w)
+    const profiles = join(w.state, 'profiles')
+    rmSync(profiles, { recursive: true })
+    put(profiles, 'now a file')
+    const c = await I.compareRun(id, { by: 'test', page: pager().fn, guard: w.guard, sleep: noSleep })
+    expect(c.changed).toBe(true)
+    expect(c.publicSummary).toBe('the integrity check could not be completed')
+    expect(c.summary).toContain(profiles)
+    const l = latchOf(w.guard)
+    expect(l.publicSummary).toBe('the integrity check could not be completed')
+    expect(l.publicSummary).not.toMatch(/[\\/]/)
+    expect(I.haltRefusal(w.guard, w.home)).not.toContain(profiles)
+  })
+
+  it('(49) a link whose target cannot be read is never equal at a compare', () => {
+    const root = resolve(tmp('unreadable'))
+    const roots: I.Roots = { frozen: [{ path: root, mutable: [] }], presence: [] }
+    const m = (target: string): I.Manifest => ({
+      schema: 1, runId: rid(), takenAt: '', by: 'test', home: '', exclude: [], roots, notes: [], presence: [],
+      frozen: [{ root, exists: true, entries: [['jn', 'l', 0, 0, target]] }],
+    })
+    const d = I.compareManifests(m('(unreadable: EPERM)'), m('(unreadable: EPERM)'))
+    expect(d.changes).toEqual([{ class: 'FROZEN', root, path: 'jn', kind: 'modified', detail: 'link target cannot be read' }])
+    expect(I.compareManifests(m('C:/a'), m('C:/a')).changed).toBe(false)
+  })
+
+  it.skipIf(!isWin)('(50) a counted folder whose children can no longer be listed is emptied (uncountable)', () => {
+    const h = tmp('acl')
+    put(join(h, '.config', 'a')); put(join(h, '.config', 'b'))
+    const roots: I.Roots = { frozen: [], presence: [P(h, { dotOnly: true, files: true, counts: true })] }
+    const b = snap(roots)
+    const user = userInfo().username
+    const target = join(h, '.config')
+    expect(icacls(target, '/deny', `${user}:(RD)`).status).toBe(0)
+    let after: I.Manifest
+    try {
+      after = snap(roots)
+    } finally {
+      icacls(target, '/remove:d', user)
+    }
+    const d = I.compareManifests(b, after)
+    expect(d.changes.map(c => `${c.path}:${c.kind}:${c.detail}`)).toEqual(['.config:emptied:2 -> uncountable'])
+  })
+})
+
+describe('review: pages (finding 5)', () => {
+  const page = (msg: string) => JSON.stringify({ title: 't', message: msg, priority: 5, at: '2026-01-01T00:00:00.000Z' })
+
+  it('(51) two flushes at once deliver a kept page once', async () => {
+    const w = world()
+    mkdirSync(join(w.guard, 'unsent'))
+    writeFileSync(join(w.guard, 'unsent', 'a.json'), page('m'))
+    const delivered: string[] = []
+    const slow: I.Pager = async p => { delivered.push(p.message); await new Promise(r => setTimeout(r, 20)); return true }
+    const [r1, r2] = await Promise.all([I.flushUnsentPages(w.guard, slow), I.flushUnsentPages(w.guard, slow)])
+    expect(delivered).toEqual(['(late) m'])
+    expect(r1.sent + r2.sent).toBe(1)
+    expect(readdirSync(join(w.guard, 'sent'))).toEqual(['a.json'])
+    expect(readdirSync(join(w.guard, 'unsent'))).toEqual([])
+  })
+
+  it('(52) a page claimed by a process that died is sent again; one claimed by a live process is left to it', async () => {
+    const w = world()
+    mkdirSync(join(w.guard, 'sending'))
+    writeFileSync(join(w.guard, 'sending', `dead.json.${deadPid()}`), page('from a dead sender'))
+    writeFileSync(join(w.guard, 'sending', `live.json.${process.ppid}`), page('being sent elsewhere'))
+    const pg = pager()
+    expect(await I.flushUnsentPages(w.guard, pg.fn)).toEqual({ sent: 1, left: 0 })
+    expect(pg.calls.map(c => c.message)).toEqual(['(late) from a dead sender'])
+    expect(readdirSync(join(w.guard, 'sending'))).toEqual([`live.json.${process.ppid}`])
+  })
+
+  it('(53) a latch for the same run that is still being written is read again before a second page is sent', async () => {
+    const w = world()
+    const run = rid()
+    const latch = join(w.guard, I.LATCH_FILE)
+    writeFileSync(latch, '')
+    const record = JSON.stringify({ schema: 1, at: 'a', by: 'the first tripper', run, publicSummary: 'p', summary: 's', reason: 'presence-lost', changes: [], changeCount: 0 })
+    const pg = pager()
+    let waited = 0
+    await I.tripHalt({ by: 'test', run, reason: 'integrity-change', guard: w.guard, page: pg.fn, sleep: () => { waited++; writeFileSync(latch, record) } })
+    expect(waited).toBe(1)
+    expect(pg.calls).toEqual([])
+    // A latch that stays empty is not "the same run": the page is new information.
+    const w2 = world()
+    writeFileSync(join(w2.guard, I.LATCH_FILE), '')
+    const pg2 = pager()
+    await I.tripHalt({ by: 'test', run: rid(), reason: 'integrity-change', guard: w2.guard, page: pg2.fn, sleep: noSleep })
+    expect(pg2.calls).toHaveLength(1)
+  })
+})
+
+describe('review: who clears, and the sticky tripwire (findings 11, 12, 13; decision e)', () => {
+  it('(54) clearHalt refuses without an interactive terminal or the typed word, and changes nothing', async () => {
+    const w = world()
+    await I.tripHalt({ by: 'test', run: rid(), reason: 'integrity-change', guard: w.guard, page: pager().fn })
+    expect(() => I.clearHalt(w.guard, { by: 'x', terminal: { isTTY: false }, typed: 'CLEAR' })).toThrow('the integrity latch is cleared only by a person at a terminal; nothing was changed')
+    expect(() => I.clearHalt(w.guard, { by: 'x', terminal: undefined, typed: 'CLEAR' })).toThrow(/only by a person at a terminal/)
+    expect(() => I.clearHalt(w.guard, { by: 'x', terminal: { isTTY: true }, typed: 'clear' })).toThrow('the integrity latch is cleared only after CLEAR is typed; nothing was changed')
+    expect(existsSync(join(w.guard, I.LATCH_FILE))).toBe(true)
+    expect(existsSync(join(w.guard, 'cleared'))).toBe(false)
+  })
+
+  it('(55) clearHalt and the tripwire reset are called by no other file under engine/ or scripts/', () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
+    const found: Record<string, string[]> = { 'clearHalt(': [], 'resetPresenceTripwireForTests(': [] }
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(join(dir, e.name)); continue }
+        if (!/\.(ts|mjs|js|cjs)$/.test(e.name)) continue
+        const file = join(dir, e.name)
+        const src = readFileSync(file, 'utf-8')
+        for (const k of Object.keys(found)) if (src.includes(k)) found[k]!.push(file.slice(root.length + 1).replace(/\\/g, '/'))
+      }
+    }
+    walk(join(root, 'engine'))
+    walk(join(root, 'scripts'))
+    expect(found['clearHalt(']!.sort()).toEqual(['engine/integrity.ts', 'scripts/cynco-guard.mjs'])
+    expect(found['resetPresenceTripwireForTests(']).toEqual(['engine/integrity.ts'])
+  })
+
+  function wiredHome() {
+    const w = world()
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    return { w, id, ctx }
+  }
+
+  it('(56) a loss stays for the life of the process: a second start is refused, and neither stop clears it', () => {
+    const t = wiredHome()
+    const losses: unknown[] = []
+    const r = I.startPresenceTripwire({ ctx: t.ctx, onLoss: l => { losses.push(l) }, timer: false })
+    expect(r.ok).toBe(true)
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    expect(I.presenceTripwireCheck(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    ;(r as { stop: () => void }).stop()
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(I.startPresenceTripwire({ ctx: t.ctx, onLoss: () => {}, timer: false })).toEqual({ ok: false, reason: I.INTEGRITY_LOSS_TO_MODEL })
+    I.stopPresenceTripwire()
+    expect(I.presenceTripwireCheck(300_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(losses).toHaveLength(1)
+  })
+
+  it('(57) a tripwire check that fails names no path in its public summary; a baseline without entries is refused at the start', () => {
+    const t = wiredHome()
+    const file = before(t.w, t.id)
+    const m = JSON.parse(readFileSync(file, 'utf-8'))
+    m.presence[0].entries = null
+    writeFileSync(file, JSON.stringify(m))
+    expect(I.startPresenceTripwire({ ctx: t.ctx, onLoss: () => {}, timer: false }))
+      .toEqual({ ok: false, reason: `the integrity baseline of run ${t.id} cannot be read (not a baseline)` })
+    // A malformed entry passes the start and breaks the check itself: the catch-all.
+    m.presence[0].entries = { '.config': null }
+    writeFileSync(file, JSON.stringify(m))
+    const losses: Array<{ publicSummary: string; summary: string }> = []
+    expect(I.startPresenceTripwire({ ctx: t.ctx, onLoss: l => { losses.push(l) }, timer: false }).ok).toBe(true)
+    expect(I.presenceTripwireCheck(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(losses[0]!.publicSummary).toBe('the presence check could not be completed')
+    expect(losses[0]!.summary).toMatch(/^the presence check could not be completed \(/)
+  })
+
+  it('(58) a tripwire whose baseline belongs to another run is refused', () => {
+    const t = wiredHome()
+    const other = rid('other')
+    writeFileSync(before(t.w, other), readFileSync(before(t.w, t.id)))
+    const ctx = testContainment({ ...t.ctx, runId: other, sandbox: { ...t.ctx.sandbox }, folders: { ...t.ctx.folders }, extraRoots: [] })
+    expect(I.startPresenceTripwire({ ctx, onLoss: () => {}, timer: false }))
+      .toEqual({ ok: false, reason: `the integrity baseline of run ${other} cannot be read (it is the baseline of run ${t.id})` })
+  })
+})
+
+// ─── Review of wave 5 ───────────────────────────────────────────────────────────────────────────
+describe('review of wave 5: a baseline nothing will settle (finding 1, blocker)', () => {
+  const opts = (w: World, page: I.Pager, extra: object = {}) => ({ by: 'test', page, guard: w.guard, sleep: noSleep, ...extra })
+  const DEAD = 2_000_000_000
+
+  it('(59) a dead holder, a passed time limit and a restart each make an orphan; a live holder, this process and a fresh one do not', () => {
+    const w = world()
+    const mine = baseline(w, rid('mine'), { holderPid: process.pid })
+    const late = baseline(w, rid('late'), { maxRunMs: 5000 })
+    const fresh = baseline(w, rid('fresh'))
+    const dead = baseline(w, rid('dead'), { holderPid: DEAD })
+    const alive = (pid: number) => pid !== DEAD
+    const now = Date.now() + 60_000
+    const o = I.orphanedBaselines(w.guard, { now, alive, bootTimeMs: Date.now() - 3_600_000 })
+    expect(o.map(x => x.runId).sort()).toEqual([dead, late].sort())
+    expect(o.find(x => x.runId === dead)!.why).toBe(`its starter (test, pid ${DEAD}) is gone`)
+    expect(o.find(x => x.runId === late)!.why).toMatch(/^its time limit passed at \d{4}-/)
+    expect(o.every(x => !x.restarted)).toBe(true)
+    // A restart after the baselines were taken: every one of them is an orphan whose run is dead.
+    const after = I.orphanedBaselines(w.guard, { now, alive: () => true, bootTimeMs: Date.now() + 120_000 })
+    expect(after.map(x => x.runId).sort()).toEqual([dead, late, fresh].sort())
+    expect(after.every(x => x.restarted)).toBe(true)
+    expect(mine).toBeDefined()
+  })
+
+  it('(60) takeBaseline refuses while an orphan exists, naming it and the command; the changes the dead run made are then still seen', async () => {
+    const w = world()
+    const dead = baseline(w, rid('dead'), { holderPid: DEAD })
+    rmSync(join(w.home, '.config'), { recursive: true })
+    // The probe of the review: run B's baseline used to fold run A's loss in, and nothing ever compared A.
+    let refused: unknown = null
+    try { baseline(w, rid('next')) } catch (e) { refused = e }
+    expect(refused).toBeInstanceOf(I.ManifestError)
+    expect((refused as I.ManifestError).kind).toBe('refusal')
+    expect((refused as Error).message).toBe(`run ${dead} was never compared (its starter (test, pid ${DEAD}) is gone); nothing new starts until it is. The daemon compares it on its next tick; at the desk: bun scripts/cynco-guard.mjs post ${dead}`)
+    // The daemon's answer: not confirmed dead, so it latches, whatever the walk finds (here a loss).
+    const pg = pager()
+    const settled = await I.settleOrphans({ by: 'daemon', page: pg.fn, guard: w.guard, home: w.home, alive: (p) => p !== DEAD, bootTimeMs: 0, sleep: noSleep })
+    expect(settled).toHaveLength(1)
+    expect(latchOf(w.guard)).toMatchObject({ run: dead, reason: 'engine-not-confirmed-dead' })
+    expect(latchOf(w.guard).summary).toMatch(/PRESENCE .*\.config gone/)
+    expect(pg.calls).toHaveLength(1)
+    // While the latch stands the daemon does nothing more: no second page every tick.
+    expect(await I.settleOrphans({ by: 'daemon', page: pg.fn, guard: w.guard, home: w.home, alive: (p) => p !== DEAD, bootTimeMs: 0, sleep: noSleep })).toEqual([])
+    expect(pg.calls).toHaveLength(1)
+  })
+
+  it('(61) an orphan from before a restart is settled normally: clean closes it with no latch', async () => {
+    const w = world()
+    const id = baseline(w, rid('boot'), { holderPid: DEAD })
+    const pg = pager()
+    const c = await I.settleOrphans({ by: 'daemon', page: pg.fn, guard: w.guard, home: w.home, bootTimeMs: Date.now() + 120_000, sleep: noSleep })
+    expect(c).toHaveLength(1)
+    expect(c[0]).toMatchObject({ run: id, changed: false, settled: true })
+    expect(existsSync(join(w.guard, I.LATCH_FILE))).toBe(false)
+    expect(pg.calls).toEqual([])
+    expect(I.orphanRefusal(w.guard)).toBeNull()
+  })
+
+  it('(62) the holder and the deadline are written in the first kilobytes, where openBaselines reads them', () => {
+    const w = world()
+    const id = baseline(w, rid('head'), { holderPid: 4242, maxRunMs: 60_000 })
+    const head = readFileSync(before(w, id), 'utf-8').slice(0, 600)
+    expect(head).toMatch(/"holder":\{"pid":4242,"host":"[^"]+"\},"deadline":"\d{4}-/)
+    const b = I.openBaselines(w.guard).find(x => x.runId === id)!
+    expect(b.holderPid).toBe(4242)
+    expect(Date.parse(b.deadline!) - Date.parse(b.takenAt)).toBe(60_000)
+  })
+
+  it('(63) settleRun with noLatch closes the baseline and reports the change, and writes no latch and no page', async () => {
+    const w = world()
+    const id = baseline(w)
+    put(join(w.state, 'profiles', 'new.yaml'))
+    const pg = pager()
+    const c = await I.settleRun(id, opts(w, pg.fn, { noLatch: true }))
+    expect(c).toMatchObject({ changed: true, settled: true, latchPath: null })
+    expect(existsSync(join(w.guard, I.LATCH_FILE))).toBe(false)
+    expect(existsSync(before(w, id))).toBe(false)
+    expect(pg.calls).toEqual([])
+  })
+})
+
+describe('review of wave 5: the record after a settle that could not close (finding 6)', () => {
+  const opts = (w: World, page: I.Pager, extra: object = {}) => ({ by: 'test', page, guard: w.guard, sleep: noSleep, ...extra })
+
+  it('(64) a clean compare whose close failed is logged as a reading; the later settle that found a change is the record, even after a clear', async () => {
+    const w = world()
+    const id = baseline(w)
+    mkdirSync(join(w.guard, 'manifests', 'last-clean.json', 'in-the-way'), { recursive: true })
+    const first = await I.settleRun(id, opts(w, pager().fn))
+    expect(first).toMatchObject({ changed: false, settled: false, kind: 'reading' })
+    expect(checkLines(w).filter(l => l.run === id).map(l => l.kind)).toEqual(['reading'])
+    put(join(w.state, 'profiles', 'added.yaml'))
+    const second = await I.settleRun(id, opts(w, pager().fn))
+    expect(second).toMatchObject({ changed: true, settled: true })
+    I.clearHalt(w.guard, { by: 'owner', terminal: { isTTY: true }, typed: 'CLEAR' })
+    const rec = await I.compareRun(id, opts(w, pager().fn))
+    expect(rec).toMatchObject({ from: 'recorded', changed: true })
+  })
+
+  it('(65) a clean settle line written before a change line never answers for the run', async () => {
+    const w = world()
+    const id = rid()
+    appendFileSync(join(w.guard, 'checks.jsonl'), JSON.stringify({ run: id, kind: 'settle', baselineTakenAt: null, at: 'a', by: 'x', changed: false, changeCount: 0, publicSummary: 'no change in protected folders', ms: 1 }) + '\n')
+    appendFileSync(join(w.guard, 'checks.jsonl'), JSON.stringify({ run: id, kind: 'settle', baselineTakenAt: null, at: 'b', by: 'y', changed: true, changeCount: 2, publicSummary: '2 change(s) in protected folders (first: FROZEN)', ms: 1 }) + '\n')
+    const rec = await I.compareRun(id, opts(w, pager().fn))
+    expect(rec).toMatchObject({ from: 'recorded', changed: true, changeCount: 2, by: 'y' })
+  })
+})
+
+describe('review of wave 5: clearing withdraws the latch\'s waiting pages (finding 11)', () => {
+  it('(66) the pages still in unsent/ go to cleared/pages/ and are never sent late; the log line counts them', async () => {
+    const w = world()
+    const run = rid()
+    await I.tripHalt({ by: 'test', run, reason: 'integrity-change', guard: w.guard, page: pager(false).fn })
+    await I.tripHalt({ by: 'test', run: rid('other'), reason: 'integrity-change', guard: w.guard, page: pager(false).fn })
+    expect(readdirSync(join(w.guard, 'unsent'))).toHaveLength(2)
+    const r = I.clearHalt(w.guard, { by: 'owner', terminal: { isTTY: true }, typed: 'CLEAR' })
+    expect(r.pagesWithdrawn).toBe(2)
+    expect(readdirSync(join(w.guard, 'unsent'))).toEqual([])
+    expect(readdirSync(join(w.guard, 'cleared', 'pages'))).toHaveLength(2)
+    const sent = pager()
+    expect(await I.flushUnsentPages(w.guard, sent.fn)).toEqual({ sent: 0, left: 0 })
+    expect(sent.calls).toEqual([])
+    const log = readFileSync(join(w.guard, 'halt-log.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l))
+    expect(log[log.length - 1]).toMatchObject({ cleared: true, pagesWithdrawn: 2 })
+  })
+})
+
+describe('review of wave 5: the summary says when the change may be the owner\'s own (finding 13)', () => {
+  it('(67) a home or frozen change tells the owner how to clear it; a change in the models folder names hash-models', () => {
+    const base = tmp('own')
+    const models = join(base, 'models')
+    put(join(models, 'a.gguf'), 'a')
+    const prev = process.env.LOCALCODE_MODELS_DIR
+    process.env.LOCALCODE_MODELS_DIR = models
+    try {
+      const roots: I.Roots = { frozen: [{ path: models, mutable: [] }], presence: [] }
+      const d = diffOf(roots, () => put(join(models, 'b.gguf'), 'b'))
+      expect(d.summary).toContain("If you changed it yourself while a run was open (open runs: bun scripts/cynco-guard.mjs status), it is your own change: clear the latch, and the next run's baseline takes the folders as they are then; a change in the models folder also needs: bun scripts/cynco-guard.mjs hash-models")
+      expect(d.publicSummary).toBe('1 change(s) in protected folders (first: FROZEN)')
+    } finally {
+      if (prev === undefined) delete process.env.LOCALCODE_MODELS_DIR
+      else process.env.LOCALCODE_MODELS_DIR = prev
+    }
+  })
+})
+
+describe('review of wave 5: the tripwire looks again after a second (finding 8)', () => {
+  it('(68) by default a removed dot-folder is seen at the first tool call a second after the last look', () => {
+    expect(I.TRIPWIRE_MIN_GAP_MS).toBe(1_000)
+    const w = world()
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    const losses: unknown[] = []
+    try {
+      expect(I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false, now: () => 0 }).ok).toBe(true)
+      expect(I.presenceTripwireCheck(0)).toBeNull()
+      rmSync(join(w.home, '.config'), { recursive: true })
+      expect(I.presenceTripwireCheck(500)).toBeNull()
+      expect(I.presenceTripwireCheck(1_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+      expect(losses).toHaveLength(1)
+    } finally {
+      I.resetPresenceTripwireForTests()
+    }
   })
 })

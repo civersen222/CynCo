@@ -404,9 +404,11 @@ describe('the driver is wired to it', () => {
     expect(driver).toMatch(/\} else if \(m\.type === 'session\.error' && !engineError\) \{\n(\s+\/\/.*\n)+\s+const held = stallRecovery\.onSessionError\(m\)\n/)
     expect(driver).toContain('if (WORK_BEGUN.has(m.type)) { workBegun = true; stallRecovery.onTurnActivity() }')
     // The only assignments to engineError: its declaration, the terminal arm, a re-prompt that did not land, a stall left standing,
-    // and (F242, S5) a critical containment, audit or integrity alert from the engine.
-    expect(driver.match(/\bengineError = /g)).toHaveLength(5)
+    // (F242, S5) a critical containment, audit or integrity alert from the engine, and (F242, S7) the integrity
+    // latch met by the wait loop's poll.
+    expect(driver.match(/\bengineError = /g)).toHaveLength(6)
     expect(driver).toContain("engineError = `${m.source}: ${String(m.message ?? '')}`")
+    expect(driver).toContain('if (!engineError) engineError = `integrity: ${latchNow}`')
   })
 
   it('never reads the error\'s text for the stall: the one text match on a session.error is the busy refusal', () => {

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { planRuns, runEnv, runOutcome, missionIdOf, idsFromRunFile, waitForRun, seedRepo, runSet, TASKS, ARMS, armOf, selectRows, compareRows, verdictOf, regressionSuspect, reportLines } from '../cynco-conduct-ab.mjs'
+import { planRuns, runEnv, runOutcome, missionIdOf, idsFromRunFile, waitForRun, seedRepo, runSet, notDeadOf, TASKS, ARMS, armOf, selectRows, compareRows, verdictOf, regressionSuspect, reportLines } from '../cynco-conduct-ab.mjs'
 import { runSync } from '../cynco-spawn.mjs'
 import { CAP_HOUSE_CONDUCT } from '../cynco-contract.mjs'
 
@@ -253,6 +253,24 @@ describe('runSet', () => {
     expect(seen[1].flag).toBeUndefined()
     expect(seen[1].skipIdle).toBeUndefined() // last run: dispatch-mission.sh boots the idle engine
     expect(seen[1].args).toEqual(['brief-b', '[conduct-ab]', `${root}/off/plague`, '1800', 'python -m pytest -q tests'])
+  })
+  // F242, review of wave 5: a mission engine that may still be running is the integrity latch, as in a wave.
+  it('a dispatch that failed with nothing armed, or a run with no row in the wall clock, writes the integrity latch; a trapped dispatch does not', async () => {
+    const root = tmpRoot()
+    const runs = threeRuns(root)
+    const halts = []
+    const io = {
+      seed: seedRepo,
+      dispatch: (args) => { if (args[0] === 'brief-a') throw new Error('spawn bash ETIMEDOUT'); if (args[2].includes('/on/')) throw new Error('dispatch failed (exit 1): boom') },
+      wait: async () => ({ outcome: 'no-row', lastLine: 'driver never wrote a row', missionId: null }),
+      halt: async (what) => { halts.push(what) },
+    }
+    expect(await runSet({ env: { PATH: 'p' }, io, runs, root })).toBe(0)
+    expect(halts.map(h => [h.run, h.reason])).toEqual([['conduct-ab-sack-off', 'engine-not-confirmed-dead'], ['conduct-ab-plague-off', 'engine-not-confirmed-dead']])
+    expect(halts[0].detail).toBe('dispatch or wait failed: spawn bash ETIMEDOUT')
+    expect(halts[1].detail).toBe('no ledger row within the wall clock; the driver may still be running')
+    expect(notDeadOf({ outcome: 'row' })).toBeNull()
+    expect(notDeadOf({ outcome: 'seed-failed', lastLine: 'x' })).toBeNull()
   })
   it('refuses the whole set up front when a run directory is not empty, before anything is dispatched', async () => {
     const root = tmpRoot()

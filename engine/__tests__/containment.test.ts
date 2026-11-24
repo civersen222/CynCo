@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import {
   existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync,
-  statSync, symlinkSync, unlinkSync, writeFileSync,
+  symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -26,7 +26,7 @@ import {
   type ContainmentRecord, type ContainmentRunner, type RunContainment,
 } from '../containment.js'
 import { RUN_ID_RE } from '../missionEnv.js'
-import { auditDir, cyncoHome } from '../paths.js'
+import { auditDir, cyncoHome, guardDir } from '../paths.js'
 
 const ENV_KEYS = ['LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_MARKER']
 
@@ -631,12 +631,20 @@ describe('establishContainment: every refusal by its text', () => {
   })
 
   // M4 is reached only on a volume that holds neither the checkout nor the home folder (M2 and M3
-  // come first for those), so it runs where such a volume exists; it only reads that root.
-  const otherVolume = process.platform === 'win32'
-    ? 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l => `${l}:\\`).find(v => v[0] !== engineCheckout()[0].toUpperCase() && v[0] !== tmpdir()[0].toUpperCase() && existsSync(v) && (() => { try { return statSync(v).isDirectory() } catch (e) { void e; return false } })())
-    : undefined
-  it.skipIf(otherVolume === undefined)('M4: a volume root', () => {
-    expect(refusal(establishContainment(base({ missionCwd: otherVolume!, home: L.home })))).toBe(`the mission folder ${otherVolume} is a volume root`)
+  // come first for those). No test may depend on a real second drive (a sleeping one timed this case
+  // out under suite load), so the root is made up and the M1 seam says it is a folder: nothing is
+  // read on any volume but the resolution of a letter no test machine is expected to have. A
+  // Windows path rule: elsewhere the only volume root, /, holds the checkout.
+  it.skipIf(process.platform !== 'win32')('M4: a volume root (a made-up one, no disk)', () => {
+    const fake = 'Q:\\'
+    expect(fake[0]).not.toBe(engineCheckout()[0].toUpperCase())
+    expect(fake[0]).not.toBe(tmpdir()[0].toUpperCase())
+    const asked: string[] = []
+    const isFolder = (p: string) => { asked.push(p); return p === fake }
+    expect(refusal(establishContainment(base({ missionCwd: fake, home: L.home, isFolder })))).toBe(`the mission folder ${fake} is a volume root`)
+    expect(asked).toEqual([fake])
+    // The seam is rule M1's own: a folder it denies is refused with M1's text.
+    expect(refusal(establishContainment(base({ missionCwd: L.mission, isFolder: () => false })))).toBe(`the mission folder ${L.mission} does not exist or is not a folder`)
   })
 
   it('M1: a folder that is not there', () => {
@@ -1072,6 +1080,16 @@ describe('establishContainment: the audit folder default (S5)', () => {
     const ctx = established(establishContainment(base({ test: true, folders: { guard: folders.guard } })))
     expect(ctx.folders.audit).toBe(auditDir())
     expect(ctx.folders.audit).not.toBeNull()
+  })
+})
+
+describe('establishContainment: the guard folder default (S7)', () => {
+  it('with no folders.guard argument, a context carries what guardDir() answers', () => {
+    // Under the suite's setup guardDir() names a folder that is never created, so every integrity
+    // check of such a context refuses (the guard folder does not exist): never "no latch".
+    const ctx = established(establishContainment(base({ test: true, folders: { audit: folders.audit } })))
+    expect(ctx.folders.guard).toBe(guardDir())
+    expect(ctx.folders.guard).not.toBe('C:/cynco-guard')
   })
 })
 

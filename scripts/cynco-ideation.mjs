@@ -57,13 +57,19 @@ export function parseIdeation(outcome) {
   return { hypotheses, order: hypotheses.map(h => h.gateId), trap }
 }
 
-export async function runIdeation({ spec, fails, prior, briefText, stateDir, repoRoot = process.cwd(), io }) {
+export async function runIdeation({ spec, fails, prior, briefText, stateDir, repoRoot = process.cwd(), io, integrity = null }) {
   const t0 = Date.now()
   const dir = join(stateDir, 'ideation'); mkdirSync(dir, { recursive: true })
   const stamp = Date.now()
   const taskPath = join(dir, `task-wave-${stamp}.json`)
   const outcomePath = join(dir, `outcome-wave-${stamp}.json`)
   const { prompt, context } = ideationPrompt({ spec, fails, prior, briefText })
+  // F242: under the integrity latch (or with no models record) nothing is made for the run, not even its sandbox.
+  const refused = integrity?.refusal ? integrity.refusal() : null
+  if (refused) {
+    console.error(operatorRefusal('[campaign]', 'integrity', refused, 'run'))
+    return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: null, error: `REFUSED: integrity: ${refused}` }
+  }
   // F242: the one-shot is an unattended run, so it starts in a sandbox made for it, which it adopts at
   // boot. The repository is not labelled: the one-shot's tools (Read, Grep, Glob, CodeIndex) write nothing.
   const est = (io?.contain ?? establishContainment)({ kind: 'daemon-task', label: `ideation-${spec.id}`, missionCwd: spec.repo, labelCwd: false })
@@ -71,6 +77,18 @@ export async function runIdeation({ spec, fails, prior, briefText, stateDir, rep
     console.error(operatorRefusal('[campaign]', 'containment', est.reason, 'run'))
     return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: null, error: `REFUSED: containment: ${est.reason}` }
   }
+  // F242: the integrity baseline of this run, before its engine starts (the engine refuses to boot without it).
+  if (integrity) {
+    try { integrity.before(est.containment.runId, spec.repo) }
+    catch (e) {
+      const r = (io?.release ?? releaseContainment)(est.containment)
+      if (!r.relabelled && r.note) console.error(`[campaign] ${r.note}`)
+      return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: null, error: `REFUSED: integrity: no integrity baseline could be taken (${e?.message ?? e})` }
+    }
+  }
+  // Every path out settles the baseline once: a throw before the engine started settles it clean (nothing
+  // ran), a throw while it ran settles it as not confirmed dead (review of wave 5).
+  const settled = { done: false, started: false }
   try {
     writeTaskFile(taskPath, { missionId: `campaign-${spec.id}`, triggerId: `wave-${stamp}`, prompt, context, allowedTools: ['Read', 'Grep', 'Glob', 'CodeIndex'], timeoutMs: IDEATION_TIMEOUT_MS, outcomePath, cwd: spec.repo, runId: est.containment.runId })
     const env = {}
@@ -78,12 +96,25 @@ export async function runIdeation({ spec, fails, prior, briefText, stateDir, rep
     env.LOCALCODE_APPROVE_ALL = 'true'
     // Rule H1: the child starts in the checkout, never in the mission repository, where a planted
     // bunfig.toml or .env would be read at medium integrity; the workspace travels in the task file.
+    settled.started = true
     const code = await (io?.runTask ?? runTask)(repoRoot, taskPath, env, repoRoot)
+    // F242, directive 15: the settling compare, after the one-shot engine has exited.
+    settled.done = true
+    const tripped = integrity
+      ? await integrity.after(est.containment.runId, code === 'not-dead' ? 'the ideation engine did not exit within 10 s of being killed' : undefined)
+      : null
+    if (tripped) return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: null, error: `INTEGRITY: ${tripped}` }
+    const exitCode = code === 'not-dead' ? null : code
     try {
       const outcome = JSON.parse(readFileSync(outcomePath, 'utf8'))
-      return { ideation: parseIdeation(outcome), taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code }
-    } catch (e) { return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode: code, error: String(e) } }
+      return { ideation: parseIdeation(outcome), taskPath, outcomePath, durationMs: Date.now() - t0, exitCode }
+    } catch (e) { return { ideation: null, taskPath, outcomePath, durationMs: Date.now() - t0, exitCode, error: String(e) } }
   } finally {
+    if (integrity && !settled.done) {
+      settled.done = true
+      const tripped = await integrity.after(est.containment.runId, settled.started ? "the ideation engine's end was not seen (its runner threw)" : undefined)
+      if (tripped) console.error(`[campaign] INTEGRITY: ${tripped}`)
+    }
     const r = (io?.release ?? releaseContainment)(est.containment)
     if (!r.relabelled && r.note) console.error(`[campaign] ${r.note}`)
   }
@@ -92,9 +123,15 @@ export async function runIdeation({ spec, fails, prior, briefText, stateDir, rep
 function runTask(repoRoot, taskPath, env, cwd) {
   return new Promise((res) => {
     const child = spawn('bun', [resolve(repoRoot, 'engine', 'main.ts'), '--run-task', taskPath], { cwd, env, stdio: 'ignore', windowsHide: true })
-    const timer = setTimeout(() => { try { child.kill() } catch {} res(null) }, IDEATION_TIMEOUT_MS + 60_000)
-    child.on('exit', (c) => { clearTimeout(timer); res(c) })
-    child.on('error', () => { clearTimeout(timer); res(null) })
+    // F242: a killed child is waited for; one still alive 10 s after the kill resolves 'not-dead', and the
+    // caller's settling compare then writes the integrity latch (an engine not confirmed dead).
+    let deadline = null
+    const timer = setTimeout(() => {
+      try { child.kill() } catch (e) { console.error(`[campaign] the ideation engine could not be killed: ${e?.message ?? e}`) }
+      deadline = setTimeout(() => res('not-dead'), 10_000)
+    }, IDEATION_TIMEOUT_MS + 60_000)
+    child.on('exit', (c) => { clearTimeout(timer); if (deadline) clearTimeout(deadline); res(c) })
+    child.on('error', () => { clearTimeout(timer); if (deadline) clearTimeout(deadline); res(null) })
   })
 }
 

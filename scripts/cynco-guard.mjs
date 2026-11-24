@@ -8,7 +8,7 @@
 // asks before it starts the daemon: one line, no network, exit 0 or 3.
 //
 //   bun scripts/cynco-guard.mjs status [--quiet]
-//   bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>]
+//   bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>] [--max-seconds <n>]
 //   bun scripts/cynco-guard.mjs post <runId> [--by <who>] [--engine-not-confirmed-dead <why>]
 //   bun scripts/cynco-guard.mjs hash-models [--all]
 //   bun scripts/cynco-guard.mjs verify [--deep]
@@ -24,12 +24,12 @@ import { operatorRefusal } from '../engine/containment.js'
 import { guardDir, modelsDir } from '../engine/paths.js'
 import {
   checkModelsRecord, clearHalt, flushUnsentPages, haltRefusal, haltState, hashModels, LATCH_FILE, ManifestError,
-  openBaselines, readModelsRecord, settleRun, takeBaseline, verifyModelsDeep,
+  openBaselines, orphanedBaselines, orphanRefusal, readModelsRecord, settleRun, takeBaseline, verifyModelsDeep,
 } from '../engine/integrity.js'
 
 export const USAGE = [
   'usage: bun scripts/cynco-guard.mjs status [--quiet]',
-  '       bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>]',
+  '       bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>] [--max-seconds <n>]',
   '       bun scripts/cynco-guard.mjs post <runId> [--by <who>] [--engine-not-confirmed-dead <why>]',
   '       bun scripts/cynco-guard.mjs hash-models [--all]',
   '       bun scripts/cynco-guard.mjs verify [--deep]',
@@ -117,7 +117,33 @@ function printBaselines(guard, out, withPost) {
   if (open.length === 0) { out('[guard] open baselines: none'); return }
   for (const b of open) {
     const line = `[guard] open baseline ${b.runId}: taken ${b.takenAt} by ${b.by}, ${ago(b.ageMs)} ago`
-    out(withPost ? `${line}; if that run is not running: bun scripts/cynco-guard.mjs post ${b.runId}` : line)
+    out(withPost ? `${line}; if that run is not running, compare it BEFORE you change anything: bun scripts/cynco-guard.mjs post ${b.runId}` : line)
+  }
+}
+
+/** The orphaned baselines, and the run of a not-confirmed-dead latch, are compared at `clear` with no page. */
+async function settleAtClear(guard, guardArg, latch, out, err, page) {
+  let orphans = []
+  try {
+    orphans = orphanedBaselines(guard)
+  } catch (e) {
+    err(`[guard] ${e?.message ?? e}; no open baseline was compared`)
+    return
+  }
+  const runs = new Map(orphans.map(o => [o.runId, o.why]))
+  if (latch?.reason === 'engine-not-confirmed-dead' && latch.run && !runs.has(latch.run)) {
+    let open = []
+    try { open = openBaselines(guard) } catch (e) { err(`[guard] ${e?.message ?? e}`) }
+    if (open.some(b => b.runId === latch.run)) runs.set(latch.run, 'the latch you cleared said its engine was not confirmed dead')
+  }
+  for (const [runId, why] of runs) {
+    const c = await settleRun(runId, { by: 'the owner, at clear', page, guard: guardArg, noLatch: true })
+    if (!c.changed) out(`[guard] run ${runId} (${why}): compared now, no change in protected folders; its baseline is closed`)
+    else {
+      out(`[guard] run ${runId} (${why}): compared now, ${c.summary}`)
+      for (const ch of (c.changes ?? []).slice(0, 10)) out(`[guard]   ${ch.class} ${ch.path ? `${ch.root}/${ch.path}` : ch.root} ${ch.kind}${ch.detail ? ` (${ch.detail})` : ''}`)
+      out(c.settled ? `[guard] nothing was latched: you are at the desk; look at these before the next run` : `[guard] its baseline could not be closed; bun scripts/cynco-guard.mjs post ${runId} compares it again`)
+    }
   }
 }
 
@@ -149,9 +175,14 @@ export async function main(argv, deps = {}) {
     if (!a || a.pos.length) return usage('status takes only --quiet')
     const why = haltRefusal(guardArg, home)
     out(why ?? 'clear')
+    // --quiet answers the latch alone: the service script asks it before it starts the daemon, and the
+    // daemon is what compares an orphaned baseline.
     if (a.flags['--quiet']) return why ? 3 : 0
-    printLatch(haltState(guardArg, home), out)
+    const st = haltState(guardArg, home)
+    printLatch(st, out)
     printBaselines(guard, out, false)
+    const orphan = orphanRefusal(guard)
+    if (orphan) out(`[guard] ${orphan}`)
     const unsent = unsentPages(guard)
     out(unsent === null ? '[guard] unsent pages: the folder cannot be listed' : `[guard] unsent pages: ${unsent.length}`)
     const checks = tail(join(guard, 'checks.jsonl'), 5)
@@ -165,20 +196,28 @@ export async function main(argv, deps = {}) {
       out(`[guard] models record: ${models}`)
     }
     if (env.CYNCO_NTFY_URL) {
-      const f = await flushUnsentPages(guard, page)
-      out(`[guard] re-sent ${f.sent} page(s), ${f.left} left`)
+      // Re-sending moves files; nothing is moved in a folder that cannot be used.
+      if (st.state === 'unusable') {
+        out('[guard] unsent pages were not re-sent: the guard folder cannot be used')
+      } else {
+        const f = await flushUnsentPages(guard, page)
+        out(`[guard] re-sent ${f.sent} page(s), ${f.left} left`)
+      }
     }
     return why ? 3 : 0
   }
 
   if (verb === 'pre') {
-    const a = parse(rest, { '--cwd': { value: true }, '--also': { value: true, many: true }, '--by': { value: true } })
+    const a = parse(rest, { '--cwd': { value: true }, '--also': { value: true, many: true }, '--by': { value: true }, '--max-seconds': { value: true } })
     if (!a || a.pos.length !== 1 || !a.flags['--cwd']) return usage('pre needs <runId> and --cwd <dir>')
     const runId = a.pos[0]
+    const maxS = a.flags['--max-seconds'] === undefined ? undefined : Number(a.flags['--max-seconds'])
+    if (maxS !== undefined && !(Number.isInteger(maxS) && maxS > 0)) return usage('--max-seconds takes a whole number of seconds above 0')
     try {
       const r = takeBaseline({
         runId, cwd: a.flags['--cwd'], also: a.flags['--also'] ?? [], by: a.flags['--by'] ?? 'cynco-guard pre',
         guard: guardArg, home, now, ...(deps.volumes ? { volumes: deps.volumes } : {}),
+        ...(maxS !== undefined ? { maxRunMs: maxS * 1000 } : {}),
       })
       out(`[guard] integrity baseline ${r.runId}: ${r.frozenEntries} frozen entries, ${r.presenceEntries} presence entries, ${r.ms} ms`)
       for (const n of r.notes) out(`[guard] note: ${n}`)
@@ -196,6 +235,9 @@ export async function main(argv, deps = {}) {
     if (!a || a.pos.length !== 1) return usage('post needs <runId>')
     const runId = a.pos[0]
     const dead = a.flags['--engine-not-confirmed-dead']
+    // The settle runs all the same (a change must still latch); the log says why the folder is wrong.
+    const st = haltState(guardArg, home)
+    if (st.state === 'unusable') err(`[guard] ${st.summary}`)
     const c = await settleRun(runId, { by: a.flags['--by'] ?? 'cynco-guard post', page, guard: guardArg, notConfirmedDead: dead, now })
     if (dead !== undefined) {
       out(`[guard] INTEGRITY: the engine of run ${runId} is not confirmed dead (${dead}); the integrity latch is set and the baseline stays open`)
@@ -214,6 +256,8 @@ export async function main(argv, deps = {}) {
   if (verb === 'hash-models') {
     const a = parse(rest, { '--all': {} })
     if (!a || a.pos.length) return usage('hash-models takes only --all')
+    const st = haltState(guardArg, home)
+    if (st.state === 'unusable') { err(`[guard] the models record was not written: ${st.summary}`); return 3 }
     out(`[guard] models folder: ${resolve(modelsDir())}`)
     try {
       const r = await hashModels({ guard: guardArg, all: a.flags['--all'] === true, onFile: (rel, bytes) => out(`[guard] hashing ${rel} (${bytes} bytes)`) })
@@ -261,13 +305,20 @@ export async function main(argv, deps = {}) {
       out(st.state === 'clear' ? '[guard] there is no integrity latch; nothing was changed' : `[guard] ${st.summary}; nothing was changed`)
       return st.state === 'clear' ? 0 : 3
     }
-    if (!stdin || stdin.isTTY !== true) { err('[guard] clear needs a person at a terminal; nothing was changed'); return 3 }
+    if (!stdin || stdin.isTTY !== true) {
+      err('[guard] clear needs a person at a terminal; nothing was changed')
+      err('[guard] (its input is not a console here: in a Git Bash window run it as winpty bun scripts/cynco-guard.mjs clear, or run it from PowerShell or Windows Terminal)')
+      return 3
+    }
     out('Type CLEAR to remove the integrity latch:')
     const answer = (await readLine(stdin)).trim()
     if (answer !== 'CLEAR') { err('[guard] nothing was changed'); return 3 }
+    // The only caller of clearHalt; it checks the terminal and the typed word again itself.
     try {
-      const r = clearHalt(guard, { by: 'the owner, at a terminal (cynco-guard clear)', now })
+      const r = clearHalt(guard, { by: 'the owner, at a terminal (cynco-guard clear)', now, terminal: stdin, typed: answer })
       if (!r.cleared) { out('[guard] the latch was already gone; nothing was changed'); return 0 }
+      if (r.pagesWithdrawn) out(`[guard] ${r.pagesWithdrawn} unsent page(s) about this latch withdrawn (kept in ${join(guard, 'cleared', 'pages')})`)
+      await settleAtClear(guard, guardArg, r.latch, out, err, page)
       out(`[guard] cleared; the latch is kept at ${r.archivedTo}`)
       return 0
     } catch (e) {

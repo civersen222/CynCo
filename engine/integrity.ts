@@ -10,7 +10,9 @@
  *   recursive stat-only walk records every entry's kind, size and time. PRESENCE folders (the home
  *   folder's dot-entries, the desk tools' folder, the state folder and its authoring and campaign
  *   folders, the top of every volume integrity labels cannot protect) must not LOSE anything; one
- *   listing per folder records names and child counts.
+ *   listing per folder records names and child counts. A FROZEN root that is a link or junction is
+ *   refused (a protected folder must be a real folder); a folder that was empty at the baseline is
+ *   never a loss, in any PRESENCE root.
  * - the baseline pair, keyed by a run id that is used once: the starter takes the baseline before
  *   its engine starts (`takeBaseline`), the early reading compares without closing it
  *   (`compareRun`), and the settling compare after the engine is confirmed dead closes it
@@ -18,10 +20,16 @@
  * - the integrity latch, `<guard>/HALT.json`: written first, create-exclusive, on any change; then
  *   the latch log, then one page per run (kept in `<guard>/unsent/` when it cannot be sent). Every
  *   unattended starter refuses while it exists (`haltRefusal`), and only the owner clears it, at a
- *   terminal (`scripts/cynco-guard.mjs clear`).
+ *   terminal (`scripts/cynco-guard.mjs clear`; `clearHalt` itself refuses without a terminal and
+ *   the typed word). Anything at that name, a dangling link included, is the latch.
  * - the models hash record, `<guard>/models-hashes.json`, and its cheap check before a run.
  * - the in-run tripwire: a contained engine re-lists its baseline's PRESENCE folders on a timer and
- *   before tool calls, and reports a lost folder once.
+ *   before tool calls, and reports a lost folder once; a loss is remembered for the life of the
+ *   process. Volume roots are left out of it: a synchronous listing of a sleeping or failing drive
+ *   cannot be bounded and would block the engine's event loop (F225), so the top of every volume is
+ *   compared only by the baseline and the settling compare, which the starter runs in its own
+ *   process. A loss there still latches, with a page one step below top priority whose text names
+ *   the drive and the folder, so the owner can tell their own tidy-up from an attack.
  *
  * Everything persisted is in the guard folder (`guardDir()`, outside the home folder), so nothing
  * that decides "may this run" is read from the home folder. The module creates the guard folder's
@@ -32,10 +40,10 @@
 import { createHash } from 'node:crypto'
 import {
   appendFileSync, closeSync, createReadStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
-  readdirSync, readFileSync, readlinkSync, readSync, renameSync, statSync, writeFileSync, writeSync,
+  opendirSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, statSync, writeFileSync, writeSync,
 } from 'node:fs'
-import type { Stats } from 'node:fs'
-import { homedir, hostname } from 'node:os'
+import type { Dirent, Stats } from 'node:fs'
+import { homedir, hostname, uptime } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { cyncoHome, guardDir, guardDirSource, modelsDir, sandboxRoot } from './paths.js'
 import { isInside, realPathOf } from './realPath.js'
@@ -95,6 +103,10 @@ export interface Manifest {
   runId: string
   takenAt: string                     // ISO, millisecond precision
   by: string
+  /** The process that will settle this baseline, when the starter named one (an in-process starter: the daemon, ideation). */
+  holder?: { pid: number; host: string } | null
+  /** After this time the run is over by its own limit, so a baseline still open is an orphan (ISO). */
+  deadline?: string | null
   home: string
   exclude: string[]                   // real paths: the mission folder and the run's extra roots
   roots: Roots                        // stored; every compare walks THESE, never roots recomputed from the environment
@@ -109,6 +121,8 @@ export interface Change {
   path: string
   kind: 'added' | 'removed' | 'modified' | 'kind-changed' | 'gone' | 'emptied' | 'root-gone' | 'root-appeared'
   detail?: string
+  /** Set on a change at the top of a volume integrity labels cannot protect (the owner's own drives). */
+  volume?: boolean
 }
 
 export interface Compare {
@@ -155,7 +169,20 @@ type Context = { campaignId?: string; wave?: number; cwd?: string }
 const MAX_CHANGES = 200
 const LATCH_CHANGES = 50
 const DEFAULT_CONFIRM_MS = 2000
+/** A baseline whose starter named no time limit is an orphan after a day. */
+const DEFAULT_MAX_RUN_MS = 24 * 3_600_000
+/** A baseline taken more than this before the machine started is from before the restart (uptime is coarse). */
+const BOOT_SLACK_MS = 60_000
 const PAGE_TITLE = 'CynCo integrity latch'
+/** A latch whose every change is at the top of an unprotected drive: high, one step below a loss of the home. */
+const PAGE_PRIORITY = 5
+const VOLUME_PAGE_PRIORITY = 4
+/** How long `tripHalt` waits before reading an existing latch a second time (it may be mid-write). */
+const LATCH_REREAD_MS = 50
+/** The target text of a link whose target could not be read; never equal to anything at a compare. */
+const UNREADABLE_TARGET = '(unreadable: '
+const COMPARE_FAILED_PUBLIC = 'the integrity check could not be completed'
+const PRESENCE_FAILED_PUBLIC = 'the presence check could not be completed'
 const NOT_SENT_FALSE = 'the sender returned false: no CYNCO_NTFY_URL in this process, or ntfy did not accept it'
 
 // ─── Small helpers ───────────────────────────────────────────────────────────────────────────
@@ -182,13 +209,16 @@ function syncSleep(ms: number): void {
   if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-/** Creates `<guard>/<sub>` when missing; never the guard folder itself. */
+/** Creates `<guard>/<sub>` when missing; never the guard folder itself, and never writes through a link. */
 function ensureSub(guard: string, sub: string): string {
   const p = join(guard, sub)
   try {
     mkdirSync(p)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    const st = lstatSync(p)
+    if (st.isSymbolicLink()) throw new Error(`${p} is a link; nothing is written through it`)
+    if (!st.isDirectory()) throw new Error(`${p} is not a folder`)
   }
   return p
 }
@@ -228,13 +258,17 @@ export function protectedRoots(o: {
   addF(o.models ?? modelsDir())
   for (const s of states) { addF(join(s, 'profiles')); addF(join(s, 'heldout')) }
   addF(join(home, '.ssh'), ['known_hosts', 'known_hosts.old'])
-  addF(join(home, '.ollama', 'models'))
   addP(home, { dotOnly: true, files: true, counts: true })
+  // The local model store: loss only, counted. Nothing CynCo loads comes from it, and processes outside
+  // any run (a model pull, the owner's other apps, the store's own migration on update) add to it while
+  // a daemon task runs; as a FROZEN root every such addition latched at top priority (review of wave 5).
+  addP(join(home, '.ollama', 'models'), { counts: true })
   // the desk tools' own folder: its sub-folders by name; its owner program prunes several of them by age, so no counts
   addP(join(home, '.claude'), {})
   for (const s of states) { addP(join(s, 'authoring'), { counts: true }); addP(join(s, 'campaigns'), { counts: true }) }
   for (const s of states) addP(s, {})
-  for (const v of o.volumes ?? []) addP(v.root, { files: true, volume: true, network: v.kind === 'network' })
+  // Counted, so a top-level folder emptied in place (D:\DCIM after its sub-folders went) is seen.
+  for (const v of o.volumes ?? []) addP(v.root, { files: true, counts: true, volume: true, network: v.kind === 'network' })
   return { frozen, presence }
 }
 
@@ -255,12 +289,10 @@ function walkFrozen(r: FrozenRoot, exclude: string[], notes: string[]): FrozenSe
     throw new ManifestError(`the frozen folder ${r.path} cannot be read (${codeOf(e)})`)
   }
   if (st.isSymbolicLink()) {
+    // Everything behind a link would go unwatched, and a retarget would hide a replaced folder.
     let target: string
-    try { target = readlinkSync(r.path) } catch (e) { target = `(unreadable: ${codeOf(e)})` }
-    notes.push(`${r.path}: is a link; recorded as a link, not entered`)
-    out.exists = true
-    out.entries.push(['', 'l', 0, 0, target])
-    return out
+    try { target = readlinkSync(r.path) } catch (e) { target = `(a target that cannot be read: ${codeOf(e)})` }
+    throw new ManifestError(`the frozen folder ${r.path} is a link to ${target}; a protected folder must be a real folder`)
   }
   if (!st.isDirectory()) throw new ManifestError(`the protected folder ${r.path} exists but is not a folder`)
   const realRoot = realPathOf(r.path, { quiet: true })
@@ -293,7 +325,7 @@ function walkFrozen(r: FrozenRoot, exclude: string[], notes: string[]): FrozenSe
       }
       if (s.isSymbolicLink()) {
         let target: string
-        try { target = readlinkSync(childAbs) } catch (e) { target = `(unreadable: ${codeOf(e)})` }
+        try { target = readlinkSync(childAbs) } catch (e) { target = `${UNREADABLE_TARGET}${codeOf(e)})` }
         out.entries.push([childRel, 'l', 0, 0, target])
       } else if (s.isDirectory()) {
         if (FROZEN_SKIP_DIRS.includes(name)) continue
@@ -308,14 +340,30 @@ function walkFrozen(r: FrozenRoot, exclude: string[], notes: string[]): FrozenSe
   return out
 }
 
-function kindOf(s: Stats): 'f' | 'd' | 'l' {
+function kindOf(s: Stats | Dirent): 'f' | 'd' | 'l' {
   return s.isSymbolicLink() ? 'l' : s.isDirectory() ? 'd' : 'f'
 }
 
+/** True when the folder holds nothing but transient or excluded names; reads only until the first other entry. */
+function isEmptyDir(abs: string, realDir: string, excluded: (p: string) => boolean): boolean {
+  const d = opendirSync(abs)
+  try {
+    for (let e = d.readSync(); e !== null; e = d.readSync()) {
+      if (TRANSIENT_NAME.test(e.name) || excluded(join(realDir, e.name))) continue
+      return false
+    }
+    return true
+  } finally {
+    d.closeSync()
+  }
+}
+
 /**
- * One listing of a PRESENCE root and, where `counts` is on, one per folder in it. A folder with no
- * children is recorded with `n: 0` and never compared, which is how "an empty folder at the
- * baseline is not recorded" is kept while a folder that is still there at the compare is still seen.
+ * One listing of a PRESENCE root and one look into each folder in it: where `counts` is on, its
+ * children are counted; elsewhere it is only asked whether it is empty (`n: 0`) or not (`n: null`).
+ * A folder with no children is recorded with `n: 0` and never compared, in every root, which is how
+ * "an empty folder that disappears is not a loss" is kept while a folder that is still there at the
+ * compare is still seen.
  */
 function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): PresenceSection {
   const out: PresenceSection = { root: r.path, exists: false, listed: true, entries: {} }
@@ -339,9 +387,9 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): Pres
     if (r.volume) return unlisted('not a folder')
     throw new ManifestError(`the protected folder ${r.path} exists but is not a folder`)
   }
-  let names: string[]
+  let listed: Dirent[]
   try {
-    names = readdirSync(r.path)
+    listed = readdirSync(r.path, { withFileTypes: true })
   } catch (e) {
     if (r.volume) return unlisted(codeOf(e))
     throw new ManifestError(`the protected folder ${r.path} cannot be listed (${codeOf(e)})`)
@@ -350,29 +398,33 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): Pres
   const realRoot = realPathOf(r.path, { quiet: true })
   const ex = excludesFor(realRoot, exclude)
   const excluded = (p: string) => ex.length > 0 && ex.some(x => isInside(x, p))
-  for (const name of names.sort()) {
+  for (const dirent of listed.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))) {
+    const name = dirent.name
     if (r.dotOnly && !name.startsWith('.')) continue
     if (TRANSIENT_NAME.test(name)) continue
     if (r.volume && VOLUME_SKIP.test(name)) continue
     const realChild = join(realRoot, name)
     if (excluded(realChild)) continue
-    let s: Stats
+    let k: 'f' | 'd' | 'l'
+    let looked = true
     try {
-      s = lstatSync(join(r.path, name))
+      k = kindOf(lstatSync(join(r.path, name)))
     } catch (e) {
       if (isMissing(e)) continue
-      // Its existence is still a fact worth keeping; its kind is not known.
-      notes.push(`${join(r.path, name)}: could not be looked at (${codeOf(e)})`)
-      continue
+      // Its existence is still a fact worth keeping: recorded with the kind the listing gave.
+      notes.push(`${join(r.path, name)}: could not be looked at (${codeOf(e)}); recorded by its listed kind`)
+      k = kindOf(dirent)
+      looked = false
     }
-    const k = kindOf(s)
     if (k === 'f' && !r.files) continue
     let n: number | null = null
-    if (r.counts && k === 'd') {
+    if (k === 'd' && looked) {
       try {
-        n = readdirSync(join(r.path, name)).filter(c => !TRANSIENT_NAME.test(c) && !excluded(join(realChild, c))).length
+        n = r.counts
+          ? readdirSync(join(r.path, name)).filter(c => !TRANSIENT_NAME.test(c) && !excluded(join(realChild, c))).length
+          : (isEmptyDir(join(r.path, name), realChild, excluded) ? 0 : null)
       } catch (e) {
-        notes.push(`${join(r.path, name)}: its children could not be counted (${codeOf(e)})`)
+        notes.push(`${join(r.path, name)}: its children could not be ${r.counts ? 'counted' : 'listed'} (${codeOf(e)})`)
         n = null
       }
     }
@@ -381,17 +433,26 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): Pres
   return out
 }
 
-/** Read-only: `lstat` and `readdir` only; never opens a file, never follows a link or junction. */
-export function takeManifest(roots: Roots, o: { runId: string; by: string; home: string; exclude?: string[]; now?: () => Date }): Manifest {
-  const takenAt = (o.now ?? (() => new Date()))().toISOString()
+/** Read-only: `lstat`, `readdir` and a directory handle only; never opens a file, never follows a link or junction. */
+export function takeManifest(roots: Roots, o: {
+  runId: string; by: string; home: string; exclude?: string[]; now?: () => Date
+  holder?: { pid: number; host: string } | null; maxRunMs?: number | null
+}): Manifest {
+  const t = (o.now ?? (() => new Date()))()
+  const takenAt = t.toISOString()
   const exclude = (o.exclude ?? []).map(p => realPathOf(p, { quiet: true }))
   const notes: string[] = []
   const frozen = roots.frozen.map(r => walkFrozen(r, exclude, notes))
   const presence = roots.presence.map(r => listPresence(r, exclude, notes))
-  return { schema: 1, runId: o.runId, takenAt, by: o.by, home: o.home, exclude, roots, frozen, presence, notes }
+  // holder and deadline come right after `by`: openBaselines reads them from the file's first kilobytes.
+  const deadline = typeof o.maxRunMs === 'number' && Number.isFinite(o.maxRunMs) && o.maxRunMs > 0
+    ? new Date(t.getTime() + o.maxRunMs).toISOString() : null
+  return { schema: 1, runId: o.runId, takenAt, by: o.by, holder: o.holder ?? null, deadline, home: o.home, exclude, roots, frozen, presence, notes }
 }
 
 // ─── compareManifests ────────────────────────────────────────────────────────────────────────
+
+const unreadableTarget = (t: string | undefined) => typeof t === 'string' && t.startsWith(UNREADABLE_TARGET)
 
 function diffFrozen(before: Manifest, after: Manifest): Change[] {
   const changes: Change[] = []
@@ -411,7 +472,10 @@ function diffFrozen(before: Manifest, after: Manifest): Change[] {
       if (x[1] !== e[1]) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'kind-changed', detail: `${e[1]} -> ${x[1]}` })
       else if (e[1] === 'f' && x[2] !== e[2]) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'modified', detail: `size ${e[2]} -> ${x[2]}` })
       else if (e[1] === 'f' && x[3] !== e[3]) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'modified', detail: 'time' })
-      else if (e[1] === 'l' && x[4] !== e[4]) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'modified', detail: 'link target' })
+      else if (e[1] === 'l' && (unreadableTarget(e[4]) || unreadableTarget(x[4]))) {
+        // A target that could not be read is never equal to anything: a retarget must not hide behind it.
+        changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'modified', detail: 'link target cannot be read' })
+      } else if (e[1] === 'l' && x[4] !== e[4]) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'modified', detail: 'link target' })
     }
     for (const rel of am.keys()) {
       if (!bm.has(rel) && !mutable.has(rel)) changes.push({ class: 'FROZEN', root: b.root, path: rel, kind: 'added' })
@@ -422,8 +486,9 @@ function diffFrozen(before: Manifest, after: Manifest): Change[] {
 
 /**
  * PRESENCE, loss only. P1 a root gone (never for a volume), P2 a recorded entry gone or of another
- * kind, P3 a counted folder down to fewer than half of its children and by at least two. With
- * `dirsOnly` (the tripwire) P2 looks at folders only.
+ * kind, P3 a counted folder down to fewer than half of its children and by at least two, or whose
+ * children (two or more at the baseline) can no longer be counted. A folder empty at the baseline is
+ * never compared. With `dirsOnly` (the tripwire) P2 looks at folders only.
  */
 function diffPresence(before: PresenceSection[], after: PresenceSection[], roots: PresenceRoot[], notes: string[], dirsOnly = false): Change[] {
   const changes: Change[] = []
@@ -439,13 +504,20 @@ function diffPresence(before: PresenceSection[], after: PresenceSection[], roots
       changes.push({ class: 'PRESENCE', root: b.root, path: '', kind: 'root-gone' })
       continue
     }
+    const vol = opts?.volume ? { volume: true } : {}
     for (const [name, e] of Object.entries(b.entries)) {
-      if (opts?.counts && e.k === 'd' && e.n === 0) continue
+      if (e.k === 'd' && e.n === 0) continue
       if (dirsOnly && e.k !== 'd') continue
       const x = a.entries[name]
-      if (!x || x.k !== e.k) { changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'gone' }); continue }
-      if (opts?.counts && e.k === 'd' && e.n !== null && x.n !== null && x.n < e.n / 2 && e.n - x.n >= 2) {
-        changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> ${x.n}` })
+      if (!x || x.k !== e.k) {
+        // On a volume the detail names what was there, for a sentence the owner can read.
+        const noun = e.k === 'd' ? 'folder' : e.k === 'l' ? 'link' : 'file'
+        changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'gone', ...(opts?.volume ? { detail: noun, volume: true } : {}) })
+        continue
+      }
+      if (opts?.counts && e.k === 'd' && e.n !== null && e.n >= 2) {
+        if (x.n === null) changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> uncountable`, ...vol })
+        else if (x.n < e.n / 2 && e.n - x.n >= 2) changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> ${x.n}`, ...vol })
       }
     }
   }
@@ -454,8 +526,25 @@ function diffPresence(before: PresenceSection[], after: PresenceSection[], roots
 
 type Diff = Pick<Compare, 'changed' | 'changes' | 'changeCount' | 'summary' | 'publicSummary' | 'firstClass' | 'firstRoot' | 'notes'>
 
-const changeKey = (c: Change) => `${c.class}|${keyOf(c.root)}|${c.path}|${c.kind}`
+/** No kind: a path that differs from the baseline on both walks is a change in whatever form. */
+const changeKey = (c: Change) => `${c.class}|${keyOf(c.root)}|${c.path}`
 const sortKey = (c: Change) => `${c.class === 'FROZEN' ? 0 : 1}|${c.root}|${c.path}`
+
+/** One change in words. A change at the top of a drive names the drive and the entry plainly. */
+function described(c: Change): string {
+  if (c.volume) {
+    const drive = c.root.replace(/[\\/]+$/, '') + '\\'
+    if (c.kind === 'gone') return `drive ${drive}, top-level ${c.detail ?? 'entry'} "${c.path}" gone`
+    if (c.kind === 'emptied') return `drive ${drive}, top-level folder "${c.path}" emptied (${c.detail})`
+  }
+  const where = c.path ? `${c.root}/${c.path}` : c.root
+  return `${c.class} ${where} ${c.kind}${c.detail ? ` (${c.detail})` : ''}`
+}
+
+/** Every change is known and is at the top of a drive integrity labels cannot protect. */
+function onlyVolumeChanges(c: { changes: Change[]; changeCount: number }): boolean {
+  return c.changes.length > 0 && c.changes.length === c.changeCount && c.changes.every(x => x.volume === true)
+}
 
 function finish(all: Change[], notes: string[]): Diff {
   const sorted = [...all].sort((x, y) => (sortKey(x) < sortKey(y) ? -1 : sortKey(x) > sortKey(y) ? 1 : 0))
@@ -463,13 +552,21 @@ function finish(all: Change[], notes: string[]): Diff {
   if (!first) {
     return { changed: false, changes: [], changeCount: 0, summary: 'no change in protected folders', publicSummary: 'no change in protected folders', firstClass: null, firstRoot: null, notes }
   }
-  const where = first.path ? `${first.root}/${first.path}` : first.root
+  const n = sorted.length
+  const volumeOnly = sorted.every(c => c.volume === true)
+  // The owner's own tidy-up or edit while a run was open latches like an attack; the page says so.
+  const models = sorted.some(c => c.class === 'FROZEN' && keyOf(c.root) === keyOf(modelsDir()))
+    ? '; a change in the models folder also needs: bun scripts/cynco-guard.mjs hash-models' : ''
   return {
     changed: true,
     changes: sorted.slice(0, MAX_CHANGES),
-    changeCount: sorted.length,
-    summary: `${sorted.length} change(s) in protected folders; first: ${first.class} ${where} ${first.kind}${first.detail ? ` (${first.detail})` : ''}`,
-    publicSummary: `${sorted.length} change(s) in protected folders (first: ${first.class})`,
+    changeCount: n,
+    summary: volumeOnly
+      ? `${n} change(s) in protected folders, all at the top of drives without integrity labels; first: ${described(first)}. If you removed or emptied it yourself while a run was open, this is your own change, not an attack: look at the drive, then clear the latch`
+      : `${n} change(s) in protected folders; first: ${described(first)}. If you changed it yourself while a run was open (open runs: bun scripts/cynco-guard.mjs status), it is your own change: clear the latch, and the next run's baseline takes the folders as they are then${models}`,
+    publicSummary: volumeOnly
+      ? `${n} change(s) at the top of drives without integrity labels (first: ${first.class})`
+      : `${n} change(s) in protected folders (first: ${first.class})`,
     firstClass: first.class,
     firstRoot: first.root,
     notes,
@@ -500,6 +597,13 @@ export function takeBaseline(a: {
   volumes?: () => Array<{ root: string; kind: 'local' | 'removable' | 'network' }>; now?: () => Date
   /** The sandbox root the guard folder must not be inside; default `sandboxRoot()`. */
   sandboxRoot?: string | null
+  /**
+   * The process that will settle this baseline (an in-process starter passes its own pid). When it is
+   * gone and the baseline is still open, the baseline is an orphan (`orphanedBaselines`).
+   */
+  holderPid?: number | null
+  /** The run's longest life, its own time limit with a margin; a baseline still open after it is an orphan. Default a day. */
+  maxRunMs?: number | null
 }): { runId: string; takenAt: string; frozenEntries: number; presenceEntries: number; ms: number; notes: string[] } {
   const t0 = Date.now()
   if (typeof a.runId !== 'string' || !RUN_ID_RE.test(a.runId)) throw new ManifestError(`${a.runId} is not a run id`)
@@ -507,6 +611,10 @@ export function takeBaseline(a: {
   const home = resolve(a.home ?? homedir())
   const refusal = haltRefusal(a.guard, home, { missionCwd: a.cwd ?? null, sandboxRoot: a.sandboxRoot })
   if (refusal !== null) throw new ManifestError(refusal, 'refusal')
+  // A run whose starter died before its compare is compared before anything new starts: its changes
+  // would otherwise be folded into the next run's baseline and never be seen.
+  const orphan = orphanRefusal(guard)
+  if (orphan !== null) throw new ManifestError(orphan, 'refusal')
   if (a.checkModels !== false) {
     const models = checkModelsRecord({ guard })
     if (models !== null) throw new ManifestError(models, 'refusal')
@@ -514,9 +622,9 @@ export function takeBaseline(a: {
   const target = beforePath(guard, a.runId)
   if (existsSync(target)) throw new ManifestError(`a baseline for run ${a.runId} already exists; a run id is used once`)
 
-  let roots = a.roots
-  if (!roots) {
-    let volumes: Volume[]
+  // The volumes are listed when the roots are derived here, and whenever a caller hands a listing in.
+  let volumes: Volume[] | null = null
+  if (!a.roots || a.volumes) {
     try {
       volumes = (a.volumes ?? listUnprotectedVolumes)().map(v => ({ root: v.root, kind: v.kind }))
     } catch (e) {
@@ -524,8 +632,10 @@ export function takeBaseline(a: {
       const msg = textOf(e)
       throw new ManifestError(msg.startsWith('the attached volumes could not be listed') ? msg : `the attached volumes could not be listed (${msg})`)
     }
-    roots = protectedRoots({ home, volumes })
+    const onVolume = guardVolumeRefusal(guard, volumes.map(v => v.root))
+    if (onVolume !== null) throw new ManifestError(onVolume, 'refusal')
   }
+  const roots = a.roots ?? protectedRoots({ home, volumes: volumes ?? [] })
 
   const exclude = [a.cwd, ...(a.also ?? [])]
     .filter((p): p is string => typeof p === 'string' && p.trim() !== '')
@@ -540,7 +650,8 @@ export function takeBaseline(a: {
     }
   }
 
-  const m = takeManifest(roots, { runId: a.runId, by: a.by, home, exclude, now: a.now })
+  const holder = typeof a.holderPid === 'number' && a.holderPid > 0 ? { pid: a.holderPid, host: hostname() } : null
+  const m = takeManifest(roots, { runId: a.runId, by: a.by, home, exclude, now: a.now, holder, maxRunMs: a.maxRunMs ?? DEFAULT_MAX_RUN_MS })
   try {
     ensureSub(guard, 'manifests')
     if (existsSync(target)) throw new ManifestError(`a baseline for run ${a.runId} already exists; a run id is used once`)
@@ -572,6 +683,8 @@ function readBaseline(guard: string, runId: string): Opened {
   try {
     const m = JSON.parse(text) as Manifest
     if (!m || m.schema !== 1 || !Array.isArray(m.frozen) || !Array.isArray(m.presence) || !m.roots) return { state: 'unreadable', why: 'not a baseline' }
+    // A copied or misnamed baseline would settle against another run's roots and time.
+    if (m.runId !== runId) return { state: 'unreadable', why: `it is the baseline of run ${String(m.runId)}` }
     return { state: 'open', manifest: m }
   } catch (e) {
     return { state: 'unreadable', why: textOf(e) }
@@ -612,25 +725,33 @@ function readChecks(guard: string): CheckLine[] {
   return out
 }
 
+/**
+ * The recorded settle of a run. A change wins over a clean line (a second settle that found a change,
+ * or a baseline that was moved to `tripped/`): a clean line written earlier is never the answer then.
+ */
 function recordedSettle(guard: string, runId: string): Compare | null {
-  const l = readChecks(guard).find(c => c.run === runId && c.kind === 'settle')
-  if (!l) return null
+  const lines = readChecks(guard).filter(c => c.run === runId && c.kind === 'settle')
+  if (lines.length === 0) return null
+  const l = lines.find(c => c.changed) ?? lines[lines.length - 1]!
+  const tripped = existsSync(join(guard, 'manifests', 'tripped', `${runId}${BEFORE_SUFFIX}`))
+  const changed = l.changed || tripped
+  const publicSummary = changed && !l.changed ? 'a change was recorded for this run (its baseline was moved to tripped/)' : l.publicSummary
   return {
     run: runId, at: l.at, by: l.by, kind: 'settle', settled: true, from: 'recorded',
-    changed: l.changed, changes: [], changeCount: l.changeCount,
-    summary: l.publicSummary, publicSummary: l.publicSummary,
+    changed, changes: [], changeCount: changed && !l.changed ? 1 : l.changeCount,
+    summary: publicSummary, publicSummary,
     firstClass: l.firstClass ?? null, firstRoot: l.firstRoot ?? null,
     entries: l.entries ?? 0, ms: l.ms, notes: [], latchPath: null,
     ...(l.error ? { error: l.error } : {}),
   }
 }
 
-/** A compare that could not be done: a change, by rule 7. */
+/** A compare that could not be done: a change, by rule 7. The reason (it can name a path) stays out of `publicSummary`. */
 function failedCompare(runId: string, by: string, at: string, kind: 'reading' | 'settle', why: string, ms: number): Compare {
-  const s = `the integrity check could not be completed (${why})`
   return {
     run: runId, at, by, kind, settled: false, from: 'live', changed: true, changes: [], changeCount: 0,
-    summary: s, publicSummary: s, firstClass: null, firstRoot: null, entries: 0, ms, notes: [], latchPath: null, error: why,
+    summary: `${COMPARE_FAILED_PUBLIC} (${why})`, publicSummary: COMPARE_FAILED_PUBLIC,
+    firstClass: null, firstRoot: null, entries: 0, ms, notes: [], latchPath: null, error: why,
   }
 }
 
@@ -728,6 +849,8 @@ export async function compareRun(runId: string, o: {
  */
 export async function settleRun(runId: string, o: {
   by: string; page: Pager; guard?: string; notConfirmedDead?: string
+  /** The owner at the desk (`cynco-guard clear`): the compare is made and the baseline closed, but nothing latches or pages. */
+  noLatch?: boolean
   context?: Context
   confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date
 }): Promise<Compare> {
@@ -735,8 +858,9 @@ export async function settleRun(runId: string, o: {
   const now = o.now ?? (() => new Date())
   const t0 = Date.now()
   const at = now().toISOString()
-  const trip = (cmp: Compare, reason: LatchReason, detail?: string) =>
-    tripHalt({ by: o.by, run: runId, reason, page: o.page, compare: cmp, detail, guard, ...o.context, now: o.now })
+  const trip = async (cmp: Compare, reason: LatchReason, detail?: string): Promise<{ latchPath: string | null }> => o.noLatch
+    ? { latchPath: null }
+    : tripHalt({ by: o.by, run: runId, reason, page: o.page, compare: cmp, detail, guard, ...o.context, now: o.now })
   if (typeof runId !== 'string' || !RUN_ID_RE.test(runId)) {
     const cmp = failedCompare(String(runId), o.by, at, 'settle', `${runId} is not a run id`, Date.now() - t0)
     cmp.latchPath = (await trip(cmp, 'manifest-error', cmp.error)).latchPath
@@ -780,7 +904,6 @@ export async function settleRun(runId: string, o: {
         return cmp
       }
       const cmp = compareFrom(runId, o.by, at, 'settle', w.diff, w.entries, Date.now() - t0, true)
-      appendCheck(guard, lineOf(cmp, opened.manifest.takenAt))
       const from = beforePath(guard, runId)
       try {
         if (!cmp.changed) {
@@ -796,16 +919,26 @@ export async function settleRun(runId: string, o: {
         }
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-          // Another caller settled first: its record is the answer. A change this walk saw still latches.
-          const rec = recordedSettle(guard, runId)
-          if (rec) {
-            if (cmp.changed) rec.latchPath = (await trip(cmp, 'integrity-change')).latchPath
-            return rec
+          // Another caller closed the baseline first. A change THIS walk saw is the answer (and latches)
+          // whatever the other caller recorded; a clean walk returns the other caller's record.
+          if (cmp.changed) {
+            cmp.notes.push('another caller closed the baseline first; this walk found a change')
+            appendCheck(guard, lineOf(cmp, opened.manifest.takenAt))
+            cmp.latchPath = (await trip(cmp, 'integrity-change')).latchPath
+            return cmp
           }
+          const rec = recordedSettle(guard, runId)
+          if (rec) return rec
         }
+        // The baseline was not closed: this compare is not the settle the caller can rely on, and it is
+        // logged as a reading, so the record answers with a later settle, never with this line.
+        cmp.settled = false
+        cmp.kind = 'reading'
         cmp.notes.push(`the baseline could not be closed (${codeOf(e)})`)
         console.error(`[guard] the baseline of run ${runId} could not be closed (${codeOf(e)})`)
       }
+      // Written once the baseline is closed, or known not to be: a `settle` line means it was closed.
+      appendCheck(guard, lineOf(cmp, opened.manifest.takenAt))
       if (cmp.changed) cmp.latchPath = (await trip(cmp, 'integrity-change')).latchPath
       return cmp
     }
@@ -827,8 +960,10 @@ export async function settleRun(runId: string, o: {
   }
 }
 
-/** Reads the first few kilobytes of a baseline for its `takenAt` and `by` (a baseline is about 3 MB). */
-function headOf(file: string): { takenAt: string | null; by: string | null } {
+type Head = { takenAt: string | null; by: string | null; holderPid: number | null; holderHost: string | null; deadline: string | null }
+
+/** Reads the first few kilobytes of a baseline for its `takenAt`, `by`, holder and deadline (a baseline is about 3 MB). */
+function headOf(file: string): Head {
   let fd: number | null = null
   try {
     fd = openSync(file, 'r')
@@ -837,17 +972,27 @@ function headOf(file: string): { takenAt: string | null; by: string | null } {
     const head = buf.subarray(0, n).toString('utf-8')
     const takenAt = /"takenAt":"([^"]*)"/.exec(head)?.[1] ?? null
     const by = /"by":"((?:[^"\\]|\\.)*)"/.exec(head)?.[1] ?? null
-    return { takenAt, by: by === null ? null : (JSON.parse(`"${by}"`) as string) }
+    const holder = /"holder":\{"pid":(\d+),"host":"((?:[^"\\]|\\.)*)"\}/.exec(head)
+    const deadline = /"deadline":"([^"]*)"/.exec(head)?.[1] ?? null
+    return {
+      takenAt, by: by === null ? null : (JSON.parse(`"${by}"`) as string),
+      holderPid: holder ? Number(holder[1]) : null, holderHost: holder ? (JSON.parse(`"${holder[2]}"`) as string) : null, deadline,
+    }
   } catch (e) {
     console.error(`[guard] the baseline ${file} could not be read (${codeOf(e)})`)
-    return { takenAt: null, by: null }
+    return { takenAt: null, by: null, holderPid: null, holderHost: null, deadline: null }
   } finally {
     if (fd !== null) closeSync(fd)
   }
 }
 
+export interface OpenBaseline {
+  runId: string; takenAt: string; by: string; ageMs: number
+  holderPid: number | null; holderHost: string | null; deadline: string | null
+}
+
 /** Every open baseline, oldest first. Throws when the manifests folder exists and cannot be listed. */
-export function openBaselines(guard: string = guardDir()): Array<{ runId: string; takenAt: string; by: string; ageMs: number }> {
+export function openBaselines(guard: string = guardDir()): OpenBaseline[] {
   const dir = join(guard, 'manifests')
   let names: string[]
   try {
@@ -856,7 +1001,7 @@ export function openBaselines(guard: string = guardDir()): Array<{ runId: string
     if (isMissing(e)) return []
     throw new Error(`the open integrity baselines could not be listed (${codeOf(e)})`)
   }
-  const out: Array<{ runId: string; takenAt: string; by: string; ageMs: number }> = []
+  const out: OpenBaseline[] = []
   for (const name of names.filter(n => n.endsWith(BEFORE_SUFFIX))) {
     const file = join(dir, name)
     const h = headOf(file)
@@ -864,32 +1009,133 @@ export function openBaselines(guard: string = guardDir()): Array<{ runId: string
     if (takenAt === null) {
       try { takenAt = statSync(file).mtime.toISOString() } catch (e) { takenAt = new Date(0).toISOString(); console.error(`[guard] ${file}: ${codeOf(e)}`) }
     }
-    out.push({ runId: name.slice(0, -BEFORE_SUFFIX.length), takenAt, by: h.by ?? '(unknown)', ageMs: Date.now() - Date.parse(takenAt) })
+    out.push({
+      runId: name.slice(0, -BEFORE_SUFFIX.length), takenAt, by: h.by ?? '(unknown)', ageMs: Date.now() - Date.parse(takenAt),
+      holderPid: h.holderPid, holderHost: h.holderHost, deadline: h.deadline,
+    })
   }
   return out.sort((x, y) => (x.takenAt < y.takenAt ? -1 : x.takenAt > y.takenAt ? 1 : 0))
 }
 
+// ─── Orphaned baselines (review of wave 5, finding 1) ────────────────────────────────────────
+
+export interface Orphan { runId: string; takenAt: string; by: string; why: string; restarted: boolean }
+
+/**
+ * Open baselines that nothing will ever settle: the machine restarted after one was taken (every
+ * process of that run is dead), or its holder (the in-process starter that named itself) is gone, or
+ * its time limit has passed. A baseline held by this process is never an orphan. Throws when the
+ * manifests folder cannot be listed.
+ */
+export function orphanedBaselines(guard: string = guardDir(), o: {
+  now?: number; bootTimeMs?: number; alive?: (pid: number) => boolean; host?: string
+} = {}): Orphan[] {
+  const now = o.now ?? Date.now()
+  const boot = o.bootTimeMs ?? Date.now() - uptime() * 1000
+  const alive = o.alive ?? processAlive
+  const host = o.host ?? hostname()
+  const out: Orphan[] = []
+  for (const b of openBaselines(guard)) {
+    const t = Date.parse(b.takenAt)
+    const base = { runId: b.runId, takenAt: b.takenAt, by: b.by }
+    if (b.holderPid === process.pid && b.holderHost === host) continue
+    if (Number.isFinite(t) && t < boot - BOOT_SLACK_MS) {
+      out.push({ ...base, why: 'the machine restarted after it was taken', restarted: true })
+    } else if (b.holderPid !== null && b.holderHost === host && !alive(b.holderPid)) {
+      out.push({ ...base, why: `its starter (${b.by}, pid ${b.holderPid}) is gone`, restarted: false })
+    } else if (b.deadline !== null && Number.isFinite(Date.parse(b.deadline)) && now > Date.parse(b.deadline)) {
+      out.push({ ...base, why: `its time limit passed at ${b.deadline}`, restarted: false })
+    }
+  }
+  return out
+}
+
+/** A sentence while an orphaned baseline exists (or the open baselines cannot be listed), else null. */
+export function orphanRefusal(guard: string = guardDir(), o: Parameters<typeof orphanedBaselines>[1] = {}): string | null {
+  let orphans: Orphan[]
+  try {
+    orphans = orphanedBaselines(guard, o)
+  } catch (e) {
+    return `${textOf(e)}; a run that was never compared cannot be ruled out`
+  }
+  const first = orphans[0]
+  if (!first) return null
+  const more = orphans.length > 1 ? ` (and ${orphans.length - 1} more)` : ''
+  return `run ${first.runId} was never compared (${first.why})${more}; nothing new starts until it is. The daemon compares it on its next tick; at the desk: bun scripts/cynco-guard.mjs post ${first.runId}`
+}
+
+/**
+ * The daemon's answer to an orphan, once per tick while no latch stands: a run from before a restart
+ * is settled normally (it is dead); any other orphan is settled as not confirmed dead, which latches
+ * and pages. Stops at the first latch. Never throws.
+ */
+export async function settleOrphans(o: {
+  by: string; page: Pager; guard?: string; home?: string
+  now?: number; bootTimeMs?: number; alive?: (pid: number) => boolean; confirmMs?: number; sleep?: (ms: number) => void
+}): Promise<Compare[]> {
+  const guard = o.guard ?? guardDir()
+  const out: Compare[] = []
+  if (haltState(o.guard, o.home).state !== 'clear') return out
+  let orphans: Orphan[]
+  try {
+    orphans = orphanedBaselines(guard, o)
+  } catch (e) {
+    console.error(`[guard] the open integrity baselines could not be looked at (${textOf(e)})`)
+    return out
+  }
+  for (const orphan of orphans) {
+    const c = await settleRun(orphan.runId, {
+      by: o.by, page: o.page, guard: o.guard, confirmMs: o.confirmMs, sleep: o.sleep,
+      ...(orphan.restarted ? {} : { notConfirmedDead: `${orphan.why}; the run was never compared` }),
+    })
+    out.push(c)
+    if (c.latchPath !== null) break
+  }
+  return out
+}
+
 // ─── haltState, haltRefusal ──────────────────────────────────────────────────────────────────
 
-function readLatch(path: string): Latch | null {
+/** `quiet`: a first read that is retried; its failure is not worth a line. */
+function readLatch(path: string, o: { quiet?: boolean } = {}): Latch | null {
   let text: string
   try {
     text = readFileSync(path, 'utf-8')
   } catch (e) {
-    console.error(`[guard] the integrity latch ${path} could not be read (${codeOf(e)})`)
+    if (!o.quiet) console.error(`[guard] the integrity latch ${path} could not be read (${codeOf(e)})`)
     return null
   }
   try {
     const l = JSON.parse(text) as Latch
     return l && typeof l === 'object' && typeof l.publicSummary === 'string' ? l : null
   } catch (e) {
-    console.error(`[guard] the integrity latch ${path} is not a latch record (${textOf(e)})`)
+    if (!o.quiet) console.error(`[guard] the integrity latch ${path} is not a latch record (${textOf(e)})`)
     return null
   }
 }
 
-/** Read-only and cheap: two `stat` calls, one `realpath`, one small read when latched. */
-export function haltState(guard?: string, home?: string, o: { sandboxRoot?: string | null; missionCwd?: string | null } = {})
+const DRIVE_PATH = /^[A-Za-z]:[\\/]/
+const UNC_PATH = /^(\\\\|\/\/)/
+
+/**
+ * The guard folder is on a drive `listUnprotectedVolumes` names (no integrity labels there, so a
+ * contained process could change the latch, the baselines and the log): its sentence, else null.
+ */
+function guardVolumeRefusal(dir: string, volumes: string[], platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32' || volumes.length === 0) return null
+  const driveOf = (p: string) => /^([A-Za-z]):/.exec(p)?.[1]?.toUpperCase() ?? null
+  const drive = driveOf(realPathOf(dir, { quiet: true }))
+  const hit = drive === null ? undefined : volumes.find(v => driveOf(v) === drive)
+  return hit === undefined ? null
+    : `the guard folder ${dir} is on ${hit}, which carries no integrity labels; set LOCALCODE_GUARD_DIR to a folder on a local NTFS drive, outside the home folder`
+}
+
+/**
+ * Read-only and cheap: three `stat` calls, two `realpath`, one small read when latched. The guard
+ * folder is judged first (form, existence, a real folder, where it resolves), then the latch, with
+ * `lstat`: anything at that name, a dangling link included, is the latch.
+ */
+export function haltState(guard?: string, home?: string, o: { sandboxRoot?: string | null; missionCwd?: string | null; unprotectedVolumes?: string[] } = {})
   : { state: 'clear' } | { state: 'latched'; latchPath: string; latch: Latch | null; summary: string } | { state: 'unusable'; summary: string } {
   const source = guard === undefined ? guardDirSource() : null
   const dir = guard ?? source!.dir
@@ -897,9 +1143,14 @@ export function haltState(guard?: string, home?: string, o: { sandboxRoot?: stri
   if (!isAbsolute(dir)) {
     return unusable(`the guard folder ${dir} is not an absolute path on this system; set LOCALCODE_GUARD_DIR to a folder outside the home folder`)
   }
+  if (process.platform === 'win32' && !DRIVE_PATH.test(dir)) {
+    // `\cynco-guard` resolves against each process's own current drive; a share has no integrity labels.
+    return unusable(`the guard folder ${dir} does not start with a drive letter; set LOCALCODE_GUARD_DIR to a folder on a local NTFS drive, such as C:/cynco-guard`)
+  }
   let st: Stats
   try {
-    st = statSync(dir)
+    st = lstatSync(dir)
+    if (!st.isSymbolicLink()) st = statSync(dir)
   } catch (e) {
     if (!isMissing(e)) return unusable(`the guard folder ${dir} cannot be read (${codeOf(e)})`)
     if (source) {
@@ -908,37 +1159,41 @@ export function haltState(guard?: string, home?: string, o: { sandboxRoot?: stri
     }
     return unusable(`the guard folder ${dir} does not exist; scripts\\cynco-containment-setup.ps1 creates it, a run never does`)
   }
+  if (st.isSymbolicLink()) return unusable(`the guard folder ${dir} is a link; the guard folder must be a real folder`)
   if (!st.isDirectory()) return unusable(`the guard folder ${dir} is not a folder`)
 
-  const latchPath = join(dir, LATCH_FILE)
-  let latched = false
-  try {
-    statSync(latchPath)
-    latched = true
-  } catch (e) {
-    if (!isMissing(e)) return unusable(`the guard folder ${dir} cannot be read (${codeOf(e)})`)
-  }
-  if (latched) {
-    const latch = readLatch(latchPath)
-    const what = latch ? `${latch.publicSummary}, set ${latch.at} by ${latch.by}` : 'latch unreadable'
-    return {
-      state: 'latched', latchPath, latch,
-      summary: `the integrity latch is present at ${shown(dir, LATCH_FILE)} (${what}); only the owner clears it, at a terminal, with: ${GUARD_CLEAR_COMMAND}`,
-    }
-  }
-
   const real = realPathOf(dir, { quiet: true })
+  if (process.platform === 'win32' && (UNC_PATH.test(real) || !DRIVE_PATH.test(real))) {
+    return unusable(`the guard folder ${dir} resolves to ${real}, which is not on a local drive`)
+  }
   const h = home ?? homedir()
   if (isInside(realPathOf(h, { quiet: true }), real)) return unusable(`the guard folder ${dir} resolves inside the home folder ${h}`)
   const sb = o.sandboxRoot === undefined ? sandboxRoot() : o.sandboxRoot
   if (sb && isInside(realPathOf(sb, { quiet: true }), real)) return unusable(`the guard folder ${dir} resolves inside the sandbox root ${sb}`)
   const cwd = o.missionCwd
   if (cwd && isInside(realPathOf(cwd, { quiet: true }), real)) return unusable(`the guard folder ${dir} resolves inside the mission folder ${cwd}`)
-  return { state: 'clear' }
+  const onVolume = guardVolumeRefusal(dir, o.unprotectedVolumes ?? [])
+  if (onVolume !== null) return unusable(onVolume)
+
+  const latchPath = join(dir, LATCH_FILE)
+  let entry: Stats | null = null
+  try {
+    entry = lstatSync(latchPath)
+  } catch (e) {
+    if (!isMissing(e)) return unusable(`the guard folder ${dir} cannot be read (${codeOf(e)})`)
+  }
+  if (entry === null) return { state: 'clear' }
+  const latch = entry.isFile() ? readLatch(latchPath) : null
+  const what = latch ? `${latch.publicSummary}, set ${latch.at} by ${latch.by}`
+    : entry.isSymbolicLink() ? 'latch unreadable: it is a link' : 'latch unreadable'
+  return {
+    state: 'latched', latchPath, latch,
+    summary: `the integrity latch is present at ${shown(dir, LATCH_FILE)} (${what}); only the owner clears it, at a terminal, with: ${GUARD_CLEAR_COMMAND}`,
+  }
 }
 
 /** Null only when the guard folder is usable and holds no latch; otherwise the reason sentence. */
-export function haltRefusal(guard?: string, home?: string, o: { sandboxRoot?: string | null; missionCwd?: string | null } = {}): string | null {
+export function haltRefusal(guard?: string, home?: string, o: { sandboxRoot?: string | null; missionCwd?: string | null; unprotectedVolumes?: string[] } = {}): string | null {
   const s = haltState(guard, home, o)
   return s.state === 'clear' ? null : s.summary
 }
@@ -976,6 +1231,8 @@ export async function tripHalt(a: {
   by: string; run: string; reason: LatchReason; page: Pager
   compare?: Compare; detail?: string; guard?: string
   campaignId?: string; wave?: number; cwd?: string; now?: () => Date
+  /** The short wait before an existing latch is read a second time; tests inject it. */
+  sleep?: (ms: number) => void
 }): Promise<{ latched: boolean; alreadyLatched: boolean; paged: boolean; latchPath: string }> {
   const guard = a.guard ?? guardDir()
   const latchPath = join(guard, LATCH_FILE)
@@ -990,11 +1247,15 @@ export async function tripHalt(a: {
     const at = nowDate.toISOString()
     const cmp = a.compare
     const detail = a.detail ?? null
+    // The detail can name a path, so only the owner's summary carries it (rule 15); the engine's
+    // not-dead reason is a pid or a time, and its public form keeps it as the specification says.
     const fallback = a.reason === 'engine-not-confirmed-dead' ? `the engine is not confirmed dead (${detail ?? 'no reason given'})`
-      : a.reason === 'manifest-error' ? `the integrity check could not be completed (${detail ?? 'no reason given'})`
+      : a.reason === 'manifest-error' ? `${COMPARE_FAILED_PUBLIC} (${detail ?? 'no reason given'})`
         : `a protected folder changed (${detail ?? 'no detail given'})`
+    const publicFallback = a.reason === 'engine-not-confirmed-dead' ? fallback
+      : a.reason === 'manifest-error' ? COMPARE_FAILED_PUBLIC : 'a protected folder changed'
     const summary = cmp?.summary ?? fallback
-    const publicSummary = cmp?.publicSummary ?? fallback
+    const publicSummary = cmp?.publicSummary ?? publicFallback
     const latch: Latch = {
       schema: 1, at, by: a.by, pid: process.pid, host: hostname(),
       run: a.run, reason: a.reason, detail,
@@ -1005,19 +1266,39 @@ export async function tripHalt(a: {
     }
     try { latch.baseline = baselineOf(guard, a.run) } catch (e) { console.error(`[guard] the baseline of run ${a.run} could not be looked for (${codeOf(e)})`) }
 
-    // 1. The latch.
+    // 1. The latch. Anything already at that name is the latch, and nothing is opened through it:
+    //    `wx` follows a dangling link on Windows and would create the link's target elsewhere.
     let fd: number | null = null
+    let existing: Stats | null = null
     try {
-      fd = openSync(latchPath, 'wx')
-      latched = true
+      existing = lstatSync(latchPath)
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+      if (!isMissing(e)) console.error(`[guard] the integrity latch ${latchPath} could not be looked at (${codeOf(e)}); creating it`)
+    }
+    if (existing === null) {
+      try {
+        fd = openSync(latchPath, 'wx')
         latched = true
-        alreadyLatched = true
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+          latched = true
+          alreadyLatched = true
+          try { existing = lstatSync(latchPath) } catch (e2) { console.error(`[guard] the integrity latch ${latchPath} could not be looked at (${codeOf(e2)})`) }
+        } else {
+          notWritten = codeOf(e)
+          console.error(`[guard] THE INTEGRITY LATCH COULD NOT BE WRITTEN (${notWritten})`)
+        }
+      }
+    } else {
+      latched = true
+      alreadyLatched = true
+    }
+    if (alreadyLatched && existing !== null && existing.isFile()) {
+      // A latch another process created a moment ago may not hold its record yet: one short re-read.
+      existingRun = readLatch(latchPath, { quiet: true })?.run ?? null
+      if (existingRun === null) {
+        ;(a.sleep ?? syncSleep)(LATCH_REREAD_MS)
         existingRun = readLatch(latchPath)?.run ?? null
-      } else {
-        notWritten = codeOf(e)
-        console.error(`[guard] THE INTEGRITY LATCH COULD NOT BE WRITTEN (${notWritten})`)
       }
     }
     if (fd !== null) {
@@ -1043,10 +1324,13 @@ export async function tripHalt(a: {
     const sameRun = alreadyLatched && existingRun === a.run
     if (!sameRun) {
       const lead = notWritten ? `THE INTEGRITY LATCH COULD NOT BE WRITTEN (${notWritten}). ` : ''
+      // A loss only at the top of the owner's own drives (a tidy-up there is likely) still stops
+      // everything, one step below the priority of a loss of the home or a frozen folder.
+      const volumeOnly = (a.reason === 'integrity-change' || a.reason === 'presence-lost') && cmp !== undefined && onlyVolumeChanges(cmp)
       const page: Page = {
         title: PAGE_TITLE,
         message: `${lead}${a.by} ${a.run}: ${summary}. Nothing unattended runs until you clear it at the desk: ${GUARD_CLEAR_COMMAND}`,
-        priority: 5,
+        priority: volumeOnly && notWritten === null ? VOLUME_PAGE_PRIORITY : PAGE_PRIORITY,
       }
       let why: string | null = null
       try {
@@ -1074,9 +1358,49 @@ export async function tripHalt(a: {
   return { latched, alreadyLatched, paged: delivered || flushed > 0, latchPath }
 }
 
-/** Oldest first; each delivered page (marked `(late) `) moves to `sent/`; stops at the first failure. */
+/** `<name>.json.<pid>` in `sending/`: a page one process has claimed and is sending. */
+const CLAIM = /^(.+\.json)\.(\d+)$/
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    // EPERM: it exists and belongs to someone else. Anything but ESRCH is read as alive (never re-sent twice).
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+/** Claims left in `sending/` by a process that died mid-send go back to `unsent/`. */
+function reclaimDeadClaims(guard: string): void {
+  let names: string[]
+  try {
+    names = readdirSync(join(guard, 'sending'))
+  } catch (e) {
+    if (!isMissing(e)) console.error(`[guard] the pages being sent could not be listed (${codeOf(e)})`)
+    return
+  }
+  for (const n of names) {
+    const m = CLAIM.exec(n)
+    if (!m) continue
+    const pid = Number(m[2])
+    if (pid === process.pid || processAlive(pid)) continue
+    try {
+      renameSync(join(guard, 'sending', n), join(ensureSub(guard, 'unsent'), m[1]!))
+    } catch (e) {
+      console.error(`[guard] the page ${n} left by process ${pid} could not be put back into unsent/ (${codeOf(e)})`)
+    }
+  }
+}
+
+/**
+ * Oldest first; each delivered page (marked `(late) `) moves to `sent/`; stops at the first failure.
+ * Each page is claimed (renamed into `sending/` under this process's id) before it is sent, so two
+ * flushes at once, in one process or two, never deliver the same page twice.
+ */
 export async function flushUnsentPages(guard: string, send: Pager): Promise<{ sent: number; left: number }> {
   const dir = join(guard, 'unsent')
+  reclaimDeadClaims(guard)
   let names: string[]
   try {
     names = readdirSync(dir).filter(n => n.endsWith('.json'))
@@ -1084,18 +1408,35 @@ export async function flushUnsentPages(guard: string, send: Pager): Promise<{ se
     if (!isMissing(e)) console.error(`[guard] the unsent pages could not be listed (${codeOf(e)})`)
     return { sent: 0, left: 0 }
   }
-  const items = names.map(name => {
+  const items: Array<{ name: string; page: (Page & { at?: string }) | null; at: string }> = []
+  for (const name of names) {
     try {
       const p = JSON.parse(readFileSync(join(dir, name), 'utf-8')) as Page & { at?: string }
-      return { name, page: p, at: typeof p.at === 'string' ? p.at : '' }
+      items.push({ name, page: p, at: typeof p.at === 'string' ? p.at : '' })
     } catch (e) {
+      // Gone since the listing: another flush has it.
+      if (isMissing(e)) continue
       console.error(`[guard] the unsent page ${name} cannot be read (${textOf(e)}); left in place`)
-      return { name, page: null, at: '' }
+      items.push({ name, page: null, at: '' })
     }
-  }).sort((x, y) => (x.at === y.at ? (x.name < y.name ? -1 : 1) : x.at < y.at ? -1 : 1))
+  }
+  items.sort((x, y) => (x.at === y.at ? (x.name < y.name ? -1 : 1) : x.at < y.at ? -1 : 1))
   let sent = 0
+  let left = 0
+  let stopped = false
   for (const it of items) {
-    if (!it.page) continue
+    if (!it.page || stopped) { left++; continue }
+    let claimed: string
+    try {
+      claimed = join(ensureSub(guard, 'sending'), `${it.name}.${process.pid}`)
+      renameSync(join(dir, it.name), claimed)
+    } catch (e) {
+      if (isMissing(e)) continue
+      console.error(`[guard] the unsent page ${it.name} could not be claimed (${codeOf(e)}); left in place`)
+      left++
+      stopped = true
+      continue
+    }
     let ok = false
     try {
       ok = (await send({ title: it.page.title, message: `(late) ${it.page.message}`, priority: it.page.priority })) === true
@@ -1103,33 +1444,88 @@ export async function flushUnsentPages(guard: string, send: Pager): Promise<{ se
       console.error(`[guard] an unsent page could not be sent again (${textOf(e)})`)
       ok = false
     }
-    if (!ok) break
+    if (!ok) {
+      try {
+        renameSync(claimed, join(dir, it.name))
+      } catch (e) {
+        console.error(`[guard] the unsent page ${it.name} could not be put back into unsent/ (${codeOf(e)}); it waits in sending/`)
+      }
+      left++
+      stopped = true
+      continue
+    }
     sent++
     try {
-      renameSync(join(dir, it.name), join(ensureSub(guard, 'sent'), it.name))
+      renameSync(claimed, join(ensureSub(guard, 'sent'), it.name))
     } catch (e) {
+      // Marked as delivered where it is, so no later flush sends it again.
       console.error(`[guard] the delivered page ${it.name} could not be moved to sent/ (${codeOf(e)})`)
+      try {
+        renameSync(claimed, `${claimed}.delivered`)
+      } catch (e2) {
+        console.error(`[guard] the delivered page ${it.name} could not be marked delivered either (${codeOf(e2)}); it may be sent again`)
+      }
     }
   }
-  return { sent, left: items.length - sent }
+  return { sent, left }
 }
 
-/** Moves the latch into `cleared/` and logs it. The terminal check and the typed confirmation live in the CLI. */
-export function clearHalt(guard: string, o: { by: string; now?: () => Date }): { cleared: boolean; latch: Latch | null; archivedTo: string | null } {
+/**
+ * Moves the latch into `cleared/` and logs it. Only the guard command calls it, at a terminal, after
+ * the owner typed the word: it refuses (throws, changing nothing) unless `terminal` is an interactive
+ * terminal and `typed` is `CLEAR`. No other caller in the repository is allowed (a text pin in
+ * engine/__tests__/integrity.test.ts).
+ */
+export function clearHalt(guard: string, o: { by: string; now?: () => Date; terminal: { isTTY?: boolean } | null | undefined; typed: string })
+  : { cleared: boolean; latch: Latch | null; archivedTo: string | null; pagesWithdrawn?: number } {
+  if (o.terminal?.isTTY !== true) throw new Error('the integrity latch is cleared only by a person at a terminal; nothing was changed')
+  if (o.typed !== 'CLEAR') throw new Error('the integrity latch is cleared only after CLEAR is typed; nothing was changed')
   const latchPath = join(guard, LATCH_FILE)
-  if (!existsSync(latchPath)) return { cleared: false, latch: null, archivedTo: null }
-  const latch = readLatch(latchPath)
+  let entry: Stats | null = null
+  try {
+    entry = lstatSync(latchPath)
+  } catch (e) {
+    if (!isMissing(e)) throw e
+  }
+  if (entry === null) return { cleared: false, latch: null, archivedTo: null }
+  // A link at that name is moved as the link itself; nothing is read through it.
+  const latch = entry.isFile() ? readLatch(latchPath) : null
   const nowDate = (o.now ?? (() => new Date()))()
   const dir = ensureSub(guard, 'cleared')
   let target = join(dir, `HALT-${stampOf(nowDate)}.json`)
   for (let i = 1; existsSync(target); i++) target = join(dir, `HALT-${stampOf(nowDate)}-${i}.json`)
   renameSync(latchPath, target)
+  // Every page still waiting is about a latch the owner has just read and cleared at the desk: it is
+  // withdrawn into cleared/pages/, so the daemon does not deliver it later as a top-priority "(late)" page.
+  const withdrawn = withdrawUnsentPages(guard)
   try {
-    appendFileSync(join(guard, 'halt-log.jsonl'), JSON.stringify({ cleared: true, at: nowDate.toISOString(), by: o.by }) + '\n')
+    appendFileSync(join(guard, 'halt-log.jsonl'), JSON.stringify({ cleared: true, at: nowDate.toISOString(), by: o.by, pagesWithdrawn: withdrawn }) + '\n')
   } catch (e) {
     console.error(`[guard] the latch log could not be written (${codeOf(e)})`)
   }
-  return { cleared: true, latch, archivedTo: target }
+  return { cleared: true, latch, archivedTo: target, pagesWithdrawn: withdrawn }
+}
+
+/** Moves every unsent page (and any claim left by a dead process) into `cleared/pages/`. Never throws. */
+function withdrawUnsentPages(guard: string): number {
+  reclaimDeadClaims(guard)
+  let names: string[]
+  try {
+    names = readdirSync(join(guard, 'unsent')).filter(n => n.endsWith('.json'))
+  } catch (e) {
+    if (!isMissing(e)) console.error(`[guard] the unsent pages could not be listed (${codeOf(e)}); none were withdrawn`)
+    return 0
+  }
+  let moved = 0
+  for (const n of names) {
+    try {
+      renameSync(join(guard, 'unsent', n), join(ensureSub(join(guard, 'cleared'), 'pages'), n))
+      moved++
+    } catch (e) {
+      if (!isMissing(e)) console.error(`[guard] the unsent page ${n} could not be withdrawn (${codeOf(e)}); it may still be sent late`)
+    }
+  }
+  return moved
 }
 
 // ─── frozenWriteRefusal (entry 4.M5) ─────────────────────────────────────────────────────────
@@ -1346,24 +1742,39 @@ interface Tripwire {
   minGapMs: number
   now: () => number
   last: number | null
-  lost: boolean
   timer: ReturnType<typeof setInterval> | null
 }
 
+/**
+ * The shortest time between two looks. The look costs a few milliseconds (one listing of the home and
+ * of the state folder), so a model that deletes and then keeps calling tools quickly gets at most about
+ * one second of further tools (review of wave 5: it was ten).
+ */
+export const TRIPWIRE_MIN_GAP_MS = 1_000
+
 let wire: Tripwire | null = null
+/** A loss seen by this process. Kept for the life of the process: no stop and no second start clears it. */
+let lostForProcess: Loss | null = null
 
 const tripwireHalt = (ctx: RunContainment) =>
-  haltRefusal(ctx.folders.guard, ctx.home, { sandboxRoot: dirname(ctx.sandbox.root), missionCwd: ctx.missionCwd })
+  haltRefusal(ctx.folders.guard, ctx.home, {
+    sandboxRoot: dirname(ctx.sandbox.root), missionCwd: ctx.missionCwd, unprotectedVolumes: ctx.unprotectedVolumes,
+  })
 
 /**
- * Keeps the baseline's PRESENCE section (mapped network drives left out) and re-checks it on a
- * timer and before tool calls. One tripwire per process; starting again replaces the old one.
+ * Keeps the baseline's PRESENCE section and re-checks it on a timer and before tool calls. Volume
+ * roots are left out (mapped network drives and every other volume): a synchronous listing of a
+ * drive that sleeps or fails cannot be bounded and would hold the event loop; the baseline and the
+ * settling compare, run by the starter in its own process, compare them. One tripwire per process;
+ * starting again replaces the old one, unless a loss was already seen, which refuses the start and
+ * leaves everything as it is.
  */
 export function startPresenceTripwire(a: {
   ctx: RunContainment
   onLoss: (loss: { kind: 'presence' | 'latch'; summary: string; publicSummary: string; compare: Compare | null }) => void
   intervalMs?: number; minGapMs?: number; now?: () => number; timer?: boolean
 }): { ok: true; stop: () => void; folders: number; roots: number } | { ok: false; reason: string } {
+  if (lostForProcess !== null) return { ok: false, reason: INTEGRITY_LOSS_TO_MODEL }
   stopPresenceTripwire()
   if (!RUN_ID_RE.test(a.ctx.runId)) return { ok: false, reason: `${a.ctx.runId} is not a run id` }
   const refusal = tripwireHalt(a.ctx)
@@ -1382,16 +1793,20 @@ export function startPresenceTripwire(a: {
   } catch (e) {
     return { ok: false, reason: `the integrity baseline of run ${a.ctx.runId} cannot be read (${textOf(e)})` }
   }
-  if (!m || !m.roots || !Array.isArray(m.roots.presence) || !Array.isArray(m.presence)) {
+  if (!m || !m.roots || !Array.isArray(m.roots.presence) || !Array.isArray(m.presence)
+    || m.presence.some(p => !p || typeof p.entries !== 'object' || p.entries === null)) {
     return { ok: false, reason: `the integrity baseline of run ${a.ctx.runId} cannot be read (not a baseline)` }
   }
-  const roots = m.roots.presence.filter(r => !r.network)
+  if (m.runId !== a.ctx.runId) {
+    return { ok: false, reason: `the integrity baseline of run ${a.ctx.runId} cannot be read (it is the baseline of run ${String(m.runId)})` }
+  }
+  const roots = m.roots.presence.filter(r => !r.volume && !r.network)
   const kept = new Set(roots.map(r => keyOf(r.path)))
   const before = m.presence.filter(p => kept.has(keyOf(p.root)))
-  const folders = before.reduce((n, p) => n + Object.values(p.entries).filter(e => e.k === 'd').length, 0)
+  const folders = before.reduce((n, p) => n + Object.values(p.entries).filter(e => e?.k === 'd').length, 0)
   const w: Tripwire = {
     ctx: a.ctx, onLoss: a.onLoss, roots, before, exclude: Array.isArray(m.exclude) ? m.exclude : [],
-    minGapMs: a.minGapMs ?? 10_000, now: a.now ?? Date.now, last: null, lost: false, timer: null,
+    minGapMs: a.minGapMs ?? TRIPWIRE_MIN_GAP_MS, now: a.now ?? Date.now, last: null, timer: null,
   }
   wire = w
   if (a.timer !== false) {
@@ -1403,13 +1818,14 @@ export function startPresenceTripwire(a: {
 
 /**
  * Null while nothing was lost (or it is not time to look again); `INTEGRITY_LOSS_TO_MODEL` once a
- * loss was seen, for the rest of the process. Folders only: a file replaced by delete-then-rename
- * is absent for an instant, and this check has no confirmation wait.
+ * loss was seen, for the rest of the process, whether or not a tripwire is still running. Folders
+ * only: a file replaced by delete-then-rename is absent for an instant, and this check has no
+ * confirmation wait.
  */
 export function presenceTripwireCheck(now?: number): string | null {
+  if (lostForProcess !== null) return INTEGRITY_LOSS_TO_MODEL
   const w = wire
   if (w === null) return null
-  if (w.lost) return INTEGRITY_LOSS_TO_MODEL
   const t = now ?? w.now()
   if (w.last !== null && t - w.last < w.minGapMs) return null
   w.last = t
@@ -1439,11 +1855,11 @@ export function presenceTripwireCheck(now?: number): string | null {
       }
     }
   } catch (e) {
-    const s = `the presence check could not be completed (${textOf(e)})`
-    loss = { kind: 'presence', summary: s, publicSummary: s, compare: null }
+    // The reason can name a path: the owner's summary only.
+    loss = { kind: 'presence', summary: `${PRESENCE_FAILED_PUBLIC} (${textOf(e)})`, publicSummary: PRESENCE_FAILED_PUBLIC, compare: null }
   }
   if (loss === null) return null
-  w.lost = true
+  lostForProcess = loss
   try {
     w.onLoss(loss)
   } catch (e) {
@@ -1452,8 +1868,18 @@ export function presenceTripwireCheck(now?: number): string | null {
   return INTEGRITY_LOSS_TO_MODEL
 }
 
-/** Clears the timer and the state (tests' `afterEach`). */
+/** Clears the timer and the running tripwire. A loss this process saw stays (`presenceTripwireCheck` still answers it). */
 export function stopPresenceTripwire(): void {
   if (wire?.timer) clearInterval(wire.timer)
   wire = null
+}
+
+/**
+ * For the test suite only (a text pin in engine/__tests__/integrity.test.ts keeps every other caller
+ * out): stops the tripwire AND forgets a loss. Refuses outside the test runner.
+ */
+export function resetPresenceTripwireForTests(): void {
+  if (process.env.VITEST === undefined) throw new Error('resetPresenceTripwireForTests is for the test suite only')
+  stopPresenceTripwire()
+  lostForProcess = null
 }

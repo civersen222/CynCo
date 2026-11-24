@@ -184,6 +184,13 @@ export const bashTool: ToolImpl = {
     // would widen the variable's scope autoTranslateEnvPrefix returns null and
     // checkShellDialect still refuses with the instructive message.
     const dialected = autoTranslateEnvPrefix(command, shellInfo) ?? command
+    // The translation can turn an inert single-quoted value into code (`X='$(...)' cmd` becomes
+    // `$env:X="$(...)"; cmd`), so a translated command is judged as the shell will run it too, whatever the
+    // executor already said about the model's text (review 2026-11-23, fourth).
+    if (dialected !== command) {
+      const again = checkProtectedPaths('Bash', { command: dialected }, cwd)
+      if (again.kind === 'refuse') return { output: again.text, isError: true }
+    }
     const dialectError = checkShellDialect(dialected, shellInfo)
     if (dialectError) {
       return { output: dialectError, isError: true }
