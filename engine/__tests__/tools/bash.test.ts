@@ -479,3 +479,62 @@ describe('Bash exitCode', () => {
     expect('exitCode' in late).toBe(false)
   })
 })
+
+/**
+ * F60's success path, after a trailing `2>&1` was stripped (PowerShell only: a POSIX shell merges the
+ * streams itself and the tool strips nothing there).
+ *
+ * Measured 2026-11-24 with this tool and no run context: `cmd /c rem` answered `(no output)`, and
+ * `cmd /c rem 2>&1` answered "Command exited with code 0, no output on either stream. Nothing printed at
+ * all usually means the shell or environment failed to run it, ...". The stripped success path asked
+ * `failedOutput` for its silent text and replaced a bare `Command exited with code 0` with `(no output)`,
+ * but `failedOutput` has not returned that bare line since its silent-case text was written (F66, a few
+ * days after F60). So every silent success a model wrote with a trailing merge (`git add -A 2>&1`) told
+ * it that its shell had failed, the very misreading F66's text exists to prevent on a real failure.
+ */
+const MERGE_STRIPPED = getShellInfo().isPowerShell
+describe('Bash tool — a trailing 2>&1 on a success (F60)', () => {
+  it.skipIf(!MERGE_STRIPPED)(
+    'a silent success answers (no output) with the merge exactly as without it (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      // One native program and one PowerShell statement, both silent and both exit 0.
+      for (const command of ['cmd /c rem', '$null = 1']) {
+        const plain = await bashTool.execute({ command }, tmpdir())
+        const merged = await bashTool.execute({ command: `${command} 2>&1` }, tmpdir())
+        expect(plain).toMatchObject({ isError: false, exitCode: 0, output: '(no output)' })
+        expect(merged).toMatchObject({ isError: false, exitCode: 0, output: '(no output)' })
+        expect(merged.output).not.toContain('failed to run it')
+      }
+    },
+    30000,
+  )
+
+  it.skipIf(!MERGE_STRIPPED)(
+    'a merged success that prints still answers with both streams, stdout first (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      const both = await bashTool.execute({ command: 'cmd /c "echo OUT-LINE & echo ERR-LINE 1>&2" 2>&1' }, tmpdir())
+      expect(both).toMatchObject({ isError: false, exitCode: 0 })
+      expect(both.output).toContain('OUT-LINE')
+      expect(both.output).toContain('ERR-LINE')
+      expect(both.output.indexOf('OUT-LINE')).toBeLessThan(both.output.indexOf('ERR-LINE'))
+      // Only stderr printed: it is the answer, not "(no output)".
+      const errOnly = await bashTool.execute({ command: 'cmd /c "echo ERR-ONLY 1>&2" 2>&1' }, tmpdir())
+      expect(errOnly).toMatchObject({ isError: false, exitCode: 0 })
+      expect(errOnly.output).toContain('ERR-ONLY')
+      expect(errOnly.output).not.toContain('(no output)')
+    },
+    30000,
+  )
+
+  it.skipIf(!MERGE_STRIPPED)(
+    'a silent FAILURE with the merge keeps the shell-failure text: only the success path changed (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      // PowerShell's own `exit 3`, not `cmd /c "exit 3"`: under `-Command` a native program's
+      // failure leaves the shell's status at 1, so only the shell's own exit carries a known code.
+      const failed = await bashTool.execute({ command: 'exit 3 2>&1' }, tmpdir())
+      expect(failed).toMatchObject({ isError: true, exitCode: 3 })
+      expect(failed.output).toContain('no output on either stream')
+    },
+    30000,
+  )
+})

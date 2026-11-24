@@ -300,8 +300,12 @@ export const bashTool: ToolImpl = {
         }
         // F60. Only when a merge was stripped, so the model gets exactly what it
         // asked for and no other run gains SDL/pygame stderr noise it did not.
+        // A silent success says `(no output)`, as it does without the merge: it
+        // is passed as `whenSilent`, because failedOutput's own silent text says
+        // the shell failed (F66), and a `.replace` of the bare line it returned
+        // before F66 let that text through on every quiet `git add -A 2>&1`.
         const succeeded = merged.stripped
-          ? (failedOutput(stderr, stdout, 0).replace(/^Command exited with code 0$/, '(no output)'))
+          ? failedOutput(stderr, stdout, 0, undefined, '(no output)')
           : (stdout || stderr || '(no output)')
         // Hint on success only. A failing command already has the model's full
         // attention on its own error; adding tool advice there buries the reason
