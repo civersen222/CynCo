@@ -1,5 +1,5 @@
 import { describe, expect, it, mock, afterEach } from 'bun:test'
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, symlinkSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -304,5 +304,126 @@ describe('layer 4 — a sealed instrument cannot be read around', () => {
     setTaskSealedPaths([baseline])
     expect(redactSealed(collected)).not.toContain('test_alpha_is_collected')
     setTaskSealedPaths([])
+  })
+})
+
+/** A directory link (a junction on Windows), or false when this system cannot make one. */
+function linkDir(target: string, link: string): boolean {
+  try {
+    symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+    return true
+  } catch (e) {
+    console.log(`[test] no directory link could be made here: ${(e as Error).message}`)
+    return false
+  }
+}
+const CAN_LINK_DIRS = (() => {
+  const d = mkdtempSync(join(tmpdir(), 'linkprobe-'))
+  const ok = linkDir(d, join(d, 'l'))
+  if (ok) unlinkSync(join(d, 'l'))
+  rmSync(d, { recursive: true, force: true })
+  return ok
+})()
+
+describe('layer 1, second arm: nested keys, patch headers, decoded payloads and real paths (F242)', () => {
+  it('refuses a MultiEdit whose second edit names the gate', () => {
+    const { dir, gate } = gatesDir()
+    setTaskSealedPaths([gate])
+    expect(callTouchesSealed('MultiEdit', {
+      edits: [
+        { file_path: `${dir}/other.py`, old_string: 'a', new_string: 'b' },
+        { file_path: gate, old_string: 'a', new_string: 'b' },
+      ],
+    }, dir)).toBe(true)
+  })
+
+  it('refuses an ApplyPatch whose +++ header names the gate', () => {
+    const { dir, gate } = gatesDir()
+    setTaskSealedPaths([gate])
+    const patch = '--- a/notes.txt\n+++ b/verify_w9.py\n@@ -1 +1 @@\n-x\n+y\n'
+    expect(callTouchesSealed('ApplyPatch', { patch }, dir)).toBe(true)
+  })
+
+  it("refuses a Git call whose arguments spell the gate's basename", () => {
+    const { dir, gate } = gatesDir()
+    setTaskSealedPaths([gate])
+    expect(callTouchesSealed('Git', { subcommand: 'commit', args: '-m "tidy verify_w9.py"' }, dir)).toBe(true)
+    expect(callTouchesSealed('Git', { subcommand: 'status', args: '' }, dir)).toBe(false)
+  })
+
+  it('refuses a Bash -EncodedCommand whose decoded text names the gate, at the unit level', () => {
+    const { dir, gate } = gatesDir()
+    setTaskSealedPaths([gate])
+    const encoded = Buffer.from(`Get-Content "${gate}"`, 'utf16le').toString('base64')
+    const command = `powershell -NoProfile -EncodedCommand ${encoded}`
+    expect(command.toLowerCase()).not.toContain('verify_w9')
+    expect(callTouchesSealed('Bash', { command }, dir)).toBe(true)
+  })
+
+  it.skipIf(!CAN_LINK_DIRS)('refuses a Read through a directory link to a sealed folder under another name', () => {
+    const { dir } = gatesDir()
+    const sealedFolder = `${dir}/gates`
+    mkdirSync(sealedFolder)
+    writeFileSync(`${sealedFolder}/check.py`, 'print(1)\n')
+    const alias = join(dir, 'elsewhere')
+    expect(linkDir(sealedFolder, alias)).toBe(true)
+    try {
+      setTaskSealedPaths([sealedFolder], () => [], () => '')
+      // Neither the spelling nor the basename names the seal; only the real path does.
+      expect(callTouchesSealed('Read', { file_path: 'elsewhere/check.py' }, dir)).toBe(true)
+      expect(callTouchesSealed('Read', { file_path: 'notes.txt' }, dir)).toBe(false)
+    } finally {
+      unlinkSync(alias)
+    }
+  })
+
+  it.skipIf(!CAN_LINK_DIRS)('a gate sealed by a link spelling is refused by its real spelling, and the reverse', () => {
+    const { dir, gate } = gatesDir()
+    const alias = join(dir, '..', `${dir.split('/').pop()}-alias`)
+    expect(linkDir(dir, alias)).toBe(true)
+    const viaLink = join(alias, 'verify_w9.py').replace(/\\/g, '/')
+    try {
+      setTaskSealedPaths([viaLink])
+      expect(callTouchesSealed('Read', { file_path: gate }, dir)).toBe(true)
+      setTaskSealedPaths([gate])
+      expect(callTouchesSealed('Read', { file_path: viaLink }, dir)).toBe(true)
+    } finally {
+      unlinkSync(alias)
+    }
+  })
+})
+
+describe('review 2026-11-23: slash-prefixed powershell parameters and directory readers through an alias (F242)', () => {
+  it('refuses a powershell /EncodedCommand whose decoded text names the gate, as it refuses -EncodedCommand', () => {
+    const { dir, gate } = gatesDir()
+    setTaskSealedPaths([gate])
+    const encoded = Buffer.from(`Get-Content "${gate}"`, 'utf16le').toString('base64')
+    for (const flag of ['/EncodedCommand', '/enc', '/e', '-enc']) {
+      const command = `powershell ${flag} ${encoded}`
+      expect(command.toLowerCase()).not.toContain('verify_w9')
+      expect(callTouchesSealed('Bash', { command }, dir), flag).toBe(true)
+    }
+  })
+
+  it.skipIf(!CAN_LINK_DIRS)('refuses Grep, Ls and Glob over a junction alias of the gates directory', () => {
+    const { dir } = gatesDir()
+    const gates = `${dir}/gates`
+    mkdirSync(gates)
+    const gate = `${gates}/verify_s9.py`
+    writeFileSync(gate, 'print(1)\n')
+    const alias = join(dir, 'g')
+    expect(linkDir(gates, alias)).toBe(true)
+    try {
+      setTaskSealedPaths([gate])
+      expect(getSealedDirs().length).toBe(1)
+      expect(callTouchesSealed('Grep', { pattern: 'x', path: 'g' }, dir)).toBe(true)
+      expect(callTouchesSealed('Grep', { pattern: 'x', glob: 'g/*' }, dir)).toBe(true)
+      expect(callTouchesSealed('Ls', { path: 'g' }, dir)).toBe(true)
+      expect(callTouchesSealed('Glob', { pattern: 'g/*' }, dir)).toBe(true)
+      expect(callTouchesSealed('Grep', { pattern: 'x', path: '.' }, dir)).toBe(false)
+      expect(callTouchesSealed('Glob', { pattern: 'src/*.py' }, dir)).toBe(false)
+    } finally {
+      unlinkSync(alias)
+    }
   })
 })

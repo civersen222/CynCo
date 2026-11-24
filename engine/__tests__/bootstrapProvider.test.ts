@@ -17,6 +17,12 @@ vi.mock('../llama/modelResolver.js', () => ({
   resolveModel: vi.fn(() => {
     throw new Error("No GGUF found for 'stale-model:latest'")
   }),
+  resolveChatTemplateFile: vi.fn((v: string | undefined) => v),
+}))
+
+vi.mock('../llama/processManager.js', () => ({
+  ProcessManager: vi.fn(),
+  DEFAULT_CTX_SIZE: 65536,
 }))
 
 vi.mock('../providers/factory.js', () => ({
@@ -26,6 +32,11 @@ vi.mock('../providers/factory.js', () => ({
 import { bootstrapProvider, binaryAction, isUnattendedMission, launchKnobs } from '../bootstrapProvider.js'
 import { createProvider } from '../providers/factory.js'
 import { resolveBinary, downloadBinary } from '../llama/binaryManager.js'
+import { resolveModel, resolveChatTemplateFile } from '../llama/modelResolver.js'
+import { ProcessManager } from '../llama/processManager.js'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 
 /**
  * F161 residual (Phase 4 final review, I4): an unattended engine downloaded a
@@ -133,5 +144,66 @@ describe('bootstrapProvider llama-cpp failure path', () => {
 
     // The old bug: a silent createOllamaFallback() here. Must never happen.
     expect(vi.mocked(createProvider)).not.toHaveBeenCalled()
+  })
+})
+
+describe('bootstrapProvider: the models folder and the chat template', () => {
+  const config = (over: Record<string, unknown> = {}) =>
+    ({ provider: 'llama-cpp', model: 'm', baseUrl: 'http://localhost:11434', port: 8081, ...over }) as unknown as LocalCodeConfig
+
+  async function withModelsDir(value: string | undefined, fn: () => Promise<void>): Promise<void> {
+    const prev = process.env.LOCALCODE_MODELS_DIR
+    if (value === undefined) delete process.env.LOCALCODE_MODELS_DIR
+    else process.env.LOCALCODE_MODELS_DIR = value
+    try {
+      await fn()
+    } finally {
+      if (prev === undefined) delete process.env.LOCALCODE_MODELS_DIR
+      else process.env.LOCALCODE_MODELS_DIR = prev
+    }
+  }
+
+  // Entry 5.M3: a missing template is a named refusal before any llama-server is started.
+  it('a chat template that is not there refuses before the process manager or a slot-cache folder exists', async () => {
+    const modelPath = join(tmpdir(), 'cynco-m', `no-template-${process.pid}.gguf`)
+    vi.mocked(resolveModel).mockReturnValueOnce(modelPath)
+    vi.mocked(resolveChatTemplateFile).mockImplementationOnce(() => {
+      throw new Error("chat_template_file 'chat_template.jinja' was looked for at X and is not there.")
+    })
+    vi.mocked(ProcessManager).mockClear()
+    vi.mocked(createProvider).mockClear()
+    await expect(bootstrapProvider(config({ runtime: { chatTemplateFile: 'chat_template.jinja' } })))
+      .rejects.toThrow(/chat_template_file 'chat_template\.jinja' was looked for/)
+    expect(vi.mocked(resolveChatTemplateFile)).toHaveBeenLastCalledWith('chat_template.jinja', modelPath)
+    expect(vi.mocked(ProcessManager)).not.toHaveBeenCalled()
+    expect(existsSync(join(process.env.CYNCO_HOME!, 'slot-cache', `no-template-${process.pid}.gguf`))).toBe(false)
+    expect(vi.mocked(createProvider)).not.toHaveBeenCalled()
+  })
+
+  it('LOCALCODE_MODELS_DIR is the folder the model is looked for in', async () => {
+    const moved = join(tmpdir(), 'models-elsewhere')
+    await withModelsDir(moved, async () => {
+      vi.mocked(resolveModel).mockClear()
+      await expect(bootstrapProvider(config())).rejects.toThrow(/No GGUF found/)
+      expect(vi.mocked(resolveModel).mock.lastCall?.[1]).toBe(moved)
+    })
+  })
+
+  it('unset, the model is looked for under the CynCo home', async () => {
+    await withModelsDir(undefined, async () => {
+      vi.mocked(resolveModel).mockClear()
+      await expect(bootstrapProvider(config())).rejects.toThrow(/No GGUF found/)
+      expect(vi.mocked(resolveModel).mock.lastCall?.[1]).toBe(join(process.env.CYNCO_HOME!, 'models'))
+    })
+  })
+
+  it('a relative value refuses before a binary or a model is looked for', async () => {
+    await withModelsDir('models-here', async () => {
+      vi.mocked(resolveModel).mockClear()
+      vi.mocked(resolveBinary).mockClear()
+      await expect(bootstrapProvider(config())).rejects.toThrow(/LOCALCODE_MODELS_DIR is "models-here", which is not an absolute path/)
+      expect(vi.mocked(resolveModel)).not.toHaveBeenCalled()
+      expect(vi.mocked(resolveBinary)).not.toHaveBeenCalled()
+    })
   })
 })

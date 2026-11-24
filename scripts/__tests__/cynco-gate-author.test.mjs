@@ -20,6 +20,7 @@ import { summarize } from '../cynco-gate-lines.mjs'
 import { applyProposalDecision } from '../cynco-campaign.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { GATE_AUTHOR_MIN_LINES as SV_MIN_LINES, GATE_AUTHOR_HELD_FLOOR as SV_HELD_FLOOR } from '../cynco-signal-validation.mjs'
+import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../../engine/missionRule.js'
 
 // ── the world the fake io stands in for ─────────────────────────────────────
 //
@@ -343,6 +344,15 @@ describe('authoringBrief', () => {
     expect(t).toContain('gate c9 authored')
   })
 
+  it('names C:/tmp only as the BASE archive it reads, never as a place to write (F242, review 2026-11-23)', () => {
+    for (const baseDir of ['C:/tmp/c9_author_base', 'C:\\tmp\\c9_author_base']) {
+      const t = build({ baseDir })
+      const uses = [...t.matchAll(/C:(?:\\+|\/)tmp[^\s"'`)]*/gi)].map(m => m[0].replace(/\\+/g, '/').replace(/[.,;:]+$/, ''))
+      expect(uses.length).toBeGreaterThan(0)
+      for (const u of uses) expect(u.startsWith('C:/tmp/c9_author_base'), u).toBe(true)
+    }
+  })
+
   // Ruling: the exemplar is read from the sealed directory but the brief is a
   // file a model reads. The path never appears and neither does the word.
   it('never contains the string heldout, even when the exemplar does', () => {
@@ -403,6 +413,23 @@ describe('authoringBrief', () => {
 
   it('says the archive is read-only', () => {
     expect(build()).toMatch(/read-only/)
+  })
+
+  // F242: the fixed rule leads THE RULES, before Rule 11, and says where the scratch folder is.
+  it('opens THE RULES with both fixed-rule paragraphs and the scratch phrase, before Rule 11', () => {
+    const t = build()
+    const rules = t.slice(t.indexOf('THE RULES'), t.indexOf('THE DRAFT'))
+    const rule11 = rules.indexOf('Rule 11')
+    expect(rule11).toBeGreaterThan(-1)
+    for (const l of MISSION_FIXED_RULE_LINES) {
+      const at = rules.indexOf(`Fixed rule — ${l}`)
+      expect(at, l).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(rule11)
+    }
+    const phrase = rules.indexOf(`Where this brief says scratch folder it means ${SCRATCH_PHRASE}.`)
+    expect(phrase).toBeGreaterThan(-1)
+    expect(phrase).toBeLessThan(rule11)
+    expect(t).not.toContain('heldout')
   })
 
   it('tells a resume the list is the PREVIOUS run\'s and to re-run the check', () => {

@@ -16,10 +16,14 @@ import { readTaskFile, writeOutcome } from './taskFile.js'
 import { fileRunDraft } from '../projects/inbox.js'
 import { projectsHome } from '../projects/layout.js'
 import type { Recommendation, TaskFileInput, TaskOutcome } from './types.js'
+import { MISSION_FIXED_RULE, MISSION_FIXED_RULE_SHORT, withFixedRule } from '../missionRule.js'
+import { runContainment } from '../containment.js'
 
 export function buildOneShotPrompt(context: string, prompt: string): string {
   return [
     'You are running an unattended scheduled mission task. There is no user to ask — work autonomously with the tools provided, then stop.',
+    '',
+    MISSION_FIXED_RULE,
     '',
     'Mission context:',
     context,
@@ -42,6 +46,7 @@ export function buildResumePrompt(): string {
     'The daemon paused this task to free the GPU and has now resumed it. Everything above is your own work so far.',
     'Continue from the last tool result: do not repeat steps that already completed, re-issue only the tool call that was interrupted if you still need it,',
     'and finish exactly as the original task asked, ending your FINAL message with the ```json outcome block.',
+    MISSION_FIXED_RULE_SHORT,
   ].join(' ')
 }
 
@@ -204,7 +209,21 @@ export async function runGovernedLoop(opts: {
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; loop.abort() }, opts.timeoutMs)
   try {
-    await loop.handleUserMessage(resumed ? buildResumePrompt() : buildOneShotPrompt(opts.context, opts.prompt))
+    const first = resumed ? buildResumePrompt() : buildOneShotPrompt(opts.context, opts.prompt)
+    const contained = runContainment()
+    // A contained run is told the literal path of its scratch folder (F242, entry 4.M3). With no
+    // context (a test calling this function directly) the prompt still carries the two rule lines.
+    let message = first
+    if (contained) {
+      try {
+        message = withFixedRule(first, contained.sandbox.scratch)
+      } catch (e) {
+        // A context with no absolute scratch path is a broken adopt: the outcome says REFUSED like every
+        // other containment refusal (00 section 1.4), so the daemon's page for it fires (review 2026-11-23).
+        throw new Error(`REFUSED: containment: ${(e as Error)?.message ?? String(e)}`)
+      }
+    }
+    await loop.handleUserMessage(message)
   } finally {
     clearTimeout(timer)
   }

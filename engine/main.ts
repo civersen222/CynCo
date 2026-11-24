@@ -180,7 +180,13 @@ import { bootstrapProvider } from './bootstrapProvider.js'
       const k = adopted.containment
       console.log(`[containment] run ${k.runId}: ${k.isolation === 'verified' ? 'verified' : 'overlay only'}, sandbox ${k.sandbox.root}, mission folder ${k.missionCwd}`)
     }
-    // step 4 (S4): pathGuardFault    step 5 (S5): toolAudit probe    step 6 (S7): models record, tripwire
+    {
+      // Step 4 (F242, layer 2): the path check must answer correctly for THIS run before any model call.
+      const { pathGuardFault } = await import('./tools/protectedPaths.js')
+      const fault = pathGuardFault()
+      if (fault) refuseBoot('containment', fault)
+    }
+    // step 5 (S5): toolAudit probe    step 6 (S7): models record, tripwire
   }
 }
 // Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops

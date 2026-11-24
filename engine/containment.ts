@@ -27,7 +27,7 @@ import {
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cyncoHome, sandboxRoot } from './paths.js'
+import { cyncoHome, modelsDir, sandboxRoot } from './paths.js'
 import { isContainedRun, RUN_ID_RE } from './missionEnv.js'
 import { isInside, realPathOf } from './realPath.js'
 
@@ -896,7 +896,7 @@ function probe(runner: ContainmentRunner | undefined, runDir: string, labelled: 
 // ─── establishContainment ────────────────────────────────────────────────────────────────────
 
 function defaultFolders(): RunContainment['folders'] {
-  return { state: cyncoHome(), models: join(cyncoHome(), 'models'), guard: 'C:/cynco-guard', audit: null }
+  return { state: cyncoHome(), models: modelsDir(), guard: 'C:/cynco-guard', audit: null }
 }
 
 /** Rules M1 to M9 for one folder; null when it may be a write root of the run. */

@@ -99,6 +99,7 @@ import { loadOrCreateTokens } from '../engine/security/localToken.js'
 import { adoptContainment, setRunContainment, runContainment, operatorRefusal } from '../engine/containment.js'
 import { missionRunId } from '../engine/missionEnv.js'
 import { harnessGitBin, harnessGitEnv } from '../engine/harnessGit.js'
+import { withFixedRule } from '../engine/missionRule.js'
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 // The repository is named, never assumed: a default of the CivKings repo sent
@@ -152,6 +153,12 @@ const RUN_URL = ENDPOINTS.run
 // 100 MB file ceiling mid-wave.
 
 const task = await Bun.file(taskFile).text()
+// F242: the first message of the mission, built once and here: the fixed rule (when the brief does not
+// already carry it) and the literal path of the run's scratch folder. Inside the socket handler a throw is
+// swallowed by its catch and the run would read as "never dispatched"; here it is a refusal.
+let firstMessage
+try { firstMessage = withFixedRule(task, runContainment().sandbox.scratch) }
+catch (e) { console.error(operatorRefusal('[driver]', 'containment', String(e?.message ?? e), 'dispatched')); process.exit(2) }
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
 // Said out loud, because two waves running at once is the case where driving
 // the WRONG engine still connects, still runs, and lands its commits in a
@@ -428,7 +435,7 @@ function dispatchMission() {
       }
     : undefined
   ws.send(JSON.stringify({
-    type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    type: 'user.message', text: firstMessage, cwd: CWD, readOnlyPaths,
     // This driver is a script, not a person. An AskUser raised here is broadcast
     // to an empty room and "answered" only by the AskBroker's 300s timeout —
     // measured on Gilded UI Wave 6, five minutes spent learning nothing.

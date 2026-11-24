@@ -31,6 +31,7 @@ import { foundations } from '../cybernetics-core/src/index.js'
 import { bashEffect } from '../tools/bashEffect.js'
 import { isSourceRewrite } from '../tools/toolHints.js'
 import { importRetainedFrom, type RetainedStoreLike } from './retainedConfigStore.js'
+import { SCRATCH_PHRASE } from '../missionRule.js'
 
 /** This instance's id in the retained-configuration store. */
 export const MISSION_INVARIANTS_INSTANCE = 'mission-invariants'
@@ -116,7 +117,7 @@ const REVERT_MESSAGE =
   '[invariant] REFUSED: that command discards work. You may not revert a file in this run, ' +
   'for any reason — not git checkout --, git restore, git stash, git reset --hard, or git clean. ' +
   'Permitted: a targeted Edit on top of the last commit, saying in the commit message what came ' +
-  'out and why. Salvage belongs under C:\\tmp, never in a stash.'
+  'out and why. Keep a copy you want in ' + SCRATCH_PHRASE + ', never in a stash.'
 
 export class MissionInvariants {
   private readonly homeostat: InstanceType<typeof foundations.UltrastableSystem>

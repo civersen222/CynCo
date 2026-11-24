@@ -77,9 +77,9 @@ describe('the contained-tools word', () => {
 
 describe('containmentDispatchRefusal', () => {
   it('dispatches to contained-tools on Windows and to contained-overlay elsewhere', () => {
-    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED], platform: 'win32' })).toBeNull()
-    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED_OVERLAY], platform: 'linux' })).toBeNull()
-    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED], platform: 'linux' })).toBeNull()
+    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, 'path-guard'], platform: 'win32' })).toBeNull()
+    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED_OVERLAY, 'path-guard'], platform: 'linux' })).toBeNull()
+    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, 'path-guard'], platform: 'linux' })).toBeNull()
   })
 
   it('refuses everything else, naming the missing word', () => {

@@ -28,6 +28,7 @@ import { callTouchesSealed, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { isHouseConductEnabled, isS5EnforcementEnabled } from '../config.js'
 import { isUnattendedMission } from '../missionEnv.js'
 import { runContainment } from '../containment.js'
+import { pathGuardProbe } from '../tools/protectedPaths.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
 export const CAP_SEALED_GATES = 'sealed-gates'
@@ -74,6 +75,12 @@ export const CAP_HOUSE_CONDUCT = 'house-conduct'
 export const CAP_CONTAINED = 'contained-tools'
 /** The same sandbox and overlay with no kernel layer under it (any system other than Windows). */
 export const CAP_CONTAINED_OVERLAY = 'contained-overlay'
+/**
+ * In this process every tool call of the contained run is judged against the protected paths before it
+ * runs (F242). A word for the safe state, and MEASURED: four decisions against the live run context,
+ * one of which must be an allow. An engine with no run context cannot say it.
+ */
+export const CAP_PATH_GUARD = 'path-guard'
 
 /**
  * A path that cannot collide with a real instrument, and says what it is to
@@ -95,6 +102,8 @@ type Wiring = {
   houseConduct?: () => boolean
   /** What the run context says; optional so a wiring without it never claims either word. */
   contained?: () => 'verified' | 'overlay' | null
+  /** The live probe of the path check; optional so a wiring without it never claims the word. */
+  pathGuard?: () => boolean
 }
 
 const LIVE: Wiring = {
@@ -108,6 +117,7 @@ const LIVE: Wiring = {
   unattended: () => isUnattendedMission(),
   houseConduct: () => isHouseConductEnabled(),
   contained: () => { const c = runContainment(); return c && !c.test ? c.isolation : null },
+  pathGuard: () => pathGuardProbe(),
 }
 
 /**
@@ -159,6 +169,11 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
     else if (k === 'overlay') caps.push(CAP_CONTAINED_OVERLAY)
   } catch (e) {
     console.log(`[capability] ${CAP_CONTAINED}/${CAP_CONTAINED_OVERLAY} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
+  }
+  try {
+    if (wiring.pathGuard?.() === true) caps.push(CAP_PATH_GUARD)
+  } catch (e) {
+    console.log(`[capability] ${CAP_PATH_GUARD} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }

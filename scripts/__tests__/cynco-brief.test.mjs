@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { generateBrief, sidecarFor, orderWork, workOrderFor, denialFollowUp, pacingDigestIncluded } from '../cynco-brief.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
 import { loadCampaignSpec } from '../cynco-campaign-spec.mjs'
+import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../../engine/missionRule.js'
 
 const spec = loadCampaignSpec(fileURLToPath(new URL('../../docs/civkings-redesign-briefs/c8.campaign.json', import.meta.url)))
 const base = parseGateOutput(readFileSync(fileURLToPath(new URL('./fixtures/gate_c8_base.log', import.meta.url)), 'utf8'))
@@ -49,6 +50,18 @@ describe('generateBrief — wave 1 golden against c8-wave1.txt', () => {
     expect(text).toMatch(/40 tool calls without a source edit/)
     expect(text).toMatch(/reverting is refused/i)
   })
+  // F242: the fixed rule rides every generated brief, without a path (the brief is written before
+  // the run id exists); the driver appends the literal scratch path to the first message.
+  it('carries both fixed-rule lines between RULES and DONE WHEN and still ends with the bare marker', () => {
+    const rules = text.slice(text.indexOf('\nRULES\n'), text.indexOf('DONE WHEN'))
+    for (const l of MISSION_FIXED_RULE_LINES) expect(rules).toContain(`- ${l}`)
+    expect(text.trimEnd().split('\n').at(-1)).toBe('stage c8 complete')
+  })
+  it('PACING names the scratch folder, and no sentence sends the run to C:\\tmp', () => {
+    const pacing = text.slice(text.indexOf('PACING'), text.indexOf('\nRULES\n'))
+    expect(pacing).toContain(SCRATCH_PHRASE)
+    expect(text).not.toMatch(/C:(\\+|\/)tmp/i)
+  })
 })
 
 describe('generateBrief — wave 2 with a prior wave', () => {
@@ -80,6 +93,13 @@ describe('generateBrief — wave 2 with a prior wave', () => {
       ideation: null })
     expect(many).toMatch(/STEP 0[\s\S]*uncommitted edits to gilded\/ui\/app\.py, gilded\/ai\.py[\s\S]*git apply --3way "C:\/tmp\/m\.uncommitted\.1\.patch"\n\s+git apply --3way "C:\/tmp\/m\.uncommitted\.patch"\n\s+git add gilded\/ui\/app\.py gilded\/ai\.py/)
     expect(many).toMatch(/saved as 2 patches outside the repo/)
+  })
+  // F242: STEP 0 quotes the patch path the harness wrote (a read); nothing else names C:\tmp.
+  it('names C:\\tmp only in STEP 0\'s quoted patch paths', () => {
+    const outsideStep0 = text.slice(0, text.indexOf('STEP 0')) + text.slice(text.indexOf('THE MISSES'))
+    expect(text.slice(text.indexOf('STEP 0'), text.indexOf('THE MISSES'))).toMatch(/C:\/tmp\//)
+    expect(outsideStep0).not.toMatch(/C:(\\+|\/)tmp/i)
+    for (const l of MISSION_FIXED_RULE_LINES) expect(text).toContain(`- ${l}`)
   })
   it('only lists work items whose gate ids still fail', () => {
     const work = text.slice(text.indexOf('THE WORK'), text.indexOf('S4 IDEATION'))

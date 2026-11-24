@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
+import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../engine/missionRule.js'
 import { harnessGitEnv } from '../engine/harnessGit.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
@@ -612,7 +613,13 @@ the three: a bar that depends on a remote is not a measurement of the repo, it
 is a flake.`))
 
   out.push(section('THE RULES',
-`Rule 11 — the BASE must MISS. Run the gate against ${base}
+`Fixed rule — ${MISSION_FIXED_RULE_LINES[0]}
+
+Fixed rule — ${MISSION_FIXED_RULE_LINES[1]}
+
+Where this brief says scratch folder it means ${SCRATCH_PHRASE}.
+
+Rule 11 — the BASE must MISS. Run the gate against ${base}
   before you believe anything: the terminator must be MISS, every line you
   wrote must fail there BY ABSENCE, and the run must print zero error lines
   (no Traceback, no "Error:"). A line that fails because your check crashed is

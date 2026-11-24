@@ -184,6 +184,7 @@ echo "[dispatch] iterations=$LOCALCODE_MAX_ITERATIONS bash-timeout=${CYNCO_BASH_
 # above. Printed raw so a value that is set and ignored ("1", "TRUE") is visible
 # here; the engine's session.ready capabilities say which arm was actually served.
 echo "[dispatch] house conduct: ${LOCALCODE_HOUSE_CONDUCT:-unset} (on only when exactly 'true'; the engine's session.ready says which)"
+echo "[dispatch] models folder: ${LOCALCODE_MODELS_DIR:-unset: the engine looks under its home, .cynco/models}"
 echo "[dispatch] engine log $ENGINE_LOG"
 # The engine's startup auto-index covers only its own process.cwd() (localcode);
 # the mission repo never got indexed, so every CodeIndex call degraded to regex.

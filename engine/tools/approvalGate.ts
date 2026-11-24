@@ -60,8 +60,8 @@ export function isDownloadCommand(command: string): boolean {
 
 export const DOWNLOAD_REFUSAL =
   'Downloads require explicit user approval and none is available in this run. '
-  + 'If the mission needs a file from the internet, check whether it is already staged '
-  + '(the brief will say where, typically under ~/.cynco/staging/) and copy it from there. '
+  + 'If the mission needs a file from the internet, check whether it is already staged: '
+  + 'the brief names the folder by its full path; copy what you need from there into the mission folder. '
   + 'Otherwise, state in your reply exactly what you need and why, so the operator can '
   + 'stage or approve it.'
 

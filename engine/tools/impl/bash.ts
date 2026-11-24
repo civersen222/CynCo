@@ -2,6 +2,7 @@ import { toolExec, toolSpawnRefusal, containmentHint } from '../../containment.j
 import type { ToolImpl } from '../types.js'
 import { ownProcessTree } from '../../processTree.js'
 import { checkBashSafety } from '../bashSafety.js'
+import { checkProtectedPaths } from '../protectedPaths.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
 import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble, stripTrailingStderrMerge } from '../shellInfo.js'
@@ -165,6 +166,11 @@ export const bashTool: ToolImpl = {
     if (!safety.safe) {
       return { output: `Blocked: ${safety.reason}`, isError: true }
     }
+
+    // F242, layer 2: asked here as well as in ToolExecutor.execute, so a refused command is never run
+    // whoever called the tool. Judged on the model's own text, before any translation.
+    const guard = checkProtectedPaths('Bash', input, cwd)
+    if (guard.kind === 'refuse') return { output: guard.text, isError: true }
 
     const shellInfo = getShellInfo()
 

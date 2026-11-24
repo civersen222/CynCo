@@ -49,7 +49,9 @@ beforeEach(() => {
   delete process.env.LOCALCODE_CONTAINMENT_OFF
   dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'cynco-contained-sites-')))
   mission = join(dir, 'mission')
-  const runDir = join(dir, 'run')
+  // The run's sandbox sits in a sandbox root of its own, as on a real machine: a mission folder beside
+  // the run's sandbox, inside the folder all runs' sandboxes share, is a context the path check refuses (F242, S4).
+  const runDir = join(dir, 'sandboxes', 'run')
   const sandbox = { root: runDir, home: join(runDir, 'home'), tmp: join(runDir, 'tmp'), scratch: join(runDir, 'scratch') }
   for (const d of [mission, sandbox.home, sandbox.tmp, sandbox.scratch]) mkdirSync(d, { recursive: true })
   writeFileSync(join(sandbox.home, '.gitconfig'), '[user]\n\tname = sandbox-identity\n\temail = sandbox@localhost\n')

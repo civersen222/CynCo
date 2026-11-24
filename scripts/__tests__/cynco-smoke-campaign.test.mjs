@@ -322,6 +322,32 @@ describe('smoke campaign --runtime-from (F161)', () => {
     expect(() => runtimeEnvFrom(fakeRuntime({ profile: 'model: qwen3.8-27b-nvfp4\nmodel_file: missing.gguf\n' }))).toThrow(/missing\.gguf does not exist/)
   })
 
+  it('looks the GGUF up under LOCALCODE_MODELS_DIR when this process sets it, and refuses an empty or a relative folder', () => {
+    const saved = process.env.LOCALCODE_MODELS_DIR
+    try {
+      const moved = mkdtempSync(join(tmpdir(), 's1-models-elsewhere-'))
+      mkdirSync(join(moved, 'qwen3.8-27b-nvfp4'))
+      writeFileSync(join(moved, 'qwen3.8-27b-nvfp4', 'Q.gguf'), 'GGUF')
+      const r = fakeRuntime()
+      rmSync(join(r, 'models', 'qwen3.8-27b-nvfp4'), { recursive: true })
+      process.env.LOCALCODE_MODELS_DIR = moved
+      expect(runtimeEnvFrom(r).LOCALCODE_MODEL_PATH).toBe(`${moved.replace(/\\/g, '/')}/qwen3.8-27b-nvfp4/Q.gguf`)
+
+      const empty = mkdtempSync(join(tmpdir(), 's1-models-empty-'))
+      process.env.LOCALCODE_MODELS_DIR = empty
+      let message = ''
+      try { runtimeEnvFrom(r) } catch (e) { message = String(e.message) }
+      expect(message).toMatch(/does not exist \(models folder /)
+      expect(message).toContain(empty.replace(/\\/g, '/'))
+
+      process.env.LOCALCODE_MODELS_DIR = 'models-here'
+      expect(() => runtimeEnvFrom(r)).toThrow(/is not an absolute path/)
+    } finally {
+      if (saved === undefined) delete process.env.LOCALCODE_MODELS_DIR
+      else process.env.LOCALCODE_MODELS_DIR = saved
+    }
+  })
+
   it('writes the env onto the spec, copies only the yaml profiles, and the spec still loads', () => {
     const r = fakeRuntime()
     const h = tempHome()

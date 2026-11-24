@@ -75,3 +75,25 @@ export function resolveAdapter(
   }
   return adapterPath
 }
+
+/**
+ * Resolve a profile's `runtime.chat_template_file` to a file that exists.
+ *
+ * Nothing set: undefined (no --chat-template-file argument). An absolute path is used as written.
+ * Anything else names a file beside the model's GGUF, the way `model_file` names a file inside the
+ * model's folder, so a profile does not have to say where the models are. A file that is not there
+ * throws: until 2026-11-23 the value went to llama-server verbatim, the server exited, and the
+ * engine reported only "Process exited with code N" (F242).
+ */
+export function resolveChatTemplateFile(templateFile: string | undefined, modelPath: string): string | undefined {
+  if (!templateFile) return undefined
+  const modelDir = path.dirname(modelPath)
+  const resolved = path.isAbsolute(templateFile) ? templateFile : path.join(modelDir, templateFile)
+  if (!fs.existsSync(resolved)) {
+    throw new Error(
+      `chat_template_file '${templateFile}' was looked for at ${resolved} and is not there. ` +
+      `An absolute path is used as written (a leading ~ is not expanded); anything else names a file beside the model, in ${modelDir}.`,
+    )
+  }
+  return resolved
+}

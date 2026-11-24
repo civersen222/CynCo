@@ -15,7 +15,7 @@
 import type { Provider } from './provider.js'
 import type { LocalCodeConfig, RuntimeConfig } from './config.js'
 import { resolveCapabilities } from './ollama/probe.js'
-import { cyncoHome } from './paths.js'
+import { cyncoHome, requireModelsDir } from './paths.js'
 import { isUnattendedMission, uncertaintyTraceEnabled } from './missionEnv.js'
 import { mkdirSync } from 'fs'
 import { basename, join } from 'path'
@@ -134,7 +134,7 @@ export async function bootstrapProvider(
 
       const cyncoDir = cyncoHome()
       const binDir = path.join(cyncoDir, 'bin')
-      const modelsDir = path.join(cyncoDir, 'models')
+      const modelsDir = requireModelsDir(cyncoDir)
       const adaptersDir = path.join(cyncoDir, 'adapters')
 
       // 1. Resolve llama-server binary. bin-brain (the locally patched build:
@@ -173,7 +173,7 @@ export async function bootstrapProvider(
       }
 
       // 2. Resolve GGUF model
-      const { resolveModel } = await import('./llama/modelResolver.js')
+      const { resolveModel, resolveChatTemplateFile } = await import('./llama/modelResolver.js')
       const modelPath = resolveModel(config.model ?? 'unknown', modelsDir, config.modelPath, config.modelFile)
       console.log(`[llama-cpp] Model: ${modelPath}`)
 
@@ -195,7 +195,7 @@ export async function bootstrapProvider(
         specDraftN: process.env.LOCALCODE_SPEC_DRAFT_N
           ? parseInt(process.env.LOCALCODE_SPEC_DRAFT_N, 10)
           : rt?.specDraftN,
-        chatTemplateFile: rt?.chatTemplateFile,
+        chatTemplateFile: resolveChatTemplateFile(rt?.chatTemplateFile, modelPath),
         cacheTypeK: rt?.cacheTypeK,
         cacheTypeV: rt?.cacheTypeV,
         chatTemplateKwargs: rt?.chatTemplateKwargs,

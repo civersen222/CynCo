@@ -43,6 +43,7 @@ import { SUITE_GATE_FILE } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { harnessGitEnv } from '../engine/harnessGit.js'
 import { WORKER_INVARIANTS, heldoutDirFor } from './cynco-gate-author.mjs'
+import { requireModelsDir } from '../engine/paths.js'
 
 export const SMOKE_ID = 's1'
 const FIXTURES = fileURLToPath(new URL('./__tests__/fixtures/gates/smoke/', import.meta.url))
@@ -196,7 +197,9 @@ export { SUITE_GATE_FILE }
  * and reaches for GitHub — the live proof's first dispatch died there. The
  * assets are not state: the temp home must point at the real ones, by path,
  * never by junction (a junction under a tree someone later `rm -rf`s deletes
- * the real models). The two env keys below are the engine's explicit-path
+ * the real models). The GGUF is looked up under `LOCALCODE_MODELS_DIR` when
+ * the generator's own environment sets it (a machine that keeps its models
+ * outside the home), else under `<runtimeFrom>/models`. The two env keys below are the engine's explicit-path
  * overrides (`engine/config.ts`), and the campaign spec carries them as `env`
  * so the runner's dispatch hands them to the engine.
  *
@@ -214,8 +217,9 @@ export function runtimeEnvFrom(runtimeFrom, { exists = existsSync, read = (p) =>
   const model = key('model')
   const modelFile = key('model_file')
   if (!model || !modelFile) throw new Error(`--runtime-from: ${profile} lacks model: or model_file:`)
-  const modelPath = `${r}/models/${model.split(':')[0]}/${modelFile}`
-  if (!exists(modelPath)) throw new Error(`--runtime-from: ${modelPath} does not exist`)
+  const modelsRoot = norm(requireModelsDir(r))
+  const modelPath = `${modelsRoot}/${model.split(':')[0]}/${modelFile}`
+  if (!exists(modelPath)) throw new Error(`--runtime-from: ${modelPath} does not exist (models folder ${modelsRoot})`)
   return { LOCALCODE_LLAMA_SERVER: binary, LOCALCODE_MODEL_PATH: modelPath }
 }
 

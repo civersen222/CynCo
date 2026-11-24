@@ -483,3 +483,102 @@ describe('containment wiring: slice S2, call by call (F242)', () => {
     expect(withEnv).toEqual(['engine/daemon/precheck.ts'])
   })
 })
+
+// ---------------------------------------------------------------------------------------------
+// Slice S3: the rule in every brief (entry 6.M8). Tested against the SOURCE TEXT, where a
+// backslash is spelled twice: `C:\\tmp` in source is `C:\tmp` in the sentence the model reads.
+// ---------------------------------------------------------------------------------------------
+
+const TMP = /C:(\\+|\/)tmp/i
+const IMPORTS_MISSION_RULE = /from ['"][^'"]*missionRule(\.js)?['"]/
+
+/** The harness's own uses of C:/tmp in a file that also holds model-facing text: a decision, not an oversight. */
+const HARNESS_TMP_USES = [
+  { file: 'scripts/cynco-gate-author.mjs', text: 'return `C:/tmp/${id}_author_base`',
+    reason: 'BASE archive and uncommitted-work patches written by the harness, never by a tool call: the BASE archive is made by the harness, read by the author, handed to the run as an extra root (1.B2)' },
+  { file: 'scripts/cynco-gate-author.mjs', text: "export const WORK_SNAPSHOT_DIR = 'C:/tmp'",
+    reason: 'BASE archive and uncommitted-work patches written by the harness, never by a tool call: where the driver, a harness process, leaves a stopped mission\'s uncommitted tree; a run reads it and never writes it' },
+]
+
+describe('containment wiring: the model is sent to its scratch folder, never to C:\\tmp (S3, entry 6.M8)', () => {
+  it('the revert refusal and the brief generator name no C:\\tmp and do name the scratch folder', () => {
+    for (const rel of ['engine/vsm/missionInvariants.ts', 'scripts/cynco-brief.mjs']) {
+      const src = read(rel)
+      expect(src, rel).not.toMatch(TMP)
+      expect(src.includes('scratch folder') || IMPORTS_MISSION_RULE.test(src), rel).toBe(true)
+    }
+    const inv = read('engine/vsm/missionInvariants.ts')
+    expect(inv).toMatch(IMPORTS_MISSION_RULE)
+    expect(inv).toContain("'out and why. Keep a copy you want in ' + SCRATCH_PHRASE + ', never in a stash.'")
+    const brief = read('scripts/cynco-brief.mjs')
+    expect(brief).toContain('- Probes live in ${SCRATCH_PHRASE}, never in the repo.')
+    expect(brief).toContain('MISSION_FIXED_RULE_LINES.map(')
+  })
+
+  it('the download refusal names the brief\'s full path, never a home spelling', () => {
+    const src = read('engine/tools/approvalGate.ts')
+    expect(src).not.toContain('~/.cynco/staging')
+    expect(src).not.toContain('.cynco/staging')
+    expect(src).toContain('the brief names the folder by its full path; copy what you need from there into the mission folder')
+  })
+
+  it('the harness\'s own uses of C:/tmp are listed, and each is still where it was', () => {
+    for (const use of HARNESS_TMP_USES) {
+      expect(use.reason.length, use.text).toBeGreaterThan(0)
+      expect(read(use.file), `${use.file}: ${use.text}`).toContain(use.text)
+    }
+  })
+
+  it('the driver builds the first message once, before its socket, and sends it', () => {
+    const src = read('scripts/cynco-mission-driver.mjs').replace(/\r\n/g, '\n')
+    const built = src.indexOf('withFixedRule(task, runContainment().sandbox.scratch)')
+    const fn = src.indexOf('function dispatchMission()')
+    expect(built).toBeGreaterThan(-1)
+    expect(fn).toBeGreaterThan(-1)
+    expect(built).toBeLessThan(fn)
+    const body = src.slice(fn, src.indexOf('\n}\n', fn))
+    expect(body).toContain('text: firstMessage')
+    expect(body).not.toMatch(/text: task\b/)
+  })
+
+  it('the one-shot sends a contained run its scratch path, and the authoring brief carries the rule', () => {
+    expect(read('engine/daemon/oneShot.ts')).toContain('withFixedRule(first, contained.sandbox.scratch)')
+    const author = read('scripts/cynco-gate-author.mjs')
+    expect(author).toMatch(IMPORTS_MISSION_RULE)
+    expect(author).toContain('Fixed rule — ${MISSION_FIXED_RULE_LINES[0]}')
+    expect(author).toContain('Fixed rule — ${MISSION_FIXED_RULE_LINES[1]}')
+  })
+
+  it('the fixed rule names no sealed instrument', async () => {
+    const rule = await import('../../missionRule.js')
+    for (const text of [rule.MISSION_FIXED_RULE, rule.MISSION_FIXED_RULE_SHORT, rule.SCRATCH_PHRASE, ...rule.MISSION_FIXED_RULE_LINES]) {
+      expect(text).not.toMatch(/heldout/i)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// S4 (work package 2): the protected-path check sits where the design says. These pins live here
+// and nowhere else.
+// ---------------------------------------------------------------------------------------------
+
+describe('the protected-path check (S4, F242 layer 2)', () => {
+  it('the executor asks the path check where the design says', () => {
+    const ex = read('engine/tools/executor.ts').replace(/\r\n/g, '\n')
+    const secret = ex.indexOf('secretPathOf(toolName')
+    const guard = ex.indexOf('checkProtectedPaths(toolName, input, this.cwd)')
+    const run = ex.indexOf('await tool.execute(')
+    expect(secret).toBeGreaterThan(-1)
+    expect(guard).toBeGreaterThan(secret)
+    expect(run).toBeGreaterThan(guard)
+    expect(ex).toContain('redactSealed(guard.text)')
+
+    const bash = read('engine/tools/impl/bash.ts').replace(/\r\n/g, '\n')
+    const safety = bash.indexOf('checkBashSafety(command)')
+    const bashGuard = bash.indexOf("checkProtectedPaths('Bash', input, cwd)")
+    const spawn = bash.indexOf('toolExec(runnable')
+    expect(safety).toBeGreaterThan(-1)
+    expect(bashGuard).toBeGreaterThan(safety)
+    expect(spawn).toBeGreaterThan(bashGuard)
+  })
+})

@@ -1,9 +1,11 @@
 // engine/__tests__/daemon/oneShot.test.ts
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask, countAssistantTurns } from '../../daemon/oneShot.js'
+import { extractOutcome, buildOneShotPrompt, buildResumePrompt, makeHaltCapture, runOneShotTask, runGovernedLoop, countAssistantTurns } from '../../daemon/oneShot.js'
+import { MISSION_FIXED_RULE, MISSION_FIXED_RULE_SHORT, scratchSentence } from '../../missionRule.js'
+import { setRunContainment, testContainment } from '../../containment.js'
 import type { Message } from '../../types.js'
 import type { Provider, CompletionRequest, ModelCapabilities } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
@@ -159,6 +161,105 @@ describe('buildOneShotPrompt', () => {
     expect(p).toContain('```json')
     expect(p).toContain('recommendations')
   })
+
+  // F242: every one-shot prompt carries the fixed rule; a resumed run gets the short form.
+  it('carries the fixed rule, and the resume prompt its short form', () => {
+    expect(buildOneShotPrompt('goal: win the league', 'Review the waiver wire')).toContain(MISSION_FIXED_RULE)
+    expect(buildResumePrompt()).toContain(MISSION_FIXED_RULE_SHORT)
+  })
+})
+
+describe('runGovernedLoop: the first message of a contained run (F242)', () => {
+  afterEach(() => { setRunContainment(null) })
+
+  function makeConfig() {
+    return {
+      baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto' as const,
+      temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
+      contextLength: undefined, tools: undefined,
+    }
+  }
+  function capturingProvider(captured: CompletionRequest[]): Provider {
+    return {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities(): Promise<ModelCapabilities> {
+        return { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true }
+      },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        const text = '```json\n{"summary": "ok", "recommendations": []}\n```'
+        yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+        yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+        yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
+        yield { type: 'content_block_stop', index: 0 } as any
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } as any
+        yield { type: 'message_stop' } as any
+      },
+    }
+  }
+  /** The text of the first user message the model was sent. */
+  function firstUserText(captured: CompletionRequest[]): string {
+    expect(captured.length).toBeGreaterThan(0)
+    const first = (captured[0].messages ?? []).find((m: any) => m.role === 'user') as any
+    expect(first).toBeDefined()
+    const c = first.content
+    return typeof c === 'string' ? c : (c ?? []).map((b: any) => (typeof b?.text === 'string' ? b.text : '')).join('')
+  }
+
+  it('a contained run is told the literal path of its scratch folder; an uncontained one is not', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-osrule-'))
+    try {
+      const scratch = join(dir, 'run', 'scratch')
+      setRunContainment(testContainment({
+        missionCwd: dir,
+        sandbox: { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch },
+        home: join(dir, 'home'),
+        folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+      }))
+      const captured: CompletionRequest[] = []
+      const outcome = await runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(captured), config: makeConfig() as any, cwd: dir,
+      })
+      expect(outcome.ok).toBe(true)
+      const text = firstUserText(captured)
+      expect(text).toContain('Review the waiver wire')
+      expect(text).toContain(MISSION_FIXED_RULE)
+      expect(text.trimEnd().endsWith(scratchSentence(scratch))).toBe(true)
+
+      setRunContainment(null)
+      const plain: CompletionRequest[] = []
+      await runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(plain), config: makeConfig() as any, cwd: dir,
+      })
+      const plainText = firstUserText(plain)
+      expect(plainText).toContain(MISSION_FIXED_RULE)
+      expect(plainText).not.toContain('SCRATCH FOLDER')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
+
+  it('a context with no absolute scratch path is a REFUSED: containment outcome, and no model call is made (review 2026-11-23)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-osrule-'))
+    try {
+      const ctx = testContainment({
+        missionCwd: dir,
+        sandbox: { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch: join(dir, 'run', 'scratch') },
+        home: join(dir, 'home'),
+        folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+      })
+      setRunContainment({ ...ctx, sandbox: { ...ctx.sandbox, scratch: 'relative-scratch' } })
+      const captured: CompletionRequest[] = []
+      await expect(runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(captured), config: makeConfig() as any, cwd: dir,
+      })).rejects.toThrow(/^REFUSED: containment: withFixedRule: /)
+      expect(captured).toEqual([])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
 })
 
 describe('runOneShotTask trade-scan dispatch', () => {

@@ -26,6 +26,7 @@ import {
   type ContainmentRecord, type ContainmentRunner, type RunContainment,
 } from '../containment.js'
 import { RUN_ID_RE } from '../missionEnv.js'
+import { cyncoHome } from '../paths.js'
 
 const ENV_KEYS = ['LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_MARKER']
 
@@ -1015,6 +1016,28 @@ describe('sweepSandboxes', () => {
     const a = established(establishContainment(base({ now: daysAgo(2) })))
     expect(containmentRecords({ sandboxRoot: L.root }).map(r => r.runId)).toEqual([a.runId, b.runId])
     expect(containmentRecords({ sandboxRoot: join(dir, 'none') })).toEqual([])
+  })
+})
+
+// ─── The models folder of a context comes from modelsDir() (S6) ─────────────────────────────────
+
+describe('establishContainment: the models folder default', () => {
+  const saved = process.env.LOCALCODE_MODELS_DIR
+  afterEach(() => {
+    if (saved === undefined) delete process.env.LOCALCODE_MODELS_DIR
+    else process.env.LOCALCODE_MODELS_DIR = saved
+  })
+
+  it('with no folders.models argument, a context carries what LOCALCODE_MODELS_DIR names, else models under the CynCo home', () => {
+    const rest = { guard: folders.guard, audit: folders.audit }
+    const moved = join(dir, 'moved-models')
+    mkdirSync(moved)
+    process.env.LOCALCODE_MODELS_DIR = moved
+    expect(established(establishContainment(base({ test: true, folders: rest }))).folders.models).toBe(moved)
+    delete process.env.LOCALCODE_MODELS_DIR
+    const ctx = established(establishContainment(base({ test: true, folders: rest })))
+    expect(ctx.folders.state).toBe(cyncoHome())
+    expect(ctx.folders.models).toBe(join(cyncoHome(), 'models'))
   })
 })
 

@@ -6,6 +6,9 @@ import { capToolResult } from './resultCap.js'
 import { ToolScorer } from './toolScorer.js'
 import { callTouchesSealed, redactSealed, SEALED_REFUSAL } from './sealedPaths.js'
 import { secretPathOf, SECRET_REFUSAL, secretApprovalRefusal } from './secretPaths.js'
+import { checkProtectedPaths } from './protectedPaths.js'
+import { namePaths, type NamedCall } from './toolPaths.js'
+import { realPathOf } from '../realPath.js'
 import { withCodeIndexNudge } from './toolHints.js'
 import { isWrongPathAnswer } from './impl/pathHint.js'
 
@@ -106,14 +109,31 @@ function samePath(a: string, b: string): boolean {
 /** The declared-immutable path this input would write, if any. */
 export function immutableTargetOf(
   toolName: string, input: Record<string, unknown>, cwd: string,
+  namer: (toolName: string, input: Record<string, unknown>, cwd: string) => NamedCall = namePaths,
 ): string | null {
-  if (!WORKSPACE_MUTATING_TOOLS.has(toolName)) return null
-  const raw = (input.file_path as string) ?? (input.path as string) ?? ''
-  if (!raw) return null
-  const abs = /^([a-zA-Z]:[\\/]|\/)/.test(raw)
-    ? raw
-    : `${cwd.replace(/\\/g, '/').replace(/\/+$/, '')}/${raw}`
-  return immutablePaths().find(p => samePath(p, abs)) ?? null
+  const mutating = WORKSPACE_MUTATING_TOOLS.has(toolName)
+  if (!mutating && toolName !== 'Bash') return null
+  const declared = immutablePaths()
+  if (declared.length === 0) return null
+  if (mutating) {
+    const raw = (input.file_path as string) ?? (input.path as string) ?? ''
+    if (raw) {
+      const abs = /^([a-zA-Z]:[\\/]|\/)/.test(raw)
+        ? raw
+        : `${cwd.replace(/\\/g, '/').replace(/\/+$/, '')}/${raw}`
+      const hit = declared.find(p => samePath(p, abs))
+      if (hit) return hit
+    }
+  }
+  // Every path the call names (F242): nested edits, notebook and patch targets, and for Bash the exact
+  // target of a write, a delete or a move.
+  for (const n of namer(toolName, input, cwd).paths) {
+    if (n.op !== 'write' && n.op !== 'delete' && n.op !== 'move') continue
+    if (n.inherited || n.children) continue
+    const hit = declared.find(p => samePath(p, n.path) || samePath(realPathOf(p, { quiet: true }), n.real()))
+    if (hit) return hit
+  }
+  return null
 }
 
 export class ToolExecutor {
@@ -218,6 +238,19 @@ export class ToolExecutor {
     if (secret?.action === 'refuse') {
       return { output: SECRET_REFUSAL, isError: true }
     }
+
+    // F242, layer 2 (protected paths). In a contained run a call that would write, delete, move, link
+    // or hand an unknown program a path outside the mission folder and the run's sandbox is refused
+    // here, before any grade or approval: approve-all does not open it. With no run context this
+    // answers allow at once.
+    const guard = checkProtectedPaths(toolName, input, this.cwd)
+    if (guard.kind === 'refuse') {
+      console.log(`[paths] refused ${guard.rule} ${toolName}: ${guard.target ?? '-'}`)
+      return { output: redactSealed(guard.text), isError: true }
+    }
+    // `escalate` is where a yes/no will one day be asked. Today it is a record and nothing else.
+    const escalate = guard.kind === 'escalate' ? guard.note : null
+    if (escalate) console.log(`[paths] escalate ${escalate.rule} ${toolName}: ${escalate.targets.join(', ')} (allowed: no decision model is installed)`)
 
     if (this.grader) {
       // Project mode: one grade decides. A download is the grader's `risky`

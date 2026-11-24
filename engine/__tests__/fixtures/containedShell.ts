@@ -396,6 +396,14 @@ await step('throughTheTool', async () => {
   }
 })
 
+// S3 (F242): the scratch folder the first message names is the one the shell is given, and it exists.
+await step('scratchThroughTheTool', async () => {
+  const { bashTool } = await import('../../tools/impl/bash.js')
+  const r = await bashTool.execute({ command: '$env:CYNCO_SCRATCH; Test-Path -LiteralPath $env:CYNCO_SCRATCH' }, mission)
+  const lines = r.output.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  return { isError: r.isError, first: lines[0] ?? '', second: lines[1] ?? '', scratch: ctx.sandbox.scratch, output: r.output.slice(0, 400) }
+})
+
 // S2a: the engine's other spawn sites through the real launcher, as the loop calls them.
 const levelOf = (text: string) => (/S-1-16-\d+/.exec(text) ?? ['none'])[0]
 await step('throughTheSites', async () => {

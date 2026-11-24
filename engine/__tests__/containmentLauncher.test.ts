@@ -277,6 +277,14 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(String(v.home).toLowerCase().replace(/\\/g, '/'), v.output).toBe(String(v.sandboxHome).toLowerCase().replace(/\\/g, '/'))
   }, 300_000)
 
+  it('scratch (S3): a contained shell is given CYNCO_SCRATCH, the context\'s scratch folder, and it exists', () => {
+    const v = ok('scratchThroughTheTool')
+    expect(v.isError, v.output).toBe(false)
+    expect(v.first, v.output).not.toBe('')
+    expect(String(v.first).toLowerCase().replace(/\\/g, '/'), v.output).toBe(String(v.scratch).toLowerCase().replace(/\\/g, '/'))
+    expect(v.second, v.output).toBe('True')
+  }, 300_000)
+
   it('through the sites (S2a): a contract check, the Git tool, ApplyPatch and best-of-N tests run low, with the sandbox home', () => {
     const v = ok('throughTheSites')
     const slash = (p: unknown) => String(p).toLowerCase().replace(/\\/g, '/')
