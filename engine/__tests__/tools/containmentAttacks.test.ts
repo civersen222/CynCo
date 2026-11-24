@@ -22,7 +22,7 @@ import { SECRET_REFUSAL, secretApprovalRefusal, secretPathOf } from '../../tools
 import { cyncoHome } from '../../paths.js'
 import { getShellInfo } from '../../tools/shellInfo.js'
 import { attacks, BYPASS_SPELLINGS, LEFT_BEHIND, TARGET_DOT_FOLDER, protectedFolderCalls } from '../../../scripts/cynco-containment-attacks.mjs'
-import { buildFakeProfile, insideRoot, parseDry } from '../../../scripts/cynco-containment-acceptance.mjs'
+import { buildFakeProfile, insideRoot, parseDry, twinVerdict } from '../../../scripts/cynco-containment-acceptance.mjs'
 import { bashExe } from '../../../scripts/cynco-spawn.mjs'
 
 const WIN = process.platform === 'win32'
@@ -31,8 +31,12 @@ const nonce = 'a1b2c3d4'
 const fake = buildFakeProfile(root, nonce)
 const sandbox = { root: join(fake.sandboxRoot, 'run'), home: join(fake.sandboxRoot, 'run', 'home'), tmp: join(fake.sandboxRoot, 'run', 'tmp'), scratch: join(fake.sandboxRoot, 'run', 'scratch') }
 for (const d of [sandbox.home, sandbox.tmp, sandbox.scratch]) mkdirSync(d, { recursive: true })
-const DECOYS = [['.cynco', 'decoy.txt'], [TARGET_DOT_FOLDER, 'decoy.txt'], ['.decoy', 'a.txt']]
+// The dot-folder decoys, and (the ninth attack, appdata-walk) one application folder in each of the
+// sandbox home's AppData\Local and AppData\Roaming, so that the listing twins of case 17 have something to list.
+const DECOYS = [['.cynco', 'decoy.txt'], [TARGET_DOT_FOLDER, 'decoy.txt'], ['.decoy', 'a.txt'],
+  [join('AppData', 'Local', 'decoy-app'), 'a.txt'], [join('AppData', 'Roaming', 'decoy-app'), 'a.txt']]
 for (const [d, f] of DECOYS) { mkdirSync(join(sandbox.home, d), { recursive: true }); writeFileSync(join(sandbox.home, d, f), 'decoy\n') }
+const dirsIn = (d: string) => readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
 mkdirSync(join(root, 'outside'), { recursive: true })
 writeFileSync(join(root, 'outside', 'gate.py'), "print('gate')\n")
 const folders = { state: fake.state, models: fake.models, guard: fake.guard, audit: fake.audit }
@@ -44,6 +48,7 @@ const P = {
   home: fake.home, cwd: fake.mission, scratch: sandbox.scratch, linked: fake.linked, guard: fake.guard, audit: fake.audit,
   models: fake.models, sandboxRootOther: join(fake.sandboxRoot, 'acc-other-20260101T000000-0000'), nonce,
   dotEntries: readdirSync(fake.home).filter(n => n.startsWith('.')),
+  localEntries: dirsIn(join(fake.home, 'AppData', 'Local')), roamingEntries: dirsIn(join(fake.home, 'AppData', 'Roaming')),
 }
 type Variant = { variant: string; label: string; form: string; call: { tool: string; input: Record<string, unknown> }; dry: { tool: string; input: { command: string } } | null; targets: string[] | null }
 type Attack = { id: string; variants: (p: typeof P) => Variant[] }
@@ -58,6 +63,15 @@ function allVariants(): Array<{ shell: string; attack: Attack; v: Variant }> {
   return out
 }
 const decide = (tool: string, input: Record<string, unknown>, cwd = fake.mission, c: RunContainment = ctx) => checkProtectedPaths(tool, input, cwd, c)
+/**
+ * The ninth attack's Git Bash form writes its inner quotes `\"` (RS-1 of wave 8: Windows PowerShell 5.1 hands them
+ * to bash.exe as plain quotes). The path check refuses it, but reads the backslashes as part of the bash text and
+ * resolves the path to a place that is not the one bash acts on (measured: "which resolves to C:\c"), so its
+ * refusal quotes the text instead of naming the fake AppData. It errs toward refusing (a `\"./x\"` inside the
+ * mission folder is refused too); reading 5.1's quoting is the path check's to learn (docs/NOW.md, backlog).
+ * Admitted for that one form only, and only when the refusal quotes the escaped text.
+ */
+const escapedGitBash = (id: string, v: Variant, reason: string) => id === 'appdata-walk' && v.variant === 'git-bash' && reason.includes('\\"$LOCALAPPDATA\\"/*')
 const approvals: string[] = []
 const executor = (cwd = fake.mission, auditSrc?: 'tool' | 'subagent') => new ToolExecutor({
   cwd, approveAll: true, requestApproval: async (tool) => { approvals.push(tool); return true }, ...(auditSrc ? { auditSrc } : {}),
@@ -87,7 +101,7 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
       if (verdict.kind !== 'refuse') continue
       // The refusal names what it refused: the place in the fake home the spelling resolves to, or,
       // for a git setting that would start a program, the setting.
-      const names = verdict.reason.toLowerCase().includes(fake.home.toLowerCase()) || /git setting core\.fsmonitor/.test(verdict.reason)
+      const names = verdict.reason.toLowerCase().includes(fake.home.toLowerCase()) || /git setting core\.fsmonitor/.test(verdict.reason) || escapedGitBash(attack.id, v, verdict.reason)
       expect(names, `${shell} ${attack.id} ${v.label} refused without naming its target: ${verdict.reason.slice(0, 300)}`).toBe(true)
     }
   })
@@ -102,6 +116,34 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
 
   it('3. every bypass spelling is refused (they are never handed to anything that starts a process)', () => {
     for (const command of BYPASS_SPELLINGS as string[]) expect(decide('Bash', { command }).kind, command).toBe('refuse')
+  })
+
+  it('3b. the ninth attack (appdata-walk, F242 found 2026-11-24): every mission and literal form is refused, and names the fake home\'s AppData', () => {
+    const local = join(fake.home, 'AppData', 'Local').toLowerCase()
+    const roaming = join(fake.home, 'AppData', 'Roaming').toLowerCase()
+    for (const opts of SHELLS.filter(s => s.shell === 'powershell')) {
+      const a = (attacks(opts) as Attack[]).find(x => x.id === 'appdata-walk')
+      expect(a, `${opts.gitBash ? 'with' : 'without'} Git Bash: no appdata-walk attack`).toBeTruthy()
+      if (!a) continue
+      const vs = a.variants(P)
+      expect(vs.filter(v => v.form === 'mission').length, 'mission forms').toBe(opts.gitBash ? 7 : 6)
+      expect(vs.filter(v => v.form === 'literal').length, 'literal forms').toBe(6)
+      for (const v of vs) {
+        const verdict = decide(v.call.tool, v.call.input)
+        expect(verdict.kind, `${v.label} ${v.form}: ${JSON.stringify(v.call.input)}`).toBe('refuse')
+        if (verdict.kind !== 'refuse') continue
+        const r = verdict.reason.toLowerCase()
+        expect(r.includes(local) || r.includes(roaming) || escapedGitBash(a.id, v, verdict.reason), `${v.label} ${v.form} refused without naming the fake AppData: ${verdict.reason.slice(0, 300)}`).toBe(true)
+      }
+    }
+    // The attack uses Windows' application-data variables: there is no POSIX form of it.
+    expect((attacks({ shell: 'posix', python: 'python3', gitBash: null }) as Attack[]).some(x => x.id === 'appdata-walk')).toBe(false)
+  })
+
+  it('3c. the bypass spellings that answer the REAL application-data folders whatever the environment says are refused', () => {
+    const appdata = (BYPASS_SPELLINGS as string[]).filter(c => /GetFolderPath\('(?:LocalApplicationData|ApplicationData)'\)/.test(c))
+    expect(appdata.length).toBe(2)
+    for (const command of appdata) expect(decide('Bash', { command }).kind, command).toBe('refuse')
   })
 
   it('4. every call at the protected folders is refused, the read of the audit file included', () => {
@@ -265,10 +307,13 @@ describe('the executor refuses the catalog before anything starts (F242, T1 case
     const list = (attacks({ shell: hostShell, python: python ?? 'python', gitBash }) as Attack[])
       .flatMap(a => a.variants(P).filter(v => v.form === 'mission' && v.dry).map(v => ({ attack: a, v })))
     for (const { attack, v } of list) {
-      const needsPython = v.dry!.input.command.includes('pathlib')
+      const needsPython = v.dry!.input.command.includes('pathlib') || /\bos\.listdir\(/.test(v.dry!.input.command)
       it.skipIf(needsPython && !python)(`${attack.id} ${v.label}`, async () => {
         process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil,paths'
         const r = await bashTool.execute(v.dry!.input, fake.mission)
+        // The ninth attack's Git Bash twin is held to the same rule as every other (RS-1 of wave 8): its inner
+        // double quotes are escaped so that Windows PowerShell 5.1 hands them to bash.exe, and the twin then lists
+        // the sandbox home's application folders like the others.
         // Rule S1': a twin counts only when it ran without an error.
         expect(r.isError, `${v.dry!.input.command}\n${r.output.slice(0, 400)}`).toBe(false)
         const d = parseDry(r.output)
@@ -277,6 +322,39 @@ describe('the executor refuses the catalog before anything starts (F242, T1 case
           // A path boundary, not a string prefix: <run>\home2 is not inside <run>\home.
           expect(insideRoot(sandbox.home, p), `${attack.id} ${v.label} printed ${p}, outside the sandbox home ${sandbox.home}`).toBe(true)
         }
+      }, 60_000)
+    }
+  })
+
+  // RS-2 of wave 8: what the acceptance relies on when APPDATA or LOCALAPPDATA is empty (its T2.29 table) is read
+  // here from a real shell, not copied by hand. Twins only (listing, never a form), in an interactive context with
+  // the two keys removed from this process's environment for the one call, the mission folder as the working folder.
+  describe.skipIf(!WIN)('17b. the ninth attack\'s listing twins with APPDATA and LOCALAPPDATA unset never let their form fire', () => {
+    const has = (cmd: string, args: string[]) => spawnSync(cmd, args, { encoding: 'utf-8', windowsHide: true }).status === 0
+    const python = has('python', ['--version']) ? 'python' : null
+    let gitBash: string | null = null
+    try { gitBash = bashExe() } catch (e) { console.log(`[test] case 17b: the Git Bash twin is skipped: ${(e as Error).message}`) }
+    const a = (attacks({ shell: 'powershell', python: python ?? 'python', gitBash }) as Attack[]).find(x => x.id === 'appdata-walk')
+    // What each twin prints with the variable unset, by kind: the pipelines list the working folder (inside the
+    // test root, not the sandbox home: FAILED), the wildcard and Git Bash list the top of the drive or Git Bash's
+    // root (UNSAFE), cmd leaves %LOCALAPPDATA% as written and Python raises KeyError (nothing resolved).
+    const want = (label: string) => /pipeline$/.test(label) ? 'FAILED' : /wildcard$/.test(label) || label === 'git-bash' ? 'UNSAFE' : 'twin did not resolve'
+    for (const v of (a?.variants(P) ?? []).filter(x => x.form === 'mission' && x.dry)) {
+      it.skipIf(v.label.startsWith('python') && !python)(v.label, async () => {
+        const saved = { APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA }
+        setRunContainment(null)
+        delete process.env.APPDATA
+        delete process.env.LOCALAPPDATA
+        let r: { output: string; isError?: boolean }
+        try {
+          r = await bashTool.execute(v.dry!.input, fake.mission)
+        } finally {
+          for (const [k, x] of Object.entries(saved)) if (x !== undefined) process.env[k] = x
+        }
+        const t = twinVerdict({ output: r.output, isError: r.isError === true, refusedLayer: refusalLayerOf(r.output),
+          inRoot: (p: string) => insideRoot(root, p), inHome: (p: string) => insideRoot(sandbox.home, p) })
+        expect(t.ok, `${v.label}: ${r.output.slice(0, 400)}`).toBe(false)
+        expect(t.outcome, `${v.label}: ${r.output.slice(0, 400)}`).toBe(want(v.label))
       }, 60_000)
     }
   })

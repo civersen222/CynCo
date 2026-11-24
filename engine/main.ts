@@ -232,7 +232,7 @@ import { bootstrapProvider } from './bootstrapProvider.js'
           },
         })
         if (!tripwire.ok) refuseBoot('integrity', tripwire.reason)
-        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every 60 s and before a tool call (at most once in 10 s)`)
+        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every 60 s and before a tool call (at most once a second)`)
       }
     }
   }

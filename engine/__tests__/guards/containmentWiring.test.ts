@@ -10,7 +10,7 @@ import { DISPATCH_RUN_PREFIX } from '../../containment.js'
  * BLOCKING wire-check for mission containment (F242).
  *
  * On 2026-11-22 one Bash call of an unattended mission deleted every dot-folder of the owner's
- * home. The containment layer (`engine/containment.ts`, the low-integrity launcher, harness git)
+ * home and then the application folders of AppData\Local up to "pip". The containment layer (`engine/containment.ts`, the low-integrity launcher, harness git)
  * only helps where a child is actually started through it, and a process can be started from many
  * places: the tools, the loop, the daemon, the mission driver, the graders. A unit test proves a
  * site that goes through the layer behaves; only this listing proves that no site was forgotten,

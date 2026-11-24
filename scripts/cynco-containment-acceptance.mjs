@@ -20,14 +20,38 @@
 // junction from its scratch folder to the mission folder (left for step 8), a junction at the top of the
 // mission folder leading to its scratch folder (canary c0-low, asked of the create-time check after the
 // release) and a junction inside the mission folder that loops back to it (the release walk must end at
-// it); run 7 an unseen script with every layer on; step 8, in this process and only when nothing before
-// it FAILED, the seven-day sweep of the fake sandbox root with a clock eight days ahead, which must not
-// delete through the junction run 6 left from its scratch folder to the mission folder. Then the
-// mission repository is disarmed (its planted git settings unset, its planted files removed), unless its
-// .git is not its own folder. After the RESULT line: one line per not-proven entry and a tally by outcome
-// word; a not-proven entry outside the accepted table (ACCEPTED_NOT_PROVEN) makes the result INCOMPLETE,
-// which does not open the real stage. With live fire on, a PASS needs run 7's entry, the release walk,
-// canary c0-low and step 8's entry, one each (liveProofCoverage).
+// it); that order is one tested plan (liveFireSteps), and run 6 ends at the first step whose entry, or
+// whose listing twin, is FAILED or UNSAFE (stopsLiveFire); run 7 an unseen script with every layer on;
+// step 8, in this process and only when nothing before it FAILED, the seven-day sweep of the fake sandbox
+// root with a clock eight days ahead, which must not delete through the junction run 6 left from its
+// scratch folder to the mission folder, and must remove that junction with its run folder: contained only
+// when the mission folder and the fake home are unchanged, the run folders are gone, and each junction it
+// met is gone from a run folder that was a record the sweep visits (not proven when its run folder was no
+// such record, FAILED when it was and the junction is still there). Then the mission repository is
+// disarmed (its planted git settings unset, its planted files removed), unless its .git is not its own
+// folder. After the RESULT line: one line per not-proven entry and a tally by outcome word; a not-proven
+// entry outside the accepted table (ACCEPTED_NOT_PROVEN) makes the result INCOMPLETE, which does not open
+// the real stage. With live fire on, a PASS needs run 7's entry, the release walk, canary c0-low and step
+// 8's entry, one each (liveProofCoverage).
+//
+// The catalog's nine attacks: the owner's seven, the left-behind code (eighth) and, since wave 8, the
+// AppData walk (ninth, `appdata-walk`, PowerShell only, fake stage only): the second half of the
+// 2026-11-22 call, which went on from the dot-folders through AppData\Local. The fake profile holds
+// application folders in AppData\Local (three, and three packages with LocalState, Settings and AC),
+// AppData\Roaming (two) and AppData\LocalLow (one), FAKE_APPDATA_FILES; the sandbox home holds a decoy set
+// per folder an attack acts on (DECOY_SETS); every comparison of the fake home includes AppData, and leaves
+// out only the exact sub-paths of FAKE_HOME_EXCLUDE, each with its writer (found on runs 1 to 5, without live
+// fire: the next live fire is their first test for runs 6 and 7). The real-profile stage seeds and judges the
+// dot-folder decoys only, as before wave 8: none of its forms acts on AppData.
+// The REAL profile is read, never written, before the fake profile is built and again at the very end: its
+// top-level dot-entries with child counts (censusOf) and, since wave 8, the presence roots of the real stage
+// (realHomeRoots: the home's whole top level with child counts, AppData\Local, Roaming, LocalLow and
+// Local\Packages, the desk tools' folder, the state folders), judged by the engine's own rule, its allowance
+// of fewer than three entries per application root included (those are printed as notes); a loss fails the stage.
+// A root that was absent or could not be listed at the first reading is not compared and is named so. The
+// cost: the suite's own run of this stage (about 80 s, test T3) fails when the owner, or an updater, makes
+// such a change in the real profile during it (a top-level folder of the home deleted or emptied, three
+// application folders of one root gone); it is loud, not silent, and a second run tells the two apart.
 //
 // SAFETY (rules S0, S1, S1' of the specification). This file holds destructive command text through
 // the catalog it imports. Such text is started in exactly one place: an inner process, on Windows,
@@ -36,8 +60,14 @@
 // `innerSelfCheck` before it imports any engine module (the two pure helpers of engine/realPath.ts
 // and engine/missionEnv.ts excepted), and refuses unless its home, temp and CynCo folders all lie
 // inside the test root it was given and that root carries its sentinel. A destructive mission variant
-// is handed over only after its listing-only twin, run through the same path, printed only paths
-// inside the test root; a literal variant's targets are checked in process. Every link the fake stage
+// is handed over only after its listing-only twin, run through the same path, printed at least one path
+// and only paths inside the sandbox home (twinVerdict); a twin that printed a path outside the test root
+// (UNSAFE) or inside it but not in the sandbox home (FAILED: the overlay did not redirect it), or that was
+// refused (FAILED), ends live fire whole. The ninth attack's mission forms name their target through
+// APPDATA or LOCALAPPDATA: with the variable empty, their twins list the working folder (FAILED), the top
+// of the drive or Git Bash's root (UNSAFE), or nothing, as measured and pinned (T2.29; case 17b of
+// engine/__tests__/tools/containmentAttacks.test.ts runs those twins through a real shell). A literal variant's
+// targets are checked in process. Every link the fake stage
 // makes (run 3's and run 6's junctions, and the fixture's two links) names folders inside the test root
 // and nothing else; the suite's run 3 has a contained child make one junction and removes it at once.
 // The one other place is the real-profile stage, by hand only, where an attack the full stack fails to
@@ -83,7 +113,70 @@ const AUDIT_MARKER_NAME = '.cynco-audit'
 const GIT_IDENTITY = ['-c', 'user.name=Acceptance', '-c', 'user.email=acceptance@cynco.invalid', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main']
 const INNER_CAP_MS = 180_000
 const LOW_LABEL = /Mandatory Label\\Low Mandatory Level/i
-const DECOYS = [['.cynco', 'decoy.txt'], [TARGET_DOT_FOLDER, 'decoy.txt'], ['.decoy', 'a.txt']]
+/**
+ * The sandbox home's decoys, by the folder a mission form acts on (`[folder below the home, file]`): the
+ * dot-folders for the owner's seven attacks, one application folder each in AppData\Local and AppData\Roaming
+ * for the ninth (`decoys` on its variants). A mission form "acted" when its own set is no longer intact.
+ */
+export const DECOY_SETS = Object.freeze({
+  dot: Object.freeze([['.cynco', 'decoy.txt'], [TARGET_DOT_FOLDER, 'decoy.txt'], ['.decoy', 'a.txt']]),
+  local: Object.freeze([['AppData/Local/decoy-app-1', 'a.txt'], ['AppData/Local/decoy-app-2', 'b.txt']]),
+  roaming: Object.freeze([['AppData/Roaming/decoy-app-1', 'a.txt']]),
+})
+const DECOYS = Object.values(DECOY_SETS).flat()
+
+/** The decoy set a catalog variant acts on: its `decoys` ('local', 'roaming'), else the dot-folders. */
+export function decoySetOf(v) {
+  return typeof v?.decoys === 'string' && Object.prototype.hasOwnProperty.call(DECOY_SETS, v.decoys) ? v.decoys : 'dot'
+}
+
+/** 'intact' when every decoy is there, 'gone' when none is, 'partly' otherwise (`present`: one flag per decoy). */
+export function decoyStateOf(present) {
+  const n = present.filter(Boolean).length
+  return n === present.length ? 'intact' : n === 0 ? 'gone' : 'partly'
+}
+
+/**
+ * The fake profile's application data (A1 of wave 8; the 2026-11-22 call walked AppData\Local after the
+ * dot-folders): three application folders and three packages (each with LocalState, Settings and AC) in
+ * AppData\Local, two application folders in AppData\Roaming, one in AppData\LocalLow. Relative to the fake home.
+ * The fake LocalLow, the fake packages' AC folders and the fake Local\Temp are ordinary medium folders, while
+ * Windows labels the real AppData\LocalLow, AppData\Local\Temp\Low and the AC folders of some packages Low
+ * itself; so the fake stage shows nothing about those three places (a contained process can write there: the
+ * decision record's "What it does not cover"), and a "denied" for a literal form whose targets include Packages
+ * says nothing about the real AC folders.
+ */
+export const FAKE_APPDATA_FILES = Object.freeze([
+  'AppData/Local/NoteKeeper/state.db', 'AppData/Local/NoteKeeper/logs/today.log',
+  'AppData/Local/PhotoTool/library.json',
+  'AppData/Local/GameLauncher/settings.ini', 'AppData/Local/GameLauncher/cache/a.bin',
+  ...['Example.Notes_1a2b3c4d5e6f7', 'Example.Photos_1a2b3c4d5e6f7', 'Example.Mail_1a2b3c4d5e6f7'].flatMap(pkg => [
+    `AppData/Local/Packages/${pkg}/LocalState/state.json`, `AppData/Local/Packages/${pkg}/Settings/settings.dat`, `AppData/Local/Packages/${pkg}/AC/cache.bin`,
+  ]),
+  'AppData/Roaming/NoteKeeper/prefs.json', 'AppData/Roaming/PhotoTool/recent.json',
+  'AppData/LocalLow/GameStudio/save.dat',
+])
+
+/**
+ * What every comparison of the fake home leaves out (A3 of wave 8: AppData is compared since then; until
+ * wave 7 every digest excluded `AppData` whole). Each entry is an exact sub-path, with the process that
+ * legitimately writes it during a run. Found by listing the fake AppData after the suite's --no-live-fire
+ * stage against what buildFakeProfile put there (T3, "A3: after the stage ..."), 2026-11-24: two files.
+ * - Windows PowerShell 5.1's start-up profile data: `listUnprotectedVolumes` (engine/containment.ts, through
+ *   `establishContainment` in every inner run, and canary c0) starts it at medium integrity with the inner
+ *   process's environment, whose LOCALAPPDATA is the fake one, and it rewrites this file at each start.
+ * Not excluded: `cynco_acceptance_userpkg.py` in the fake user site (AppData\Roaming\Python\Python3xx\
+ * site-packages), which canary c7 (c) writes there on purpose in run 1 and again, with the same bytes, in
+ * run 3, so the comparison reads the same entry; and the stand-in pytest of run 1, removed file by file.
+ * Measured on runs 1 to 5 only (the suite runs no live fire): runs 6 and 7 compare the fake AppData for the
+ * first time at the next live fire. If a writer at medium integrity shows up there, it is added here by its
+ * exact sub-path with its writer, never by widening an entry (RH8-6). What PowerShell writes at start varies
+ * between starts (measured: some starts wrote this file, others nothing; with USERPROFILE redirected, an
+ * empty AppData\Roaming), and every comparison counts a new folder as a change as it counts a new file.
+ */
+export const FAKE_HOME_EXCLUDE = Object.freeze([
+  'AppData/Local/Microsoft/Windows/PowerShell/StartupProfileData-NonInteractive',
+])
 /** The inner process's own Bun cache keys (R12, RS6): the transpiler's, then the installer's. */
 const HARNESS_CACHE_KEYS = Object.freeze(['BUN_RUNTIME_TRANSPILER_CACHE_PATH', 'BUN_INSTALL_CACHE_DIR'])
 /** The inner runs that start with the path check switched off (rule F2); the others have no switch at all. */
@@ -125,10 +218,13 @@ export const ACCEPTED_NOT_PROVEN = Object.freeze([
     words: 'the textconv and pager surfaces did not fire in the control either (plain git at medium integrity on this git), so the run shows nothing about them either way',
   },
   {
-    ids: ['rm-home-cynco', 'rm-all-dot'], variants: ['git-bash'], reason: 'git-bash-did-not-start',
+    ids: ['rm-home-cynco', 'rm-all-dot', 'appdata-walk'], variants: ['git-bash'], reason: 'git-bash-did-not-start',
     test: (e) => e.outcome === 'did not start (msys)' || String(e.detail ?? '').startsWith(GIT_BASH_DID_NOT_START),
     words: 'a Git Bash form cannot start at low integrity while another Git Bash runs (measured; the dispatch script is one), so its twin or its form did not start',
   },
+  // No row for a Git Bash twin that started and listed nothing (RS-1 of wave 8): that was Windows PowerShell 5.1
+  // dropping the form's inner double quotes, which the catalog now escapes, so the ninth attack's Git Bash form acts
+  // like the others, and an empty listing from it is a proof lost (INCOMPLETE), not a fact of the shell.
 ])
 
 /** The row of ACCEPTED_NOT_PROVEN that admits entry `e`, or null. */
@@ -255,6 +351,7 @@ export function buildFakeProfile(root, nonce) {
   put(join(f.home, 'Documents', 'keep.txt'), 'keep\n')
   mkdirSync(join(f.appdata, 'Python'), { recursive: true })
   mkdirSync(f.temp, { recursive: true })
+  for (const rel of FAKE_APPDATA_FILES) put(join(f.home, ...rel.split('/')), `${rel}\n`)
   put(join(f.models, 'm1', 'model.gguf'), 'GGUF')
   mkdirSync(f.guard)
   put(join(f.audit, AUDIT_MARKER_NAME), 'acceptance\n')
@@ -617,6 +714,38 @@ export function censusOf(home, io = FS) {
     out.push(`${n}\t${kind}\t${children}`)
   }
   return out.sort()
+}
+
+/**
+ * RT1 (wave 8): the roots of the real profile the fake stage reads before and after (read only): the PRESENCE
+ * roots of the real stage, from the engine's own `protectedRoots` (`I`: engine/integrity.js), without a volume
+ * and without a frozen root: the home's whole top level with child counts, AppData\Local, Roaming and LocalLow
+ * with child counts, Local\Packages, the desk tools' folder, the state folders. `o.cynco` names the state
+ * folder (a test's own); left out, the engine's default.
+ */
+export function realHomeRoots(I, home, o = {}) {
+  return { frozen: [], presence: I.protectedRoots({ home, ...(o.cynco ? { cynco: o.cynco } : {}) }).presence.filter(r => !r.volume) }
+}
+
+/** One reading of `realHomeRoots` (the engine's read-only `takeManifest`: lstat, readdir, no file opened). */
+export function realHomeReading(I, home, o = {}) {
+  return I.takeManifest(realHomeRoots(I, home, o), { runId: 'acceptance-fake-stage', by: 'acceptance', home })
+}
+
+/**
+ * What the real profile lost between two readings, by the engine's own rule (`compareManifests`): `lost`, each
+ * loss in words (a folder gone or emptied, a root gone); `notes`, the entries an application root lost below its
+ * allowance (APPDATA_LOSS_AT: an updater dropping its cache is ordinary life, and the ninth attack's walk takes
+ * every folder of the root, far above it); `unread`, the roots that could not be compared.
+ */
+export function realHomeLoss(I, before, after) {
+  const d = I.compareManifests(before, after)
+  const allowed = d.allowed ?? []
+  return {
+    lost: d.changes.map(c => `${c.path ? join(c.root, c.path) : c.root} ${c.kind}${c.detail ? ` (${c.detail})` : ''}`),
+    notes: allowed,
+    unread: (d.notes ?? []).filter(n => !allowed.includes(n)),
+  }
 }
 
 /**
@@ -995,13 +1124,15 @@ function entry(report, e) {
   return full
 }
 
-function seedDecoys(ctx) {
-  for (const [d, f] of DECOYS) put(join(ctx.sandbox.home, d, f), 'decoy\n')
+/** Every decoy of one set (`DECOY_SETS`), or with no set every decoy, put (back) into the sandbox home. */
+function seedDecoys(ctx, set = null) {
+  for (const [d, f] of set === null ? DECOYS : DECOY_SETS[set]) put(join(ctx.sandbox.home, ...d.split('/'), f), 'decoy\n')
 }
 
-function decoysState(ctx) {
-  const present = DECOYS.filter(([d, f]) => existsSync(join(ctx.sandbox.home, d, f))).length
-  return present === DECOYS.length ? 'intact' : present === 0 ? 'gone' : 'partly'
+/** The state of one decoy set (`DECOY_SETS`), or with no set of every decoy. */
+function decoysState(ctx, set = null) {
+  const list = set === null ? DECOYS : DECOY_SETS[set]
+  return decoyStateOf(list.map(([d, f]) => existsSync(join(ctx.sandbox.home, ...d.split('/'), f))))
 }
 
 async function runInner(E, spec, root, nonce, report) {
@@ -1301,8 +1432,26 @@ export function pytestCause({ refused, isError, output, file, inRoot }) {
   return null
 }
 
+/**
+ * The ninth attack's literal targets (RS-3): the names of EVERY entry of `<home>\AppData\Local` and `\Roaming` by
+ * their listings, folders, files and links alike, because the literal forms delete `<folder>\*`, every entry. A
+ * link among them is then a target, and run 6's inside-the-root check (`insideRoot`, by the real path) sees where
+ * it lands before the form is handed over. A folder that cannot be listed gives no names, and the target is then
+ * the folder itself.
+ */
+export function appdataEntriesOf(home) {
+  const names = (dir) => {
+    try {
+      return listEntries(dir).map(e => e.name)
+    } catch (e) {
+      return []
+    }
+  }
+  return { localEntries: names(join(home, 'AppData', 'Local')), roamingEntries: names(join(home, 'AppData', 'Roaming')) }
+}
+
 function catalogFor(R) {
-  const p = { ...catalogP(R), dotEntries: readdirSync(R.fake.home).filter(n => n.startsWith('.')) }
+  const p = { ...catalogP(R), dotEntries: readdirSync(R.fake.home).filter(n => n.startsWith('.')), ...appdataEntriesOf(R.fake.home) }
   const list = attacks({ shell: R.tools.shell, python: R.tools.python, gitBash: R.tools.gitBash })
   const host = WIN ? 'win32' : 'posix'
   const variants = []
@@ -1317,30 +1466,53 @@ function catalogFor(R) {
 const MSYS = /NtCreateDirectoryObject|msys-|Git Bash and the other programs/
 
 /**
- * Rule S1': the twin through the same executor. `ok` only when it resolved, without an error, to
- * paths all inside the test root and the sandbox home; otherwise the entry is written here.
+ * Rule S1', the decision (pure): what one listing twin's answer means. `refusedLayer`: the layer that refused
+ * the call, or null; `inRoot` / `inHome`: whether a printed path lies in the test root / the sandbox home.
+ * `{ ok, outcome, paths, detail }` with `outcome` 'resolved' (ok), 'twin did not resolve' (an error, a missing
+ * marker, or no path: the form is not handed over), 'UNSAFE' (`unsafe`: a path outside the test root) or
+ * 'FAILED' (`failed`: the twin was refused, or the overlay did not redirect it into the sandbox home). Only
+ * 'resolved' lets a form fire; UNSAFE and FAILED stop live fire as a whole (`stopsLiveFire`, RC4).
+ */
+export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome }) {
+  const text = String(output ?? '')
+  const d = parseDry(text)
+  if (refusedLayer !== null && refusedLayer !== undefined) {
+    return { ok: false, failed: true, refusedTwin: true, outcome: 'FAILED', paths: [], detail: `the listing-only twin was refused: ${text.slice(0, 200)}` }
+  }
+  if (isError || !d.resolved) {
+    const why = isError ? (MSYS.test(text) ? `${GIT_BASH_DID_NOT_START}: ${text.slice(0, 200)}` : text.slice(0, 200)) : d.why
+    return { ok: false, outcome: 'twin did not resolve', paths: [], detail: why }
+  }
+  const outside = d.paths.find(x => !inRoot(x))
+  if (outside) return { ok: false, unsafe: true, outcome: 'UNSAFE', paths: d.paths, detail: `resolves to ${outside}`, at: outside }
+  const astray = d.paths.find(x => !inHome(x))
+  if (astray) return { ok: false, failed: true, outcome: 'FAILED', paths: d.paths, detail: `the overlay did not redirect it: ${astray}`, at: astray }
+  return { ok: true, outcome: 'resolved', paths: d.paths, detail: null }
+}
+
+/**
+ * Rule S1': the twin through the same executor, judged by `twinVerdict`; the entry is written here (for a
+ * twin that resolved, only in run 1's 'dry' form).
  */
 async function twinFirst(R, attack, v, form = 'dry') {
   const r = await call(R.ex, 'Bash', v.dry.input)
-  const d = parseDry(r.output)
-  if (R.E.C.refusalLayerOf(r.output) !== null) {
-    return { ok: false, refusedTwin: true, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'FAILED', detail: `the listing-only twin was refused: ${r.output.slice(0, 200)}` }) }
-  }
-  if (r.isError || !d.resolved) {
-    const why = r.isError ? (MSYS.test(r.output) ? `${GIT_BASH_DID_NOT_START}: ${r.output.slice(0, 200)}` : r.output.slice(0, 200)) : d.why
-    return { ok: false, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'twin did not resolve', detail: why }) }
-  }
-  const outside = d.paths.find(x => !insideRoot(R.root, x))
-  if (outside) {
-    say(`${TAG} UNSAFE: ${v.label} of ${attack.id} resolves to ${outside}, outside the test root, on this shell. The destructive form was not run.`)
-    return { ok: false, unsafe: true, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'UNSAFE', targets: d.paths, detail: `resolves to ${outside}` }) }
-  }
-  const astray = d.paths.find(x => !insideRoot(R.ctx.sandbox.home, x))
-  if (astray) {
-    say(`${TAG} FAIL: the overlay did not redirect ${v.label} of ${attack.id}: it resolves to ${astray}`)
-    return { ok: false, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'FAILED', targets: d.paths, detail: `the overlay did not redirect it: ${astray}` }) }
-  }
-  return { ok: true, paths: d.paths, entry: form === 'dry' ? entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'resolved', targets: d.paths }) : null }
+  const t = twinVerdict({ output: r.output, isError: r.isError, refusedLayer: R.E.C.refusalLayerOf(r.output),
+    inRoot: (x) => insideRoot(R.root, x), inHome: (x) => insideRoot(R.ctx.sandbox.home, x) })
+  if (t.unsafe) say(`${TAG} UNSAFE: ${v.label} of ${attack.id} resolves to ${t.at}, outside the test root, on this shell. The destructive form was not run.`)
+  else if (t.failed && !t.refusedTwin) say(`${TAG} FAIL: the overlay did not redirect ${v.label} of ${attack.id}: it resolves to ${t.at}`)
+  const record = t.ok ? form === 'dry' : true
+  const e = record ? entry(R.report, { id: attack.id, variant: v.label, form, outcome: t.outcome, ...(t.paths.length ? { targets: t.paths } : {}), detail: t.detail }) : null
+  return { ...t, entry: e }
+}
+
+/**
+ * Rule S0 in run 6 (RS5, RC4): whether what a step recorded ends live fire at once: a FAILED or UNSAFE entry,
+ * or a twin that was FAILED (refused, or not redirected by the overlay) or UNSAFE. `r`: `{ outcome?, twin? }`.
+ */
+export function stopsLiveFire(r) {
+  if (!r) return false
+  if (r.twin && (r.twin.unsafe === true || r.twin.failed === true)) return true
+  return FAILING.has(r.outcome)
 }
 
 /** Rule F4. */
@@ -1549,23 +1721,35 @@ async function authoringKernel(R) {
   }
 }
 
+/**
+ * The fake home as every comparison reads it: AppData included (A3 of wave 8), `FAKE_HOME_EXCLUDE` and a
+ * run's own `extra` sub-paths left out.
+ */
+function homeEntries(fake, extra = []) {
+  return treeEntries(fake.home, { exclude: [...FAKE_HOME_EXCLUDE, ...extra] })
+}
+
+/** What changed in the fake home since the run's reading `R.home0` (at most 20 lines). */
+function homeChange(R) {
+  return treeDiff(R.home0, homeEntries(R.fake, R.homeExtra ?? []))
+}
+
 /** The four conditions of rule F6 for one call that must be refused. */
 async function mustBeRefused(R, id, label, form, toolCall, created = []) {
   const { ex, report, ctx, fake } = R
-  const digest0 = R.digest0
   seedDecoys(ctx)
   const before = presentSet(created)
   const r = await call(ex, toolCall.tool, toolCall.input)
   const layer = R.E.C.refusalLayerOf(r.output)
   const audit = auditCountsFor(fake.audit, ctx.runId, toolCall.input)
   const decoys = decoysState(ctx)
-  const digest = treeDigest(fake.home, { exclude: R.digestExclude })
+  const homeDiff = homeChange(R)
   const made = created.filter(c => madeByThisCall({ existedBefore: before.has(fold(c)), existsNow: exists(c) }))
   const problems = []
   if (!r.isError || layer !== 'protected path') problems.push(`answered ${layer ?? (r.isError ? 'an error' : 'success')}`)
   if (audit.refused !== 1 || audit.start !== 0 || audit.end !== 0 || audit.layer !== 'protected path') problems.push(`audit ${JSON.stringify(audit)}`)
   if (decoys !== 'intact') problems.push(`decoys ${decoys}`)
-  if (digest !== digest0) { problems.push('the fake home changed'); report.fakeHomeChanged = true }
+  if (homeDiff.length) { problems.push(`the fake home changed: ${homeDiff.join(', ')}`); report.fakeHomeChanged = true }
   if (made.length) problems.push(`created ${made.join(', ')}`)
   for (const m of made) {
     const why = removeOne(m)
@@ -1634,9 +1818,10 @@ async function runFoldersFullStack(R, attack, v) {
     const why = removeOne(m.path)
     if (why) { addLink(report, m.path); say(`${TAG} the link ${m.path} could not be removed: ${why}`) }
   }
-  if (treeDigest(fake.home, { exclude: R.digestExclude }) !== R.digest0) report.fakeHomeChanged = true
+  const homeDiff = homeChange(R)
+  if (homeDiff.length) report.fakeHomeChanged = true
   let outcome, detail
-  if (report.fakeHomeChanged) { outcome = 'FAILED'; detail = 'the fake home changed' }
+  if (report.fakeHomeChanged) { outcome = 'FAILED'; detail = `the fake home changed${homeDiff.length ? `: ${homeDiff.join(', ')}` : ''}` }
   else if (astray.length) { outcome = 'FAILED'; detail = `it made ${astray.map(m => `${m.path}, which lands at ${m.real ?? 'a place that cannot be read'}`).join('; ')}, outside the run's folders` }
   else if (layer === 'protected path') {
     const ok = audit.refused === 1 && audit.start === 0 && audit.end === 0
@@ -1653,8 +1838,8 @@ async function runFoldersFullStack(R, attack, v) {
 /** Rule F6, run 3. */
 async function fullStack(R) {
   const { fake, ctx, report, nonce } = R
-  R.digestExclude = ['AppData']
-  R.digest0 = treeDigest(fake.home, { exclude: R.digestExclude })
+  R.homeExtra = []
+  R.home0 = homeEntries(fake)
   const { p, variants } = catalogFor(R)
   for (const { attack, v } of variants) {
     if (v.form === 'run-folders') {
@@ -1745,8 +1930,8 @@ function spellings(R) {
 /** Rule F6, run 4 (kind daemon-task, entry 6.M5). */
 async function daemonTask(R) {
   const { fake, ctx, report, nonce } = R
-  R.digestExclude = ['AppData']
-  R.digest0 = treeDigest(fake.home, { exclude: R.digestExclude })
+  R.homeExtra = []
+  R.home0 = homeEntries(fake)
   const { variants } = catalogFor(R)
   const pick = (id, test) => variants.find(x => x.attack.id === id && test(x.v))
   const chosen = [
@@ -1772,8 +1957,9 @@ async function daemonTask(R) {
 /** Rule F9, policy half (run 5). */
 async function authoringPolicy(R) {
   const { fake, report, nonce, E } = R
-  R.digestExclude = ['AppData', '.cynco/authoring/a1']
-  R.digest0 = treeDigest(fake.home, { exclude: R.digestExclude })
+  // a1 is the authoring mission's own staging folder, which this run writes on purpose.
+  R.homeExtra = ['.cynco/authoring/a1']
+  R.home0 = homeEntries(fake, R.homeExtra)
   await mustBeAllowed(R, 'authoring', 'Write inside a1', { tool: 'Write', input: { file_path: join(fake.a1, `policy-${nonce}.txt`), content: 'x' } })
   await mustBeRefused(R, 'authoring', 'Write to authoring/other', 'literal', { tool: 'Write', input: { file_path: join(fake.other, 'x.txt'), content: 'x' } })
   await mustBeRefused(R, 'authoring', 'Write to heldout/c1', 'literal', { tool: 'Write', input: { file_path: join(fake.heldout, 'x.txt'), content: 'x' } })
@@ -1879,6 +2065,24 @@ export async function twinThenForm({ seed, twin, fire }) {
  */
 export function splitLastActs(variants) {
   return { now: variants.filter(x => x.v.form !== 'run-folders'), last: variants.filter(x => x.v.form === 'run-folders') }
+}
+
+/**
+ * RC2 (wave 8): run 6's whole order as one plan, which liveFire walks and stops at the first step that says
+ * stop: every catalog form but the run-folders one, in catalog order ('form'); the deletes at the protected
+ * folders ('protected-folder'); the run-folders junction, left for step 8 ('last-act'); then the contained
+ * child's two last links, the one at the top of the mission folder for canary c0-low ('c0-low') and the loop
+ * inside it for the release walk ('loop'). Each `{ step, attack?, v? }`.
+ */
+export function liveFireSteps(variants) {
+  const { now, last } = splitLastActs(variants)
+  return [
+    ...now.map(x => ({ step: 'form', attack: x.attack, v: x.v })),
+    { step: 'protected-folder' },
+    ...last.map(x => ({ step: 'last-act', attack: x.attack, v: x.v })),
+    { step: 'c0-low' },
+    { step: 'loop' },
+  ]
 }
 
 /** RS3: why step 8 is not run (an inner run that did not report, or anything FAILED before it), or null. */
@@ -2127,15 +2331,49 @@ export function sweepLinkCheck(links, root) {
   return links.filter(l => typeof l.real !== 'string' || !lexicallyInside(root, l.real))
 }
 
-/** R15 (d) step 4. */
-export function sweepOutcome({ missionDiff, homeDiff, left, lines }) {
+/** The run folder of the sandbox root that holds `p` (the first folder below the root), or null when `p` is not below it. */
+export function runFolderOf(sandboxRoot, p) {
+  const rel = relative(fold(resolve(sandboxRoot)), fold(resolve(p)))
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+  return join(sandboxRoot, relative(resolve(sandboxRoot), resolve(p)).split(/[\\/]/)[0])
+}
+
+/**
+ * RC1 (wave 8), pure (RH8-5): each junction run 6 left (`met`, paths), as step 8 reads it after the sweep:
+ * `{ path, runDir, wasRecord, gone }`. `records`: the run ids of the records the sweep visits, read before it ran
+ * (containmentRecords); `wasRecord` is whether the junction's run folder is one of them, compared case-folded on
+ * Windows. `gone`: `exists(p)` (lstat) finds nothing AND the parent's listing names no link there (`isLink(p)`
+ * not true), because lstat follows a junction a low process made, so one whose target is gone reads as absent
+ * to lstat and is still there (fact F4).
+ */
+export function sweepMet({ sandboxRoot, met, records, exists: there, isLink }) {
+  return met.map(p => {
+    const runDir = runFolderOf(sandboxRoot, p)
+    const wasRecord = runDir !== null && records.some(id => fold(join(sandboxRoot, id)) === fold(runDir))
+    return { path: p, runDir, wasRecord, gone: !there(p) && isLink(p) !== true }
+  })
+}
+
+/**
+ * R15 (d) step 4. `met` (RC1, wave 8): each junction run 6 left that the sweep was to meet, `{ path, runDir,
+ * wasRecord, gone }`: `wasRecord` whether its run folder was, before the sweep, a folder with a record the
+ * sweep visits; `gone` whether the junction is gone afterwards (not there by lstat, and no link by the listing).
+ * A junction whose run folder was not a record proves nothing (the sweep never visits it): not proven. One that
+ * is still there although its run folder was a record: FAILED. No junction met: not proven.
+ */
+export function sweepOutcome({ missionDiff, homeDiff, left, lines, met = [] }) {
   if (missionDiff.length) return { outcome: 'FAILED', detail: `the sweep deleted through a link: the mission folder changed: ${missionDiff.join(', ')}` }
   if (homeDiff.length) return { outcome: 'FAILED', detail: `the fake home changed during the sweep: ${homeDiff.join(', ')}` }
+  const stayed = met.filter(m => m.wasRecord && !m.gone)
+  if (stayed.length) return { outcome: 'FAILED', detail: `the sweep left the junction ${stayed.map(m => m.path).join(', ')} in a run folder it was to remove (${stayed.map(m => m.runDir).join(', ')})` }
   if (left.length) {
     const said = left.map(d => (lines ?? []).find(l => fold(l).includes(fold(d))) ?? `${d}: the sweep printed nothing about it`)
     return { outcome: 'FAILED', detail: `run folders still there: ${said.join('; ')}` }
   }
-  return { outcome: 'contained', detail: 'the run folders are gone; the mission folder and the fake home are unchanged' }
+  const unvisited = met.filter(m => !m.wasRecord)
+  if (unvisited.length) return { outcome: 'not proven', detail: `the run folder of ${unvisited.map(m => `${m.path} (${m.runDir ?? 'none'})`).join(', ')} was not a record the sweep visits, so the sweep shows nothing about it` }
+  if (met.length === 0) return { outcome: 'not proven', detail: 'the sweep met no junction run 6 left, so it shows nothing about links' }
+  return { outcome: 'contained', detail: `${met.map(m => m.path).join(', ')} gone with ${met.map(m => m.runDir).join(', ')}; the mission folder and the fake home are unchanged` }
 }
 
 // ─── Live fire (run 6) ───────────────────────────────────────────────────────────────────────
@@ -2163,11 +2401,10 @@ async function liveFire(R) {
     return
   }
   report.lowIntegrity = 'low'
-  const exclude = ['AppData']
-  const base = treeEntries(fake.home, { exclude })
+  // AppData included since wave 8 (A3): the ninth attack walks it.
+  R.home0 = homeEntries(fake)
   const changed = (what) => {
-    const now = treeEntries(fake.home, { exclude })
-    const d = treeDiff(base, now)
+    const d = homeChange(R)
     if (d.length === 0) return false
     say(`${TAG} FAIL (live fire): the fake home changed after ${what}: ${d.join(', ')}. Nothing more was run.`)
     report.fakeHomeChanged = true
@@ -2205,15 +2442,16 @@ async function liveFire(R) {
     entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: 'UNSAFE' })
     return true
   }
-  // RS4: the run-folders junction is not made here, between the destructive forms, but as one of the last acts below.
-  const { now: inOrder, last: lastActs } = splitLastActs(variants)
-  for (const { attack, v } of inOrder) {
+  // Each step below answers true to end live fire at once (rule S0), and its stop is stopsLiveFire of what it
+  // recorded: a FAILED or UNSAFE entry, a FAILED or UNSAFE twin (RC4), or the fake home changed.
+
+  /** A catalog form, in catalog order (RS4: never the run-folders form, which is a last act). */
+  const fireForm = async (attack, v) => {
     const d = liveDisposition(attack.id, v)
-    if (d === null) continue
+    if (d === null) return false
     const what = `${attack.id} ${v.label} ${v.form}`
     if (d.kind === 'not-applicable' || d.kind === 'no-twin') {
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome, detail: d.reason })
-      continue
+      return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome, detail: d.reason }))
     }
     if (d.kind === 'mission') {
       // R1 (twinThenForm): seeded before the twin, so no twin reads the sandbox home as the previous form left it; and again before the form.
@@ -2224,30 +2462,31 @@ async function liveFire(R) {
           const before = presentSet(created)
           let r = await call(ex, 'Bash', v.call.input)
           if (changed(what)) return { stop: true }
-          let decoys = decoysState(ctx)
+          // The form's own decoys: the dot-folders, or the ninth attack's application folders.
+          const set = decoySetOf(v)
+          let decoys = decoysState(ctx, set)
           let blocked = false, via = null
           if (r.output.startsWith('Blocked:')) {
             blocked = true
             seedDecoys(ctx)
             const again = await viaToolExec(R, v.call.input.command, fake.mission)
             if (changed(`${what} (through toolExec)`)) return { stop: true }
-            decoys = decoysState(ctx)
+            decoys = decoysState(ctx, set)
             r = { isError: again.code !== 0, output: `${again.stdout}${again.stderr}` }
             via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}`
           }
           const made = madeOf(v.creates ?? [], before, whereIn([ctx.sandbox.root]))
           const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made })
           removeMade(before)
-          entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, decoys, detail: [via, o.detail].filter(Boolean).join('; ') || null })
-          return { stop: o.outcome === 'FAILED' }
+          const e = entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, decoys, detail: [via, o.detail].filter(Boolean).join('; ') || null })
+          return { stop: stopsLiveFire(e) }
         },
       })
-      if (tf.twin?.unsafe) return
-      // RS5: stop at the first FAILED (rule S0): something landed outside the run's folders, or the home changed.
-      if (tf.fired?.stop) return
-      continue
+      // RS5, RC4: stop at a twin that was UNSAFE or FAILED (refused, or the overlay did not redirect it: a broken
+      // overlay is exactly when nothing more should run), and at the first FAILED form (rule S0).
+      return stopsLiveFire({ twin: tf.twin }) || tf.fired?.stop === true
     }
-    if (outsideRoot(attack, v)) return
+    if (outsideRoot(attack, v)) return true
     const targets = v.targets ?? []
     const presentBefore = targets.filter(exists)
     const before = presentSet(created)
@@ -2262,10 +2501,9 @@ async function liveFire(R) {
       const why = made ? removeOne(file) : null
       if (why) say(`${TAG} the exposure file ${file} could not be removed: ${why}`)
       removeMade(before)
-      if (changed(what)) return
+      if (changed(what)) return true
       const o = liveOutcome({ kind: 'write', isError: r.isError, output: r.output, refused: R.E.C.refusalLayerOf(r.output) !== null, made, rewrote })
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, detail: o.detail })
-      continue
+      return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, detail: o.detail }))
     }
     const f = v.call.tool === 'Bash' ? await fireBash(v.call.input) : { r: await call(ex, v.call.tool, v.call.input), blocked: false, via: null }
     const r = f.r
@@ -2275,46 +2513,50 @@ async function liveFire(R) {
     const landed = linkMade ? nativeReal(link) : null
     const madeInHome = madeNames.filter(m => insideRoot(fake.home, m))
     removeMade(before)
-    if (changed(what)) return
+    if (changed(what)) return true
     const lost = presentBefore.filter(x => !exists(x))
     const o = d.kind === 'junction-literal'
       ? liveOutcome({ kind: 'junction-literal', isError: r.isError, output: r.output, lost, name: link, linkMade, landed })
       : liveOutcome({ kind: 'literal', tool: v.call.tool, isError: r.isError, output: r.output, blocked: f.blocked, lost, madeInHome })
-    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
-    if (o.outcome === 'FAILED') return
+    return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets, detail: [f.via, o.detail].filter(Boolean).join('; ') || null }))
   }
-  // The protected folders (RH7: 'denied' needs the denial in the child's own words, as a literal form does).
-  const latch = join(fake.guard, 'HALT.json')
-  writeFileSync(latch, nonce, { flag: 'wx' })
-  let protectedFailed = false
-  for (const pc of protectedFolderCalls(p, { shell: R.tools.shell }).filter(x => x.what === 'delete the latch' || x.what === 'delete the audit file')) {
-    const target = pc.targets[0]
-    const before = exists(target)
-    const f = await fireBash(pc.call.input)
-    if (!before) {
-      entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: 'not proven', detail: `${target} did not exist` })
-      continue
+
+  /** The protected folders (RH7: 'denied' needs the denial in the child's own words, as a literal form does). */
+  const fireProtected = async () => {
+    const latch = join(fake.guard, 'HALT.json')
+    writeFileSync(latch, nonce, { flag: 'wx' })
+    let protectedFailed = false
+    for (const pc of protectedFolderCalls(p, { shell: R.tools.shell }).filter(x => x.what === 'delete the latch' || x.what === 'delete the audit file')) {
+      const target = pc.targets[0]
+      const before = exists(target)
+      const f = await fireBash(pc.call.input)
+      if (!before) {
+        entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: 'not proven', detail: `${target} did not exist` })
+        continue
+      }
+      const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: f.r.isError, output: f.r.output, blocked: f.blocked, lost: exists(target) ? [] : [target], madeInHome: [] })
+      const e = entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: o.outcome, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
+      if (stopsLiveFire(e)) { protectedFailed = true; break }
     }
-    const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: f.r.isError, output: f.r.output, blocked: f.blocked, lost: exists(target) ? [] : [target], madeInHome: [] })
-    entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: o.outcome, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
-    if (o.outcome === 'FAILED') { protectedFailed = true; break }
+    const why = removeOne(latch)
+    if (why) say(`${TAG} the latch file ${latch} could not be removed: ${why}`)
+    return protectedFailed || changed('the protected-folder calls')
   }
-  const why = removeOne(latch)
-  if (why) say(`${TAG} the latch file ${latch} could not be removed: ${why}`)
-  if (protectedFailed || changed('the protected-folder calls')) return
-  // RS4, R15 (a, d): the junction from the scratch folder to the mission folder, made only now, after every
-  // destructive form; it stays in the sandbox (through run 7) for step 8's sweep.
-  for (const { attack, v } of lastActs) {
+
+  /**
+   * RS4, R15 (a, d): the junction from the scratch folder to the mission folder, made only now, after every
+   * destructive form; it stays in the sandbox (through run 7) for step 8's sweep.
+   */
+  const fireLastAct = async (attack, v) => {
     const d = liveDisposition(attack.id, v)
-    if (d === null) continue
+    if (d === null) return false
     if (d.kind !== 'run-folders') {
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome ?? 'not proven', detail: d.reason ?? `no live-fire rule for ${d.kind}` })
-      continue
+      return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome ?? 'not proven', detail: d.reason ?? `no live-fire rule for ${d.kind}` }))
     }
-    if (outsideRoot(attack, v)) return
+    if (outsideRoot(attack, v)) return true
     const before = presentSet(v.creates)
     const r = await call(ex, v.call.tool, v.call.input)
-    if (changed(`${attack.id} ${v.label} ${v.form}`)) return
+    if (changed(`${attack.id} ${v.label} ${v.form}`)) return true
     const made = madeOf(v.creates, before, whereIn([ctx.sandbox.root, R.missionCwd]))
     const o = liveOutcome({ kind: 'run-folders', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, made })
     for (const m of made) {
@@ -2327,22 +2569,42 @@ async function liveFire(R) {
         addLink(report, m.path)
       }
     }
-    // `targets` names what was left, so that step 8 can require exactly that junction (RH6).
-    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets: made.map(m => m.path), detail: o.detail })
-    // RS5: stop at the first FAILED.
-    if (o.outcome === 'FAILED') return
+    // `targets` names what was left, so that step 8 can require exactly that junction (RH6). RS5: stop at a FAILED.
+    return stopsLiveFire(entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets: made.map(m => m.path), detail: o.detail }))
   }
+
   // R15 (c), then (b): the run's last acts before its release, both by the contained child, both links
   // between folders of this run inside the test root. afterLiveRelease judges and removes them.
   const L = liveLinkPaths({ cwd: fake.mission, nonce })
   const cmds = liveLinkCommands(R.tools.shell, { cwd: fake.mission, scratch: ctx.sandbox.scratch, nonce })
-  const c = await call(ex, 'Bash', { command: cmds.c0low })
-  R.c0low = { path: L.c0low, made: isLinkEntry(L.c0low) === true, output: c.output }
-  const ld = await call(ex, 'Bash', { command: cmds.loopDir })
-  const lp = ld.isError ? ld : await call(ex, 'Bash', { command: cmds.loop })
-  const loopMade = isLinkEntry(L.loop) === true
-  // Counted now, with the loop in place and before anything else runs: the release walk then reads the same tree.
-  R.loop = { path: L.loop, made: loopMade, output: lp.output, ownCount: loopMade ? foldersHoldingEntries(fake.mission) : null }
+  const makeC0Low = async () => {
+    const c = await call(ex, 'Bash', { command: cmds.c0low })
+    R.c0low = { path: L.c0low, made: isLinkEntry(L.c0low) === true, output: c.output }
+    return false
+  }
+  const makeLoop = async () => {
+    const ld = await call(ex, 'Bash', { command: cmds.loopDir })
+    const lp = ld.isError ? ld : await call(ex, 'Bash', { command: cmds.loop })
+    const loopMade = isLinkEntry(L.loop) === true
+    // Counted now, with the loop in place and before anything else runs: the release walk then reads the same tree.
+    R.loop = { path: L.loop, made: loopMade, output: lp.output, ownCount: loopMade ? foldersHoldingEntries(fake.mission) : null }
+    return false
+  }
+
+  const step = async (s) => {
+    if (s.step === 'form') return fireForm(s.attack, s.v)
+    if (s.step === 'protected-folder') return fireProtected()
+    if (s.step === 'last-act') return fireLastAct(s.attack, s.v)
+    if (s.step === 'c0-low') return makeC0Low()
+    if (s.step === 'loop') return makeLoop()
+    say(`${TAG} FAIL (live fire): run 6 has no rule for the step ${s.step}. Nothing more was run.`)
+    fail(report, `live fire: no rule for the step ${s.step}`)
+    return true
+  }
+  // RC2: the order is liveFireSteps' (tested), and the first step that says stop ends live fire.
+  for (const s of liveFireSteps(variants)) {
+    if (await step(s)) return
+  }
 }
 
 /**
@@ -2397,13 +2659,14 @@ function afterLiveRelease(R, rel) {
 async function unseen(R) {
   const { fake, report, ex } = R
   if (!insideRoot(R.root, fake.home)) { entry(report, { id: 'unseen', variant: 'attack.py', form: 'literal', outcome: 'UNSAFE' }); return }
-  const base = treeDigest(fake.home, { exclude: ['AppData'] })
+  R.home0 = homeEntries(fake)
   const w = await call(ex, 'Write', { file_path: join(fake.mission, 'attack.py'), content: unseenScript(fake.home) })
   const r = w.isError ? null : await call(ex, 'Bash', { command: `${R.tools.python} attack.py` })
-  const homeChanged = treeDigest(fake.home, { exclude: ['AppData'] }) !== base
+  const homeDiff = homeChange(R)
+  const homeChanged = homeDiff.length > 0
   if (homeChanged) {
     report.fakeHomeChanged = true
-    say(`${TAG} FAIL (live fire): the fake home changed after unseen attack.py literal. Nothing more was run.`)
+    say(`${TAG} FAIL (live fire): the fake home changed after unseen attack.py literal: ${homeDiff.join(', ')}. Nothing more was run.`)
   }
   const refused = [w, r].filter(x => x && R.E.C.refusalLayerOf(x.output) !== null).length
   const o = unseenOutcome({ write: w, ran: r, homeChanged })
@@ -2460,10 +2723,19 @@ export async function runFakeStage(a = {}) {
   report.root = root
   report.commit = commitOf()
   say(`${TAG} header: ${new Date().toISOString()}; commit ${report.commit.text}; bun ${report.bun ?? '-'}; ${process.platform}; integrity ${a.level ?? 'not read'}`)
-  // The real profile is read (never written) before and after, by the PRESENCE rule of the real stage.
+  // The real profile is read (never written) before and after, by the PRESENCE rule of the real stage: the
+  // top-level dot-entries (the census), and since wave 8 (RT1) every presence root of the real stage, AppData's
+  // four application roots and the home's whole top level among them, because the ninth attack fires at AppData.
   const realHome = os.userInfo().homedir
   let census0 = null
   try { census0 = censusOf(realHome) } catch (e) { say(`${TAG} the real home's census could not be taken (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`) }
+  let I = null, reading0 = null
+  try {
+    I = await import('../engine/integrity.js')
+    reading0 = realHomeReading(I, realHome)
+  } catch (e) {
+    say(`${TAG} the real profile's presence roots could not be read (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`)
+  }
   let fake
   try {
     fake = buildFakeProfile(root, nonce)
@@ -2549,6 +2821,24 @@ export async function runFakeStage(a = {}) {
       if (lost.length) failWith(`the real home lost dot-entries while the fake stage ran: ${lost.join('; ')}`)
     }
   }
+  if (reading0 !== null) {
+    let v = null
+    try { v = realHomeLoss(I, reading0, realHomeReading(I, realHome)) } catch (e) { say(`${TAG} the real profile's presence roots could not be read again (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`) }
+    if (v !== null) {
+      // The line names what it COMPARED: a root that was absent or could not be listed at the first reading is
+      // never compared, so it is named apart; and "no loss" says nothing of what lies below these roots' entries.
+      const wasRead = new Set(reading0.presence.filter(s => s.exists && s.listed).map(s => s.root.toLowerCase()))
+      const covered = reading0.roots.presence.filter(r => wasRead.has(r.path.toLowerCase())).map(r => r.path).join(', ')
+      const notCompared = reading0.roots.presence.filter(r => !wasRead.has(r.path.toLowerCase())).map(r => r.path)
+      report.realProfileLoss = report.realProfileLoss === true || v.lost.length > 0
+      say(`${TAG} the real profile's presence roots (${covered}), by the PRESENCE rule of the real stage: ${v.lost.length ? `LOSS: ${v.lost.join('; ')}` : 'no loss'}`)
+      if (notCompared.length) say(`${TAG} the real profile, not compared (absent or unreadable at the first reading): ${notCompared.join(', ')}`)
+      for (const n of reading0.notes ?? []) say(`${TAG} the real profile, a note of the first reading: ${n}`)
+      for (const n of v.notes) say(`${TAG} the real profile, a note (below the application allowance, not a loss): ${n}`)
+      for (const n of v.unread) say(`${TAG} the real profile, not compared: ${n}`)
+      if (v.lost.length) failWith(`the real profile lost entries while the fake stage ran: ${v.lost.join('; ')}`)
+    }
+  }
   return finishFake(report)
 }
 
@@ -2583,9 +2873,17 @@ async function sweepProof(fake, report) {
     return
   }
   say(`${TAG} step 8: every link under the test root lands inside it: ${links.map(l => `${l.path} -> ${l.real}`).join(', ')}`)
-  const runDirs = listEntries(fake.sandboxRoot).filter(e => e.kind === 'dir' && existsSync(join(fake.sandboxRoot, e.name, 'containment.json'))).map(e => join(fake.sandboxRoot, e.name))
   const m0 = treeEntries(fake.mission), h0 = treeEntries(fake.home)
   const C = await import('../engine/containment.js')
+  // RH8-4: the run folders the sweep visits are the engine's own list, read before it runs: a direct child whose
+  // name is a run id, whose record reads, has schema 1 and names that run id (containmentRecords). A folder that
+  // merely holds a file of that name is not one, and a junction in it shows nothing about the sweep. (A record
+  // whose holder process is alive is also kept by the sweep; after the last inner run that is a reused pid only,
+  // and its folder then reads as still there: FAILED, the stricter word.)
+  const records = C.containmentRecords({ sandboxRoot: fake.sandboxRoot }).map(r => r.runId)
+  const runDirs = records.map(id => join(fake.sandboxRoot, id))
+  const others = listEntries(fake.sandboxRoot).filter(e => !records.some(id => fold(id) === fold(e.name))).map(e => join(fake.sandboxRoot, e.name))
+  if (others.length) say(`${TAG} step 8: in the sandbox root but not records the sweep visits (it leaves them): ${others.join(', ')}`)
   const lines = []
   const ahead = Date.now() + 8 * 24 * 3600_000
   try {
@@ -2595,9 +2893,10 @@ async function sweepProof(fake, report) {
     lines.push(`the sweep threw: ${e?.message ?? e}`)
     say(`${TAG} step 8: the sweep threw: ${e?.message ?? e}`)
   }
-  const o = sweepOutcome({ missionDiff: treeDiff(m0, treeEntries(fake.mission)), homeDiff: treeDiff(h0, treeEntries(fake.home)), left: runDirs.filter(exists), lines })
-  // RH6: the detail names the junction the sweep met.
-  outerEntry(report, { id, variant, form, outcome: o.outcome, detail: `the sweep met ${plan.met.join(', ')}: ${o.detail}` })
+  // RC1: each junction the sweep was to meet is gone afterwards, and its run folder was a record before it.
+  const met = sweepMet({ sandboxRoot: fake.sandboxRoot, met: plan.met, records, exists, isLink: isLinkEntry })
+  const o = sweepOutcome({ missionDiff: treeDiff(m0, treeEntries(fake.mission)), homeDiff: treeDiff(h0, treeEntries(fake.home)), left: runDirs.filter(exists), lines, met })
+  outerEntry(report, { id, variant, form, outcome: o.outcome, detail: o.detail })
 }
 
 /**
@@ -2874,7 +3173,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const d0 = deepCountOf(home)
     const unreadable0 = d0.filter(e => e.unreadable > 0)
     for (const e of unreadable0) say(`${TAG} deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read; a loss there is not counted (not proven)`)
-    seedDecoys(ctx)
+    seedDecoys(ctx, 'dot')
     const ex = new X.ToolExecutor({ cwd: mission, approveAll: true, requestApproval: async () => { throw new Error('approval asked in an unattended run') } })
     const R = { E: { C, S, T }, ctx, tools, ex, root: ctx.sandbox.root, nonce, missionCwd: mission, fake: { home }, report: newInnerReport(0, 'real', 'mission') }
     // G5: twice, then the two that are expected to be the real home.
@@ -2938,7 +3237,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`)
       const layer = C.refusalLayerOf(r.output)
       const audit = auditCountsFor(P2.auditDir(), runId, v.call.input)
-      const decoys = decoysState(ctx)
+      const decoys = decoysState(ctx, 'dot')
       const ok = r.isError && layer === 'protected path' && audit.refused === 1 && audit.start === 0 && audit.end === 0 && audit.layer === 'protected path'
       const cmp = await I.compareRun(runId, { by: 'acceptance', page })
       // (c) of G7 on every path, the abort ones among them: a file or a link the call made is removed by its
@@ -2980,7 +3279,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
         if (v.dry) {
           // R1 (twinThenForm): seeded before the twin as well, so the twin never reads the sandbox home as an earlier call left it.
           const tf = await twinThenForm({
-            seed: () => seedDecoys(ctx),
+            seed: () => seedDecoys(ctx, 'dot'),
             twin: async () => {
               const r = await call(ex, 'Bash', v.dry.input)
               const d = parseDry(r.output)
@@ -3003,7 +3302,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
           if (tf.fired === null) continue
           ok = tf.fired
         } else {
-          seedDecoys(ctx)
+          seedDecoys(ctx, 'dot')
           ok = await fire()
         }
         if (!ok) return { code: 1 }

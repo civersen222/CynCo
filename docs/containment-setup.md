@@ -297,8 +297,31 @@ read what it printed, then tidy up. A baseline of a run that may still be runnin
 says so with the `post` command to use once it is not.
 
 Do not tidy the home folder's dot-entries (for example `.localcode-leftovers-...`, or a tool's backup copy of its settings file)
-or edit a profile while a run is open: the settling compare reads that as a change and latches. A page about
-a change says so: `If you changed it yourself while a run was open ..., it is your own change: clear the latch`.
+or edit a profile while a run is open: the settling compare reads that as a change and latches. Since
+2026-11-24 the same holds for every top-level folder of the home and for the folders in `OneDrive` (where
+this PC keeps Desktop, Documents and Pictures): renaming, deleting or emptying one (down to none, or to fewer
+than half of the entries it had and by at least two) while a run is open ends the running mission or daemon
+task at once, within a minute or at its next tool call, as a containment fault, and latches. Ordinary examples:
+clearing `Downloads`, removing a worktree, scratch or backup folder at the home's top level, tidying more than
+half of the Desktop away, deleting the only file of a folder that holds one. `OneDrive`'s folders change from
+other devices too: a deletion synced from the phone or another PC while a run is open ends it and latches the
+same way. The rule for a folder emptied in place holds in every counted folder, the top of an acknowledged
+camera drive included. One or two application folders
+going from `AppData\Local`, `Roaming`, `LocalLow` or `Local\Packages` in a run are a note, three from one of them
+latch (gone: within a minute; emptied in place: at the run's end). Uninstalling a program during a run can do
+that by itself (one program can keep three folders in `Roaming`), and so can a disk cleanup together with an
+updater: `Temp` and the shader cache `D3DSCache` are recorded by name only, so Windows' own cleanup emptying
+them counts for nothing, but every other cache folder it empties counts toward the two. A page about a change
+says so: `If you changed it yourself while a run was open ..., it is your own change: clear the latch`.
+
+Telling an application's own change from a deletion, when every change is an application folder (the page
+then says so): `bun scripts/cynco-guard.mjs status` lists up to ten changes; the run's tool-call audit (one file
+a day in the audit folder, `C:\cynco-audit` by default, each record with its run id) shows whether a call of the
+run named `AppData` or those folders; folders gone in alphabetical order, as on 2026-11-22, are a walk, while a
+few scattered folders that their applications have made again since are ordinary life. One or two such
+folders in a run latch nothing and are written only to `allowed` on the run's line in `checks.jsonl` in the
+guard folder; `post` does not print them, and `status` shows them only inside the raw JSON of the last five
+check lines.
 
 `clear` needs a console. In a Git Bash (mintty) window Bun's input is a pipe, not a console: run
 `winpty bun scripts/cynco-guard.mjs clear`, or run it from PowerShell or Windows Terminal (not measured in

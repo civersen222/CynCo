@@ -1,16 +1,21 @@
 /**
  * engine/integrity.ts: the integrity layer of unattended runs (F242).
  *
- * On 2026-11-22 an unattended mission deleted every dot-folder of the owner's home folder and ran
- * 108 more turns, for 2 hours 10 minutes, before anyone noticed; every record of the run lived in
- * the folder it deleted. This module is what notices, and what stops everything afterwards:
+ * On 2026-11-22 an unattended mission deleted every dot-folder of the owner's home folder and then
+ * the application folders of AppData\Local up to pip, and ran 108 more turns, for 2 hours 10 minutes,
+ * before anyone noticed; every record of the run lived in the folder it deleted. This module is what
+ * notices, and what stops everything afterwards:
  *
  * - a manifest of the protected folders, in two classes. FROZEN folders (the models, the profiles,
  *   the held-out gates, `.ssh`, the local model store) must not change at all during a run; a
  *   recursive stat-only walk records every entry's kind, size and time. PRESENCE folders (the home
- *   folder's dot-entries, the desk tools' folder, the state folder and its authoring and campaign
- *   folders, the top of every volume integrity labels cannot protect) must not LOSE anything; one
- *   listing per folder records names and child counts. A FROZEN root that is a link or junction is
+ *   folder's top level, every folder of it and its dot-files; `AppData\Local`, `Roaming`, `LocalLow`
+ *   and `Local\Packages`, with an allowance of `APPDATA_LOSS_AT`; the known folders OneDrive holds
+ *   (`OneDrive`, counted); the desk tools' folder, the state
+ *   folder and its authoring and campaign folders, the top of every volume integrity labels cannot
+ *   protect) must not LOSE anything; one listing per folder records names and child counts. Until
+ *   2026-11-24 the home was watched by its dot-entries alone, and the walk into `AppData\Local` of
+ *   2026-11-22 went unseen. A FROZEN root that is a link or junction is
  *   refused (a protected folder must be a real folder); a folder that was empty at the baseline is
  *   never a loss, in any PRESENCE root.
  * - the baseline pair, keyed by a run id that is used once: the starter takes the baseline before
@@ -88,7 +93,25 @@ export interface PresenceRoot {
   counts: boolean      // record each folder's number of direct children
   volume: boolean      // the top of a volume integrity labels cannot protect
   network: boolean     // a mapped network drive: never listed by the in-run tripwire
+  // The three below came with wave 8 (2026-11-24); a baseline written before it has none, which reads as false or empty.
+  filesDotOnly?: boolean   // with `files`: record a file only when its name starts with a dot (the home's top level)
+  application?: boolean    // an application folder of the profile: fewer than APPDATA_LOSS_AT entries lost in a run are notes
+  uncounted?: string[]     // with `counts`: folders of this root recorded by name only (`n: null`), never opened
 }
+
+/**
+ * In an application root (AppData\Local, Roaming, LocalLow, Local\Packages), the number of its entries
+ * gone or emptied in one run at which that is a loss; fewer are written as notes. Applications add and
+ * remove a folder of their own now and then (an updater dropping its cache, a package removed by a Store
+ * update), and one or two such in a run of hours must not stop every unattended run until the owner
+ * clears the latch at a terminal. The walk of 2026-11-22 took about twenty top-level folders of
+ * AppData\Local and 96 of the 110 package folders, far above it. The cost: a deletion of one or two
+ * application folders per root, per run, latches nothing, and an application's whole state is one
+ * entry (the browser profile under Roaming gone whole is a note); LocalLow, which a contained process
+ * can write, has the same allowance. A root gone whole is always a loss, and the owner's own folders
+ * at the home's top level have no allowance.
+ */
+export const APPDATA_LOSS_AT = 3
 export interface Roots { frozen: FrozenRoot[]; presence: PresenceRoot[] }
 
 export type FrozenEntry = [rel: string, kind: 'f' | 'd' | 'l', size: number, mtimeMs: number, target?: string]
@@ -123,6 +146,8 @@ export interface Change {
   detail?: string
   /** Set on a change at the top of a volume integrity labels cannot protect (the owner's own drives). */
   volume?: boolean
+  /** Set on a change in an application root (AppData), so the owner's summary can say so. */
+  application?: boolean
 }
 
 export interface Compare {
@@ -133,6 +158,8 @@ export interface Compare {
   changed: boolean
   changes: Change[]                   // at most 200, FROZEN first, each class sorted by path
   changeCount: number                 // the true total
+  /** Entries lost in an application root below APPDATA_LOSS_AT: not changes; each is also in `notes`. */
+  allowed?: string[]
   summary: string                     // for the owner: names the first path
   publicSummary: string               // for records that are committed or shown to a model: names no path
   firstClass: 'FROZEN' | 'PRESENCE' | null
@@ -258,7 +285,23 @@ export function protectedRoots(o: {
   addF(o.models ?? modelsDir())
   for (const s of states) { addF(join(s, 'profiles')); addF(join(s, 'heldout')) }
   addF(join(home, '.ssh'), ['known_hosts', 'known_hosts.old'])
-  addP(home, { dotOnly: true, files: true, counts: true })
+  // The home's whole top level (wave 8): every folder by name with its child count, dot or not, so a
+  // project folder or AppData gone or emptied is a loss; files by dot-name only, because the registry
+  // hive and its logs (NTUSER.DAT and the like) come and go at the top level by themselves.
+  addP(home, { files: true, filesDotOnly: true, counts: true })
+  // The application folders of the profile (wave 8): on 2026-11-22 the same call that deleted the
+  // dot-folders walked AppData\Local in alphabetical order and deleted what was not held open.
+  // Top-level folders by name with child counts; the packages folder one level further, by name.
+  // In AppData\Local two folders by name only: Temp (290,546 entries on this PC on 2026-11-24, most of
+  // every walk's time, and turnover by nature) and D3DSCache (the shader cache); Windows' own cleanup
+  // (Storage Sense is on here) empties both, which would spend the allowance before any application.
+  addP(join(home, 'AppData', 'Local'), { counts: true, application: true, uncounted: ['Temp', 'D3DSCache'] })
+  for (const sub of ['Roaming', 'LocalLow']) addP(join(home, 'AppData', sub), { counts: true, application: true })
+  addP(join(home, 'AppData', 'Local', 'Packages'), { application: true })
+  // The known folders OneDrive holds (wave 8 review): on this PC Desktop, Documents and Pictures are
+  // redirected to OneDrive\Desktop, \Documents and \Pictures, one level below the home's top level.
+  // Counted, no allowance; a root that does not exist is recorded as absent and never compared.
+  addP(join(home, 'OneDrive'), { counts: true })
   // The local model store: loss only, counted. Nothing CynCo loads comes from it, and processes outside
   // any run (a model pull, the owner's other apps, the store's own migration on update) add to it while
   // a daemon task runs; as a FROZEN root every such addition latched at top priority (review of wave 5).
@@ -363,9 +406,11 @@ function isEmptyDir(abs: string, realDir: string, excluded: (p: string) => boole
  * children are counted; elsewhere it is only asked whether it is empty (`n: 0`) or not (`n: null`).
  * A folder with no children is recorded with `n: 0` and never compared, in every root, which is how
  * "an empty folder that disappears is not a loss" is kept while a folder that is still there at the
- * compare is still seen.
+ * compare is still seen. With `namesOnly` (the tripwire's application roots) no folder is looked
+ * into: each is recorded with `n: null`, its name and kind only; so is a folder the root names in
+ * `uncounted`, at every listing.
  */
-function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): PresenceSection {
+function listPresence(r: PresenceRoot, exclude: string[], notes: string[], namesOnly = false): PresenceSection {
   const out: PresenceSection = { root: r.path, exists: false, listed: true, entries: {} }
   const unlisted = (why: string): PresenceSection => {
     notes.push(`${r.path}: could not be listed (${why}; detached or asleep); not compared`)
@@ -398,6 +443,7 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): Pres
   const realRoot = realPathOf(r.path, { quiet: true })
   const ex = excludesFor(realRoot, exclude)
   const excluded = (p: string) => ex.length > 0 && ex.some(x => isInside(x, p))
+  const byNameOnly = new Set((Array.isArray(r.uncounted) ? r.uncounted : []).map(n => n.toLowerCase()))
   for (const dirent of listed.sort((x, y) => (x.name < y.name ? -1 : x.name > y.name ? 1 : 0))) {
     const name = dirent.name
     if (r.dotOnly && !name.startsWith('.')) continue
@@ -416,9 +462,9 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): Pres
       k = kindOf(dirent)
       looked = false
     }
-    if (k === 'f' && !r.files) continue
+    if (k === 'f' && (!r.files || (r.filesDotOnly === true && !name.startsWith('.')))) continue
     let n: number | null = null
-    if (k === 'd' && looked) {
+    if (k === 'd' && looked && !namesOnly && !byNameOnly.has(name.toLowerCase())) {
       try {
         n = r.counts
           ? readdirSync(join(r.path, name)).filter(c => !TRANSIENT_NAME.test(c) && !excluded(join(realChild, c))).length
@@ -486,12 +532,16 @@ function diffFrozen(before: Manifest, after: Manifest): Change[] {
 
 /**
  * PRESENCE, loss only. P1 a root gone (never for a volume), P2 a recorded entry gone or of another
- * kind, P3 a counted folder down to fewer than half of its children and by at least two, or whose
- * children (two or more at the baseline) can no longer be counted. A folder empty at the baseline is
- * never compared. With `dirsOnly` (the tripwire) P2 looks at folders only.
+ * kind, P3 a counted folder down to none (from one child or more), or to fewer than half of its
+ * children and by at least two, or whose children (two or more at the baseline) can no longer be
+ * counted. Until the wave 8 review P3 needed two children at the baseline, and a one-child folder
+ * emptied passed: 19 of the 35 top-level folders of AppData\Local here hold one child. One of two
+ * gone is still not seen. A folder empty at the baseline is never compared. With `dirsOnly` (the
+ * tripwire) P2 looks at folders only. In an application root, P2 and P3 together below
+ * APPDATA_LOSS_AT are not changes: each goes to `allowed` and to `notes`.
  */
-function diffPresence(before: PresenceSection[], after: PresenceSection[], roots: PresenceRoot[], notes: string[], dirsOnly = false): Change[] {
-  const changes: Change[] = []
+function diffPresence(before: PresenceSection[], after: PresenceSection[], roots: PresenceRoot[], notes: string[], dirsOnly = false, allowed: string[] = []): Change[] {
+  const all: Change[] = []
   const afterBy = new Map(after.map(p => [keyOf(p.root), p]))
   const optsBy = new Map(roots.map(r => [keyOf(r.path), r]))
   for (const b of before) {
@@ -501,10 +551,13 @@ function diffPresence(before: PresenceSection[], after: PresenceSection[], roots
     if (!a || !a.listed) { notes.push(`${b.root}: could not be listed at the compare; not compared`); continue }
     if (!a.exists) {
       if (opts?.volume) { notes.push(`${b.root}: is not attached at the compare; not compared`); continue }
-      changes.push({ class: 'PRESENCE', root: b.root, path: '', kind: 'root-gone' })
+      // A root gone whole is a loss in every root, an application root included.
+      all.push({ class: 'PRESENCE', root: b.root, path: '', kind: 'root-gone' })
       continue
     }
+    const changes: Change[] = []
     const vol = opts?.volume ? { volume: true } : {}
+    const app = opts?.application === true ? { application: true } : {}
     for (const [name, e] of Object.entries(b.entries)) {
       if (e.k === 'd' && e.n === 0) continue
       if (dirsOnly && e.k !== 'd') continue
@@ -512,19 +565,31 @@ function diffPresence(before: PresenceSection[], after: PresenceSection[], roots
       if (!x || x.k !== e.k) {
         // On a volume the detail names what was there, for a sentence the owner can read.
         const noun = e.k === 'd' ? 'folder' : e.k === 'l' ? 'link' : 'file'
-        changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'gone', ...(opts?.volume ? { detail: noun, volume: true } : {}) })
+        changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'gone', ...(opts?.volume ? { detail: noun, volume: true } : {}), ...app })
         continue
       }
-      if (opts?.counts && e.k === 'd' && e.n !== null && e.n >= 2) {
-        if (x.n === null) changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> uncountable`, ...vol })
-        else if (x.n < e.n / 2 && e.n - x.n >= 2) changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> ${x.n}`, ...vol })
+      if (opts?.counts && e.k === 'd' && e.n !== null && e.n >= 1) {
+        if (x.n === null) {
+          if (e.n >= 2) changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> uncountable`, ...vol, ...app })
+        } else if (x.n === 0 || (x.n < e.n / 2 && e.n - x.n >= 2)) {
+          changes.push({ class: 'PRESENCE', root: b.root, path: name, kind: 'emptied', detail: `${e.n} -> ${x.n}`, ...vol, ...app })
+        }
       }
     }
+    if (opts?.application === true && changes.length > 0 && changes.length < APPDATA_LOSS_AT) {
+      for (const c of changes) {
+        const note = `${described(c)}: an application folder; fewer than ${APPDATA_LOSS_AT} lost in this root, so a note and not a loss`
+        allowed.push(note)
+        notes.push(note)
+      }
+      continue
+    }
+    all.push(...changes)
   }
-  return changes
+  return all
 }
 
-type Diff = Pick<Compare, 'changed' | 'changes' | 'changeCount' | 'summary' | 'publicSummary' | 'firstClass' | 'firstRoot' | 'notes'>
+type Diff = Pick<Compare, 'changed' | 'changes' | 'changeCount' | 'summary' | 'publicSummary' | 'firstClass' | 'firstRoot' | 'notes' | 'allowed'>
 
 /** No kind: a path that differs from the baseline on both walks is a change in whatever form. */
 const changeKey = (c: Change) => `${c.class}|${keyOf(c.root)}|${c.path}`
@@ -546,43 +611,50 @@ function onlyVolumeChanges(c: { changes: Change[]; changeCount: number }): boole
   return c.changes.length > 0 && c.changes.length === c.changeCount && c.changes.every(x => x.volume === true)
 }
 
-function finish(all: Change[], notes: string[]): Diff {
+function finish(all: Change[], notes: string[], allowed: string[] = []): Diff {
   const sorted = [...all].sort((x, y) => (sortKey(x) < sortKey(y) ? -1 : sortKey(x) > sortKey(y) ? 1 : 0))
   const first = sorted[0]
   if (!first) {
-    return { changed: false, changes: [], changeCount: 0, summary: 'no change in protected folders', publicSummary: 'no change in protected folders', firstClass: null, firstRoot: null, notes }
+    return { changed: false, changes: [], changeCount: 0, summary: 'no change in protected folders', publicSummary: 'no change in protected folders', firstClass: null, firstRoot: null, notes, allowed }
   }
   const n = sorted.length
   const volumeOnly = sorted.every(c => c.volume === true)
   // The owner's own tidy-up or edit while a run was open latches like an attack; the page says so.
   const models = sorted.some(c => c.class === 'FROZEN' && keyOf(c.root) === keyOf(modelsDir()))
     ? '; a change in the models folder also needs: bun scripts/cynco-guard.mjs hash-models' : ''
+  // The owner did not make an updater's change, so "your own change" does not fit there: say what
+  // tells an application's own change from a walk (wave 8 review), when nothing else changed.
+  const applicationOnly = sorted.every(c => c.application === true)
+    ? `. Here every change is an application folder under AppData, beyond the ${APPDATA_LOSS_AT - 1} a run may lose from one of AppData\\Local, Roaming, LocalLow or Local\\Packages: an application's own updater or uninstaller can do that, a walk deletes many in alphabetical order; cynco-guard.mjs status lists the changes, and the run's tool-call audit (a file a day in the audit folder, by run id) shows whether a call of the run named them`
+    : ''
   return {
     changed: true,
     changes: sorted.slice(0, MAX_CHANGES),
     changeCount: n,
     summary: volumeOnly
       ? `${n} change(s) in protected folders, all at the top of drives without integrity labels; first: ${described(first)}. If you removed or emptied it yourself while a run was open, this is your own change, not an attack: look at the drive, then clear the latch`
-      : `${n} change(s) in protected folders; first: ${described(first)}. If you changed it yourself while a run was open (open runs: bun scripts/cynco-guard.mjs status), it is your own change: clear the latch, and the next run's baseline takes the folders as they are then${models}`,
+      : `${n} change(s) in protected folders; first: ${described(first)}. If you changed it yourself while a run was open (open runs: bun scripts/cynco-guard.mjs status), it is your own change: clear the latch, and the next run's baseline takes the folders as they are then${models}${applicationOnly}`,
     publicSummary: volumeOnly
       ? `${n} change(s) at the top of drives without integrity labels (first: ${first.class})`
       : `${n} change(s) in protected folders (first: ${first.class})`,
     firstClass: first.class,
     firstRoot: first.root,
     notes,
+    allowed,
   }
 }
 
-function diffAll(before: Manifest, after: Manifest): { changes: Change[]; notes: string[] } {
+function diffAll(before: Manifest, after: Manifest): { changes: Change[]; notes: string[]; allowed: string[] } {
   const notes = [...after.notes]
-  const changes = [...diffFrozen(before, after), ...diffPresence(before.presence, after.presence, before.roots.presence, notes)]
-  return { changes, notes }
+  const allowed: string[] = []
+  const changes = [...diffFrozen(before, after), ...diffPresence(before.presence, after.presence, before.roots.presence, notes, false, allowed)]
+  return { changes, notes, allowed }
 }
 
 /** Pure: what changed between two manifests of the same roots. */
 export function compareManifests(before: Manifest, after: Manifest): Diff {
   const d = diffAll(before, after)
-  return finish(d.changes, d.notes)
+  return finish(d.changes, d.notes, d.allowed)
 }
 
 const entriesOf = (m: Manifest) =>
@@ -695,6 +767,8 @@ interface CheckLine {
   run: string; kind: 'reading' | 'settle'; baselineTakenAt: string | null; at: string; by: string
   changed: boolean; changeCount: number; publicSummary: string; ms: number
   firstClass?: 'FROZEN' | 'PRESENCE' | null; firstRoot?: string | null; entries?: number; error?: string
+  /** The compare's `allowed` notes (application folders lost below APPDATA_LOSS_AT), when there are any. */
+  allowed?: string[]
 }
 
 function appendCheck(guard: string, line: CheckLine): void {
@@ -757,7 +831,9 @@ function failedCompare(runId: string, by: string, at: string, kind: 'reading' | 
 
 /**
  * Walk the baseline's own roots again and compare. When anything differs, or the walk throws,
- * wait `confirmMs` and walk once more, keeping only changes present both times.
+ * wait `confirmMs` and walk once more, keeping only changes present both times. A change the second
+ * walk sees and the first did not gets a third walk of its own (once): it counts when the second and
+ * the third both see it, and is a note when the third no longer does.
  */
 function confirmedWalk(before: Manifest, o: { by: string; confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date })
   : { diff: Diff | null; error: string | null; after: Manifest | null; entries: number } {
@@ -766,7 +842,7 @@ function confirmedWalk(before: Manifest, o: { by: string; confirmMs?: number; sl
   let e1: string | null = null
   try { a1 = walk() } catch (e) { e1 = textOf(e) }
   const d1 = a1 ? diffAll(before, a1) : null
-  if (a1 && d1 && d1.changes.length === 0) return { diff: finish([], d1.notes), error: null, after: a1, entries: entriesOf(a1) }
+  if (a1 && d1 && d1.changes.length === 0) return { diff: finish([], d1.notes, d1.allowed), error: null, after: a1, entries: entriesOf(a1) }
   ;(o.sleep ?? syncSleep)(o.confirmMs ?? DEFAULT_CONFIRM_MS)
   let a2: Manifest | null = null
   let e2: string | null = null
@@ -775,15 +851,39 @@ function confirmedWalk(before: Manifest, o: { by: string; confirmMs?: number; sl
   if (!a2) {
     // The confirming walk failed; the first walk's changes stand (a change seen is not dropped).
     const notes = [...d1!.notes, `the confirming walk failed (${e2}); the first walk is reported`]
-    return { diff: finish(d1!.changes, notes), error: null, after: a1, entries: entriesOf(a1!) }
+    return { diff: finish(d1!.changes, notes, d1!.allowed), error: null, after: a1, entries: entriesOf(a1!) }
   }
   const d2 = diffAll(before, a2)
   if (!d1) {
     const notes = [...d2.notes, `the first walk failed (${e1}); the second walk is reported`]
-    return { diff: finish(d2.changes, notes), error: null, after: a2, entries: entriesOf(a2) }
+    return { diff: finish(d2.changes, notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
   }
   const seen = new Set(d1.changes.map(changeKey))
-  return { diff: finish(d2.changes.filter(c => seen.has(changeKey(c))), d2.notes), error: null, after: a2, entries: entriesOf(a2) }
+  const confirmed = d2.changes.filter(c => seen.has(changeKey(c)))
+  const late = d2.changes.filter(c => !seen.has(changeKey(c)))
+  if (late.length === 0) return { diff: finish(confirmed, d2.notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
+  // A change the second walk saw and the first did not is not "present both times" yet, and it is not
+  // nothing either: a loss made during the wait, or application folders that crossed the allowance
+  // between the walks (below it on the first walk they are notes, not changes). Dropping it here
+  // settled a run as unchanged when the first walk's difference had come back and a new loss had
+  // taken its place. It gets one more walk: what the second and the third both see counts.
+  ;(o.sleep ?? syncSleep)(o.confirmMs ?? DEFAULT_CONFIRM_MS)
+  let a3: Manifest | null = null
+  let e3: string | null = null
+  try { a3 = walk() } catch (e) { e3 = textOf(e) }
+  if (!a3) {
+    // As for a failed confirming walk above: a change seen is not dropped.
+    const notes = [...d2.notes, `the third walk failed (${e3}); the second walk is reported`]
+    return { diff: finish(d2.changes, notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
+  }
+  const d3 = diffAll(before, a3)
+  const lateKeys = new Set(late.map(changeKey))
+  const lateConfirmed = d3.changes.filter(c => lateKeys.has(changeKey(c)))
+  const stillThere = new Set(lateConfirmed.map(changeKey))
+  const once = late.filter(c => !stillThere.has(changeKey(c)))
+  const notes = once.length === 0 ? d3.notes
+    : [...d3.notes, ...once.map(c => `seen on the confirming walk only, so not counted: ${c.class} ${join(c.root, c.path)} (${c.kind})`)]
+  return { diff: finish([...confirmed, ...lateConfirmed], notes, d3.allowed), error: null, after: a3, entries: entriesOf(a3) }
 }
 
 function compareFrom(runId: string, by: string, at: string, kind: 'reading' | 'settle', d: Diff, entries: number, ms: number, settled: boolean): Compare {
@@ -794,6 +894,7 @@ const lineOf = (c: Compare, baselineTakenAt: string | null): CheckLine => ({
   run: c.run, kind: c.kind, baselineTakenAt, at: c.at, by: c.by, changed: c.changed, changeCount: c.changeCount,
   publicSummary: c.publicSummary, ms: c.ms, firstClass: c.firstClass, firstRoot: c.firstRoot, entries: c.entries,
   ...(c.error ? { error: c.error } : {}),
+  ...(c.allowed && c.allowed.length > 0 ? { allowed: c.allowed } : {}),
 })
 
 /**
@@ -1746,9 +1847,11 @@ interface Tripwire {
 }
 
 /**
- * The shortest time between two looks. The look costs a few milliseconds (one listing of the home and
- * of the state folder), so a model that deletes and then keeps calling tools quickly gets at most about
- * one second of further tools (review of wave 5: it was ten).
+ * The shortest time between two looks. One look lists every PRESENCE root but the volumes, the home's
+ * top level counted: about 48 ms on this PC since wave 8 (the integrity paragraph of the package
+ * document of engine/tools), so tool calls back to back spend up to about 5% of the event loop on it. A model that
+ * deletes and then keeps calling tools quickly gets at most about one second of further tools (review
+ * of wave 5: it was ten). During one long call the only look is the 60 s timer.
  */
 export const TRIPWIRE_MIN_GAP_MS = 1_000
 
@@ -1760,6 +1863,36 @@ const tripwireHalt = (ctx: RunContainment) =>
   haltRefusal(ctx.folders.guard, ctx.home, {
     sandboxRoot: dirname(ctx.sandbox.root), missionCwd: ctx.missionCwd, unprotectedVolumes: ctx.unprotectedVolumes,
   })
+
+/**
+ * The roots the in-run tripwire lists, from a baseline's PRESENCE roots: no volume root and no network
+ * drive (see `startPresenceTripwire`), and the application roots by name only, without counting their
+ * folders' children. The tripwire runs on the engine's event loop before tool calls, and one look
+ * already costs about 48 ms on this PC, about 20 ms of it the home's counts; counting the application
+ * roots too would add about 13 ms (the measured figures are in the integrity paragraph of the package
+ * document of engine/tools). So it looks at names there, and the counts of the application roots are
+ * compared by the baseline and the settling compare, in the starter's own process: an application
+ * folder emptied in place is seen at the run's end, not during it. Pure.
+ */
+export function presenceTripwireRoots(roots: PresenceRoot[]): PresenceRoot[] {
+  return roots.filter(r => !r.volume && !r.network).map(r => (r.application === true ? { ...r, counts: false } : r))
+}
+
+/**
+ * One look of the tripwire over `presenceTripwireRoots`: the application roots by name only (no folder
+ * of theirs is opened), every other root as the baseline lists it. A root that can no longer be listed
+ * is a root that is gone (P1). Read-only.
+ */
+export function presenceTripwireListing(roots: PresenceRoot[], exclude: string[], notes: string[]): PresenceSection[] {
+  return roots.map(r => {
+    try {
+      return listPresence(r, exclude, notes, r.application === true)
+    } catch (e) {
+      notes.push(textOf(e))
+      return { root: r.path, exists: false, listed: true, entries: {} } as PresenceSection
+    }
+  })
+}
 
 /**
  * Keeps the baseline's PRESENCE section and re-checks it on a timer and before tool calls. Volume
@@ -1800,7 +1933,7 @@ export function startPresenceTripwire(a: {
   if (m.runId !== a.ctx.runId) {
     return { ok: false, reason: `the integrity baseline of run ${a.ctx.runId} cannot be read (it is the baseline of run ${String(m.runId)})` }
   }
-  const roots = m.roots.presence.filter(r => !r.volume && !r.network)
+  const roots = presenceTripwireRoots(m.roots.presence)
   const kept = new Set(roots.map(r => keyOf(r.path)))
   const before = m.presence.filter(p => kept.has(keyOf(p.root)))
   const folders = before.reduce((n, p) => n + Object.values(p.entries).filter(e => e?.k === 'd').length, 0)
@@ -1837,15 +1970,7 @@ export function presenceTripwireCheck(now?: number): string | null {
     } else {
       const t0 = Date.now()
       const notes: string[] = []
-      const after = w.roots.map(r => {
-        try {
-          return listPresence(r, w.exclude, notes)
-        } catch (e) {
-          // A root that can no longer be listed is a root that is gone (P1).
-          notes.push(textOf(e))
-          return { root: r.path, exists: false, listed: true, entries: {} } as PresenceSection
-        }
-      })
+      const after = presenceTripwireListing(w.roots, w.exclude, notes)
       const changes = diffPresence(w.before, after, w.roots, notes, true)
       if (changes.length > 0) {
         const d = finish(changes, notes)

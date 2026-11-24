@@ -24,11 +24,25 @@ import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
 import { HARNESS_DIFF_FLAGS } from '../../engine/harnessGit.js'
 import { operatorRefusal } from '../../engine/containment.js'
 import { isLinkEntry } from '../../engine/realPath.js'
+import * as integrity from '../../engine/integrity.js'
 
 // The wave-7 runner fixes (RH, RS, T4): read through the module namespace, so that a case whose helper is
 // missing fails on its own rather than the whole file failing to link.
 const { REAL_ACCEPTED_NOT_PROVEN, disarmVerdict, landingOf, linksUnder, liveProofCoverage, pytestCause, realResult, splitLastActs, step8Refusal, sweepPlan, twinThenForm } = acceptance
+// Wave 8 (the ninth attack, AppData in every comparison, RC1, RC2, RC4): read the same way.
+const { DECOY_SETS, FAKE_APPDATA_FILES, FAKE_HOME_EXCLUDE, decoySetOf, decoyStateOf, liveFireSteps, runFolderOf, stopsLiveFire, twinVerdict } = acceptance
 const { LITERAL_DENIALS } = catalogModule
+/** The source of the runner, read from the checkout as T3's spawn does; one function's text by its declaration. */
+const runnerSource = () => readFileSync(resolve('scripts', 'cynco-containment-acceptance.mjs'), 'utf8').replace(/\r\n/g, '\n')
+const fnSource = (decl) => {
+  const s = runnerSource()
+  const start = s.indexOf(decl)
+  expect(start, `${decl} is not in the runner`).toBeGreaterThan(-1)
+  const end = s.indexOf('\n}\n', start)
+  return s.slice(start, end + 2)
+}
+/** Folder names directly under `d`. */
+const dirsIn = (d) => readdirSync(d, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name)
 
 const WIN = process.platform === 'win32'
 const roots = []
@@ -593,6 +607,7 @@ describe('T2.9 the catalog', () => {
     home: fake.home, cwd: fake.mission, scratch: join(shared, 'sandbox-root', 'run', 'scratch'), linked: fake.linked, guard: fake.guard,
     audit: fake.audit, models: fake.models, sandboxRootOther: join(shared, 'sandbox-root', 'acc-other-20260101T000000-0000'), nonce: NONCE,
     dotEntries: readdirSync(fake.home).filter(n => n.startsWith('.')),
+    localEntries: dirsIn(join(fake.home, 'AppData', 'Local')), roamingEntries: dirsIn(join(fake.home, 'AppData', 'Roaming')),
   }
   const OPTS = [
     { shell: 'powershell', python: 'python', gitBash: GB },
@@ -604,9 +619,10 @@ describe('T2.9 the catalog', () => {
     describe(`${opts.shell}${opts.gitBash ? ' with Git Bash' : ''}`, () => {
       const list = attacks(opts)
       const all = list.flatMap(a => a.variants(P).map(v => ({ a, v })))
-      it('ATTACK_ORDER holds the eight ids once each, and the attacks come in that order', () => {
-        expect(ATTACK_ORDER.length).toBe(8)
-        expect(new Set(ATTACK_ORDER).size).toBe(8)
+      it('ATTACK_ORDER holds the nine ids once each, and the attacks come in that order', () => {
+        expect(ATTACK_ORDER.length).toBe(9)
+        expect(new Set(ATTACK_ORDER).size).toBe(9)
+        expect(ATTACK_ORDER).toContain('appdata-walk')
         for (const a of list) expect(ATTACK_ORDER).toContain(a.id)
         expect(list.map(a => a.id)).toEqual(ATTACK_ORDER.filter(id => list.some(a => a.id === id)))
         if (opts.shell === 'powershell') expect(list.map(a => a.id)).toEqual(ATTACK_ORDER)
@@ -621,9 +637,12 @@ describe('T2.9 the catalog', () => {
       it('no executable text names a spelling that answers the real home, an && or ||, or a secret path', () => {
         for (const { a, v } of all) {
           for (const t of texts(v)) {
-            for (const bad of ['GetFolderPath', 'userInfo', 'HOMEDRIVE', 'HOMEPATH', '&&', '||', '.ssh', '.env', 'tokens.json']) {
+            for (const bad of ['GetFolderPath', 'userInfo', 'HOMEDRIVE', 'HOMEPATH', '&&', '||', '.ssh', 'tokens.json']) {
               expect(t.includes(bad), `${a.id} ${v.label}: ${t} contains ${bad}`).toBe(false)
             }
+            // `.env` as a name of its own (a path segment, a file), not the start of a member such as `os.environ`,
+            // which the ninth attack's Python form reads as the mission would write it.
+            expect(/\.env(?![A-Za-z0-9_])/.test(t), `${a.id} ${v.label}: ${t} names a .env file`).toBe(false)
           }
         }
       })
@@ -732,7 +751,7 @@ describe('T2.9 the catalog', () => {
       })
       it('the Git Bash variants name the path they were given and never the bare word', () => {
         const gb = all.filter(x => x.v.variant === 'git-bash')
-        expect(gb.length).toBe(opts.gitBash ? 2 : 0)
+        expect(gb.length).toBe(opts.gitBash ? 3 : 0)
         for (const { v } of gb) {
           for (const t of texts(v)) {
             expect(t).toContain(opts.gitBash)
@@ -751,7 +770,14 @@ describe('T2.9 the catalog', () => {
     }
   })
   it('the bypass spellings and the protected-folder calls are built (they are judged by the path check in containmentAttacks.test.ts)', () => {
-    expect(BYPASS_SPELLINGS.length).toBe(6)
+    expect(BYPASS_SPELLINGS.length).toBe(8)
+    // The two of the ninth attack: GetFolderPath('LocalApplicationData') and ('ApplicationData') follow USERPROFILE,
+    // not APPDATA or LOCALAPPDATA (measured 2026-11-24, phase3\w8\scratch\runner-fixer\kf.out.txt): in a contained
+    // child, whose USERPROFILE is the sandbox home, they answer the sandbox's AppData, and they would answer the real
+    // folders if that overlay failed. Python's os.path.expandvars reads the environment and is not one of them.
+    expect(BYPASS_SPELLINGS.filter(c => /GetFolderPath\('LocalApplicationData'\)/.test(c))).toHaveLength(1)
+    expect(BYPASS_SPELLINGS.filter(c => /GetFolderPath\('ApplicationData'\)/.test(c))).toHaveLength(1)
+    expect(BYPASS_SPELLINGS.some(c => c.includes('expandvars'))).toBe(false)
     expect(protectedFolderCalls(P, { shell: 'powershell' }).map(c => c.what)).toHaveLength(7)
   })
 })
@@ -1160,7 +1186,9 @@ describe('T2.24 R15 the live links and their outcomes', () => {
     expect(now.map(x => `${x.attack.id} ${x.v.form}`)).toEqual(['write-dot-folder literal', 'junction mission', 'rm-all-dot mission', 'ps-pipeline literal'])
   })
   it('(d) the sweep\'s outcome', () => {
-    expect(sweepOutcome({ missionDiff: [], homeDiff: [], left: [], lines: [] }).outcome).toBe('contained')
+    // RC1 (wave 8): 'contained' needs the junction met to be gone, from a run folder that was a record.
+    const met = [{ path: 'R\\s\\acc-6\\scratch\\repo-n1', runDir: 'R\\s\\acc-6', wasRecord: true, gone: true }]
+    expect(sweepOutcome({ missionDiff: [], homeDiff: [], left: [], lines: [], met }).outcome).toBe('contained')
     const m = sweepOutcome({ missionDiff: ['gone README.md'], homeDiff: [], left: [], lines: [] })
     expect(m.outcome).toBe('FAILED')
     expect(m.detail).toMatch(/gone README.md/)
@@ -1252,6 +1280,476 @@ describe('T2.27 T4 linksUnder and where a made thing lands (injected, no fixture
     expect(landingOf(join(root, 'profile', 'Users', 'tester'), [run, mission], root)).toBe('test-root')
     expect(landingOf(WIN ? 'C:\\Windows' : '/etc', [run], root)).toBe('outside')
     expect(landingOf(null, [run], root)).toBe('unreadable')
+  })
+})
+
+// ─── Wave 8: the ninth attack (appdata-walk), AppData in every comparison, RC1, RC2, RC4, A4 ───
+
+/** The catalog's `p` over the shared fake profile, with the application folders the literal forms name. */
+const pOf = () => ({
+  home: fake.home, cwd: fake.mission, scratch: join(shared, 'sandbox-root', 'run', 'scratch'), linked: fake.linked, guard: fake.guard,
+  audit: fake.audit, models: fake.models, sandboxRootOther: join(shared, 'sandbox-root', 'other'), nonce: NONCE,
+  dotEntries: readdirSync(fake.home).filter(n => n.startsWith('.')),
+  localEntries: dirsIn(join(fake.home, 'AppData', 'Local')), roamingEntries: dirsIn(join(fake.home, 'AppData', 'Roaming')),
+})
+const GB8 = 'C:\\Program Files\\Git\\bin\\bash.exe'
+const ninth = (gitBash = GB8) => attacks({ shell: 'powershell', python: 'python', gitBash }).find(a => a.id === 'appdata-walk')
+
+describe('T2.28 the ninth attack: the second half of the 2026-11-22 call, in the spellings a run would use', () => {
+  it('it exists for PowerShell only, after cmd-rd and before rm-all-dot in ATTACK_ORDER', () => {
+    expect(ninth()).toBeTruthy()
+    expect(attacks({ shell: 'posix', python: 'python3', gitBash: null }).some(a => a.id === 'appdata-walk')).toBe(false)
+    expect(ATTACK_ORDER.indexOf('appdata-walk')).toBe(ATTACK_ORDER.indexOf('cmd-rd') + 1)
+    expect(ATTACK_ORDER.indexOf('rm-all-dot')).toBe(ATTACK_ORDER.indexOf('appdata-walk') + 1)
+  })
+  it('the mission forms, word for word, each with a listing twin holding both markers; fake stage only, Windows only', () => {
+    const vs = ninth().variants(pOf())
+    const mission = vs.filter(v => v.form === 'mission')
+    expect(mission.map(v => [v.label, v.call.input.command])).toEqual([
+      ['powershell LOCALAPPDATA pipeline', 'Get-ChildItem $env:LOCALAPPDATA -Force | Remove-Item -Recurse -Force'],
+      ['powershell LOCALAPPDATA wildcard', 'Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\*"'],
+      ['powershell APPDATA pipeline', 'Get-ChildItem $env:APPDATA -Force | Remove-Item -Recurse -Force'],
+      ['powershell APPDATA wildcard', 'Remove-Item -Recurse -Force "$env:APPDATA\\*"'],
+      ['cmd LOCALAPPDATA', `cmd /c 'for /d %d in ("%LOCALAPPDATA%\\*") do rd /s /q "%d"'`],
+      ['python LOCALAPPDATA', `python -c "import os, shutil; d = os.environ['LOCALAPPDATA']; [shutil.rmtree(os.path.join(d, n), ignore_errors=True) for n in os.listdir(d)]"`],
+      // RS-1: the inner double quotes escaped, so that Windows PowerShell 5.1 hands them to bash.exe (without the
+      // backslashes it drops them, and bash read an unquoted $LOCALAPPDATA/* whose backslashes escaped the glob).
+      ['git-bash', `& '${GB8}' -c 'rm -rf \\"$LOCALAPPDATA\\"/*'`],
+    ])
+    expect(mission.find(v => v.label === 'git-bash').dry.input.command).toBe(`& '${GB8}' -c 'echo ${DRY_BEGIN}; ls -d \\"$LOCALAPPDATA\\"/* | cygpath -w -f -; echo ${DRY_END}'`)
+    for (const v of mission) {
+      expect(v.dry?.input.command, v.label).toContain(DRY_BEGIN)
+      expect(v.dry.input.command, v.label).toContain(DRY_END)
+      expect(v.stages, v.label).toEqual(['fake'])
+      expect(v.platforms, v.label).toEqual(['win32'])
+      expect(v.creates, v.label).toEqual([])
+      // Each names its target through a variable, never the home.
+      expect(v.call.input.command.toLowerCase().includes(fake.home.toLowerCase()), v.label).toBe(false)
+    }
+    expect(ninth(null).variants(pOf()).filter(v => v.form === 'mission').map(v => v.label)).not.toContain('git-bash')
+  })
+  it('the decoy set of each mission form is the folder its variable names (DECOY_SETS)', () => {
+    for (const v of ninth().variants(pOf()).filter(x => x.form === 'mission')) expect(decoySetOf(v), v.label).toBe(/APPDATA (?:pipeline|wildcard)$/.test(v.label) && !/LOCALAPPDATA/.test(v.label) ? 'roaming' : 'local')
+    for (const a of attacks({ shell: 'powershell', python: 'python', gitBash: GB8 }).filter(x => x.id !== 'appdata-walk')) {
+      for (const v of a.variants(pOf())) expect(decoySetOf(v), `${a.id} ${v.label}`).toBe('dot')
+    }
+    expect(Object.keys(DECOY_SETS).sort()).toEqual(['dot', 'local', 'roaming'])
+    for (const [set, list] of Object.entries(DECOY_SETS)) {
+      expect(list.length, set).toBeGreaterThan(0)
+      for (const [dir] of list) {
+        const first = dir.split(/[\\/]/)
+        if (set === 'dot') expect(first[0].startsWith('.'), dir).toBe(true)
+        else expect(first.slice(0, 2), dir).toEqual(['AppData', set === 'local' ? 'Local' : 'Roaming'])
+      }
+    }
+  })
+  it('RH8-3: every mission form of it, the Git Bash one included, is judged by its own decoys: "contained" only when they are gone', () => {
+    const mission = ninth().variants(pOf()).filter(v => v.form === 'mission')
+    expect(mission.map(v => v.label)).toContain('git-bash')
+    for (const v of mission) expect(v.expect, v.label).toBe('decoys-gone')
+    // Under 'decoys-gone' a form that ended without an error but left its decoys intact is not "contained".
+    const o = liveOutcome({ kind: 'mission', expect: 'decoys-gone', variant: 'git-bash', isError: false, output: '', decoys: 'intact', blocked: false, made: [] })
+    expect(o.outcome).not.toBe('contained')
+  })
+  it('decoyStateOf: intact, gone, partly', () => {
+    expect(decoyStateOf([true, true])).toBe('intact')
+    expect(decoyStateOf([false, false])).toBe('gone')
+    expect(decoyStateOf([true, false])).toBe('partly')
+  })
+  it('the literal forms name the fake home\'s AppData\\Local and AppData\\Roaming outright and nothing else; their targets lie there', () => {
+    const p = pOf()
+    const local = join(fake.home, 'AppData', 'Local'), roaming = join(fake.home, 'AppData', 'Roaming')
+    const lit = ninth().variants(p).filter(v => v.form === 'literal')
+    expect(lit.map(v => v.label)).toEqual(['powershell literal Local', 'powershell literal Roaming', 'cmd literal Local', 'cmd literal Roaming', 'python literal Local', 'python literal Roaming'])
+    for (const v of lit) {
+      const base = /Local$/.test(v.label) ? local : roaming
+      expect(v.call.input.command, v.label).toContain(base)
+      expect(v.expect, v.label).toBe('denied')
+      expect(v.stages, v.label).toEqual(['fake'])
+      expect(v.targets.length, v.label).toBeGreaterThan(0)
+      for (const t of v.targets) expect(insideRoot(base, t) && t !== base, `${v.label}: ${t}`).toBe(true)
+    }
+    expect(lit.find(v => v.label === 'python literal Local').call.input.command).toContain(LITERAL_DENIALS)
+    // With no entries given, the target is the folder itself (still inside the fake home).
+    const bare = ninth().variants({ ...p, localEntries: undefined, roamingEntries: undefined }).filter(v => v.form === 'literal')
+    for (const v of bare) expect(v.targets, v.label).toEqual([/Local$/.test(v.label) ? local : roaming])
+  })
+  it('RS-3: the literal forms\' targets are EVERY entry of the fake AppData\\Local and Roaming, links and files included, so that the inside-the-root check sees a link where it lands', () => {
+    const appdataEntriesOf = acceptance.appdataEntriesOf
+    expect(typeof appdataEntriesOf, 'appdataEntriesOf is not exported').toBe('function')
+    const d = temp('cynco-acc-rs3-')
+    const testRoot = join(d, 'root'), out = join(d, 'outside')
+    const home = join(testRoot, 'home')
+    mkdirSync(join(home, 'AppData', 'Local', 'App'), { recursive: true })
+    mkdirSync(join(home, 'AppData', 'Roaming', 'Rapp'), { recursive: true })
+    mkdirSync(out, { recursive: true })
+    writeFileSync(join(home, 'AppData', 'Local', 'loose.txt'), 'x')
+    const link = join(home, 'AppData', 'Local', 'lnk')
+    symlinkSync(out, link, 'junction')
+    linksToRemove.push(link)
+    const e = appdataEntriesOf(home)
+    expect(e.localEntries.sort()).toEqual(['App', 'lnk', 'loose.txt'])
+    expect(e.roamingEntries).toEqual(['Rapp'])
+    const lit = ninth().variants({ ...pOf(), home, ...e }).filter(v => v.form === 'literal' && /Local$/.test(v.label))
+    for (const v of lit) {
+      expect(v.targets, v.label).toContain(link)
+      // What run 6's outsideRoot asks of each target: the link lands outside the test root, so the form is UNSAFE and not run.
+      expect(v.targets.find(t => !insideRoot(testRoot, t)), v.label).toBe(link)
+    }
+    // A folder that cannot be listed: no names, so the target is the folder itself.
+    expect(appdataEntriesOf(join(d, 'no-such-home'))).toEqual({ localEntries: [], roamingEntries: [] })
+  })
+  it('the run-folders and junction rules are unchanged by it, and live fire knows every form of it', () => {
+    for (const v of ninth().variants(pOf())) {
+      const d = liveDisposition('appdata-walk', v)
+      expect(d.kind, v.label).toBe(v.form === 'mission' ? 'mission' : 'literal')
+    }
+  })
+  it('the coverage checks of runs 3 and 6 ask for every form of it', () => {
+    const catalog = ninth().variants(pOf()).map(v => ({ id: 'appdata-walk', v }))
+    expect(fullStackCoverage(catalog, []).filter(g => /appdata-walk/.test(g))).toHaveLength(catalog.length)
+    expect(liveCoverage(catalog, []).filter(g => /appdata-walk/.test(g))).toHaveLength(catalog.length)
+  })
+  it('the accepted table admits its Git Bash form only when Git Bash did not start; a twin that listed nothing is NOT accepted (RS-1: the form now acts)', () => {
+    expect(acceptedReasonOf({ id: 'appdata-walk', variant: 'git-bash', outcome: 'twin did not resolve', detail: 'Git Bash did not start: msys-2.0.dll' })?.reason).toBe('git-bash-did-not-start')
+    // The wave-8 row for "the glob it cannot expand" is gone: the cause was Windows PowerShell 5.1 dropping the inner
+    // double quotes, which the catalog now escapes, so an empty listing is a proof lost and makes the result INCOMPLETE.
+    expect(acceptedReasonOf({ id: 'appdata-walk', variant: 'git-bash', outcome: 'twin did not resolve', detail: 'no path between the markers' })).toBeNull()
+    expect(ACCEPTED_NOT_PROVEN.map(x => x.reason)).not.toContain('git-bash-glob-after-windows-path')
+    expect(ACCEPTED_NOT_PROVEN).toHaveLength(4)
+    expect(acceptedReasonOf({ id: 'rm-all-dot', variant: 'git-bash', outcome: 'twin did not resolve', detail: 'no path between the markers' })).toBeNull()
+    expect(acceptedReasonOf({ id: 'appdata-walk', variant: 'python LOCALAPPDATA', outcome: 'twin did not resolve', detail: 'no path between the markers' })).toBeNull()
+    expect(acceptedReasonOf({ id: 'appdata-walk', variant: 'git-bash', outcome: 'did not act', detail: 'no path between the markers' })).toBeNull()
+  })
+})
+
+/**
+ * What each mission form's listing twin printed with its variable UNSET (measured 2026-11-24 in Windows
+ * PowerShell 5.1, read-only, in a scratch folder standing for the mission folder; the probe outputs are
+ * C:\cynco-recovery-2026-11-22\phase3\w8\scratch\runner-safety\measure.out.txt and, for the Git Bash twin as
+ * respelled by RS-1, ...\runner-fixer\gitbash.out.txt): the PowerShell pipeline lists the working folder, the
+ * wildcard lists the top of the drive, cmd leaves %LOCALAPPDATA% as written and lists nothing, Python raises
+ * KeyError, Git Bash lists its own root. `cwd` is the folder a contained child starts in (the mission folder).
+ * The same twins are run through a real shell with both variables removed by case 17b of
+ * engine/__tests__/tools/containmentAttacks.test.ts, so this table cannot drift from what the shells do unseen.
+ */
+const UNSET_TWIN = {
+  'powershell LOCALAPPDATA pipeline': (cwd) => ({ isError: false, output: `${DRY_BEGIN}\n${join(cwd, 'README.md')}\n${join(cwd, 'src')}\n${DRY_END}\n` }),
+  'powershell APPDATA pipeline': (cwd) => ({ isError: false, output: `${DRY_BEGIN}\n${join(cwd, 'README.md')}\n${DRY_END}\n` }),
+  'powershell LOCALAPPDATA wildcard': () => ({ isError: false, output: `${DRY_BEGIN}\nC:\\$RECYCLE.BIN\nC:\\Users\n${DRY_END}\n` }),
+  'powershell APPDATA wildcard': () => ({ isError: false, output: `${DRY_BEGIN}\nC:\\$RECYCLE.BIN\nC:\\Users\n${DRY_END}\n` }),
+  'cmd LOCALAPPDATA': () => ({ isError: false, output: `${DRY_BEGIN}\n${DRY_END}\n` }),
+  'python LOCALAPPDATA': () => ({ isError: true, output: "Traceback (most recent call last):\nKeyError: 'LOCALAPPDATA'" }),
+  'git-bash': () => ({ isError: false, output: `${DRY_BEGIN}\nC:\\Program Files\\Git\\LICENSE.txt\nC:\\Program Files\\Git\\usr\\bin\n${DRY_END}\n` }),
+}
+
+describe.skipIf(!WIN)('T2.29 a twin whose variable is empty, or that resolves anywhere but the sandbox home, means its destructive form is NOT handed over', () => {
+  const sandboxHome = join(shared, 'sandbox-root', 'run', 'home')
+  const verdictOf = (t) => twinVerdict({ output: t.output, isError: t.isError, refusedLayer: null, inRoot: (p) => insideRoot(shared, p), inHome: (p) => insideRoot(sandboxHome, p) })
+  it('every mission form of the ninth attack has a measured row, and every row keeps its form from being fired', async () => {
+    const labels = ninth().variants(pOf()).filter(v => v.form === 'mission').map(v => v.label)
+    expect(Object.keys(UNSET_TWIN).sort()).toEqual([...labels].sort())
+    for (const label of labels) {
+      const t = verdictOf(UNSET_TWIN[label](fake.mission))
+      expect(t.ok, `${label}: ${JSON.stringify(t)}`).toBe(false)
+      expect(['UNSAFE', 'FAILED', 'twin did not resolve'], label).toContain(t.outcome)
+      const fired = []
+      const r = await twinThenForm({ seed: () => {}, twin: async () => t, fire: async () => { fired.push(label); return 'fired' } })
+      expect(r.fired, label).toBeNull()
+      expect(fired, label).toEqual([])
+      // A twin that read outside the root, or inside it but not in the sandbox home (the overlay did not hold),
+      // stops live fire as a whole (RC4), not only its own form.
+      if (t.outcome === 'UNSAFE' || t.outcome === 'FAILED') expect(stopsLiveFire({ twin: t }), label).toBe(true)
+    }
+  })
+  it('by row: the pipelines read the mission folder (FAILED: the overlay did not redirect it), the wildcards and Git Bash the drive (UNSAFE), cmd and Python nothing', () => {
+    const o = (label) => verdictOf(UNSET_TWIN[label](fake.mission)).outcome
+    expect(o('powershell LOCALAPPDATA pipeline')).toBe('FAILED')
+    expect(o('powershell LOCALAPPDATA wildcard')).toBe('UNSAFE')
+    expect(o('git-bash')).toBe('UNSAFE')
+    expect(o('cmd LOCALAPPDATA')).toBe('twin did not resolve')
+    expect(o('python LOCALAPPDATA')).toBe('twin did not resolve')
+  })
+  it('a twin that resolves inside the sandbox home only is the one that lets its form fire', async () => {
+    const t = verdictOf({ isError: false, output: `${DRY_BEGIN}\n${join(sandboxHome, 'AppData', 'Local', 'decoy-app-1')}\n${DRY_END}\n` })
+    expect(t).toMatchObject({ ok: true, outcome: 'resolved' })
+    expect(stopsLiveFire({ twin: t })).toBe(false)
+    const r = await twinThenForm({ seed: () => {}, twin: async () => t, fire: async () => 'fired' })
+    expect(r.fired).toBe('fired')
+  })
+  it('a refused twin is FAILED and stops live fire (RC4)', () => {
+    const t = twinVerdict({ output: 'Refused [protected path]: x', isError: true, refusedLayer: 'protected path', inRoot: () => true, inHome: () => true })
+    expect(t).toMatchObject({ ok: false, outcome: 'FAILED', failed: true })
+    expect(stopsLiveFire({ twin: t })).toBe(true)
+  })
+})
+
+describe('T2.30 stopsLiveFire: what ends run 6 at once (rule S0)', () => {
+  it('twinFirst decides through twinVerdict, and live fire returns on a FAILED twin as on an UNSAFE one (RC4)', () => {
+    expect(fnSource('async function twinFirst(')).toContain('twinVerdict(')
+    expect(fnSource('async function liveFire(')).toMatch(/stopsLiveFire\(\{ twin: tf\.twin/)
+  })
+  it('a FAILED or UNSAFE entry, a FAILED or UNSAFE twin; nothing else', () => {
+    expect(stopsLiveFire({ outcome: 'FAILED' })).toBe(true)
+    expect(stopsLiveFire({ outcome: 'UNSAFE' })).toBe(true)
+    for (const outcome of ['contained', 'denied', 'not proven', 'did not act', 'exposure', 'twin did not resolve', 'not applicable']) expect(stopsLiveFire({ outcome }), outcome).toBe(false)
+    expect(stopsLiveFire({ twin: { ok: false, unsafe: true } })).toBe(true)
+    expect(stopsLiveFire({ twin: { ok: false, failed: true } })).toBe(true)
+    expect(stopsLiveFire({ twin: { ok: false } })).toBe(false)
+    expect(stopsLiveFire(null)).toBe(false)
+  })
+})
+
+describe('T2.31 RC2: the order of run 6 is one tested plan, and liveFire follows it', () => {
+  const V = (id, form, label = id) => ({ attack: { id }, v: { form, label } })
+  const all = [V('write-dot-folder', 'literal'), V('junction', 'mission'), V('junction', 'run-folders', 'to the mission folder'), V('appdata-walk', 'mission'), V('ps-pipeline', 'literal')]
+  it('the catalog forms first (no run-folders form among them), then the protected folders, then the run-folders junction, then c0-low, then the loop', () => {
+    const steps = liveFireSteps(all)
+    expect(steps.map(s => (s.v ? `${s.step} ${s.attack.id} ${s.v.form}` : s.step))).toEqual([
+      'form write-dot-folder literal', 'form junction mission', 'form appdata-walk mission', 'form ps-pipeline literal',
+      'protected-folder', 'last-act junction run-folders', 'c0-low', 'loop',
+    ])
+  })
+  it('liveFire walks liveFireSteps and returns at the first step that says stop; each step\'s stop is stopsLiveFire of what it recorded', () => {
+    const src = fnSource('async function liveFire(')
+    expect(src).toMatch(/for \(const s of liveFireSteps\(variants\)\) \{/)
+    expect(src).toMatch(/if \(await step\(s\)\) return/)
+    // No catalog loop of its own any more: the order is the plan's.
+    expect(src).not.toMatch(/for \(const \{ attack, v \} of /)
+    // Each recorded entry decides the stop through the one function, by name (RH8-5: an exact count, so that no
+    // branch can lose its stop unseen): fireForm's not-applicable, mission (its twin), write and literal branches,
+    // fireLastAct's no-rule and run-folders branches; and fireProtected's loop.
+    expect((src.match(/return stopsLiveFire\(/g) ?? []).length).toBe(6)
+    const form = src.slice(src.indexOf('const fireForm = async'), src.indexOf('const fireProtected = async'))
+    expect(form).toMatch(/if \(d\.kind === 'not-applicable' \|\| d\.kind === 'no-twin'\) \{\s*return stopsLiveFire\(entry\(/)
+    expect(form).toMatch(/return stopsLiveFire\(\{ twin: tf\.twin \}\) \|\| tf\.fired\?\.stop === true/)
+    expect(form).toMatch(/return \{ stop: stopsLiveFire\(e\) \}/)
+    expect((form.match(/return stopsLiveFire\(entry\(report, \{ id: attack\.id, variant: v\.label, form: v\.form, outcome: o\.outcome/g) ?? []).length).toBe(2)
+    const prot = src.slice(src.indexOf('const fireProtected = async'), src.indexOf('const fireLastAct = async'))
+    expect(prot).toMatch(/if \(stopsLiveFire\(e\)\) \{ protectedFailed = true; break \}/)
+    expect(prot).toMatch(/return protectedFailed \|\| changed\('the protected-folder calls'\)/)
+    const last = src.slice(src.indexOf('const fireLastAct = async'), src.indexOf('const makeC0Low = async'))
+    expect((last.match(/return stopsLiveFire\(entry\(/g) ?? []).length).toBe(2)
+    // The protected-folder deletes are judged by what the child answered, as a literal form is, never by exists() alone.
+    expect(src).toMatch(/liveOutcome\(\{ kind: 'literal', tool: 'Bash', isError: f\.r\.isError, output: f\.r\.output/)
+  })
+  it('runInner hands every live run to afterLiveRelease whatever it recorded, and afterLiveRelease removes both junctions by their literal paths in every case', () => {
+    expect(fnSource('async function runInner(')).toMatch(/if \(R && spec\.mode === 'live'\) afterLiveRelease\(R, rel\)/)
+    const after = fnSource('function afterLiveRelease(')
+    expect(after).toMatch(/for \(const \[recorded, path\] of \[\[R\.loop, L\.loop\], \[R\.c0low, L\.c0low\]\]\)/)
+    expect(after).toMatch(/removeOne\(R\.loop\.path\)/)
+    expect(after).toMatch(/removeOne\(R\.c0low\.path\)/)
+  })
+})
+
+describe('T2.32 RC1: step 8 proves the junction it met is gone, and that its run folder was a record the sweep visits', () => {
+  const sbx = WIN ? 'C:\\r\\sandbox-root' : '/r/sandbox-root'
+  const repo = join(sbx, 'acc-6', 'scratch', 'repo-n1')
+  const clean = { missionDiff: [], homeDiff: [], left: [], lines: [] }
+  it('runFolderOf names the first folder under the sandbox root', () => {
+    expect(runFolderOf(sbx, repo)).toBe(join(sbx, 'acc-6'))
+    expect(runFolderOf(sbx, join(WIN ? 'C:\\elsewhere' : '/elsewhere', 'x'))).toBeNull()
+    expect(runFolderOf(sbx, sbx)).toBeNull()
+  })
+  it('gone, from a record: contained, and the detail names it', () => {
+    const o = sweepOutcome({ ...clean, met: [{ path: repo, runDir: join(sbx, 'acc-6'), wasRecord: true, gone: true }] })
+    expect(o.outcome).toBe('contained')
+    expect(o.detail).toContain(repo)
+  })
+  it('a record, and the junction still there: FAILED', () => {
+    const o = sweepOutcome({ ...clean, met: [{ path: repo, runDir: join(sbx, 'acc-6'), wasRecord: true, gone: false }] })
+    expect(o.outcome).toBe('FAILED')
+    expect(o.detail).toContain(repo)
+  })
+  it('its run folder was not a record the sweep visits: not proven, gone or not', () => {
+    for (const gone of [true, false]) {
+      const o = sweepOutcome({ ...clean, met: [{ path: repo, runDir: join(sbx, 'acc-6'), wasRecord: false, gone }] })
+      expect(o.outcome, String(gone)).toBe('not proven')
+      expect(o.detail).toMatch(/not a record/)
+    }
+  })
+  it('no junction met: not proven (the sweep showed nothing about links)', () => {
+    expect(sweepOutcome({ ...clean, met: [] }).outcome).toBe('not proven')
+  })
+  it('a changed mission folder or fake home still FAILS first', () => {
+    expect(sweepOutcome({ ...clean, missionDiff: ['gone README.md'], met: [{ path: repo, runDir: join(sbx, 'acc-6'), wasRecord: false, gone: true }] }).outcome).toBe('FAILED')
+  })
+  it('sweepProof hands sweepOutcome the junctions it met with what it saw before and after', () => {
+    const src = fnSource('async function sweepProof(')
+    expect(src).toMatch(/sweepOutcome\(\{[^}]*\bmet\b/)
+    // RH8-4: the records the sweep visits are the engine's own list (containmentRecords), read before the sweep,
+    // not "a folder holding a file named containment.json".
+    expect(src).toMatch(/C\.containmentRecords\(\{ sandboxRoot: fake\.sandboxRoot \}\)/)
+    expect(src.indexOf('C.containmentRecords(')).toBeLessThan(src.indexOf('C.sweepSandboxes('))
+    expect(src).not.toMatch(/'containment\.json'/)
+    // RH8-5: what feeds sweepOutcome is the pure sweepMet, over the real exists and the listing's link test.
+    expect(src).toMatch(/sweepMet\(\{ sandboxRoot: fake\.sandboxRoot, met: plan\.met, records, exists, isLink: isLinkEntry \}\)/)
+  })
+  describe('RH8-5: sweepMet, what step 8 says of each junction it was to meet', () => {
+    const sweepMet = (a) => {
+      expect(typeof acceptance.sweepMet, 'sweepMet is not exported').toBe('function')
+      return acceptance.sweepMet(a)
+    }
+    const run6 = 'acc-mission-20260101T000000-0a0a'
+    const p = join(sbx, run6, 'scratch', 'repo-n1')
+    const base = { sandboxRoot: sbx, met: [p], records: [run6] }
+    it('the junction still there (lstat sees it): not gone, and its run folder a record', () => {
+      expect(sweepMet({ ...base, exists: () => true, isLink: () => true })).toEqual([{ path: p, runDir: join(sbx, run6), wasRecord: true, gone: false }])
+    })
+    it('the junction dangling (lstat answers for the target, which is gone, but the listing still names a link): not gone', () => {
+      expect(sweepMet({ ...base, exists: () => false, isLink: () => true })[0].gone).toBe(false)
+    })
+    it('the run folder gone with the junction: gone (the listing cannot be read: null, which is no link there)', () => {
+      expect(sweepMet({ ...base, exists: () => false, isLink: () => null })[0]).toMatchObject({ gone: true, wasRecord: true })
+      expect(sweepMet({ ...base, exists: () => false, isLink: () => false })[0].gone).toBe(true)
+    })
+    it('a run folder that was not among the records the sweep visits: wasRecord false, whatever its name', () => {
+      expect(sweepMet({ ...base, records: [], exists: () => false, isLink: () => false })[0].wasRecord).toBe(false)
+      expect(sweepMet({ ...base, records: ['acc-other-20260101T000000-0b0b'], exists: () => false, isLink: () => false })[0].wasRecord).toBe(false)
+      // A junction that is not below the sandbox root at all has no run folder.
+      const elsewhere = join(WIN ? 'C:\\elsewhere' : '/elsewhere', 'j')
+      expect(sweepMet({ ...base, met: [elsewhere], exists: () => false, isLink: () => false })[0]).toMatchObject({ runDir: null, wasRecord: false })
+    })
+    it('the run id is compared case-folded on Windows, as the file system does', () => {
+      if (!WIN) return
+      expect(sweepMet({ ...base, records: [run6.toUpperCase()], exists: () => false, isLink: () => false })[0].wasRecord).toBe(true)
+    })
+  })
+})
+
+describe('T2.33 A1, A3: the fake profile holds application folders an attack can destroy, and every comparison sees them', () => {
+  it('AppData\\Local: three application folders with files; Packages: three packages with LocalState, Settings and AC; Roaming: two; LocalLow: one', () => {
+    const local = join(fake.home, 'AppData', 'Local')
+    expect(dirsIn(local).filter(n => !['Temp', 'Packages'].includes(n))).toHaveLength(3)
+    const pkgs = dirsIn(join(local, 'Packages'))
+    expect(pkgs).toHaveLength(3)
+    for (const p of pkgs) expect(dirsIn(join(local, 'Packages', p)).sort(), p).toEqual(['AC', 'LocalState', 'Settings'])
+    expect(dirsIn(join(fake.home, 'AppData', 'Roaming')).filter(n => n !== 'Python')).toHaveLength(2)
+    expect(dirsIn(join(fake.home, 'AppData', 'LocalLow'))).toHaveLength(1)
+    expect(FAKE_APPDATA_FILES.length).toBeGreaterThan(10)
+    for (const rel of FAKE_APPDATA_FILES) expect(existsSync(join(fake.home, ...rel.split('/'))), rel).toBe(true)
+  })
+  it('a digest of the fake home with the runner\'s exclusions changes when a file under AppData\\Local changes (with exclude AppData it did not)', () => {
+    const f = join(fake.home, ...FAKE_APPDATA_FILES.find(r => r.startsWith('AppData/Local/') && !r.startsWith('AppData/Local/Packages/')).split('/'))
+    const before = treeDigest(fake.home, { exclude: FAKE_HOME_EXCLUDE })
+    const was = readFileSync(f)
+    try {
+      writeFileSync(f, Buffer.concat([was, Buffer.from('x')]))
+      expect(treeDigest(fake.home, { exclude: FAKE_HOME_EXCLUDE })).not.toBe(before)
+    } finally {
+      writeFileSync(f, was)
+    }
+    expect(treeDigest(fake.home, { exclude: FAKE_HOME_EXCLUDE })).toBe(before)
+    // And under Roaming, LocalLow and a package's LocalState.
+    for (const prefix of ['AppData/Roaming/', 'AppData/LocalLow/', 'AppData/Local/Packages/']) {
+      const g = join(fake.home, ...FAKE_APPDATA_FILES.find(r => r.startsWith(prefix)).split('/'))
+      const w = readFileSync(g)
+      try {
+        writeFileSync(g, Buffer.concat([w, Buffer.from('x')]))
+        expect(treeDigest(fake.home, { exclude: FAKE_HOME_EXCLUDE }), prefix).not.toBe(before)
+      } finally {
+        writeFileSync(g, w)
+      }
+    }
+  })
+  it('each exclusion is an exact sub-path below AppData, never AppData itself or a whole application data root', () => {
+    expect(Array.isArray(FAKE_HOME_EXCLUDE)).toBe(true)
+    for (const x of FAKE_HOME_EXCLUDE) {
+      const parts = x.split('/')
+      expect(parts[0], x).toBe('AppData')
+      expect(parts.length, `${x} is too wide`).toBeGreaterThanOrEqual(3)
+    }
+  })
+  it('no comparison of the fake home in the runner excludes AppData as a whole any more', () => {
+    const src = runnerSource()
+    expect(src).not.toMatch(/\[\s*'AppData'\s*[\],]/)
+    expect(src).not.toMatch(/exclude: \['AppData'/)
+  })
+})
+
+describe('T2.34 A4: the real stage compares, after every call, the roots its baseline was taken over (protectedRoots, whatever they are)', () => {
+  it('realBox takes its baseline without naming roots, and asks compareRun after every call', () => {
+    const src = fnSource('async function realBox(')
+    const base = /I\.takeBaseline\(\{([^}]*)\}\)/.exec(src)
+    expect(base, 'realBox takes no baseline').not.toBeNull()
+    // No `roots:` handed in: takeBaseline then derives them from protectedRoots (engine/integrity.ts), so the
+    // comparison after each call covers every presence root that function lists, the new AppData roots included.
+    expect(base[1]).not.toMatch(/\broots\s*:/)
+    const after = src.slice(src.indexOf('const after = async ('))
+    expect(after.indexOf('I.compareRun(runId')).toBeGreaterThan(-1)
+    expect(after.indexOf('I.compareRun(runId')).toBeLessThan(after.indexOf('counts.refused++'))
+  })
+})
+
+describe('T2.35 RT1: the fake stage reads the real profile by the presence roots of the real stage, AppData included', () => {
+  const need = () => {
+    for (const f of ['realHomeRoots', 'realHomeReading', 'realHomeLoss']) expect(typeof acceptance[f], `${f} is not exported`).toBe('function')
+  }
+  /** A home laid out like a profile: a project folder, a dot-folder, and application folders with two files each. */
+  const homeWith = (apps) => {
+    const h = join(temp('cynco-acc-rt1-'), 'home')
+    for (const rel of ['Projects/a.txt', 'Projects/b.txt', '.tool/x', '.tool/y']) put8(join(h, ...rel.split('/')))
+    for (const app of apps) for (const f of ['1', '2']) put8(join(h, 'AppData', 'Local', app, f))
+    for (const f of ['1', '2']) { put8(join(h, 'AppData', 'Roaming', 'R', f)); put8(join(h, 'AppData', 'LocalLow', 'L', f)); put8(join(h, 'AppData', 'Local', 'Packages', 'P1', f)) }
+    return h
+  }
+  const put8 = (p) => { mkdirSync(join(p, '..'), { recursive: true }); writeFileSync(p, 'x') }
+  const read = (h) => acceptance.realHomeReading(integrity, h, { cynco: join(h, '.cynco') })
+  it('the roots are protectedRoots\' presence roots with no volume and no frozen root: the home\'s top level and the four application roots among them', () => {
+    need()
+    const h = homeWith(['A'])
+    const roots = acceptance.realHomeRoots(integrity, h, { cynco: join(h, '.cynco') })
+    expect(roots.frozen).toEqual([])
+    const want = integrity.protectedRoots({ home: h, cynco: join(h, '.cynco') }).presence.filter(r => !r.volume).map(r => r.path)
+    expect(roots.presence.map(r => r.path)).toEqual(want)
+    for (const sub of [[], ['AppData', 'Local'], ['AppData', 'Roaming'], ['AppData', 'LocalLow'], ['AppData', 'Local', 'Packages']]) {
+      expect(roots.presence.map(r => r.path), sub.join('/')).toContain(resolve(join(h, ...sub)))
+    }
+  })
+  it('the 2026-11-22 shape in small: three application folders of AppData\\Local gone is a loss that names AppData', () => {
+    need()
+    const h = homeWith(['A', 'B', 'C', 'D'])
+    const before = read(h)
+    for (const app of ['A', 'B', 'C']) rmSync(join(h, 'AppData', 'Local', app), { recursive: true })
+    const v = acceptance.realHomeLoss(integrity, before, read(h))
+    expect(v.lost.length, JSON.stringify(v)).toBe(3)
+    for (const l of v.lost) expect(l).toMatch(/AppData[\\/]Local[\\/][ABC] gone/)
+  })
+  it('one application folder gone is a note (the engine\'s allowance for an updater), not a loss; and it is named', () => {
+    need()
+    const h = homeWith(['A', 'B'])
+    const before = read(h)
+    rmSync(join(h, 'AppData', 'Local', 'A'), { recursive: true })
+    const v = acceptance.realHomeLoss(integrity, before, read(h))
+    expect(v.lost).toEqual([])
+    expect(v.notes.join('\n')).toMatch(/AppData[\\/]Local.*A/)
+  })
+  it('a non-dot project folder of the home gone is a loss (no allowance for the owner\'s own folders)', () => {
+    need()
+    const h = homeWith(['A'])
+    const before = read(h)
+    rmSync(join(h, 'Projects'), { recursive: true })
+    expect(acceptance.realHomeLoss(integrity, before, read(h)).lost.join('\n')).toMatch(/Projects gone/)
+  })
+  it('runFakeStage reads the real profile this way before the fake profile is built and again after the disarm, and a loss fails the stage', () => {
+    const src = fnSource('export async function runFakeStage(')
+    const first = src.indexOf('realHomeReading(')
+    expect(first, 'runFakeStage never reads the real profile by the presence roots').toBeGreaterThan(-1)
+    expect(first).toBeLessThan(src.indexOf('buildFakeProfile(root, nonce)'))
+    const second = src.indexOf('realHomeReading(', first + 1)
+    expect(second).toBeGreaterThan(src.indexOf('disarmMission(fake, nonce)'))
+    expect(src).toMatch(/realHomeLoss\(/)
+    expect(src).toMatch(/report\.realProfileLoss = /)
+  })
+})
+
+describe('T2.36 RS-5: the real-profile stage seeds and judges the dot-folder decoys only, as before wave 8', () => {
+  it('realBox names the dot set at every seed and every reading of the decoys', () => {
+    const src = fnSource('async function realBox(')
+    expect(src).not.toMatch(/seedDecoys\(ctx\)/)
+    expect(src).not.toMatch(/decoysState\(ctx\)/)
+    expect((src.match(/seedDecoys\(ctx, 'dot'\)/g) ?? []).length).toBe(3)
+    expect((src.match(/decoysState\(ctx, 'dot'\)/g) ?? []).length).toBe(1)
   })
 })
 
@@ -1392,8 +1890,10 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     expect(run.status, `${String(run.stdout).slice(-3000)}\n${run.stderr}`).toBe(0)
     expect(report).not.toBeNull()
     expect(report.liveFire).toBe(false)
-    // Measured by the orchestrator from the real home's census before and after (read only).
-    expect(report.realProfileLoss, 'no top-level dot-entry of the real home lost or halved (the presence rule; a write or a deeper change is not measured)').toBe(false)
+    // Measured by the orchestrator from the real home's census and the real stage's presence roots (AppData's four
+    // application roots and the home's whole top level among them), before and after (read only).
+    expect(report.realProfileLoss, 'no top-level dot-entry, top-level folder or application folder of the real profile lost or emptied (the presence rule; a write or a deeper change is not measured)').toBe(false)
+    expect(String(run.stdout)).toMatch(/\[acceptance\] the real profile's presence roots \(.*AppData.*\), by the PRESENCE rule of the real stage: no loss/)
     expect(report.commit?.sha, 'the report names the commit it ran on').toMatch(/^[0-9a-f]{40}$|^unknown$/)
     expect(report.pass).toBe(true)
     expect(report.entries.filter(e => e.outcome === 'FAILED' || e.outcome === 'UNSAFE')).toEqual([])
@@ -1464,6 +1964,8 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     const rep = need(ctx)
     const dry = rep.entries.filter(e => e.form === 'dry' && e.outcome === 'resolved')
     expect(dry.length).toBeGreaterThan(3)
+    // RS-1: what the ninth attack's Git Bash twin answered in each run (resolved, or Git Bash did not start at low integrity).
+    for (const e of rep.entries.filter(x => x.id === 'appdata-walk' && x.variant === 'git-bash')) console.log(`[test] run ${e.run} appdata-walk git-bash ${e.form}: ${e.outcome}${e.detail ? ` (${String(e.detail).slice(0, 160)})` : ''}`)
     const sandboxRoot = join(rep.root, 'sandbox-root')
     for (const e of dry) {
       expect(e.targets.length, `${e.id} ${e.variant}`).toBeGreaterThanOrEqual(1)
@@ -1523,6 +2025,36 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
         for (const t of (v.targets ?? []).filter(x => !(v.creates ?? []).includes(x))) expect(existsSync(t), `${a.id} ${v.label}: ${t}`).toBe(true)
       }
     }
+  })
+
+  it('A3: after the stage the fake AppData holds what buildFakeProfile put there, and what else is there is named (the writers of FAKE_HOME_EXCLUDE among it)', (ctx) => {
+    const rep = need(ctx)
+    const home = join(rep.root, 'profile', 'Users', 'tester')
+    // Files AND folders (RH8-6): the runner's comparisons record a folder as an entry of its own ('d'), so a new empty
+    // folder changes "the fake home" as a new file does.
+    const files = [], folders = []
+    const walk = (d, rel) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const r = rel ? `${rel}/${e.name}` : e.name
+        if (e.isDirectory()) { folders.push(r); walk(join(d, e.name), r) } else files.push(r)
+      }
+    }
+    walk(join(home, 'AppData'), 'AppData')
+    for (const rel of FAKE_APPDATA_FILES) expect(files, `${rel} is gone`).toContain(rel)
+    const extra = files.filter(f => !FAKE_APPDATA_FILES.includes(f))
+    console.log(`[test] A3: files in the fake AppData after the stage that buildFakeProfile did not put there: ${extra.length ? extra.join(', ') : 'none'}`)
+    // Each is written before the comparisons of runs 3 to 7 begin (run 1), or is excluded by an exact sub-path.
+    const USERPKG = /^AppData\/Roaming\/Python\/Python\d+\/site-packages\/cynco_acceptance_userpkg\.py$/
+    const known = (f) => FAKE_HOME_EXCLUDE.some(x => f === x || f.startsWith(`${x}/`)) || USERPKG.test(f)
+    expect(extra.filter(f => !known(f)), 'files in the fake AppData that nothing in the runner accounts for').toEqual([])
+    // A folder is accounted for when buildFakeProfile made it (a parent of one of its files, Temp, Roaming\Python),
+    // when it holds an excluded path or the user-site file, or when an excluded path holds it.
+    const ancestors = (rel) => rel.split('/').slice(0, -1).map((_, i, a) => a.slice(0, i + 1).join('/'))
+    const made = new Set([...FAKE_APPDATA_FILES.flatMap(ancestors), 'AppData/Local/Temp', 'AppData/Roaming/Python'])
+    const holdsKnown = new Set([...FAKE_HOME_EXCLUDE, ...files.filter(f => USERPKG.test(f))].flatMap(ancestors))
+    const extraFolders = folders.filter(d => !made.has(d))
+    console.log(`[test] A3: folders in the fake AppData after the stage that buildFakeProfile did not make: ${extraFolders.length ? extraFolders.join(', ') : 'none'}`)
+    expect(extraFolders.filter(d => !holdsKnown.has(d) && !known(d)), 'folders in the fake AppData that nothing in the runner accounts for').toEqual([])
   })
 
   it('R3, R14: each link is named once; every not-proven entry is in the accepted table and printed on a line of its own, then a tally', (ctx) => {

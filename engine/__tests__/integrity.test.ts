@@ -212,7 +212,11 @@ describe('PRESENCE: loss only', () => {
     expect(counted(34, 17).changed).toBe(false)
     expect(counted(3, 1).changed).toBe(true)
     expect(counted(2, 0).changed).toBe(true)
-    expect(counted(1, 0).changed).toBe(false)
+    // Wave 8 fixer (finding TH1): a folder that had children and has none is emptied, one child or more.
+    // On this PC 19 of the 35 top-level folders of AppData\Local held a single child.
+    expect(counted(1, 0).changes[0]).toMatchObject({ path: '.c', kind: 'emptied', detail: '1 -> 0' })
+    // Still not seen: one of two gone (down to half, by one).
+    expect(counted(2, 1).changed).toBe(false)
     expect(counted(3, 9).changed).toBe(false)
   })
 
@@ -262,14 +266,23 @@ describe('protectedRoots', () => {
     expect(frozen).not.toContain(resolve(home, '.ollama', 'models'))
     expect(r.presence.find(p => p.path === resolve(home, '.ollama', 'models'))).toMatchObject({ counts: true, files: false, volume: false })
     expect(r.frozen.find(f => f.path === resolve(home, '.ssh'))!.mutable).toEqual(['known_hosts', 'known_hosts.old'])
-    expect(r.presence.find(p => p.path === resolve(home))).toMatchObject({ dotOnly: true, files: true, counts: true })
+    // Wave 8: the home's top level whole (every folder, counted), its files by dot-name only.
+    expect(r.presence.find(p => p.path === resolve(home))).toMatchObject({ dotOnly: false, files: true, filesDotOnly: true, counts: true })
     // The desk tools' folder: the one dot-folder of the home watched by sub-folder name alone.
-    const desk = r.presence.filter(p => dirname(p.path) === resolve(home) && p.path !== resolve(home, '.cynco'))
+    const desk = r.presence.filter(p => dirname(p.path) === resolve(home) && p.path !== resolve(home, '.cynco') && p.path !== resolve(home, 'OneDrive'))
     expect(desk).toHaveLength(1)
     expect(desk[0]).toMatchObject({ dotOnly: false, files: false, counts: false, volume: false })
     expect(r.presence.find(p => p.path === resolve(other, 'authoring'))).toMatchObject({ counts: true })
     expect(r.presence.find(p => p.path === resolve(base, 'D'))).toMatchObject({ volume: true, network: false, files: true, counts: true })
     expect(r.presence.find(p => p.path === resolve(base, 'N'))).toMatchObject({ volume: true, network: true })
+    // Wave 8: the three application roots counted with the allowance, and the packages folder by name.
+    for (const sub of ['Local', 'Roaming', 'LocalLow']) {
+      expect(r.presence.find(p => p.path === resolve(home, 'AppData', sub))).toMatchObject({ dotOnly: false, files: false, counts: true, application: true, volume: false })
+    }
+    expect(r.presence.find(p => p.path === resolve(home, 'AppData', 'Local', 'Packages'))).toMatchObject({ dotOnly: false, files: false, counts: false, application: true, volume: false })
+    // Wave 8 fixer: the temp folder and the shader cache by name only; the known folders OneDrive holds, counted, no allowance.
+    expect(r.presence.find(p => p.path === resolve(home, 'AppData', 'Local'))!.uncounted).toEqual(['Temp', 'D3DSCache'])
+    expect(r.presence.find(p => p.path === resolve(home, 'OneDrive'))).toEqual({ path: resolve(home, 'OneDrive'), dotOnly: false, files: false, counts: true, volume: false, network: false })
     const same = I.protectedRoots({ home, cynco: join(home, '.cynco'), models, volumes: [] })
     const paths = [...same.frozen.map(f => f.path), ...same.presence.map(p => p.path)]
     expect(paths.filter(p => p === resolve(home, '.cynco', 'profiles'))).toHaveLength(1)
@@ -435,6 +448,45 @@ describe('the early reading and the settling compare (entry 4.B1)', () => {
     unlinkSync(join(w2.state, 'profiles', 'p.yaml'))
     const s2 = await I.settleRun(id2, opts(w2, pager().fn))
     expect(kinds(s2)).toEqual(['p.yaml:removed'])
+  })
+
+  it('(20c) a loss that first shows on the confirming walk is walked for once more, and counts when it is still there', async () => {
+    // Walk 1 sees a file missing that is back by walk 2 (not a change), and walk 2 sees a folder gone
+    // that walk 1 still had. Two walks that agree on nothing used to settle as "no change": the loss
+    // made during the wait was dropped with the one that came back. It gets a walk of its own now.
+    const w = world()
+    const id = baseline(w)
+    const file = join(w.state, 'profiles', 'p.yaml')
+    unlinkSync(file)
+    let slept = 0
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => {
+      slept++
+      if (slept === 1) { put(file, 'p'); rmSync(join(w.home, '.config'), { recursive: true }) }
+    } }))
+    expect(slept).toBe(2)
+    expect(s.changed).toBe(true)
+    expect(s.changes.map(c => `${c.path}:${c.kind}`)).toEqual(['.config:gone'])
+    expect(existsSync(join(w.guard, 'HALT.json'))).toBe(true)
+  })
+
+  it('(20d) a difference seen only on the confirming walk and gone again by the third is a note, not a change', async () => {
+    const w = world()
+    const id = baseline(w)
+    const file = join(w.state, 'profiles', 'p.yaml')
+    const other = join(w.state, 'heldout', 'g', 'gate.py')
+    const kept = readFileSync(other)
+    const keptTime = statSync(other).mtime
+    unlinkSync(file)
+    let slept = 0
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => {
+      slept++
+      if (slept === 1) { put(file, 'p'); unlinkSync(other) }
+      if (slept === 2) { writeFileSync(other, kept); utimesSync(other, keptTime, keptTime) }
+    } }))
+    expect(slept).toBe(2)
+    expect(s.changed).toBe(false)
+    expect(s.notes.join(' | ')).toMatch(/seen on the confirming walk only/)
+    expect(existsSync(join(w.guard, 'HALT.json'))).toBe(false)
   })
 
   it('(20b) a path that differs on both walks counts even when its kind of change differs between them', async () => {
@@ -1326,5 +1378,328 @@ describe('review of wave 5: the tripwire looks again after a second (finding 8)'
     } finally {
       I.resetPresenceTripwireForTests()
     }
+  })
+})
+
+// ─── Wave 8: the home's whole top level and the application folders (F242, 2026-11-24) ───────────
+// On 2026-11-22 the deleting call went on from the dot-folders into AppData\Local, in alphabetical
+// order: about twenty top-level folders gone, Packages emptied from 110 folders to 14. Nothing here
+// saw it. These cases pin what the tripwire and the settle see now, and what they let pass.
+
+describe('wave 8: the home\'s top level and the application folders', () => {
+  const LOCAL_APPS = Array.from({ length: 24 }, (_, i) => `app-${String(i + 1).padStart(2, '0')}`)
+  const PACKAGES = Array.from({ length: 110 }, (_, i) => `pkg-${String(i + 1).padStart(3, '0')}`)
+
+  /** world() with a fake profile: application folders under AppData, 110 package folders, a project folder, a non-dot file. */
+  function profile() {
+    const w = world()
+    const appData = join(w.home, 'AppData')
+    const local = join(appData, 'Local')
+    const roaming = join(appData, 'Roaming')
+    const low = join(appData, 'LocalLow')
+    for (const a of LOCAL_APPS) { put(join(local, a, 'state.db')); put(join(local, a, 'settings.json')) }
+    for (const p of PACKAGES) {
+      put(join(local, 'Packages', p, 'LocalState', 's.dat'))
+      put(join(local, 'Packages', p, 'Settings', 'settings.dat'))
+      mkdirSync(join(local, 'Packages', p, 'AC'))
+    }
+    for (const r of ['roam-a', 'roam-b']) { put(join(roaming, r, 'a')); put(join(roaming, r, 'b')) }
+    put(join(low, 'low-a', 'a')); put(join(low, 'low-a', 'b'))
+    // Wave 8 fixer: a one-child and a two-child application folder (TH1, TH6), the temp folder and the
+    // shader cache Windows' own cleanup empties (honest TH1), and the known folders OneDrive holds (TH2).
+    put(join(local, 'one-app', 'only.db'))
+    put(join(local, 'two-app', 'a')); put(join(local, 'two-app', 'b'))
+    for (const n of ['t1', 't2', 't3', 't4']) put(join(local, 'Temp', n))
+    for (const n of ['s1', 's2', 's3']) put(join(local, 'D3DSCache', n))
+    for (const n of ['a.lnk', 'b.lnk', 'c.lnk']) put(join(w.home, 'OneDrive', 'Desktop', n))
+    for (const n of ['d1', 'd2']) put(join(w.home, 'OneDrive', 'Documents', n))
+    put(join(w.home, 'OneDrive', 'Pictures', 'p1'))
+    for (const n of ['a.py', 'b.py', 'c.py']) put(join(w.home, 'project-one', n))
+    for (const n of ['1', '2', '3', '4']) put(join(w.home, 'Documents', n))
+    put(join(w.home, 'NTUSER.DAT'))
+    const roots = I.protectedRoots({ home: w.home, cynco: w.state, models: w.models, volumes: [] })
+    return { w, local, roaming, low, roots }
+  }
+  type Profile = ReturnType<typeof profile>
+
+  function ctxOf(w: World, id: string) {
+    const sb = join(w.base, 'sandbox')
+    return testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+  }
+
+  /** The baseline and a running tripwire whose loss latches the way the engine's boot step 6 does (engine/main.ts). */
+  function running(f: Profile) {
+    const id = baseline(f.w, rid(), { roots: f.roots })
+    const trips: Array<Promise<unknown>> = []
+    const losses: string[] = []
+    const r = I.startPresenceTripwire({
+      ctx: ctxOf(f.w, id), timer: false,
+      onLoss: loss => {
+        losses.push(loss.kind)
+        if (loss.kind === 'presence') {
+          trips.push(I.tripHalt({ by: 'engine-tripwire', run: id, reason: 'presence-lost', compare: loss.compare ?? undefined, detail: loss.summary, guard: f.w.guard, page: pager().fn }))
+        }
+      },
+    })
+    expect(r.ok, JSON.stringify(r)).toBe(true)
+    expect(I.presenceTripwireCheck(100_000)).toBeNull()
+    return { id, trips, losses }
+  }
+  const settle = (f: Profile, id: string) => I.settleRun(id, { by: 'test', page: pager().fn, guard: f.w.guard, sleep: noSleep })
+
+  it('(80) the 2026-11-22 shape (twenty application folders gone, Packages 110 -> 14) latches through the tripwire with presence-lost and names AppData; the settle sees it too', async () => {
+    const f = profile()
+    const t = running(f)
+    for (const a of LOCAL_APPS.slice(0, 20)) rmSync(join(f.local, a), { recursive: true })
+    for (const p of PACKAGES.slice(14)) rmSync(join(f.local, 'Packages', p), { recursive: true })
+    // The other half of the shape (TH6): folders kept and emptied, down to none or to one entry.
+    unlinkSync(join(f.local, 'one-app', 'only.db'))
+    unlinkSync(join(f.local, 'two-app', 'b'))
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    expect(t.losses).toEqual(['presence'])
+    const latch = latchOf(f.w.guard)
+    expect(latch.reason).toBe('presence-lost')
+    expect(latch.summary).toContain('AppData')
+    // The tripwire looks at the application roots by name: twenty folders gone in AppData\Local and
+    // 96 package folders gone in Packages.
+    expect(latch.changeCount).toBe(20 + 96)
+    // The settle counts as well: Packages emptied from 110 to 14 is a change of its own.
+    const s = await settle(f, t.id)
+    expect(s.changed).toBe(true)
+    expect(s.summary).toContain('AppData')
+    // Twenty gone, Packages emptied, 96 packages gone, and the one-child folder emptied (1 -> 0).
+    expect(s.changeCount).toBe(20 + 1 + 96 + 1)
+    expect(s.changes.find(c => c.root === resolve(f.local) && c.path === 'Packages')).toMatchObject({ kind: 'emptied', detail: '110 -> 14' })
+    expect(s.changes.find(c => c.root === resolve(f.local) && c.path === 'one-app')).toMatchObject({ kind: 'emptied', detail: '1 -> 0' })
+    // A limit, pinned: a two-child folder down to one (Comms and NVIDIA on 2026-11-22) is not seen.
+    expect(s.changes.find(c => c.path === 'two-app')).toBeUndefined()
+  })
+
+  it('(86) the tripwire lists the application roots by name only (no folder of theirs is opened); their counts are the settle\'s', async () => {
+    const f = profile()
+    const tripRoots = I.presenceTripwireRoots(f.roots.presence)
+    const local = tripRoots.find(r => r.path === resolve(f.local))!
+    expect(local).toMatchObject({ application: true, counts: false })
+    expect(tripRoots.find(r => r.path === resolve(f.w.home))).toMatchObject({ counts: true })
+    const notes: string[] = []
+    const listed = I.presenceTripwireListing([local], [], notes)
+    expect(listed[0]!.entries['app-01']).toEqual({ k: 'd', n: null })
+    expect(listed[0]!.entries.Packages).toEqual({ k: 'd', n: null })
+    // Three application folders emptied in place: the tripwire does not see it; the settle does.
+    const t = running(f)
+    for (const a of ['app-01', 'app-02', 'app-03']) for (const n of ['state.db', 'settings.json']) unlinkSync(join(f.local, a, n))
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    const s = await settle(f, t.id)
+    expect(kinds(s)).toEqual(['app-01:emptied', 'app-02:emptied', 'app-03:emptied'])
+  })
+
+  it('(81) one or two application folders gone or emptied in a root are notes, in the settle result and its log line; nothing latches', async () => {
+    const f = profile()
+    const t = running(f)
+    rmSync(join(f.local, 'app-03'), { recursive: true })
+    rmSync(join(f.local, 'Packages', 'pkg-007'), { recursive: true })
+    rmSync(join(f.roaming, 'roam-a'), { recursive: true })
+    for (const n of ['a', 'b']) unlinkSync(join(f.low, 'low-a', n))
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    rmSync(join(f.local, 'app-04'), { recursive: true })
+    expect(I.presenceTripwireCheck(300_000)).toBeNull()
+    expect(t.losses).toEqual([])
+    const s = await settle(f, t.id)
+    expect(s.changed).toBe(false)
+    expect(existsSync(join(f.w.guard, I.LATCH_FILE))).toBe(false)
+    expect(s.allowed).toHaveLength(5)
+    const said = s.notes.join('\n')
+    for (const name of ['app-03', 'app-04', 'pkg-007', 'roam-a', 'low-a']) expect(said).toContain(name)
+    expect(said).toContain('low-a emptied (2 -> 0)')
+    const line = checkLines(f.w).find(l => l.kind === 'settle')
+    expect(line).toMatchObject({ run: t.id, changed: false })
+    expect((line.allowed as string[]).join('\n')).toContain('app-03')
+    expect(line.allowed).toHaveLength(5)
+  })
+
+  it('(82) three entries of one application root gone or emptied in a run are a loss', async () => {
+    expect(I.APPDATA_LOSS_AT).toBe(3)
+    const f = profile()
+    const id = baseline(f.w, rid(), { roots: f.roots })
+    rmSync(join(f.local, 'app-01'), { recursive: true })
+    rmSync(join(f.local, 'app-02'), { recursive: true })
+    for (const n of ['state.db', 'settings.json']) unlinkSync(join(f.local, 'app-03', n))
+    const s = await settle(f, id)
+    expect(s.changed).toBe(true)
+    expect(kinds(s)).toEqual(['app-01:gone', 'app-02:gone', 'app-03:emptied'])
+    expect(latchOf(f.w.guard).reason).toBe('integrity-change')
+
+    // The tripwire counts the same way, so three folders gone stop the run at once.
+    const g = profile()
+    const u = running(g)
+    for (const a of ['app-01', 'app-02', 'app-03']) rmSync(join(g.local, a), { recursive: true })
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(u.trips)
+    expect(latchOf(g.w.guard).reason).toBe('presence-lost')
+  })
+
+  it('(83) an application root gone whole is a loss, though it is one change', async () => {
+    const f = profile()
+    const t = running(f)
+    rmSync(f.roaming, { recursive: true })
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    const s = await settle(f, t.id)
+    expect(s.changes.map(c => `${c.root === resolve(f.roaming) ? 'Roaming' : c.root}:${c.kind}`)).toEqual(['Roaming:root-gone'])
+  })
+
+  it('(84) a non-dot folder of the home gone latches, through the tripwire and the settle; one emptied latches at the settle; a non-dot file of the top level is not recorded', async () => {
+    const f = profile()
+    const m = I.takeManifest(f.roots, { runId: rid(), by: 'test', home: f.w.home })
+    const home = m.presence.find(p => p.root === resolve(f.w.home))!
+    expect(home.entries['project-one']).toEqual({ k: 'd', n: 3 })
+    expect(home.entries.AppData).toEqual({ k: 'd', n: 3 })
+    expect(home.entries['.dotfile']).toEqual({ k: 'f', n: null })
+    expect(home.entries['NTUSER.DAT']).toBeUndefined()
+
+    const t = running(f)
+    unlinkSync(join(f.w.home, 'NTUSER.DAT'))
+    mkdirSync(join(f.w.home, 'new-folder'))
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    rmSync(join(f.w.home, 'project-one'), { recursive: true })
+    expect(I.presenceTripwireCheck(300_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    expect(latchOf(f.w.guard).summary).toContain('project-one')
+    expect(kinds(await settle(f, t.id))).toEqual(['project-one:gone'])
+
+    // No allowance at the home's top level: one folder emptied is a loss. (A new process, as far as
+    // the sticky loss of the first half goes.)
+    I.resetPresenceTripwireForTests()
+    const g = profile()
+    const u = running(g)
+    for (const n of ['2', '3', '4']) unlinkSync(join(g.w.home, 'Documents', n))
+    // The home's counts are kept in the tripwire (honest TH4): the emptied folder stops the run at once.
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(u.trips)
+    expect(latchOf(g.w.guard).summary).toContain('Documents')
+    const s = await settle(g, u.id)
+    expect(s.changes.map(c => `${c.path}:${c.kind}:${c.detail}`)).toEqual(['Documents:emptied:4 -> 1'])
+  })
+
+  it('(85) a baseline written before wave 8, in its on-disk form, settles clean after the upgrade, and its tripwire starts and stays quiet', async () => {
+    const f = profile()
+    // The PRESENCE roots exactly as protectedRoots made them until wave 8: six keys each, the home by
+    // its dot-entries, and no application root.
+    const six = (p: I.PresenceRoot) => ({ path: p.path, dotOnly: p.dotOnly, files: p.files, counts: p.counts, volume: p.volume, network: p.network })
+    const presence = f.roots.presence
+      .filter(p => !resolve(p.path).startsWith(resolve(f.w.home, 'AppData')))
+      .map(p => (p.path === resolve(f.w.home) ? { ...six(p), dotOnly: true } : six(p)))
+    const id = rid('old')
+    const old = I.takeManifest({ frozen: f.roots.frozen, presence }, { runId: id, by: 'dispatch', home: f.w.home, exclude: [f.w.mission] })
+    mkdirSync(join(f.w.guard, 'manifests'))
+    writeFileSync(before(f.w, id), JSON.stringify(old))
+    const onDisk = JSON.parse(readFileSync(before(f.w, id), 'utf-8')) as I.Manifest
+    for (const r of onDisk.roots.presence) expect(Object.keys(r).sort()).toEqual(['counts', 'dotOnly', 'files', 'network', 'path', 'volume'])
+    expect(Object.keys(onDisk.presence.find(p => p.root === resolve(f.w.home))!.entries).every(n => n.startsWith('.'))).toBe(true)
+
+    const losses: string[] = []
+    expect(I.startPresenceTripwire({ ctx: ctxOf(f.w, id), onLoss: l => { losses.push(l.kind) }, timer: false }).ok).toBe(true)
+    // What only the new roots watch changes during the run: the old baseline does not see it, by design.
+    for (const a of LOCAL_APPS.slice(0, 5)) rmSync(join(f.local, a), { recursive: true })
+    rmSync(join(f.w.home, 'project-one'), { recursive: true })
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    expect(losses).toEqual([])
+    const s = await settle(f, id)
+    expect(s).toMatchObject({ kind: 'settle', settled: true, changed: false })
+    expect(s.error).toBeUndefined()
+    expect(existsSync(join(f.w.guard, I.LATCH_FILE))).toBe(false)
+  })
+
+  // ─── The fixer's cases (wave 8 reviews) ───────────────────────────────────────────────────────
+
+  it('(87) a one-child folder emptied is seen: in an application root a note toward the allowance, at the home\'s top level a loss that stops the run', async () => {
+    const f = profile()
+    put(join(f.w.home, 'solo', 'only.txt'))
+    const t = running(f)
+    unlinkSync(join(f.local, 'one-app', 'only.db'))
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    unlinkSync(join(f.w.home, 'solo', 'only.txt'))
+    expect(I.presenceTripwireCheck(300_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    expect(latchOf(f.w.guard).summary).toContain('solo')
+    const s = await settle(f, t.id)
+    expect(s.changes.map(c => `${c.path}:${c.kind}:${c.detail}`)).toEqual(['solo:emptied:1 -> 0'])
+    expect(s.allowed).toHaveLength(1)
+    expect(s.allowed![0]).toContain('one-app emptied (1 -> 0)')
+  })
+
+  it('(88) the temp folder and the shader cache of AppData\\Local are recorded by name only: Windows\' cleanup emptying both and one updater\'s folder gone is one note, not a loss', async () => {
+    const f = profile()
+    const local = f.roots.presence.find(r => r.path === resolve(f.local))!
+    expect(local.uncounted).toEqual(['Temp', 'D3DSCache'])
+    const m = I.takeManifest(f.roots, { runId: rid(), by: 'test', home: f.w.home })
+    const listed = m.presence.find(p => p.root === resolve(f.local))!
+    expect(listed.entries.Temp).toEqual({ k: 'd', n: null })
+    expect(listed.entries.D3DSCache).toEqual({ k: 'd', n: null })
+    expect(listed.entries['app-01']).toEqual({ k: 'd', n: 2 })
+
+    const id = baseline(f.w, rid(), { roots: f.roots })
+    for (const n of ['t1', 't2', 't3', 't4']) unlinkSync(join(f.local, 'Temp', n))
+    for (const n of ['s1', 's2', 's3']) unlinkSync(join(f.local, 'D3DSCache', n))
+    rmSync(join(f.local, 'app-05'), { recursive: true })
+    const s = await settle(f, id)
+    expect(s.changed).toBe(false)
+    expect(s.allowed).toHaveLength(1)
+    expect(s.allowed![0]).toContain('app-05 gone')
+
+    // Gone whole, the temp folder is still an entry lost by name.
+    const g = profile()
+    const u = baseline(g.w, rid(), { roots: g.roots })
+    rmSync(join(g.local, 'Temp'), { recursive: true })
+    const s2 = await settle(g, u)
+    expect(s2.changed).toBe(false)
+    expect(s2.allowed!.join('\n')).toContain('Temp gone')
+  })
+
+  it('(89) the known folders OneDrive holds are counted: Desktop emptied stops the run, Documents gone latches; no allowance', async () => {
+    const f = profile()
+    const one = f.roots.presence.find(r => r.path === resolve(f.w.home, 'OneDrive'))
+    expect(one).toMatchObject({ counts: true, files: false, volume: false })
+    expect(one!.application).toBeUndefined()
+    const t = running(f)
+    for (const n of ['a.lnk', 'b.lnk', 'c.lnk']) unlinkSync(join(f.w.home, 'OneDrive', 'Desktop', n))
+    expect(I.presenceTripwireCheck(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    expect(latchOf(f.w.guard).summary).toContain('Desktop')
+    const s = await settle(f, t.id)
+    expect(s.changes.map(c => `${c.root === resolve(f.w.home, 'OneDrive') ? 'OneDrive' : c.root}:${c.path}:${c.kind}:${c.detail}`))
+      .toEqual(['OneDrive:Desktop:emptied:3 -> 0'])
+
+    I.resetPresenceTripwireForTests()
+    const g = profile()
+    const u = baseline(g.w, rid(), { roots: g.roots })
+    rmSync(join(g.w.home, 'OneDrive', 'Documents'), { recursive: true })
+    const s2 = await settle(g, u)
+    expect(kinds(s2)).toEqual(['Documents:gone'])
+    expect(latchOf(g.w.guard).reason).toBe('integrity-change')
+  })
+
+  it('(90) a latch from application folders alone says so in its summary, with where to tell an updater from a walk', async () => {
+    const f = profile()
+    const id = baseline(f.w, rid(), { roots: f.roots })
+    for (const a of ['app-01', 'app-02', 'app-03']) rmSync(join(f.local, a), { recursive: true })
+    const s = await settle(f, id)
+    expect(s.changed).toBe(true)
+    expect(s.summary).toContain(`every change is an application folder under AppData, beyond the ${I.APPDATA_LOSS_AT - 1} a run may lose from one of AppData\\Local, Roaming, LocalLow or Local\\Packages`)
+    expect(s.summary).toContain('tool-call audit')
+    expect(latchOf(f.w.guard).summary).toBe(s.summary)
+    // With a folder of the owner's among the changes, the clause is not there.
+    const g = profile()
+    const u = baseline(g.w, rid(), { roots: g.roots })
+    for (const a of ['app-01', 'app-02', 'app-03']) rmSync(join(g.local, a), { recursive: true })
+    rmSync(join(g.w.home, 'project-one'), { recursive: true })
+    const s2 = await settle(g, u)
+    expect(s2.changeCount).toBe(4)
+    expect(s2.summary).not.toContain('application folder under AppData')
   })
 })

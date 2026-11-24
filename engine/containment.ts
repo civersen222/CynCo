@@ -2,7 +2,8 @@
  * engine/containment.ts: the containment of unattended runs (F242).
  *
  * On 2026-11-22 one Bash call of an unattended campaign mission deleted every dot-folder of the
- * owner's home folder. This module is the run context every layer consults (`runContainment()`),
+ * owner's home folder and then the application folders of AppData\Local, in alphabetical order
+ * up to "pip". This module is the run context every layer consults (`runContainment()`),
  * the per-run sandbox and its record (`<sandbox root>/<run id>/containment.json`), the one
  * environment builder for every child that runs workspace code (`toolEnv`), the one place that
  * decides how such a child is started (`containedCommand`: as it is, or on Windows through the
