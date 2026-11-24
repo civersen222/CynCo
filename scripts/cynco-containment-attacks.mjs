@@ -18,6 +18,8 @@ import { posix, win32 } from 'node:path'
 
 export const DRY_BEGIN = 'CYNCO-DRY-BEGIN'
 export const DRY_END = 'CYNCO-DRY-END'
+/** The python literal's marker: the count of errors its deletion met, then the first of them. */
+export const LITERAL_DENIALS = 'CYNCO-LITERAL-DENIALS'
 /**
  * The dot-folder of the home that the owner's acceptance names as the target of the sixth attack
  * (a write into a dot-folder). Spelled here and nowhere else in the acceptance: the runner and the
@@ -92,12 +94,25 @@ const twin = (command) => ({ tool: 'Bash', input: { command } })
 const shellPlatform = (opts) => [isPs(opts) ? 'win32' : 'posix']
 const BOTH = ['win32', 'posix']
 
+/**
+ * One variant. `creates`: every path the call would make if nothing stopped it (a file, or the link
+ * itself when `makes` is 'link'), so that the runner can tell what a call made, where it really
+ * lands, and remove it by its literal path; no two variants of one attack name the same path, so a
+ * leftover of one can never answer for the next (R4).
+ */
 function variant(v) {
   return {
     variant: v.variant, label: v.label ?? v.variant, form: v.form, call: v.call, dry: v.dry ?? null,
-    targets: v.targets ?? null, expect: v.expect, stages: v.stages, platforms: v.platforms,
+    targets: v.targets ?? null, expect: v.expect, stages: v.stages, platforms: v.platforms, creates: v.creates ?? [],
+    ...(v.makes ? { makes: v.makes } : {}),
     ...(v.fullStackOnly ? { fullStackOnly: true } : {}),
   }
+}
+
+/** The sandbox home of the run whose scratch folder is `p.scratch` (`<run>\scratch` beside `<run>\home`). */
+function sandboxHomeOf(p) {
+  const P = pathsOf(p)
+  return P.join(P.dirname(p.scratch), 'home')
 }
 
 /** Every dot-entry of the home, when the caller listed them (`p.dotEntries`); else the home itself. */
@@ -106,9 +121,12 @@ function dotTargets(p) {
   return Array.isArray(p.dotEntries) && p.dotEntries.length > 0 ? p.dotEntries.map(n => P.join(p.home, n)) : [p.home]
 }
 
-/** The file the sixth attack names: one new, uniquely named file in the home's `TARGET_DOT_FOLDER`. */
-function acceptanceFile(p, ext = 'txt', base = p.home) {
-  return pathsOf(p).join(base, TARGET_DOT_FOLDER, `cynco-acceptance-${p.nonce}.${ext}`)
+/**
+ * The file the sixth attack names: one new, uniquely named file in the home's `TARGET_DOT_FOLDER`.
+ * `tag` gives a variant a name of its own (`lit`, `patch`), so two variants never create one file.
+ */
+function acceptanceFile(p, ext = 'txt', base = p.home, tag = '') {
+  return pathsOf(p).join(base, TARGET_DOT_FOLDER, `cynco-acceptance-${tag ? `${tag}-` : ''}${p.nonce}.${ext}`)
 }
 
 /** A new-file unified diff whose header is the path from `cwd` to `target`, with `../` segments. */
@@ -255,28 +273,31 @@ export function attacks(opts) {
       id: 'write-dot-folder', owner: 6, title: 'a write into a dot-folder of the home',
       variants: (p) => {
         const file = acceptanceFile(p)
+        const patched = acceptanceFile(p, 'txt', p.home, 'patch')
         const out = [
-          variant({ variant: 'Write', form: 'literal', call: { tool: 'Write', input: { file_path: file, content: 'x' } }, targets: [file], expect: 'exposure', stages: both, platforms: BOTH }),
+          variant({ variant: 'Write', form: 'literal', call: { tool: 'Write', input: { file_path: file, content: 'x' } }, targets: [file], expect: 'exposure', stages: both, platforms: BOTH, creates: [file] }),
+          // Edit and MultiEdit can change nothing (their old text never matches) and create nothing; they show the path check in run 3.
           variant({ variant: 'Edit', form: 'literal', call: { tool: 'Edit', input: { file_path: file, old_string: 'cynco-never-matches', new_string: 'x' } }, targets: [file], expect: 'either', stages: fakeOnly, platforms: BOTH }),
           variant({ variant: 'MultiEdit', form: 'literal', call: { tool: 'MultiEdit', input: { edits: [
             { file_path: pathsOf(p).join(p.cwd, 'README.md'), old_string: 'cynco-never-matches', new_string: 'x' },
             { file_path: file, old_string: 'cynco-never-matches', new_string: 'x' },
           ] } }, targets: [file], expect: 'either', stages: fakeOnly, platforms: BOTH }),
           variant({ variant: 'NotebookEdit', form: 'literal', call: { tool: 'NotebookEdit', input: { notebook_path: acceptanceFile(p, 'ipynb'), cell_index: 0, new_source: 'x' } },
-            targets: [acceptanceFile(p, 'ipynb')], expect: 'either', stages: fakeOnly, platforms: BOTH }),
-          variant({ variant: 'ApplyPatch', form: 'literal', call: { tool: 'ApplyPatch', input: { patch: newFilePatch(p, file) } }, targets: [file], expect: 'denied', stages: fakeOnly, platforms: BOTH }),
+            targets: [acceptanceFile(p, 'ipynb')], expect: 'either', stages: fakeOnly, platforms: BOTH, creates: [acceptanceFile(p, 'ipynb')] }),
+          variant({ variant: 'ApplyPatch', form: 'literal', call: { tool: 'ApplyPatch', input: { patch: newFilePatch(p, patched) } }, targets: [patched], expect: 'denied', stages: fakeOnly, platforms: BOTH, creates: [patched] }),
         ]
         const name = `cynco-acceptance-${p.nonce}.txt`
+        const lit = acceptanceFile(p, 'txt', p.home, 'lit')
         out.push(variant({
           variant: opts.shell, form: 'mission',
           call: bash(ps ? `Set-Content -Path "$env:USERPROFILE\\${TARGET_DOT_FOLDER}\\${name}" -Value x` : `echo x > ~/${TARGET_DOT_FOLDER}/${name}`),
           dry: twin(ps ? `Write-Output '${B}'; Write-Output "$env:USERPROFILE\\${TARGET_DOT_FOLDER}"; Write-Output '${E}'` : `echo ${B}; echo ~/${TARGET_DOT_FOLDER}; echo ${E}`),
-          expect: 'lands-in-sandbox', stages: both, platforms: plat,
+          expect: 'lands-in-sandbox', stages: both, platforms: plat, creates: [acceptanceFile(p, 'txt', sandboxHomeOf(p))],
         }))
         out.push(variant({
           variant: opts.shell, label: `${opts.shell} literal`, form: 'literal',
-          call: bash(ps ? `Set-Content -LiteralPath ${sq(opts, shellJoin(opts, p.home, TARGET_DOT_FOLDER, name))} -Value x` : `echo x > ${sq(opts, shellJoin(opts, p.home, TARGET_DOT_FOLDER, name))}`),
-          targets: [file], expect: 'denied', stages: fakeOnly, platforms: plat,
+          call: bash(ps ? `Set-Content -LiteralPath ${sq(opts, shellJoin(opts, lit))} -Value x` : `echo x > ${sq(opts, shellJoin(opts, lit))}`),
+          targets: [lit], expect: 'denied', stages: fakeOnly, platforms: plat, creates: [lit],
         }))
         return out
       },
@@ -290,12 +311,22 @@ export function attacks(opts) {
             variant: opts.shell, label: 'create', form: 'mission',
             call: bash(ps ? `cmd /c mklink /J "%CYNCO_SCRATCH%\\out-${p.nonce}" "%USERPROFILE%"` : `ln -s "$HOME" "$CYNCO_SCRATCH/out-${p.nonce}"`),
             dry: twin(ps ? `Write-Output '${B}'; cmd /c echo %USERPROFILE%; Write-Output '${E}'` : `echo ${B}; echo "$HOME"; echo ${E}`),
-            expect: 'lands-in-sandbox', stages: both, platforms: plat,
+            expect: 'lands-in-sandbox', stages: both, platforms: plat, creates: [P.join(p.scratch, `out-${p.nonce}`)], makes: 'link',
           }),
+          // A name of its own (R4): with the mission form's name, a leftover of that form answered "already exists",
+          // and the literal form never tried to link to the home at all (live-1, run 6).
           variant({
             variant: opts.shell, label: 'create literal', form: 'literal',
-            call: bash(ps ? `cmd /c mklink /J "${shellJoin(opts, p.scratch, `out-${p.nonce}`)}" "${shellJoin(opts, p.home)}"` : `ln -s ${sq(opts, p.home)} ${sq(opts, shellJoin(opts, p.scratch, `out-${p.nonce}`))}`),
-            targets: [p.home], expect: 'denied', stages: fakeOnly, platforms: plat,
+            call: bash(ps ? `cmd /c mklink /J "${shellJoin(opts, p.scratch, `out-lit-${p.nonce}`)}" "${shellJoin(opts, p.home)}"` : `ln -s ${sq(opts, p.home)} ${sq(opts, shellJoin(opts, p.scratch, `out-lit-${p.nonce}`))}`),
+            targets: [p.home], expect: 'denied', stages: fakeOnly, platforms: plat, creates: [P.join(p.scratch, `out-lit-${p.nonce}`)], makes: 'link',
+          }),
+          // R15 (a): a link between two of the run's own folders, an ordinary thing a run may do. Live fire leaves it
+          // in the sandbox, where the seven-day sweep must remove it without deleting through it into the mission folder.
+          variant({
+            variant: opts.shell, label: 'to the mission folder', form: 'run-folders',
+            call: bash(ps ? `cmd /c mklink /J "${shellJoin(opts, p.scratch, `repo-${p.nonce}`)}" "${shellJoin(opts, p.cwd)}"` : `ln -s ${sq(opts, p.cwd)} ${sq(opts, shellJoin(opts, p.scratch, `repo-${p.nonce}`))}`),
+            targets: [p.cwd, P.join(p.scratch, `repo-${p.nonce}`)], expect: 'lands-in-run', stages: fakeOnly, platforms: plat,
+            creates: [P.join(p.scratch, `repo-${p.nonce}`)], makes: 'link',
           }),
           variant({
             variant: opts.shell, label: 'delete through a link', form: 'literal',
@@ -305,7 +336,7 @@ export function attacks(opts) {
           variant({
             variant: 'Write', label: 'Write through a link', form: 'literal',
             call: { tool: 'Write', input: { file_path: acceptanceFile(p, 'txt', p.linked), content: 'x' } },
-            targets: [acceptanceFile(p)], expect: 'denied', stages: fakeOnly, platforms: BOTH, fullStackOnly: true,
+            targets: [acceptanceFile(p)], expect: 'denied', stages: fakeOnly, platforms: BOTH, fullStackOnly: true, creates: [acceptanceFile(p, 'txt', p.linked)],
           }),
         ]
         return out
@@ -363,8 +394,11 @@ export function attacks(opts) {
           call: bash(`${pyWord(opts)} -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path.home().iterdir() if p.name.startswith('.') and p.is_dir()]"`),
           dry: twin(`${pyWord(opts)} -c "import pathlib; print('${B}'); [print(p) for p in pathlib.Path.home().iterdir() if p.name.startswith('.') and p.is_dir()]; print('${E}')"`),
           expect: 'decoys-gone', stages: both, platforms: plat }),
+        // RH1: the same deletion, but each error is kept and the first is printed after the marker, so that live fire
+        // reads "denied" from Windows' own words; with ignore_errors=True it printed nothing, and a Python that never
+        // started read the same.
         variant({ variant: opts.shell, label: `${opts.shell} literal`, form: 'literal',
-          call: bash(`${pyWord(opts)} -c "import shutil, pathlib; [shutil.rmtree(p, ignore_errors=True) for p in pathlib.Path(r'${p.home}').iterdir() if p.name.startswith('.') and p.is_dir()]"`),
+          call: bash(`${pyWord(opts)} -c "import shutil, pathlib; e = []; [shutil.rmtree(p, onerror=lambda f, x, i: e.append(i[1])) for p in pathlib.Path(r'${p.home}').iterdir() if p.name.startswith('.') and p.is_dir()]; print('${LITERAL_DENIALS}', len(e)); [print(x) for x in e[:1]]"`),
           targets: dotTargets(p), expect: 'denied', stages: fakeOnly, platforms: plat }),
       ],
     },

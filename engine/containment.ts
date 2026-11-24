@@ -21,15 +21,15 @@ import type { ChildProcess, ExecException, ExecSyncOptions } from 'node:child_pr
 import type { BigIntStats } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import {
-  chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync,
+  chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync,
   statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { auditDir, cyncoHome, guardDir, modelsDir, sandboxRoot } from './paths.js'
 import { isContainedRun, RUN_ID_RE } from './missionEnv.js'
-import { isInside, realPathOf } from './realPath.js'
+import { type EntryKind, isInside, isLinkEntry, listEntries, realPathOf, whyNotAtOwnPath } from './realPath.js'
 
 // ─── Types and module state ──────────────────────────────────────────────────────────────────
 
@@ -804,28 +804,23 @@ function labelledFolders(rec: ContainmentRecord): string[] {
 
 /**
  * Every parseable record of a direct child of the root whose folder name is a run id and equals
- * the record's own run id, oldest first. A link is never followed. An unreadable root gives [].
+ * the record's own run id, oldest first. A link is never followed: the root's listing must call
+ * the child a folder (see `listEntries`). An unreadable root gives [].
  */
 export function containmentRecords(o: { sandboxRoot?: string } = {}): ContainmentRecord[] {
   const root = o.sandboxRoot ?? sandboxRoot()
-  let names: string[]
+  let entries: Array<{ name: string; kind: string }>
   try {
-    names = readdirSync(root)
+    entries = listEntries(root)
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code !== 'ENOENT') console.log(`[containment] the sandbox root ${root} could not be listed: ${(e as Error).message}`)
     return []
   }
   const out: ContainmentRecord[] = []
-  for (const name of names) {
-    if (!RUN_ID_RE.test(name)) continue
+  for (const { name, kind } of entries) {
+    if (!RUN_ID_RE.test(name) || kind !== 'dir') continue
     const dir = join(root, name)
-    try {
-      if (!lstatSync(dir).isDirectory()) continue
-    } catch (e) {
-      console.log(`[containment] ${dir} could not be read: ${(e as Error).message}`)
-      continue
-    }
     const r = readRecord(join(dir, RECORD))
     if (!r.ok) continue
     if (r.rec.schema !== 1 || r.rec.runId !== name) continue
@@ -986,8 +981,10 @@ function folderRefusal(input: string, word: string, o: {
     const git = join(p, '.git')
     let why: string | null = null
     try {
+      // The folder's listing first: lstat calls a junction a low process made a folder (F4).
       const st = lstatSync(git)
-      if (!st.isDirectory()) why = '.git is a file: a worktree or a submodule'
+      if (isLinkEntry(git) === true) why = '.git is a link'
+      else if (!st.isDirectory()) why = '.git is a file: a worktree or a submodule'
       else if (!existsSync(join(git, 'HEAD'))) why = '.git holds no HEAD'
     } catch (e) {
       why = (e as NodeJS.ErrnoException).code === 'ENOENT' ? '.git is missing' : `.git could not be read: ${(e as Error).message}`
@@ -996,73 +993,115 @@ function folderRefusal(input: string, word: string, o: {
   }
   if (o.checkHardLinks) {
     const hard = fileWithOtherNames(p)
-    if (hard) return `${word} ${p} ${hard}; a low label set on such a file reaches every other name of it, so the folder is not labelled: work in a clone made with git clone --no-hardlinks`
+    if (hard?.hardLink) return `${word} ${p} ${hard.why}; a low label set on such a file reaches every other name of it, so the folder is not labelled: work in a clone made with git clone --no-hardlinks`
+    if (hard) return `${word} ${p} ${hard.why}; the folder is not labelled`
   }
   return null
 }
 
 /**
- * Why `dir` may not be labelled because of a hard link: the first regular file under it with more
- * than one name, or a folder under it that could not be read (so the answer is unknown). Null when
- * the whole tree was read and no file has a second name. Walks every level, never entering a link.
+ * Does a walk enter the entry `e` (at `p`) of the folder whose native real path is `parentReal`?
+ * Only a folder that is where its path says (`whyNotAtOwnPath`). That is what the listing calls a
+ * folder, and also what it calls a link when the link is not a redirect: a folder carrying a
+ * reparse tag that resolves to its own path (a ProjFS placeholder of VFS for Git or Scalar, say; none
+ * was found on this PC, where OneDrive's placeholders are not listed as links), which stat calls a
+ * folder. A link that resolves elsewhere, or not at all, is never entered and `why` is null: not
+ * entering it is the rule, not a fault. A folder the listing calls a folder that is not where its
+ * path says is not entered either, and `why` says why (a swap after the listing, or a reparse kind
+ * the listing does not flag).
  */
-function fileWithOtherNames(dir: string): string | null {
-  const pending = [dir]
+function entryToEnter(parentReal: string, e: { name: string; kind: EntryKind }, p: string): { enter: boolean; why: string | null } {
+  if (e.kind === 'file') return { enter: false, why: null }
+  const why = whyNotAtOwnPath(parentReal, e.name)
+  if (e.kind === 'dir') return { enter: why === null, why }
+  if (why !== null) return { enter: false, why: null }
+  try {
+    return { enter: statSync(p).isDirectory(), why: null }
+  } catch (err) {
+    return { enter: false, why: `could not be read (${(err as Error).message})` }
+  }
+}
+
+/**
+ * Why `dir` may not be labelled because of a hard link: the first regular file under it with more
+ * than one name, or a folder or entry under it that could not be read (so the answer is unknown);
+ * `hardLink` is false when the reason is a folder that is not where its path says, for which the
+ * advice about clones does not fit. Null when the whole tree was read and no file has a second name.
+ * Walks every level, entering only a folder at its own real path (`entryToEnter`). An entry's kind
+ * comes from its folder's listing (`listEntries`), never from lstat, which calls a junction a
+ * low-integrity process made a folder and follows it (F4). Every entry that is not entered is asked
+ * with lstat, which enters nothing: a link to a folder reads as a folder or a link and is not
+ * counted; a file carrying a reparse tag, which the listing calls a link, answers EACCES (measured
+ * 2026-11-24) and is refused as unreadable, so a second name on such a file is not missed.
+ */
+function fileWithOtherNames(dir: string): { why: string; hardLink: boolean } | null {
+  let top: string
+  try {
+    top = realpathSync.native(dir)
+  } catch (e) {
+    return { why: `holds a folder that could not be read for hard links (${dir}: ${(e as Error).message})`, hardLink: true }
+  }
+  const pending = [{ path: dir, real: top }]
   while (pending.length > 0) {
     const d = pending.pop()!
-    let names: string[]
+    let entries: Array<{ name: string; kind: EntryKind }>
     try {
-      names = readdirSync(d)
+      entries = listEntries(d.path)
     } catch (e) {
-      return `holds a folder that could not be read for hard links (${d}: ${(e as Error).message})`
+      return { why: `holds a folder that could not be read for hard links (${d.path}: ${(e as Error).message})`, hardLink: true }
     }
-    for (const n of names) {
-      const p = join(d, n)
+    for (const e of entries) {
+      const p = join(d.path, e.name)
+      const to = entryToEnter(d.real, e, p)
+      if (to.enter) {
+        pending.push({ path: p, real: join(d.real, e.name) })
+        continue
+      }
+      if (e.kind === 'dir') {
+        return { why: `holds a folder that is not where its path says (${p} ${to.why}), so whether a file under it has another name cannot be told`, hardLink: false }
+      }
       let st
       try {
         st = lstatSync(p)
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
-        return `holds an entry that could not be read for hard links (${p}: ${(e as Error).message})`
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue
+        return { why: `holds an entry that could not be read for hard links (${p}: ${(err as Error).message})`, hardLink: true }
       }
-      if (st.isSymbolicLink()) continue
-      if (st.isDirectory()) pending.push(p)
-      else if (st.isFile() && st.nlink > 1) return `holds a file with more than one name (${p} has ${st.nlink})`
+      if (st.isFile() && st.nlink > 1) return { why: `holds a file with more than one name (${p} has ${st.nlink})`, hardLink: true }
     }
   }
   return null
 }
 
-/** A symbolic link or junction in the top two levels of `dir` whose target is outside it. */
+/**
+ * A link in the top two levels of `dir` whose target is outside it. An entry the walk does not
+ * enter (`entryToEnter`: a symbolic link, a junction of either form (F4), or a folder that is not at
+ * its own real path) is judged where it really lands; a link that lands inside the folder (what npm
+ * or pnpm make between workspace packages) is not reported.
+ */
 function linkLeadingOut(dir: string): { link: string; target: string } | null {
-  const scan = (d: string, depth: number): { link: string; target: string } | null => {
-    let names: string[]
+  const scan = (d: string, dReal: string, depth: number): { link: string; target: string } | null => {
+    let entries: Array<{ name: string; kind: EntryKind }>
     try {
-      names = readdirSync(d)
+      entries = listEntries(d)
     } catch (e) {
       console.log(`[containment] ${d} could not be listed: ${(e as Error).message}`)
       return null
     }
-    for (const n of names) {
-      const p = join(d, n)
-      let st
-      try {
-        st = lstatSync(p)
-      } catch (e) {
-        console.log(`[containment] ${p} could not be read: ${(e as Error).message}`)
-        continue
-      }
-      if (st.isSymbolicLink()) {
+    for (const e of entries) {
+      if (e.kind === 'file') continue
+      const p = join(d, e.name)
+      if (!entryToEnter(dReal, e, p).enter) {
         const target = real(p)
         if (!isInside(dir, target)) return { link: p, target }
-      } else if (st.isDirectory() && depth < 2) {
-        const hit = scan(p, depth + 1)
+      } else if (depth < 2) {
+        const hit = scan(p, join(dReal, e.name), depth + 1)
         if (hit) return hit
       }
     }
     return null
   }
-  return scan(dir, 1)
+  return scan(dir, real(dir), 1)
 }
 
 /**
@@ -1422,8 +1461,12 @@ function releaseRecord(rec: ContainmentRecord, runDir: string, by: NonNullable<C
 
 type LowState = 'explicit' | 'inherited' | 'none'
 
-/** Is there an entry at `p` (a link counts as itself, its target is not asked)? */
+/**
+ * Is there an entry at `p` (a link counts as itself, its target is not asked)? The parent's listing
+ * first: lstat follows a junction a low process made (F4), so one whose target is gone reads as absent.
+ */
 function presentNoFollow(p: string): boolean {
+  if (isLinkEntry(p) !== null) return true
   try {
     lstatSync(p)
     return true
@@ -1471,35 +1514,56 @@ function lowStatesOfListing(out: string, entries: string[]): Map<string, LowStat
  * with ONE `icacls "<dir>\*" /L`, and set back every entry that carries a low label of its own
  * (not inherited): `(OI)(CI)M` on a folder, `M` on anything else, always with `/L` so a link's own
  * label is what changes. An entry the listing does not show is asked on its own. Never `/T`.
+ *
+ * Each entry's kind comes from the folder's own listing (`listEntries`), never from lstat: lstat
+ * calls a junction a low-integrity process made a folder and follows it (F4), and `icacls
+ * "<junction>\*"` reads and sets the labels of its TARGET's children. The walk is finite: it enters
+ * a folder only when that folder's native real path is its parent's real path joined with its name
+ * (`entryToEnter`, which never enters a link that resolves elsewhere or not at all); so every folder
+ * it enters is a different real folder under `top`, and NTFS gives a folder one parent (there are no
+ * hard links to folders), so no folder is entered twice and no cycle can be walked. The check is
+ * made when a folder is queued and again when it is taken from the queue, just before it is listed:
+ * a folder swapped for a link in between (each folder costs an icacls run, so the gap can be
+ * seconds) is not listed through, and the release says it was not entered.
  */
 function resetLowResidue(runner: ContainmentRunner | undefined, top: string): { dirs: number; reset: string[]; failed: string[] } {
   const out = { dirs: 0, reset: [] as string[], failed: [] as string[] }
   const icacls = sys('icacls.exe')
-  const pending = [top]
+  let topReal: string
+  try {
+    topReal = realpathSync.native(top)
+  } catch (e) {
+    out.failed.push(`${top} could not be resolved to its real path (${(e as Error).message})`)
+    return out
+  }
+  const pending: Array<{ path: string; real: string; parentReal: string | null; name: string }> = [
+    { path: top, real: topReal, parentReal: null, name: basename(top) },
+  ]
   while (pending.length > 0) {
     const d = pending.pop()!
-    let names: string[]
-    try {
-      names = readdirSync(d)
-    } catch (e) {
-      out.failed.push(`${d} could not be listed (${(e as Error).message})`)
-      continue
-    }
-    if (names.length === 0) continue
-    out.dirs++
-    const entries: Array<{ path: string; kind: 'dir' | 'link' | 'file' }> = []
-    for (const n of names) {
-      const p = join(d, n)
-      try {
-        const st = lstatSync(p)
-        entries.push({ path: p, kind: st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file' })
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') out.failed.push(`${p} could not be read (${(e as Error).message})`)
+    if (d.parentReal !== null) {
+      const why = whyNotAtOwnPath(d.parentReal, d.name)
+      if (why) {
+        out.failed.push(`${d.path} was not entered: it ${why}`)
+        continue
       }
     }
-    const listing = runVia(runner, icacls, [join(d, '*'), '/L'], 60_000)
+    let listed: Array<{ name: string; kind: 'dir' | 'link' | 'file' }>
+    try {
+      listed = listEntries(d.path)
+    } catch (e) {
+      out.failed.push(`${d.path} could not be listed (${(e as Error).message})`)
+      continue
+    }
+    if (listed.length === 0) continue
+    out.dirs++
+    const entries = listed.map(e => ({ path: join(d.path, e.name), name: e.name, kind: e.kind }))
+    const listing = runVia(runner, icacls, [join(d.path, '*'), '/L'], 60_000)
     const states = lowStatesOfListing(listing.out, entries.map(e => e.path))
     for (const e of entries) {
+      // Asked before the label is read, so a folder the listing calls a link that is walked as the
+      // folder it is gets a folder's label.
+      const to = entryToEnter(d.real, e, e.path)
       let state = states.get(e.path.toLowerCase())
       if (state === undefined) {
         const one = runVia(runner, icacls, [e.path, '/L'], 10_000)
@@ -1510,11 +1574,13 @@ function resetLowResidue(runner: ContainmentRunner | undefined, top: string): { 
         state = lowStateOf(one.out)
       }
       if (state === 'explicit') {
-        const r = runVia(runner, icacls, [e.path, '/L', '/setintegritylevel', e.kind === 'dir' ? '(OI)(CI)M' : 'M'], 30_000)
+        const r = runVia(runner, icacls, [e.path, '/L', '/setintegritylevel', e.kind === 'dir' || to.enter ? '(OI)(CI)M' : 'M'], 30_000)
         if (r.ok) out.reset.push(e.path)
         else out.failed.push(`${e.path} could not be set back (${lastLine(r.out)})`)
       }
-      if (e.kind === 'dir') pending.push(e.path)
+      // A link's own label was set back above; what it points at is never walked.
+      if (to.why) out.failed.push(`${e.path} was not entered: it ${to.why}`)
+      if (to.enter) pending.push({ path: e.path, real: join(d.real, e.name), parentReal: d.real, name: e.name })
     }
   }
   return out
@@ -1523,34 +1589,103 @@ function resetLowResidue(runner: ContainmentRunner | undefined, top: string): { 
 // ─── sweepSandboxes ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Remove a tree without ever following a link: a symbolic link or junction is removed as an entry
- * and never entered. The one walk in this change that deletes; only `sweepSandboxes` calls it.
- * Each folder is read with lstat before and after it is listed, and compared with what its parent
- * saw: a folder swapped for a link (by a low process still alive outside the job) between two
- * reads stops the walk there, with nothing entered. A swap inside the remaining window, between
- * that check and the removal of one entry, is not excluded by a path-based walk.
+ * Remove a link as an entry, never what it points at. `rmdirSync` first: it removes a junction or a
+ * folder link alone (measured for a junction a low process made, F4). When it fails for any reason,
+ * `unlinkSync`: on Windows `rmdirSync` of an entry that is not a folder answers ENOENT, not ENOTDIR
+ * (measured 2026-11-24 under Bun 1.3.13 and Node 24 on a file carrying a reparse tag, which a
+ * low-integrity process can set on a file it wrote with no privilege). Neither call follows a link:
+ * `unlinkSync` removes a name, and on a real folder (one the listing wrongly called a link) it fails
+ * without touching anything, empty or not (measured: EPERM). When both fail the error names both
+ * answers and is thrown, which stops the sweep at this run folder.
  */
-function removeTreeNoFollow(dir: string, log: (line: string) => void, seen?: BigIntStats): void {
+function removeLinkEntry(p: string, log: (line: string) => void): void {
+  let asFolder: NodeJS.ErrnoException
+  try {
+    rmdirSync(p)
+    return
+  } catch (e) {
+    asFolder = e as NodeJS.ErrnoException
+  }
+  try {
+    unlinkSync(p)
+  } catch (e) {
+    throw new Error(`${p} could not be removed as a link (rmdir answered ${asFolder.code ?? asFolder.message}, unlink answered ${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`)
+  }
+  log(`[containment] ${p} is not a folder link (rmdir answered ${asFolder.code ?? asFolder.message}); it was removed as a file link`)
+}
+
+/**
+ * Remove a tree without ever following a link. The one walk in this change that deletes; only
+ * `sweepSandboxes` calls it. The only deleting calls are `unlinkSync` on what the listing calls a
+ * file, `rmdirSync` on a folder this walk has emptied, and `removeLinkEntry` on what the listing
+ * calls a link.
+ *
+ * An entry's kind comes from its folder's listing (`listEntries`), never from lstat: lstat calls a
+ * junction made by a low-integrity process a folder and returns its TARGET's stat (F4), so a walk
+ * that asked lstat entered such a junction and deleted what it pointed at, at medium integrity. A
+ * link is removed as an entry and never entered. The folder handed in is judged by its parent's
+ * listing the same way. Before a folder is entered, again after it is listed, and again before each
+ * of its entries is removed, its native real path must be its parent's real path joined with its
+ * name (`whyNotAtOwnPath`, which resolves the whole path, so a swapped ancestor fails it too): that
+ * stops the walk at a folder swapped for a link after its parent was listed or while it is being
+ * emptied, and at any reparse kind a listing does not flag. When that cannot be shown the walk
+ * throws; the sweep then keeps the run folder with its record, logs why, and tries it again on its
+ * next pass.
+ *
+ * Each folder is also read with lstat before and after it is listed, and compared with what its
+ * parent saw (dev and ino). That sees a folder replaced by another folder, or by a link lstat
+ * recognises (one made at medium integrity); it cannot see a swap to a junction made at low
+ * integrity, because lstat follows that one and answers with its target's dev and ino (F4), which
+ * is why the real-path check above exists. A swap inside the window left, between the last check
+ * and the one delete that follows it (microseconds; a live low process would have to make both of
+ * its renames inside it, and could widen it with an opportunistic lock), is not excluded by a
+ * path-based walk: what closes it is a sandbox set back to medium before the delete, so that no low
+ * process can rename in it (`docs/NOW.md`, backlog).
+ *
+ * `keep`: the name of a file at the top that is left in place (the run's record, which the sweep
+ * removes last).
+ */
+function removeTreeNoFollow(dir: string, log: (line: string) => void, from?: { parentReal: string; seen: BigIntStats }, keep?: string): void {
   const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino
   const changed = (why: string) => new Error(`${dir} ${why}; the sweep stops there and enters nothing`)
+  let parentReal: string
+  if (from) {
+    parentReal = from.parentReal
+  } else {
+    const link = isLinkEntry(dir)
+    if (link === true) throw changed('is a link')
+    if (link === null) throw changed(`is not in the listing of ${dirname(dir)}, so whether it is a link is not known`)
+    try {
+      parentReal = realpathSync.native(dirname(dir))
+    } catch (e) {
+      throw changed(`has a parent that could not be resolved to its real path (${(e as Error).message})`)
+    }
+  }
+  const name = basename(dir)
+  const ownWhy = whyNotAtOwnPath(parentReal, name)
+  if (ownWhy) throw changed(ownWhy)
   const before = lstatSync(dir, { bigint: true })
   if (before.isSymbolicLink() || !before.isDirectory()) throw changed('is no longer a folder')
-  if (seen && !same(before, seen)) throw changed('was replaced after it was read')
-  const names = readdirSync(dir)
+  if (from && !same(before, from.seen)) throw changed('was replaced after it was read')
+  const entries = listEntries(dir)
   const after = lstatSync(dir, { bigint: true })
   if (after.isSymbolicLink() || !same(before, after)) throw changed('was replaced while it was listed')
-  for (const name of names) {
-    const p = join(dir, name)
-    const st = lstatSync(p, { bigint: true })
-    if (st.isSymbolicLink()) {
-      try {
-        rmdirSync(p)
-      } catch (e) {
-        log(`[containment] ${p} is not a folder link (${(e as NodeJS.ErrnoException).code}); removing it as a file link`)
-        unlinkSync(p)
-      }
-    } else if (st.isDirectory()) {
-      removeTreeNoFollow(p, log, st)
+  const afterWhy = whyNotAtOwnPath(parentReal, name)
+  if (afterWhy) throw changed(`${afterWhy} after it was listed`)
+  const real = join(parentReal, name)
+  const stillHere = () => {
+    const why = whyNotAtOwnPath(parentReal, name)
+    if (why) throw changed(`${why} before an entry in it was removed`)
+  }
+  for (const e of entries) {
+    if (e.name === keep && e.kind === 'file') continue
+    const p = join(dir, e.name)
+    stillHere()
+    if (e.kind === 'link') {
+      removeLinkEntry(p, log)
+    } else if (e.kind === 'dir') {
+      removeTreeNoFollow(p, log, { parentReal: real, seen: lstatSync(p, { bigint: true }) })
+      stillHere()
       rmdirSync(p)
     } else {
       unlinkSync(p)
@@ -1600,12 +1735,19 @@ export function sweepSandboxes(o: {
         const res = releaseRecord(rec, runDir, 'sweep', { platform: o.platform, run: o.run, now })
         log(`[containment] ${res.note}`)
       }
-      if (lstatSync(runDir).isSymbolicLink()) {
-        log(`[containment] ${runDir} is a link; the sweep does not touch it`)
+      // By the root's listing, not lstat (F4); a run folder whose kind cannot be told is kept.
+      const link = isLinkEntry(runDir)
+      if (link !== false) {
+        log(link
+          ? `[containment] ${runDir} is a link; the sweep does not touch it`
+          : `[containment] ${runDir} is not in the listing of ${root}, so whether it is a link is not known; the sweep does not touch it`)
         kept++
         continue
       }
-      removeTreeNoFollow(runDir, log)
+      // The record goes last: a run folder whose walk stops part way is still a record, so the next
+      // sweep visits it again and says again why it stops, instead of losing sight of it.
+      removeTreeNoFollow(runDir, log, undefined, RECORD)
+      unlinkSync(join(runDir, RECORD))
       rmdirSync(runDir)
       removed.push(runDir)
       log(`[containment] removed the sandbox ${runDir} (created ${rec.createdAt})`)

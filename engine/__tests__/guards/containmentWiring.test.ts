@@ -248,7 +248,7 @@ const SPAWN_SITES: Record<string, { count: number; class: SpawnClass; git?: true
   'scripts/cynco-smoke-campaign.mjs': { count: 1, class: 'harness-git', reason: 'git rev-parse in the smoke repository.' },
   'scripts/cynco-gate-author.mjs': { count: 10, class: 'harness-git', reason: 'git in the staging folder; its bun --check child starts in the checkout, and the gate runs inside it are contained by calibrate.' },
   'scripts/cynco-ideation.mjs': { count: 1, class: 'not-contained', reason: 'starts the ideation one-shot engine in the checkout (rule H1) under a daemon-task sandbox it establishes and the engine adopts.' },
-  'scripts/cynco-containment-acceptance.mjs': { count: 14, class: 'not-contained', reason: 'the acceptance harness: it starts its own inner process with a fake-home environment, and establishes a test containment there; it reads the planted git settings back with the harness git before its control runs.' },
+  'scripts/cynco-containment-acceptance.mjs': { count: 16, class: 'not-contained', reason: 'the acceptance harness: it starts its own inner process with a fake-home environment, and establishes a test containment there; it reads the planted git settings back with the harness git before its control runs, and unsets them with the harness git when it disarms the test repository at the end; in the real-profile stage it asks the registry (reg query, read only) before its probe as well as after.' },
   'scripts/cynco-campaign-verdict.mjs': { count: 3, class: 'not-contained', reason: 'git in the CynCo checkout (the verdict commit) and node scripts/supervision-economics.mjs (io.run), from the checkout.' },
   'scripts/cynco-conduct-ab.mjs': { count: 1, class: 'not-contained', reason: 'git init, add and commit (git = runSync) in a folder it has just copied from the template, before any run is dispatched into it.' },
   'scripts/cynco-hindcast.mjs': { count: 4, class: 'not-contained', reason: 'the harness\'s own python retrain script (run = runSync), from the checkout, on datasets the harness wrote.' },
@@ -930,8 +930,13 @@ describe('the acceptance script cannot hold attack text before it has checked wh
       .filter(m => !/^\s*(?:import|export)\s+type\s/.test(m[0]))
       .map(m => [m[0], (m[1] ?? m[2])!])
 
-  it('imports nothing from engine/ statically except the mission predicate (a statement spread over lines included)', () => {
-    const offenders = staticImports(acc()).filter(([, spec]) => /^\.\.\/engine\/(?!missionEnv\.js$)/.test(spec)).map(([s]) => s)
+  it('imports nothing from engine/ statically except the mission predicate and the path helpers (a statement spread over lines included)', () => {
+    // engine/realPath.js (listEntries, isLinkEntry, whyNotAtOwnPath) is allowed since the first live-fire
+    // run (2026-11-24): the script's own removals and tree comparisons must tell a link by its folder's
+    // listing, in the outer process too. It adds nothing to what is loaded before the self-check: the
+    // module is already in the pinned set below (through ./cynco-spawn.mjs), declarations only, and it
+    // starts no process and holds no state.
+    const offenders = staticImports(acc()).filter(([, spec]) => /^\.\.\/engine\/(?!(?:missionEnv|realPath)\.js$)/.test(spec)).map(([s]) => s)
     expect(offenders).toEqual([])
     // The reading sees the multi-line form the script uses for node:fs, so it would see one for engine/ too.
     expect(staticImports("import {\n  a,\n  b,\n} from '../engine/containment.js'").map(([, s]) => s)).toEqual(['../engine/containment.js'])

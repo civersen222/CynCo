@@ -13,33 +13,37 @@
  */
 import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LAUNCHER_UNAVAILABLE, MSYS_IN_CONTAINED_RUN } from '../containment.js'
 import { lowerOwnIntegrity, parseLauncherArgs } from '../lowIntegrityLauncher.js'
+import { listEntries } from '../realPath.js'
 
 const PREFIX = 'cynco-launcher-'
 
-/** Remove a folder this test made, never entering a link (a junction is removed as an entry). */
+/**
+ * Remove a folder this test made, never entering a link (a junction is removed as an entry). The
+ * kind comes from the folder's listing, not lstat: lstat calls a junction a low-integrity child made
+ * a folder and follows it (F242, fact F4 of the first live-fire run).
+ */
 function removeOwnTree(dir: string): void {
   const abs = resolve(dir)
   if (dirname(abs) !== resolve(tmpdir()) || !basename(abs).startsWith(PREFIX)) {
     throw new Error(`refusing to remove ${abs}: not a ${PREFIX}* folder directly in the temp folder`)
   }
   const walk = (d: string) => {
-    for (const name of readdirSync(d)) {
+    for (const { name, kind } of listEntries(d)) {
       const p = join(d, name)
-      const st = lstatSync(p)
-      if (st.isSymbolicLink()) {
+      if (kind === 'link') {
         try {
           rmdirSync(p)
         } catch (e) {
           console.log(`[containmentLauncher] ${p} is a file link (${(e as Error).message}); unlinking it`)
           unlinkSync(p)
         }
-      } else if (st.isDirectory()) {
+      } else if (kind === 'dir') {
         walk(p)
         rmdirSync(p)
       } else {

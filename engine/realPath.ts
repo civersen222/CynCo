@@ -9,8 +9,73 @@
  * written with. One addition: `realPathOf(p, { quiet: true })` logs nothing, for
  * a caller that asks about many paths that may not resolve.
  */
-import { lstatSync, readlinkSync, realpathSync } from 'node:fs'
+import { lstatSync, readdirSync, readlinkSync, realpathSync } from 'node:fs'
 import { basename, dirname, join, resolve, sep } from 'node:path'
+
+/** What a folder's own listing says one of its entries is. */
+export type EntryKind = 'link' | 'dir' | 'file'
+
+/**
+ * The entries of `dir`, each with the kind the directory listing itself gives it. Any reparse point
+ * (a symbolic link, a junction, a mount point, a cloud placeholder) is `'link'`, wherever it points
+ * and however its target is stored. Throws what `readdirSync` throws.
+ *
+ * Why not `lstat`: Windows stores a junction made by a low-integrity process with the substitute
+ * name `\??\Global\X:\...`. libuv, and so Node and Bun, take only `\??\X:\...` for a link: for the
+ * other form `lstatSync` answers with the TARGET's stat (a directory, with the target's dev and
+ * ino), `readlinkSync` throws EINVAL and the JS `realpathSync` returns the junction's own path
+ * (measured 2026-11-24 under Bun 1.3.13 and Node 24, F242). A walk that asks `lstat` whether an
+ * entry is a link therefore ENTERS such a junction. The listing reads the entry's own attribute and
+ * reports it as a link; `realpathSync.native` resolves it to its target.
+ */
+export function listEntries(dir: string): Array<{ name: string; kind: EntryKind }> {
+  return readdirSync(dir, { withFileTypes: true }).map(d => ({
+    name: d.name,
+    kind: d.isSymbolicLink() ? 'link' as const : d.isDirectory() ? 'dir' as const : 'file' as const,
+  }))
+}
+
+/**
+ * Is the entry at `p` a link, by its parent's listing (see `listEntries`)? `null` when that cannot be
+ * told: the parent cannot be listed, or lists no such name (a name given in its 8.3 short form is
+ * not found either). A caller that must not enter a link treats `null` as "do not enter".
+ * A volume root is an entry of nothing: `false`.
+ */
+export function isLinkEntry(p: string): boolean | null {
+  const full = resolve(p)
+  const parent = dirname(full)
+  if (parent === full) return false
+  const fold = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s)
+  const name = fold(basename(full))
+  let entries: Array<{ name: string; kind: EntryKind }>
+  try {
+    entries = listEntries(parent)
+  } catch (e) {
+    void e
+    return null
+  }
+  const hit = entries.find(e => fold(e.name) === name)
+  return hit === undefined ? null : hit.kind === 'link'
+}
+
+/**
+ * Why the folder entry `name` of the folder whose native real path is `parentReal` is not where its
+ * path says, or null when it is: `realpathSync.native` of it must be `parentReal` joined with `name`
+ * (compared without case on Windows). A walk asks this before it enters an entry its listing called
+ * a folder, so that an entry swapped for a link after it was listed, or a reparse kind a listing
+ * does not flag, is not entered. Never throws: a path that cannot be resolved is a reason.
+ */
+export function whyNotAtOwnPath(parentReal: string, name: string): string | null {
+  const expected = join(parentReal, name)
+  let real: string
+  try {
+    real = realpathSync.native(expected)
+  } catch (e) {
+    return `could not be resolved to its real path (${(e as Error).message})`
+  }
+  const fold = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s)
+  return fold(real) === fold(expected) ? null : `resolves to ${real}, not to ${expected}`
+}
 
 /** True when `candidate` resolves to `root` or somewhere beneath it. Case-folded on win32. */
 export function isInside(root: string, candidate: string): boolean {

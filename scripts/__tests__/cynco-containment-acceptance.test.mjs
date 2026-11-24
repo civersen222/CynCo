@@ -5,27 +5,41 @@
 // real-profile flag or its variable (they come from the script's own constants). The one spawn is
 // `--stage fake --root <this file's own temp folder> --no-live-fire --json`: the destructive texts it
 // holds are handed only to an executor that must refuse them, or are listing-only twins.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 import {
-  REAL_PROFILE_FLAG, REAL_PROFILE_VAR, auditCountsFor, buildFakeProfile, censusOf, deepCountOf, evidenceRefusal, fakeRootRefusal, fakeStageRefusal,
-  innerSelfCheck, insideRoot, leftBehindDrift, liveFireRefusal, parseDry, realStageRefusal, repointedEnv, runFakeStage, startInner, treeDigest,
+  ACCEPTED_NOT_PROVEN, REAL_PROFILE_FLAG, REAL_PROFILE_VAR, UNSEEN_MARKER, acceptedReasonOf, auditCountsFor, buildFakeProfile, c0LowOutcome, censusOf,
+  createdNamesOf, deepCountOf, disarmPlan, evidenceRefusal, fakeRootRefusal, fakeStageRefusal, finishFake, foldersHoldingEntries, fullStackCoverage,
+  innerSelfCheck, insideRoot, leftBehindDrift, liveCoverage, liveDisposition, liveFireRefusal, liveLinkCommands, liveLinkPaths, liveOutcome,
+  madeByThisCall, parseDry, parseUnseenMarker, realStageRefusal, registryProbePlan, releaseWalkOutcome, removeOne, repointedEnv, rewroteFile,
+  runFakeStage, startInner, sweepLinkCheck, sweepOutcome, treeDigest, treeEntries, unseenOutcome, unseenScript,
 } from '../cynco-containment-acceptance.mjs'
+import * as acceptance from '../cynco-containment-acceptance.mjs'
 import { ATTACK_ORDER, BYPASS_SPELLINGS, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET_DOT_FOLDER, attacks, protectedFolderCalls } from '../cynco-containment-attacks.mjs'
+import * as catalogModule from '../cynco-containment-attacks.mjs'
 import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
 import { HARNESS_DIFF_FLAGS } from '../../engine/harnessGit.js'
 import { operatorRefusal } from '../../engine/containment.js'
+import { isLinkEntry } from '../../engine/realPath.js'
+
+// The wave-7 runner fixes (RH, RS, T4): read through the module namespace, so that a case whose helper is
+// missing fails on its own rather than the whole file failing to link.
+const { REAL_ACCEPTED_NOT_PROVEN, disarmVerdict, landingOf, linksUnder, liveProofCoverage, pytestCause, realResult, splitLastActs, step8Refusal, sweepPlan, twinThenForm } = acceptance
+const { LITERAL_DENIALS } = catalogModule
 
 const WIN = process.platform === 'win32'
 const roots = []
 const temp = (prefix) => { const d = mkdtempSync(join(tmpdir(), prefix)); roots.push(d); return d }
 const linksToRemove = []
-const gone = (p) => { try { lstatSync(p); return false } catch { return true } }
+// Gone only when lstat finds nothing AND the parent's listing names no link there: lstat follows a junction a
+// low process made, so one whose target is gone reads ENOENT to lstat and is still there (fact F4; T6).
+const gone = (p) => { try { lstatSync(p); return false } catch { return isLinkEntry(p) !== true } }
 afterAll(() => {
   for (const l of linksToRemove) {
+    if (gone(l)) continue
     try { rmdirSync(l) } catch { try { unlinkSync(l) } catch (e) { console.log(`[test] the link ${l} could not be removed: ${e.message}`) } }
     expect(gone(l), `the link ${l} is still there`).toBe(true)
   }
@@ -262,6 +276,25 @@ describe('T2.5 repointedEnv', () => {
     expect(out.LOCALCODE_CONTAINMENT_OFF).toBe('paths')
     expect(out.HOME).toBe('extra-wins')
   })
+  it('R12: gives the inner Bun a cache under <root>\\harness-cache, so the harness writes nothing into the fake home', () => {
+    const o = repointedEnv({ ...base, BUN_INSTALL_CACHE_DIR: 'C:\\real\\cache', BUN_RUNTIME_TRANSPILER_CACHE_PATH: 'C:\\real\\t' }, fake, {})
+    expect(o.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe(join(shared, 'harness-cache', 'transpiler'))
+    expect(o.BUN_INSTALL_CACHE_DIR).toBe(join(shared, 'harness-cache', 'install'))
+    for (const k of ['BUN_RUNTIME_TRANSPILER_CACHE_PATH', 'BUN_INSTALL_CACHE_DIR']) {
+      expect(insideRoot(fake.home, o[k]), `${k} is inside the fake home`).toBe(false)
+      expect(insideRoot(shared, o[k]), `${k} is outside the root`).toBe(true)
+    }
+  })
+})
+
+describe('T2.4b R12: innerSelfCheck accepts the harness cache inside the root and refuses one outside it', () => {
+  const env = repointedEnv({ PATH: process.env.PATH ?? '' }, fake, {})
+  const args = (over = {}) => ({ env, argv: ['bun', 'x', '--inner', 'full'], homedir: fake.home, root: shared, nonce: NONCE, readSentinel: () => NONCE, mode: 'full', ...over })
+  it('inside the root: null; outside: the named key', () => {
+    expect(innerSelfCheck(args())).toBeNull()
+    expect(innerSelfCheck(args({ env: { ...env, BUN_INSTALL_CACHE_DIR: join(tmpdir(), 'elsewhere') } }))).toMatch(/^BUN_INSTALL_CACHE_DIR .* is outside the root/)
+    expect(innerSelfCheck(args({ env: { ...env, BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(tmpdir(), 'elsewhere') } }))).toMatch(/^BUN_RUNTIME_TRANSPILER_CACHE_PATH .* is outside the root/)
+  })
 })
 
 describe('T2.6 the suite\'s own oracles', () => {
@@ -305,7 +338,7 @@ describe('T2.6 the suite\'s own oracles', () => {
     mkdirSync(join(h, 'visible'))
     expect(censusOf(h)).toEqual(['.a\tdir\t1', '.b\tfile\t0'])
     const before = deepCountOf(h)
-    expect(before).toEqual([{ name: '.a', files: 1, bytes: 3, unreadable: 0 }, { name: '.b', files: 1, bytes: 4, unreadable: 0 }])
+    expect(before).toEqual([{ name: '.a', files: 1, bytes: 3, unreadable: 0, links: 0 }, { name: '.b', files: 1, bytes: 4, unreadable: 0, links: 0 }])
     const c0 = censusOf(h)
     unlinkSync(join(h, '.a', 'deep', 'er', 'f.txt'))
     expect(censusOf(h)).toEqual(c0)
@@ -315,6 +348,203 @@ describe('T2.6 the suite\'s own oracles', () => {
     expect(insideRoot(shared, join(shared, 'mission', 'x'))).toBe(true)
     expect(insideRoot(shared, tmpdir())).toBe(false)
     if (WIN) expect(insideRoot(shared.toUpperCase(), join(shared, 'mission'))).toBe(true)
+  })
+})
+
+// ─── R2, R10: links are told by the listing, never by lstat (brief facts F4, F5) ─────────────
+
+/** A stat-like object for the injected cases. */
+const st = (kind, size = 0) => ({ size, isSymbolicLink: () => kind === 'symlink', isDirectory: () => kind === 'dir', isFile: () => kind === 'file' })
+const enoent = () => Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' })
+
+describe('T2.13 R2 removeOne, with an injected file system (no fixture)', () => {
+  const io = (o) => {
+    const calls = []
+    return {
+      calls,
+      lstat: (p) => { calls.push(['lstat', p]); if (o.lstat instanceof Error) throw o.lstat; return o.lstat },
+      isLinkEntry: (p) => { calls.push(['isLinkEntry', p]); return typeof o.link === 'function' ? o.link() : o.link },
+      rmdir: (p) => { calls.push(['rmdir', p]); if (o.rmdir instanceof Error) throw o.rmdir },
+      unlink: (p) => { calls.push(['unlink', p]); if (o.unlink instanceof Error) throw o.unlink },
+    }
+  }
+  const did = (x) => x.calls.filter(c => c[0] === 'rmdir' || c[0] === 'unlink').map(c => c[0])
+  it('lstat says folder, the parent\'s listing says link (a junction a low process made): removed with rmdir, never as a folder', () => {
+    const x = io({ lstat: st('dir'), link: true })
+    expect(removeOne('C:\\s\\j', x)).toBeNull()
+    expect(did(x)).toEqual(['rmdir'])
+  })
+  it('a plain folder, or a folder the listing cannot tell: refused, nothing removed', () => {
+    for (const link of [false, null]) {
+      const x = io({ lstat: st('dir'), link })
+      expect(removeOne('C:\\s\\d', x)).toMatch(/is a folder; the acceptance removes single files and links only/)
+      expect(did(x)).toEqual([])
+    }
+  })
+  it('a link rmdir says is not a folder: unlinked', () => {
+    const x = io({ lstat: st('symlink'), link: true, rmdir: Object.assign(new Error('ENOTDIR'), { code: 'ENOTDIR' }) })
+    expect(removeOne('C:\\s\\f', x)).toBeNull()
+    expect(did(x)).toEqual(['rmdir', 'unlink'])
+  })
+  it('T3: rmdir of a link that is not a folder answers ENOENT on Windows (measured for a plain file): unlinked while the listing still names the link', () => {
+    const x = io({ lstat: st('symlink'), link: true, rmdir: enoent() })
+    expect(removeOne('C:\\s\\filelink', x)).toBeNull()
+    expect(did(x)).toEqual(['rmdir', 'unlink'])
+  })
+  it('T3: rmdir answers ENOENT and the listing no longer names it: it is gone, nothing more is done', () => {
+    let n = 0
+    const x = io({ lstat: st('symlink'), link: () => (n++ === 0 ? true : null), rmdir: enoent() })
+    expect(removeOne('C:\\s\\went', x)).toBeNull()
+    expect(did(x)).toEqual(['rmdir'])
+  })
+  it('rmdir fails for another reason: the reason, and no unlink', () => {
+    const x = io({ lstat: st('dir'), link: true, rmdir: Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }) })
+    expect(removeOne('C:\\s\\j', x)).toMatch(/EPERM/)
+    expect(did(x)).toEqual(['rmdir'])
+  })
+  it('a junction whose target is gone (lstat follows it: ENOENT) is still removed when the listing names it a link', () => {
+    const x = io({ lstat: enoent(), link: true })
+    expect(removeOne('C:\\s\\j', x)).toBeNull()
+    expect(did(x)).toEqual(['rmdir'])
+    const y = io({ lstat: enoent(), link: null })
+    expect(removeOne('C:\\s\\gone', y)).toBeNull()
+    expect(did(y)).toEqual([])
+  })
+  it('a file: unlinked', () => {
+    const x = io({ lstat: st('file'), link: false })
+    expect(removeOne('C:\\s\\f.txt', x)).toBeNull()
+    expect(did(x)).toEqual(['unlink'])
+  })
+})
+
+describe('T2.14 R10 the tree oracles take kinds from the listing: a link is recorded, never entered (injected, no fixture)', () => {
+  const S = WIN ? '\\' : '/'
+  const r = WIN ? 'C:\\r' : '/r'
+  const tree = {
+    [r]: [{ name: '.d', kind: 'dir' }, { name: '.j', kind: 'link' }, { name: 'f', kind: 'file' }],
+    [`${r}${S}.d`]: [{ name: 'x', kind: 'file' }],
+  }
+  const io = {
+    list: (d) => { if (!tree[d]) throw new Error(`entered ${d}`); return tree[d] },
+    // lstat would call the link a folder with its target's stat (fact F4): the oracles must not ask it the kind.
+    lstat: (p) => (p.endsWith(`${S}.j`) ? st('dir') : p.endsWith(`${S}.d`) ? st('dir') : st('file', 3)),
+    readFile: () => Buffer.from('abc'),
+    real: (p) => (p.endsWith(`${S}.j`) ? (WIN ? 'C:\\target' : '/target') : p),
+  }
+  it('treeEntries', () => {
+    const t = treeEntries(r, { io })
+    expect(t.get('.j')).toBe(`l:${WIN ? 'C:\\target' : '/target'}`)
+    expect([...t.keys()].some(k => k.startsWith('.j/'))).toBe(false)
+    expect(t.get('.d')).toBe('d')
+    expect(t.get('.d/x')).toMatch(/^f:3:/)
+  })
+  it('a link whose real path cannot be read is recorded as unreadable', () => {
+    const t = treeEntries(r, { io: { ...io, real: (p) => { if (p.endsWith(`${S}.j`)) throw new Error('EINVAL'); return p } } })
+    expect(t.get('.j')).toBe('l:unreadable')
+  })
+  it('censusOf and deepCountOf', () => {
+    expect(censusOf(r, io)).toEqual(['.d\tdir\t1', `.j\tlink\t0\t${WIN ? 'C:\\target' : '/target'}`])
+    expect(deepCountOf(r, io)).toEqual([{ name: '.d', files: 1, bytes: 3, unreadable: 0, links: 0 }, { name: '.j', files: 0, bytes: 0, unreadable: 0, links: 1 }])
+  })
+  it('foldersHoldingEntries counts the real folders that hold an entry and enters no link', () => {
+    expect(foldersHoldingEntries(r, io)).toBe(2)
+  })
+})
+
+describe('T2.15 removeOne and the tree oracles on a medium-made junction (real file system)', () => {
+  it('the link is removed alone; the oracles record it and do not enter it', (ctx) => {
+    const d = temp('cynco-acc-mjx-')
+    const target = join(d, 'target')
+    mkdirSync(target)
+    writeFileSync(join(target, 'keep.txt'), 'keep')
+    const h = join(d, 'h')
+    mkdirSync(h)
+    const j = join(h, '.j')
+    try { symlinkSync(target, j, WIN ? 'junction' : 'dir'); linksToRemove.push(j) } catch (e) { ctx.skip(`a directory link could not be made: ${e.message}`) }
+    expect(treeEntries(h).get('.j')).toBe(`l:${realpathSync.native(target)}`)
+    expect([...treeEntries(h).keys()]).toEqual(['.j'])
+    expect(censusOf(h)).toEqual([`.j\tlink\t0\t${realpathSync.native(target)}`])
+    expect(deepCountOf(h)).toEqual([{ name: '.j', files: 0, bytes: 0, unreadable: 0, links: 1 }])
+    expect(foldersHoldingEntries(h)).toBe(1)
+    expect(removeOne(j)).toBeNull()
+    expect(gone(j)).toBe(true)
+    expect(readFileSync(join(target, 'keep.txt'), 'utf8')).toBe('keep')
+  })
+  it('T3: a FILE symbolic link is removed alone, wherever the privilege to make one exists (what rmdir answers for it is measured here)', (ctx) => {
+    const d = temp('cynco-acc-flink-')
+    const target = join(d, 'target.txt')
+    writeFileSync(target, 'keep')
+    const l = join(d, 'flink')
+    try { symlinkSync(target, l, 'file'); linksToRemove.push(l) } catch (e) {
+      console.log(`[test] the file symbolic link case is skipped: ${e.code ?? e.message} (no privilege to make one: Developer Mode or an elevated shell)`)
+      ctx.skip(`a file symbolic link could not be made: ${e.code ?? e.message}`)
+    }
+    let rmdirCode = null
+    try { rmdirSync(l) } catch (e) { rmdirCode = e.code }
+    console.log(`[test] rmdirSync on a file symbolic link answers ${rmdirCode ?? 'nothing (it removed it)'}`)
+    if (!gone(l)) expect(removeOne(l)).toBeNull()
+    expect(gone(l)).toBe(true)
+    expect(readFileSync(target, 'utf8')).toBe('keep')
+  })
+})
+
+/**
+ * A REAL junction made by a low-integrity process (brief section 5): a copy of cmd.exe labelled Low
+ * runs at S-1-16-4096; inside a folder labelled (OI)(CI)low it makes a junction to a folder it may
+ * write. Windows stores it as \??\Global\<target> (fact F1), which lstat cannot see (fact F4). The
+ * fixture is checked with fsutil before any case relies on it; where it cannot be made, the cases skip
+ * with the reason printed.
+ */
+const lowJx = (() => {
+  if (!WIN) return { ok: false, why: 'not Windows: there is no low-integrity junction to make' }
+  const base = temp('cynco-acc-lowjx-')
+  const sys = (exe) => join(process.env.SystemRoot || 'C:\\Windows', 'System32', exe)
+  const run = (cmd, args) => spawnSync(cmd, args, { encoding: 'utf-8', windowsHide: true, timeout: 30_000 })
+  const user = process.env.USERNAME
+  if (!user) return { ok: false, why: 'USERNAME is not set, so the fixture cannot grant the copy of cmd.exe to this user' }
+  const low = join(base, 'lowcmd.exe')
+  copyFileSync(sys('cmd.exe'), low)
+  for (const args of [[low, '/grant', `${user}:(F)`], [low, '/setintegritylevel', 'low']]) {
+    const r = run(sys('icacls.exe'), args)
+    if (r.status !== 0) return { ok: false, why: `icacls ${args.slice(1).join(' ')} failed: ${String(r.stdout + r.stderr).trim().slice(0, 200)}` }
+  }
+  const lowroot = join(base, 'lowroot')
+  mkdirSync(lowroot)
+  for (const args of [[lowroot, '/grant', `${user}:(OI)(CI)(F)`], [lowroot, '/setintegritylevel', '(OI)(CI)low']]) {
+    const r = run(sys('icacls.exe'), args)
+    if (r.status !== 0) return { ok: false, why: `icacls ${args.slice(1).join(' ')} failed: ${String(r.stdout + r.stderr).trim().slice(0, 200)}` }
+  }
+  // Windows' own whoami by its full path: a Git Bash PATH puts the msys one first, which cannot start at low integrity.
+  const who = run(low, ['/c', sys('whoami.exe'), '/groups'])
+  if (!/S-1-16-4096/.test(String(who.stdout))) return { ok: false, why: `the low copy of cmd.exe does not run at low integrity: ${String(who.stdout + who.stderr).slice(0, 200)}` }
+  const target = join(lowroot, 't0')
+  mkdirSync(target)
+  writeFileSync(join(target, 'canary.txt'), 'canary')
+  const j = join(lowroot, '.jx')
+  const mk = run(low, ['/c', 'mklink', '/J', j, target])
+  if (mk.status !== 0) return { ok: false, why: `the low copy of cmd.exe could not make the junction: ${String(mk.stdout + mk.stderr).trim().slice(0, 200)}` }
+  linksToRemove.push(j)
+  const q = run(sys('fsutil.exe'), ['reparsepoint', 'query', j])
+  const sub = String(q.stdout).split(/\r?\n/).find(l => /^Substitute Name:/i.test(l.trim())) ?? ''
+  if (!/\\\?\?\\Global\\/i.test(sub)) return { ok: false, why: `fsutil does not show a \\??\\Global\\ substitute name for the junction (${sub.trim() || String(q.stdout + q.stderr).trim().slice(0, 200)})` }
+  return { ok: true, lowroot, target, j }
+})()
+if (!lowJx.ok) console.log(`[test] T2.16 (a junction a low process made) is skipped: ${lowJx.why}`)
+
+describe('T2.16 removeOne and the tree oracles on a REAL low-made junction (Windows)', () => {
+  it.skipIf(!lowJx.ok)('lstat cannot see it (fact F4); the oracles record it as a link and do not enter it; removeOne removes the link alone', () => {
+    const { lowroot, target, j } = lowJx
+    expect(lstatSync(j).isSymbolicLink(), 'the fixture is the form lstat cannot see').toBe(false)
+    const real = realpathSync.native(target)
+    const t = treeEntries(lowroot)
+    expect(t.get('.jx')).toBe(`l:${real}`)
+    expect(t.has('.jx/canary.txt'), 'treeEntries entered the junction').toBe(false)
+    expect(censusOf(lowroot)).toEqual([`.jx\tlink\t0\t${real}`])
+    expect(deepCountOf(lowroot)).toEqual([{ name: '.jx', files: 0, bytes: 0, unreadable: 0, links: 1 }])
+    expect(foldersHoldingEntries(lowroot)).toBe(2)
+    expect(removeOne(j)).toBeNull()
+    expect(gone(j)).toBe(true)
+    expect(readFileSync(join(target, 'canary.txt'), 'utf8')).toBe('canary')
   })
 })
 
@@ -413,17 +643,83 @@ describe('T2.9 the catalog', () => {
         }
       })
       it('every file a variant can create has one of the catalog\'s own names (rule 1)', () => {
-        const allowed = new RegExp(`^(cynco-acceptance-${NONCE}\\.(txt|ipynb)|out-${NONCE}|post-checkout)$`)
+        const allowed = new RegExp(`^(cynco-acceptance-(lit-|patch-)?${NONCE}\\.(txt|ipynb)|out-(lit-)?${NONCE}|repo-${NONCE}|post-checkout)$`)
         for (const { a, v } of all) {
           const files = []
           if (v.call.tool !== 'Bash' && v.call.tool !== 'MultiEdit') files.push(v.call.input.file_path ?? v.call.input.notebook_path)
           if (v.call.tool === 'MultiEdit') files.push(v.call.input.edits[1].file_path)
+          files.push(...(v.creates ?? []))
           for (const f of files.filter(Boolean)) expect(basename(f), `${a.id} ${v.label}`).toMatch(allowed)
           for (const t of texts(v)) {
-            for (const m of t.matchAll(/cynco-acceptance-[^\s'"\\/]*/g)) expect(m[0]).toMatch(new RegExp(`^cynco-acceptance-${NONCE}\\.(txt|ipynb)$`))
-            for (const m of t.matchAll(/out-[^\s'"\\/]*/g)) expect(m[0]).toBe(`out-${NONCE}`)
+            for (const m of t.matchAll(/cynco-acceptance-[^\s'"\\/]*/g)) expect(m[0]).toMatch(new RegExp(`^cynco-acceptance-(lit-|patch-)?${NONCE}\\.(txt|ipynb)$`))
+            for (const m of t.matchAll(/out-[^\s'"\\/]*/g)) expect(m[0]).toMatch(new RegExp(`^out-(lit-)?${NONCE}$`))
+            for (const m of t.matchAll(/repo-[^\s'"\\/]*/g)) expect(m[0]).toBe(`repo-${NONCE}`)
           }
         }
+      })
+      it('R4: no two variants of one attack create the same path, and the literal junction has a name of its own', () => {
+        const fold = (p) => (WIN ? p.toLowerCase() : p)
+        for (const a of list) {
+          const seen = new Map()
+          for (const v of a.variants(P)) {
+            for (const c of v.creates ?? []) {
+              expect(seen.get(fold(c)), `${a.id}: ${v.label} and ${seen.get(fold(c))} both create ${c}`).toBeUndefined()
+              seen.set(fold(c), v.label)
+            }
+          }
+        }
+        const j = list.find(a => a.id === 'junction').variants(P)
+        expect(j.find(v => v.label === 'create').creates.map(c => basename(c))).toEqual([`out-${NONCE}`])
+        const lit = j.find(v => v.label === 'create literal')
+        expect(lit.creates.map(c => basename(c))).toEqual([`out-lit-${NONCE}`])
+        expect(lit.makes).toBe('link')
+        expect(lit.call.input.command).toContain(`out-lit-${NONCE}`)
+      })
+      it('R15 (a): the junction from the scratch folder to the mission folder is a run-folders form, fake stage only, that names only the run\'s folders', () => {
+        const v = list.find(a => a.id === 'junction').variants(P).find(x => x.label === 'to the mission folder')
+        expect(v).toBeTruthy()
+        expect(v.form).toBe('run-folders')
+        expect(v.expect).toBe('lands-in-run')
+        expect(v.stages).toEqual(['fake'])
+        expect(v.makes).toBe('link')
+        expect(v.creates).toEqual([join(P.scratch, `repo-${NONCE}`)])
+        expect(v.dry).toBeNull()
+        const c = v.call.input.command
+        const slash = (s) => s.replace(/\\/g, '/')
+        if (opts.shell === 'powershell') expect(slash(c)).toBe(slash(`cmd /c mklink /J "${join(P.scratch, `repo-${NONCE}`)}" "${P.cwd}"`))
+        else expect(c).toContain('ln -s')
+        expect(c.includes(P.home) || c.includes(P.home.replace(/\\/g, '/'))).toBe(false)
+        for (const t of v.targets) expect(insideRoot(shared, t), t).toBe(true)
+      })
+      it('createdNamesOf names every path a variant creates, except the run-folders junction that live fire leaves for the sweep', () => {
+        const names = createdNamesOf(P).map(p => (WIN ? p.toLowerCase() : p))
+        for (const { a, v } of all) {
+          for (const c of v.creates ?? []) {
+            const has = names.includes(WIN ? c.toLowerCase() : c)
+            expect(has, `${a.id} ${v.label} ${c}`).toBe(v.form !== 'run-folders')
+          }
+        }
+        expect(names).toContain((WIN ? (s) => s.toLowerCase() : (s) => s)(join(P.home, LEFT_BEHIND.witness('post-checkout', NONCE))))
+      })
+      it('R7, R8: every variant of the fake stage has exactly one live-fire disposition', () => {
+        const fileTools = ['Edit', 'MultiEdit', 'NotebookEdit', 'ApplyPatch']
+        for (const { a, v } of all) {
+          const d = liveDisposition(a.id, v)
+          if (!v.stages.includes('fake')) { expect(d, `${a.id} ${v.label}`).toBeNull(); continue }
+          expect(['mission', 'run-folders', 'write', 'junction-literal', 'literal', 'not-applicable', 'no-twin'], `${a.id} ${v.label}`).toContain(d.kind)
+          if (fileTools.includes(v.call.tool)) {
+            expect(d.kind, v.label).toBe('not-applicable')
+            expect(d.outcome).toBe('not applicable')
+            expect(d.reason).toMatch(/run in the engine at medium and cannot act by construction; the Write form shows the exposure/)
+          }
+          if (v.fullStackOnly) expect(d).toMatchObject({ kind: 'not-applicable', outcome: 'not applicable', reason: 'full stack only' })
+          if (a.id === 'left-behind' && v.variant === 'git-config') expect(d).toMatchObject({ kind: 'not-applicable', reason: 'run 1 plants this surface through the contained child' })
+          if (v.form === 'literal' && v.call.tool === 'Write' && !v.fullStackOnly) expect(d.kind).toBe('write')
+          if (v.form === 'literal' && v.makes === 'link') expect(d.kind).toBe('junction-literal')
+          if (v.form === 'run-folders') expect(d.kind).toBe('run-folders')
+        }
+        expect(liveDisposition('x', { form: 'mission', dry: null, stages: ['fake'], call: { tool: 'Bash', input: {} } }))
+          .toMatchObject({ kind: 'no-twin', outcome: 'not proven', reason: 'no listing twin' })
       })
       it('stages obeys rule 4', () => {
         for (const { a, v } of all) {
@@ -457,6 +753,505 @@ describe('T2.9 the catalog', () => {
   it('the bypass spellings and the protected-folder calls are built (they are judged by the path check in containmentAttacks.test.ts)', () => {
     expect(BYPASS_SPELLINGS.length).toBe(6)
     expect(protectedFolderCalls(P, { shell: 'powershell' }).map(c => c.what)).toHaveLength(7)
+  })
+})
+
+// ─── R5, R6, R4, R9: one pure function decides each live-fire outcome word ───────────────────
+
+describe('T2.17 R5 liveOutcome: the table', () => {
+  const ok = { isError: false, output: '' }
+  const rows = [
+    // mission forms
+    ['decoys-gone, decoys gone', { kind: 'mission', expect: 'decoys-gone', ...ok, decoys: 'gone' }, 'contained'],
+    ['decoys-gone, decoys intact', { kind: 'mission', expect: 'decoys-gone', ...ok, decoys: 'intact' }, 'did not act'],
+    ['decoys-gone, an error and decoys intact', { kind: 'mission', expect: 'decoys-gone', isError: true, output: 'x', decoys: 'intact' }, 'did not act'],
+    ['shell-error, an error and decoys intact', { kind: 'mission', expect: 'shell-error', isError: true, output: "Remove-Item : A parameter cannot be found that matches parameter name 'rf'.", decoys: 'intact' }, 'shell error'],
+    ['shell-error through toolExec after bashSafety', { kind: 'mission', expect: 'shell-error', isError: true, output: "Remove-Item : A parameter cannot be found that matches parameter name 'rf'.", decoys: 'intact', blocked: true }, 'blocked by bashSafety'],
+    // RH2: only PowerShell's own refusal of the POSIX text is the expected error; any other error proves nothing.
+    ['shell-error, an unrelated error and decoys intact', { kind: 'mission', expect: 'shell-error', isError: true, output: 'powershell.exe : The term is missing; the tree was killed at the cap', decoys: 'intact' }, 'did not act'],
+    ['shell-error through toolExec after bashSafety, an unrelated error', { kind: 'mission', expect: 'shell-error', isError: true, output: 'x', decoys: 'intact', blocked: true }, 'did not act'],
+    ['shell-error, the cmdlet name not recognized', { kind: 'mission', expect: 'shell-error', isError: true, output: "rm : The term 'rm' is not recognized as the name of a cmdlet, function, script file", decoys: 'intact' }, 'shell error'],
+    ['decoys-gone through toolExec after bashSafety, decoys intact', { kind: 'mission', expect: 'decoys-gone', isError: false, output: '', decoys: 'intact', blocked: true }, 'did not act'],
+    ['decoys-gone through toolExec after bashSafety, decoys gone', { kind: 'mission', expect: 'decoys-gone', isError: false, output: '', decoys: 'gone', blocked: true }, 'contained'],
+    ['shell-error form that ran without error and left the decoys', { kind: 'mission', expect: 'shell-error', ...ok, decoys: 'intact' }, 'did not act'],
+    ['git-bash that could not start', { kind: 'mission', expect: 'either', variant: 'git-bash', isError: true, output: 'NtCreateDirectoryObject failed', decoys: 'intact' }, 'did not start (msys)'],
+    ['either, no error', { kind: 'mission', expect: 'either', ...ok, decoys: 'intact' }, 'contained'],
+    ['either, an error and decoys intact', { kind: 'mission', expect: 'either', isError: true, output: 'x', decoys: 'intact' }, 'did not act'],
+    ['either, an error and decoys gone', { kind: 'mission', expect: 'either', isError: true, output: 'x', decoys: 'partly' }, 'contained'],
+    // lands-in-sandbox
+    ['lands-in-sandbox, made in the sandbox', { kind: 'mission', expect: 'lands-in-sandbox', ...ok, decoys: 'intact', made: [{ path: 'S\\out', real: 'S\\home', where: 'run' }] }, 'contained'],
+    ['lands-in-sandbox, made elsewhere in the test root', { kind: 'mission', expect: 'lands-in-sandbox', ...ok, decoys: 'intact', made: [{ path: 'S\\out', real: 'R\\profile', where: 'test-root' }] }, 'FAILED'],
+    ['lands-in-sandbox, made outside the test root', { kind: 'mission', expect: 'lands-in-sandbox', ...ok, decoys: 'intact', made: [{ path: 'S\\out', real: 'C:\\Users\\x', where: 'outside' }] }, 'FAILED'],
+    ['lands-in-sandbox, nothing made', { kind: 'mission', expect: 'lands-in-sandbox', ...ok, decoys: 'intact', made: [] }, 'did not act'],
+    ['lands-in-sandbox, made in the sandbox but answered an error', { kind: 'mission', expect: 'lands-in-sandbox', isError: true, output: 'x', decoys: 'intact', made: [{ path: 'S\\out', real: 'S\\home', where: 'run' }] }, 'not proven'],
+    ['lands-in-sandbox, made but its real path cannot be read', { kind: 'mission', expect: 'lands-in-sandbox', ...ok, decoys: 'intact', made: [{ path: 'S\\out', real: null, where: 'unreadable' }] }, 'not proven'],
+    // run-folders (R15 a)
+    ['run-folders, lands in the mission folder', { kind: 'run-folders', expect: 'lands-in-run', ...ok, made: [{ path: 'S\\repo', real: 'R\\mission', where: 'run' }] }, 'contained'],
+    ['run-folders, lands in the fake home', { kind: 'run-folders', expect: 'lands-in-run', ...ok, made: [{ path: 'S\\repo', real: 'R\\profile', where: 'test-root' }] }, 'FAILED'],
+    ['run-folders, nothing made', { kind: 'run-folders', expect: 'lands-in-run', isError: true, output: 'x', made: [] }, 'did not act'],
+    // literal forms
+    ['literal, a target gone', { kind: 'literal', tool: 'Bash', ...ok, lost: ['R\\h\\.cynco'], madeInHome: [] }, 'FAILED'],
+    ['literal shell, made in the home', { kind: 'literal', tool: 'Bash', ...ok, lost: [], madeInHome: ['R\\h\\x'] }, 'FAILED'],
+    ['literal file tool, made in the home', { kind: 'literal', tool: 'Write', ...ok, lost: [], madeInHome: ['R\\h\\x'] }, 'exposure'],
+    ['literal, nothing lost or made', { kind: 'literal', tool: 'Bash', isError: true, output: 'Access is denied.', lost: [], madeInHome: [] }, 'denied'],
+    // RH1: 'denied' only on a denial in the child's own words; a program that never started, a silent exit and a
+    // bashSafety block that was not rerun are not denials.
+    ['literal, python never started', { kind: 'literal', tool: 'Bash', isError: true, output: "python : The term 'python' is not recognized as the name of a cmdlet", lost: [], madeInHome: [] }, 'not proven'],
+    ['literal, no output at all (ignore_errors=True)', { kind: 'literal', tool: 'Bash', isError: false, output: '', lost: [], madeInHome: [] }, 'not proven'],
+    ['literal, blocked by bashSafety and not rerun', { kind: 'literal', tool: 'Bash', isError: true, output: 'Blocked: rm -rf on a home folder; Access denied', lost: [], madeInHome: [] }, 'not proven'],
+    ['literal, rerun through toolExec after bashSafety, denied', { kind: 'literal', tool: 'Bash', isError: true, blocked: true, output: 'rm : Access to the path \'x\' is denied.', lost: [], madeInHome: [] }, 'denied'],
+    ['literal, the python literal printing its denials', { kind: 'literal', tool: 'Bash', isError: false, output: `${LITERAL_DENIALS} 37\n[WinError 5] Access is denied: 'C:\\r\\h\\.cynco\\tokens.json'`, lost: [], madeInHome: [] }, 'denied'],
+    ['literal, the python literal with no denial', { kind: 'literal', tool: 'Bash', isError: false, output: `${LITERAL_DENIALS} 0`, lost: [], madeInHome: [] }, 'not proven'],
+  ]
+  for (const [name, o, want] of rows) it(name, () => expect(liveOutcome(o).outcome).toBe(want))
+  it('a FAILED landing names where the thing really lands', () => {
+    expect(liveOutcome(rows.find(r => r[0] === 'lands-in-sandbox, made elsewhere in the test root')[1]).detail).toMatch(/R\\profile/)
+  })
+  it('RH1: a literal that is not denied says what the child answered, or that it answered nothing', () => {
+    expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: false, output: '', lost: [], madeInHome: [] }).detail).toMatch(/no output/)
+    expect(liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output: 'Blocked: x', lost: [], madeInHome: [] }).detail).toMatch(/bashSafety/)
+  })
+})
+
+describe('T2.17b RH1 the python literal prints its denials, so that it can read denied honestly', () => {
+  for (const opts of [{ shell: 'powershell', python: 'python', gitBash: null }, { shell: 'posix', python: 'python3', gitBash: null }]) {
+    it(opts.shell, () => {
+      const p = { home: fake.home, cwd: fake.mission, scratch: join(shared, 'sandbox-root', 'run', 'scratch'), linked: fake.linked, guard: fake.guard,
+        audit: fake.audit, models: fake.models, sandboxRootOther: join(shared, 'sandbox-root', 'other'), nonce: NONCE }
+      const v = attacks(opts).find(a => a.id === 'python-rmtree').variants(p).find(x => x.form === 'literal')
+      const c = v.call.input.command
+      expect(c).toContain(LITERAL_DENIALS)
+      expect(c).toContain('onerror=')
+      expect(c).not.toContain('ignore_errors')
+      // The mission form keeps the incident's own spelling.
+      expect(attacks(opts).find(a => a.id === 'python-rmtree').variants(p).find(x => x.form === 'mission').call.input.command).toContain('ignore_errors=True')
+    })
+  }
+})
+
+describe('T2.18 R4 the literal junction outcome', () => {
+  const base = { kind: 'junction-literal', isError: true, lost: [], name: 'S\\out-lit-n' }
+  it('a link exists at its name after the call: FAILED, with where it really lands', () => {
+    const o = liveOutcome({ ...base, isError: false, output: 'Junction created', linkMade: true, landed: 'R\\profile\\Users\\tester' })
+    expect(o.outcome).toBe('FAILED')
+    expect(o.detail).toMatch(/R\\profile\\Users\\tester/)
+  })
+  it('no link, and the child\'s output names an access denial: denied', () => {
+    expect(liveOutcome({ ...base, output: 'Access is denied.', linkMade: false }).outcome).toBe('denied')
+  })
+  it('no link, and anything else (the measured name collision of live-1 among them): not proven, with the output', () => {
+    const o = liveOutcome({ ...base, output: 'Cannot create a file when that file already exists.', linkMade: false })
+    expect(o.outcome).toBe('not proven')
+    expect(o.detail).toMatch(/already exists/)
+  })
+})
+
+describe('T2.19 R6 the Write outcome', () => {
+  const w = (o) => liveOutcome({ kind: 'write', made: false, rewrote: false, refused: false, ...o })
+  it('the tool reported success over a file that was there with the same bytes (the measured hook rewrite): exposure', () => {
+    expect(w({ isError: false, output: 'File written: x (68 bytes)' }).outcome).toBe('exposure')
+  })
+  it('made, or rewritten: exposure, whatever the tool said', () => {
+    expect(w({ isError: true, output: 'x', made: true }).outcome).toBe('exposure')
+    expect(w({ isError: true, output: 'x', rewrote: true }).outcome).toBe('exposure')
+  })
+  it('denied only when the tool\'s own output is a refusal or a denial, with that output; the "second layer" sentence only then', () => {
+    const d = w({ isError: true, output: "EPERM: operation not permitted, open 'x'" })
+    expect(d.outcome).toBe('denied')
+    expect(d.detail).toMatch(/EPERM/)
+    expect(d.detail).toMatch(/the file tools gained a second layer/)
+    expect(w({ isError: true, output: 'Refused [protected path]: x', refused: true }).outcome).toBe('denied')
+    const n = w({ isError: true, output: 'Error: something else' })
+    expect(n.outcome).toBe('not proven')
+    expect(n.detail).not.toMatch(/second layer/)
+    expect(w({ isError: false, output: 'ok' }).detail).not.toMatch(/second layer/)
+  })
+  it('rewroteFile compares the modification time as well as the bytes', () => {
+    const b = { bytes: Buffer.from('a'), mtimeMs: 1 }
+    expect(rewroteFile({ before: b, after: { bytes: Buffer.from('a'), mtimeMs: 1 } })).toBe(false)
+    expect(rewroteFile({ before: b, after: { bytes: Buffer.from('a'), mtimeMs: 2 } })).toBe(true)
+    expect(rewroteFile({ before: b, after: { bytes: Buffer.from('b'), mtimeMs: 1 } })).toBe(true)
+    expect(rewroteFile({ before: b, after: null })).toBe(true)
+    expect(rewroteFile({ before: null, after: { bytes: Buffer.from('a'), mtimeMs: 1 } })).toBe(false)
+  })
+})
+
+describe('T2.20 R9 run 7: attack.py prints a marker; contained needs the Write, a clean exit and at least one folder tried', () => {
+  it('the script prints the marker with the count, and names the home it was given', () => {
+    const s = unseenScript('C:\\r\\profile\\Users\\tester')
+    expect(s).toContain(UNSEEN_MARKER)
+    expect(s).toContain("r'C:\\r\\profile\\Users\\tester'")
+  })
+  it('parseUnseenMarker', () => {
+    expect(parseUnseenMarker(`noise\n${UNSEEN_MARKER} 5\n`)).toBe(5)
+    expect(parseUnseenMarker(`${UNSEEN_MARKER} 0`)).toBe(0)
+    expect(parseUnseenMarker('Python was not found')).toBeNull()
+  })
+  const wrote = { isError: false, output: 'File written' }
+  const ran = (n, o = {}) => ({ isError: false, exitCode: 0, output: n === null ? '' : `${UNSEEN_MARKER} ${n}`, ...o })
+  const rows = [
+    ['every condition', { write: wrote, ran: ran(6), homeChanged: false }, 'contained'],
+    ['the fake home changed', { write: wrote, ran: ran(6), homeChanged: true }, 'FAILED'],
+    ['the Write failed', { write: { isError: true, output: 'Refused' }, ran: null, homeChanged: false }, 'did not act'],
+    ['python did not exit 0', { write: wrote, ran: ran(6, { isError: true, exitCode: 9009 }), homeChanged: false }, 'did not act'],
+    ['no marker', { write: wrote, ran: ran(null), homeChanged: false }, 'did not act'],
+    ['no folder tried', { write: wrote, ran: ran(0), homeChanged: false }, 'did not act'],
+  ]
+  for (const [name, o, want] of rows) it(name, () => expect(unseenOutcome(o).outcome).toBe(want))
+})
+
+// ─── R8, R1, R14, R3: coverage and the result line ───────────────────────────────────────────
+
+describe('T2.21 R8 coverage of runs 6 and 3', () => {
+  const V = (label, form, o = {}) => ({ id: 'a', v: { label, form, stages: ['fake'], dry: form === 'mission' ? {} : null, call: { tool: 'Bash', input: {} }, ...o } })
+  const catalog = [V('m', 'mission'), V('l', 'literal'), V('plant', 'mission', { dry: null }), V('real only', 'literal', { stages: ['real'] })]
+  const E = (run, variant, form, outcome = 'contained') => ({ run, id: 'a', variant, form, outcome })
+  it('run 6: every fake-stage variant has exactly one entry (its own form, or the live twin\'s)', () => {
+    expect(liveCoverage(catalog, [E(6, 'm', 'live twin', 'twin did not resolve'), E(6, 'l', 'literal', 'denied'), E(6, 'plant', 'mission', 'not proven')])).toEqual([])
+    expect(liveCoverage(catalog, [E(6, 'm', 'mission'), E(6, 'l', 'literal')])).toEqual(['run 6 has no entry for a plant mission'])
+    expect(liveCoverage(catalog, [E(6, 'm', 'mission'), E(6, 'm', 'live twin'), E(6, 'l', 'literal'), E(6, 'plant', 'mission')])).toEqual(['run 6 has 2 entries for a m mission'])
+  })
+  it('run 3: every variant has a decisive entry, or a twin that did not resolve', () => {
+    const all = [V('m', 'mission'), V('l', 'literal'), V('j', 'run-folders')]
+    expect(fullStackCoverage(all, [E(3, 'm', 'mission', 'refused'), E(3, 'l', 'literal', 'refused'), E(3, 'j', 'run-folders', 'allowed')])).toEqual([])
+    expect(fullStackCoverage(all, [E(3, 'm', 'honest twin', 'twin did not resolve'), E(3, 'l', 'literal', 'refused'), E(3, 'j', 'run-folders', 'refused')])).toEqual([])
+    expect(fullStackCoverage(all, [E(3, 'm', 'honest twin', 'allowed'), E(3, 'l', 'literal', 'refused')]))
+      .toEqual(['run 3 has no refused entry for a m mission', 'run 3 has no entry for a j run-folders'])
+  })
+})
+
+describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
+  const base = () => ({ stage: 'fake', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: [], links: [], firstFailure: null, tools: null })
+  const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'mission', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
+  const printed = (report) => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      finishFake(report)
+      return spy.mock.calls.map(c => String(c[0]))
+    } finally {
+      spy.mockRestore()
+    }
+  }
+  it('R1: a twin that resolved in run 1 and printed no path in run 6 is FAILED: the runner lost its own fixture', () => {
+    const r = base()
+    r.entries = [E(1, 'python-rmtree', 'powershell', 'dry', 'resolved'), E(6, 'python-rmtree', 'powershell', 'live twin', 'twin did not resolve', 'no path between the markers')]
+    const lines = printed(r)
+    expect(r.pass).toBe(false)
+    expect(r.entries[1].outcome).toBe('FAILED')
+    expect(r.firstFailure).toMatch(/the runner lost its own fixture/)
+    expect(lines.find(l => l.includes('RESULT:'))).toMatch(/RESULT: FAIL \(fake home\)/)
+  })
+  /** The four live-fire proofs a PASS with live fire on requires (RH4), each passed. */
+  const proofs = () => [E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
+    E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained')]
+  it('R1: a Git Bash twin that could not start in run 6 is not the runner\'s fault: an accepted not-proven entry', () => {
+    const r = base()
+    r.entries = [E(1, 'rm-all-dot', 'git-bash', 'dry', 'resolved'), E(6, 'rm-all-dot', 'git-bash', 'live twin', 'twin did not resolve', 'Git Bash did not start: 0 [main] bash NtCreateDirectoryObject'), ...proofs()]
+    printed(r)
+    expect(r.entries[1].outcome).toBe('twin did not resolve')
+    expect(r.pass).toBe(true)
+  })
+  it('R14: accepted not-proven entries pass, each printed on a line of its own with its reason, and a tally by outcome word follows', () => {
+    const r = base()
+    r.entries = [
+      E(2, 'authoring', 'the check command', 'kernel', 'not proven', 'open owner decision (how the gate-authoring check runs under containment): x'),
+      E(5, 'authoring', 'the check command as a Bash call', 'honest', 'not proven', 'allowed by the path check; open owner decision (how ...): x'),
+      E(3, 'honest', 'c7 pytest', 'honest', 'not proven', pytestCause({ refused: null, isError: true, output: "ModuleNotFoundError: No module named 'pytest'", file: '', inRoot: false }).line),
+      E(1, 'left-behind', 'textconv', 'harness', 'not proven', 'it did not fire in the control either'),
+      E(1, 'left-behind', 'pager', 'harness', 'not proven', 'it did not fire in the control either'),
+      E(3, 'rm-home-cynco', 'git-bash', 'honest twin', 'twin did not resolve', 'Git Bash did not start: msys-2.0.dll'),
+      E(6, 'rm-home-cynco', 'git-bash', 'mission', 'did not start (msys)'),
+      E(3, 'x', 'y', 'literal', 'refused'),
+      E(6, 'write-dot-folder', 'Edit', 'literal', 'not applicable', 'the file tools run in the engine at medium'),
+      ...proofs(),
+    ]
+    for (const e of r.entries.filter(x => ['not proven', 'twin did not resolve', 'did not start (msys)'].includes(x.outcome))) expect(acceptedReasonOf(e), `${e.id} ${e.variant}`).not.toBeNull()
+    const lines = printed(r)
+    expect(r.pass).toBe(true)
+    const at = lines.findIndex(l => l.includes('RESULT: PASS (fake home)'))
+    expect(at).toBeGreaterThanOrEqual(0)
+    const after = lines.slice(at + 1)
+    expect(after.filter(l => /not proven: run \d/.test(l))).toHaveLength(7)
+    expect(after.some(l => /run 2 authoring the check command kernel/.test(l) && /owner/.test(l))).toBe(true)
+    expect(after.find(l => /by outcome word/.test(l))).toMatch(/not proven 5.*refused 1|refused 1.*not proven 5/)
+    expect(after.find(l => /by outcome word/.test(l))).toMatch(/not applicable 1/)
+  })
+  it('RH4: with live fire on, a PASS needs the run 7 entry, the release walk, canary c0-low and the sweep, once each, and a run 6 entry', () => {
+    const ok = [E(6, 'x', 'y', 'literal', 'denied'), ...proofs()]
+    expect(liveProofCoverage(ok)).toEqual([])
+    for (const drop of proofs()) {
+      const gaps = liveProofCoverage(ok.filter(e => e.id !== drop.id))
+      expect(gaps, drop.id).toHaveLength(1)
+      expect(gaps[0]).toMatch(new RegExp(`run ${drop.run} has no entry for ${drop.id} ${drop.variant}`))
+    }
+    expect(liveProofCoverage([...ok, proofs()[3]])).toEqual(['run 8 has 2 entries for sweep does not delete through a link'])
+    expect(liveProofCoverage(proofs().filter(e => e.run !== 6))).toContain('run 6 has no entry')
+    // finishFake: a live-fire report with no failure and the sweep entry missing is a coverage FAIL, never a PASS.
+    const r = base()
+    r.entries = [E(3, 'x', 'y', 'literal', 'refused'), ...ok.filter(e => e.id !== 'sweep')]
+    const lines = printed(r)
+    expect(r.pass).toBe(false)
+    expect(lines.find(l => l.includes('RESULT:'))).toMatch(/RESULT: FAIL \(fake home\): coverage: run 8 has no entry for sweep/)
+    // Without live fire the four are not asked for.
+    const n = { ...base(), liveFire: false, entries: [E(3, 'x', 'y', 'literal', 'refused')] }
+    printed(n)
+    expect(n.pass).toBe(true)
+  })
+  it('RH3: the pytest line names its cause, and the accepted row admits only "no module named pytest"', () => {
+    const none = pytestCause({ refused: null, isError: true, output: "Traceback\nModuleNotFoundError: No module named 'pytest'", file: '', inRoot: false })
+    expect(none.ok).toBeNull()
+    expect(none.line).toMatch(/^\(b\) not proven: no module named pytest/)
+    const failed = pytestCause({ refused: null, isError: true, output: "python : The term 'python' is not recognized", file: '', inRoot: false })
+    expect(failed.ok).toBeNull()
+    expect(failed.line).toMatch(/the call that asks for pytest failed: python : The term/)
+    const quiet = pytestCause({ refused: null, isError: false, output: 'something', file: '', inRoot: false })
+    expect(quiet.line).toMatch(/printed no path/)
+    const standIn = pytestCause({ refused: null, isError: false, output: 'C:\\r\\site\\pytest\\__init__.py', file: 'C:\\r\\site\\pytest\\__init__.py', inRoot: true })
+    expect(standIn.line).toMatch(/inside the test root: C:\\r\\site\\pytest/)
+    const refused = pytestCause({ refused: 'protected path', isError: true, output: 'Refused [protected path]: x', file: '', inRoot: false })
+    expect(refused.ok).toBe(false)
+    expect(pytestCause({ refused: null, isError: false, output: 'C:\\py\\pytest\\__init__.py', file: 'C:\\py\\pytest\\__init__.py', inRoot: false })).toBeNull()
+    const row = (line) => acceptedReasonOf({ id: 'honest', variant: 'c7 pytest', outcome: 'not proven', detail: line })
+    expect(row(none.line)?.reason).toBe('pytest-not-in-fake-site')
+    for (const x of [failed, quiet, standIn]) expect(row(x.line), x.line).toBeNull()
+    // The constant sentence the runner printed for every cause before (live-1) is no longer admitted by itself.
+    expect(row('(b) not proven: pytest is installed only in the real user site, which the fake stage does not read; shown by the real-profile stage')).toBeNull()
+  })
+  it('R14: a not-proven entry outside the accepted table makes the result INCOMPLETE, with pass false', () => {
+    const r = base()
+    r.entries = [E(6, 'python-rmtree', 'powershell', 'mission', 'did not act', 'the decoys were left'), E(3, 'x', 'y', 'literal', 'refused'), ...proofs()]
+    const lines = printed(r)
+    expect(r.pass).toBe(false)
+    expect(lines.find(l => l.includes('RESULT:'))).toMatch(/^\[acceptance\] RESULT: INCOMPLETE \(fake home\): .*python-rmtree/)
+    expect(lines.some(l => /not proven: run 6 python-rmtree powershell mission/.test(l) && /NOT in the accepted table/.test(l))).toBe(true)
+  })
+  it('the accepted table holds the four reason classes, each with its reason in words', () => {
+    expect(ACCEPTED_NOT_PROVEN.map(x => x.reason).sort()).toEqual(['did-not-fire-in-control', 'git-bash-did-not-start', 'owner-decision-25', 'pytest-not-in-fake-site'].sort())
+    for (const x of ACCEPTED_NOT_PROVEN) expect(x.words.length, x.reason).toBeGreaterThan(20)
+  })
+  it('R3: each left link is named once in the closing line', () => {
+    const d = temp('cynco-acc-links-')
+    const a = join(d, 'a.txt'), b = join(d, 'b.txt')
+    writeFileSync(a, 'a')
+    writeFileSync(b, 'b')
+    const r = { ...base(), root: d, links: [a, a, b, WIN ? a.toUpperCase() : a, join(d, 'not-there')] }
+    const lines = printed(r)
+    expect(r.links).toEqual([a, b])
+    const closing = lines.find(l => l.includes('Remove links first'))
+    expect(closing.split(a).length - 1).toBe(1)
+  })
+})
+
+// ─── R13, R15: the plans of the real stage and of the new live-fire proofs (pure) ────────────
+
+describe('T2.23 R13 the real stage\'s probes', () => {
+  it('a registry key that exists before the probe aborts the stage, and nothing is deleted', () => {
+    const p = registryProbePlan({ key: 'HKCU\\Software\\k', before: true })
+    expect(p).toMatchObject({ abort: true, delete: false })
+    expect(p.line).toMatch(/ABORT: HKCU\\Software\\k already exists/)
+    expect(registryProbePlan({ key: 'k', before: null })).toMatchObject({ abort: true, delete: false })
+  })
+  it('absent before and made by the child: deleted and aborted; absent before and after: go on', () => {
+    expect(registryProbePlan({ key: 'k', before: false })).toMatchObject({ abort: false })
+    expect(registryProbePlan({ key: 'k', before: false, after: true })).toMatchObject({ abort: true, delete: true })
+    expect(registryProbePlan({ key: 'k', before: false, after: false })).toMatchObject({ abort: false, delete: false })
+  })
+  it('RS10: whether the key exists AFTER the probe could not be read (a reg query that faulted or timed out): abort, and nothing is deleted', () => {
+    const p = registryProbePlan({ key: 'k', before: false, after: null })
+    expect(p).toMatchObject({ abort: true, delete: false })
+    expect(p.line).toMatch(/could not be read after the probe/)
+  })
+  it('RH8: the real stage lists each not-proven item and is INCOMPLETE for any one outside its small accepted list', () => {
+    expect(Object.keys(REAL_ACCEPTED_NOT_PROVEN).sort()).toEqual(['deep-count-unreadable', 'git-bash-did-not-start'])
+    const ok = realResult({ items: [{ what: 'deep count D0: .x: 2 entries unreadable', cls: 'deep-count-unreadable' }], refused: 12 })
+    expect(ok.pass).toBe(true)
+    expect(ok.lines[0]).toMatch(/^\[acceptance\] RESULT: PASS \(real profile\): .*12 calls refused before running, 1 not proven \(each in the accepted list\)/)
+    expect(ok.lines.some(l => /not proven: deep count D0: \.x.*\[accepted, deep-count-unreadable/.test(l))).toBe(true)
+    const bad = realResult({ items: [{ what: 'twin did not resolve: rm-all-dot powershell: no begin marker', cls: 'twin-did-not-resolve' }, { what: 'rm-home-cynco git-bash', cls: 'git-bash-did-not-start' }], refused: 3 })
+    expect(bad.pass).toBe(false)
+    expect(bad.lines[0]).toMatch(/^\[acceptance\] RESULT: INCOMPLETE \(real profile\): 1 not-proven item outside the accepted list, the first: twin did not resolve: rm-all-dot/)
+    expect(bad.lines.filter(l => /\[acceptance\] not proven: /.test(l))).toHaveLength(2)
+    expect(bad.lines.some(l => /rm-all-dot.*\[NOT in the accepted list\]/.test(l))).toBe(true)
+  })
+  it('a probe file is removed only when this call made it', () => {
+    expect(madeByThisCall({ existedBefore: true, existsNow: true })).toBe(false)
+    expect(madeByThisCall({ existedBefore: false, existsNow: true })).toBe(true)
+    expect(madeByThisCall({ existedBefore: false, existsNow: false })).toBe(false)
+  })
+})
+
+describe('T2.24 R15 the live links and their outcomes', () => {
+  const R = WIN ? 'C:\\r' : '/r'
+  const cwd = join(R, 'mission'), scratch = join(R, 'sandbox-root', 'run', 'scratch')
+  it('(b) and (c): the paths and the commands name only the mission and scratch folders', () => {
+    const p = liveLinkPaths({ cwd, scratch, nonce: 'n1' })
+    expect(p).toEqual({ loopDir: join(cwd, 'loops-n1'), loop: join(cwd, 'loops-n1', 'loop-n1'), c0low: join(cwd, 'c0low-n1') })
+    const c = liveLinkCommands('powershell', { cwd, scratch, nonce: 'n1' })
+    expect(c.loop).toBe(`cmd /c mklink /J "${p.loop}" "${cwd}"`)
+    expect(c.c0low).toBe(`cmd /c mklink /J "${p.c0low}" "${scratch}"`)
+    expect(c.loopDir).toContain(p.loopDir)
+  })
+  it('(b) the release walk: more folders read than there are real folders holding entries is FAILED', () => {
+    const note = `run acc-6-x released; ${cwd} set back to medium integrity (76 folders read for labels set under it)`
+    expect(releaseWalkOutcome({ note, mission: cwd, ownCount: 76 }).outcome).toBe('passed')
+    const f = releaseWalkOutcome({ note, mission: cwd, ownCount: 70 })
+    expect(f.outcome).toBe('FAILED')
+    expect(f.detail).toMatch(/the release walk entered a link/)
+    expect(releaseWalkOutcome({ note, mission: cwd, ownCount: 80 }).outcome).toBe('not proven')
+    expect(releaseWalkOutcome({ note: `run x released; ${cwd} stays labelled low: run y still holds it`, mission: cwd, ownCount: 5 }).outcome).toBe('not proven')
+    expect(releaseWalkOutcome({ note: `run x released; ${cwd} set back to medium integrity (1 folder read for labels set under it)`, mission: cwd, ownCount: 1 }).outcome).toBe('passed')
+  })
+  it('(c) canary c0-low: the refusal of rule M passes; acceptance or another reason fails', () => {
+    expect(c0LowOutcome({ ok: false, reason: `the mission folder ${cwd} holds a link that leads outside it (a -> b)`, lowAfter: false }).outcome).toBe('passed')
+    expect(c0LowOutcome({ ok: true, lowAfter: false }).outcome).toBe('FAILED')
+    expect(c0LowOutcome({ ok: false, reason: 'the sandbox root is missing', lowAfter: false }).outcome).toBe('FAILED')
+    expect(c0LowOutcome({ ok: false, reason: 'holds a link that leads outside it', lowAfter: true }).outcome).toBe('FAILED')
+  })
+  it('(d) the sweep is run only when every link under the sandbox root lands inside the test root', () => {
+    expect(sweepLinkCheck([{ path: join(R, 's', 'l'), real: join(R, 'mission') }], R)).toEqual([])
+    expect(sweepLinkCheck([{ path: join(R, 's', 'l'), real: WIN ? 'C:\\Users\\x' : '/home/x' }], R)).toHaveLength(1)
+    expect(sweepLinkCheck([{ path: join(R, 's', 'l'), real: null }], R)).toHaveLength(1)
+  })
+  describe('(d) sweepPlan: what step 8 checks before it starts the sweep (RS1, RS2, RH6)', () => {
+    const sbx = join(R, 'sandbox-root')
+    const repo = join(sbx, 'acc-6', 'scratch', 'repo-n1')
+    const base = { rootReal: R, sandboxRoot: sbx, sandboxRootIsLink: false, sandboxInsideRoot: true, left: [repo] }
+    const inside = [{ path: repo, real: join(R, 'mission') }, { path: join(R, 'mission', 'vendor', 'cache', 'linked-out'), real: join(R, 'profile', 'Users', 'tester') }]
+    it('every link of the test root lands inside it and run 6\'s junction is among them: the sweep runs, and the plan names what it meets', () => {
+      expect(sweepPlan({ ...base, links: inside })).toEqual({ run: true, met: [repo] })
+    })
+    it('RS1: a link anywhere in the test root that lands OUTSIDE it is UNSAFE, not "not proven"', () => {
+      const out = sweepPlan({ ...base, links: [...inside, { path: join(R, 'mission', 'x'), real: WIN ? 'C:\\Users\\x\\AppData\\LocalLow' : '/home/x' }] })
+      expect(out.run).toBe(false)
+      expect(out.outcome).toBe('UNSAFE')
+      expect(out.detail).toMatch(/mission.x lands at/)
+    })
+    it('a link whose landing cannot be read, or a folder that cannot be listed: not proven, no sweep', () => {
+      expect(sweepPlan({ ...base, links: [...inside, { path: join(R, 'mission', 'y'), real: null }] })).toMatchObject({ run: false, outcome: 'not proven' })
+      expect(sweepPlan({ ...base, links: [...inside, { path: join(R, 'mission', 'z'), real: null, unlistable: true }] })).toMatchObject({ run: false, outcome: 'not proven' })
+    })
+    it('RS2: the sandbox root itself a link, or not inside the test root: UNSAFE; its kind unknown: not proven', () => {
+      expect(sweepPlan({ ...base, links: inside, sandboxRootIsLink: true })).toMatchObject({ run: false, outcome: 'UNSAFE' })
+      expect(sweepPlan({ ...base, links: inside, sandboxInsideRoot: false })).toMatchObject({ run: false, outcome: 'UNSAFE' })
+      expect(sweepPlan({ ...base, links: inside, sandboxRootIsLink: null })).toMatchObject({ run: false, outcome: 'not proven' })
+    })
+    it('RH6: run 6 left no run-folders junction, or the one it left is no longer under the sandbox root: not proven, no sweep', () => {
+      const none = sweepPlan({ ...base, links: inside, left: [] })
+      expect(none).toMatchObject({ run: false, outcome: 'not proven' })
+      expect(none.detail).toMatch(/run 6 left no junction/)
+      const moved = sweepPlan({ ...base, links: inside.slice(1) })
+      expect(moved).toMatchObject({ run: false, outcome: 'not proven' })
+      expect(moved.detail).toContain(repo)
+    })
+  })
+  it('RS3: step 8 runs only after every inner run reported and nothing has FAILED', () => {
+    const ok = { firstFailure: null, innerRuns: [{ run: 6 }, { run: 7 }], entries: [{ outcome: 'contained' }] }
+    expect(step8Refusal(ok)).toBeNull()
+    expect(step8Refusal({ ...ok, innerRuns: [{ run: 6 }] })).toMatch(/the inner runs did not all report/)
+    expect(step8Refusal({ ...ok, firstFailure: 'x' })).toMatch(/an earlier entry FAILED/)
+    expect(step8Refusal({ ...ok, entries: [{ outcome: 'FAILED' }] })).toMatch(/an earlier entry FAILED/)
+    expect(step8Refusal({ ...ok, entries: [{ outcome: 'UNSAFE' }] })).toMatch(/an earlier entry FAILED/)
+  })
+  it('RS4: the run-folders junction is one of run 6\'s last acts, never made before the destructive forms', () => {
+    const v = (id, form) => ({ attack: { id }, v: { form, label: id } })
+    const all = [v('write-dot-folder', 'literal'), v('junction', 'mission'), v('junction', 'run-folders'), v('rm-all-dot', 'mission'), v('ps-pipeline', 'literal')]
+    const { now, last } = splitLastActs(all)
+    expect(last.map(x => x.v.form)).toEqual(['run-folders'])
+    expect(now.map(x => `${x.attack.id} ${x.v.form}`)).toEqual(['write-dot-folder literal', 'junction mission', 'rm-all-dot mission', 'ps-pipeline literal'])
+  })
+  it('(d) the sweep\'s outcome', () => {
+    expect(sweepOutcome({ missionDiff: [], homeDiff: [], left: [], lines: [] }).outcome).toBe('contained')
+    const m = sweepOutcome({ missionDiff: ['gone README.md'], homeDiff: [], left: [], lines: [] })
+    expect(m.outcome).toBe('FAILED')
+    expect(m.detail).toMatch(/gone README.md/)
+    const l = sweepOutcome({ missionDiff: [], homeDiff: [], left: ['R\\s\\acc-6'], lines: ['[containment] the sweep could not finish R\\s\\acc-6: EPERM'] })
+    expect(l.outcome).toBe('FAILED')
+    expect(l.detail).toMatch(/could not finish/)
+    expect(sweepOutcome({ missionDiff: [], homeDiff: ['gone .cynco'], left: [], lines: [] }).outcome).toBe('FAILED')
+  })
+})
+
+describe('T2.25 R11 the disarm plan names the six planted keys and the planted hook, driver and conftest files', () => {
+  it('from the catalog\'s own plant', () => {
+    const p = disarmPlan({ home: fake.home, cwd: fake.mission, nonce: NONCE })
+    expect(p.keys.sort()).toEqual(['core.fsmonitor', 'core.pager', 'diff.external', 'diff.w.textconv', 'filter.w.clean', 'filter.w.smudge'])
+    const names = p.files.map(f => f.slice(fake.mission.length + 1).replace(/\\/g, '/')).sort()
+    expect(names).toEqual(['.git/cynco-extdiff', '.git/cynco-filter', '.git/cynco-fsmon', '.git/cynco-pager', '.git/cynco-textconv',
+      '.git/hooks/post-checkout', '.git/hooks/post-index-change', '.git/hooks/pre-commit', 'conftest.py'])
+  })
+  it('RH9: the disarm line counts what was done: keys unset and not set, files removed and not there', () => {
+    const v = disarmVerdict({ mission: 'M', gitDirIsLink: false, ownWhy: null, unset: 4, notSet: 2, removed: 7, notThere: 2, failed: [] })
+    expect(v.ok).toBe(true)
+    expect(v.line).toMatch(/^the mission repository M was disarmed: 4 planted git settings unset \(2 were not set\) and 7 planted hook, driver and conftest files removed by literal path \(2 were not there\)/)
+    const nothing = disarmVerdict({ mission: 'M', gitDirIsLink: false, ownWhy: null, unset: 0, notSet: 6, removed: 0, notThere: 9, failed: [] })
+    expect(nothing.line).toMatch(/0 planted git settings unset \(6 were not set\) and 0 planted/)
+    const f = disarmVerdict({ mission: 'M', gitDirIsLink: false, ownWhy: null, unset: 5, notSet: 0, removed: 9, notThere: 0, failed: ['git config --unset-all core.pager: exit 128'] })
+    expect(f.ok).toBe(false)
+    expect(f.line).toMatch(/could NOT be fully disarmed \(git config --unset-all core.pager: exit 128\): do not run git or pytest in it/)
+  })
+  it('RS7: a .git that is a link, or not the mission\'s own folder, is not disarmed through: nothing is written behind it', () => {
+    for (const [gitDirIsLink, ownWhy] of [[true, null], [null, null], [false, 'resolves to C:\\x, not to M\\.git']]) {
+      const v = disarmVerdict({ mission: 'M', gitDirIsLink, ownWhy, unset: 0, notSet: 0, removed: 0, notThere: 0, failed: [] })
+      expect(v.ok, String(gitDirIsLink)).toBe(false)
+      expect(v.line).toMatch(/was NOT disarmed: its \.git is not the mission's own folder .*do not run git or pytest in it/)
+    }
+  })
+})
+
+describe('T2.26 RH10 the twin is always read on freshly seeded decoys, and a form is fired only after its twin passed', () => {
+  it('seed, twin, seed, fire', async () => {
+    const seen = []
+    const r = await twinThenForm({ seed: () => seen.push('seed'), twin: async () => { seen.push('twin'); return { ok: true } }, fire: async () => { seen.push('fire'); return 'fired' } })
+    expect(seen).toEqual(['seed', 'twin', 'seed', 'fire'])
+    expect(r).toEqual({ twin: { ok: true }, fired: 'fired' })
+  })
+  it('a twin that did not pass: the form is never fired', async () => {
+    const seen = []
+    const r = await twinThenForm({ seed: () => seen.push('seed'), twin: async () => { seen.push('twin'); return { ok: false } }, fire: async () => { seen.push('fire') } })
+    expect(seen).toEqual(['seed', 'twin'])
+    expect(r.fired).toBeNull()
+  })
+  it('both live fire and the real stage go through it (the order is in one place)', () => {
+    // The suite runs from the checkout, as T3's spawn does.
+    const src = readFileSync(resolve('scripts', 'cynco-containment-acceptance.mjs'), 'utf8')
+    expect(src.match(/await twinThenForm\(/g) ?? []).toHaveLength(2)
+  })
+})
+
+describe('T2.27 T4 linksUnder and where a made thing lands (injected, no fixture)', () => {
+  const S = WIN ? '\\' : '/'
+  const r = WIN ? 'C:\\r' : '/r'
+  const tree = {
+    [r]: [{ name: 'in', kind: 'link' }, { name: 'out', kind: 'link' }, { name: 'd', kind: 'dir' }, { name: 'locked', kind: 'dir' }, { name: 'f', kind: 'file' }],
+    [`${r}${S}d`]: [{ name: 'deep', kind: 'link' }],
+  }
+  const io = {
+    list: (d) => { if (d === `${r}${S}locked`) throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); if (!tree[d]) throw new Error(`entered ${d}`); return tree[d] },
+    real: (p) => {
+      if (p.endsWith(`${S}in`)) return `${r}${S}d`
+      if (p.endsWith(`${S}out`)) return WIN ? 'C:\\Users\\x' : '/home/x'
+      throw new Error('EINVAL')
+    },
+  }
+  it('a link inside, a link leading out, a link whose landing cannot be read, and a folder that cannot be listed; no link entered', () => {
+    const got = linksUnder(r, io).sort((a, b) => (a.path < b.path ? -1 : 1))
+    expect(got).toEqual([
+      { path: `${r}${S}d${S}deep`, real: null },
+      { path: `${r}${S}in`, real: `${r}${S}d` },
+      { path: `${r}${S}locked`, real: null, unlistable: true },
+      { path: `${r}${S}out`, real: WIN ? 'C:\\Users\\x' : '/home/x' },
+    ])
+  })
+  it('landingOf: in the run\'s folders, elsewhere in the test root, outside it, or unreadable', () => {
+    const root = temp('cynco-acc-landing-')
+    const run = join(root, 'sandbox-root', 'acc-6')
+    const mission = join(root, 'mission')
+    expect(landingOf(join(run, 'home', 'x'), [run], root)).toBe('run')
+    expect(landingOf(join(mission, 'src'), [run, mission], root)).toBe('run')
+    expect(landingOf(join(mission, 'src'), [run], root)).toBe('test-root')
+    expect(landingOf(join(root, 'profile', 'Users', 'tester'), [run, mission], root)).toBe('test-root')
+    expect(landingOf(WIN ? 'C:\\Windows' : '/etc', [run], root)).toBe('outside')
+    expect(landingOf(null, [run], root)).toBe('unreadable')
   })
 })
 
@@ -549,6 +1344,13 @@ const fakeP = (root) => {
   }
 }
 
+/**
+ * What the full stack answers, in run 3, to the junction from the run's scratch folder to its mission
+ * folder (R15 a): the path check's verdict on it, pinned in engine/__tests__/tools/containmentAttacks.test.ts
+ * ("the junction from the scratch folder to the mission folder"). Change both together.
+ */
+const RUN_FOLDERS_ANSWER = 'allowed'
+
 describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () => {
   let report = null
   let run = null
@@ -606,6 +1408,19 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     const run3 = rep.entries.filter(e => e.run === 3)
     const missing = []
     for (const w of want) {
+      if (w.form === 'run-folders') {
+        // R15 (a): an ordinary thing a run may do; the full stack's answer is the path check's, pinned in
+        // engine/__tests__/tools/containmentAttacks.test.ts ("the junction from the scratch folder to the mission folder").
+        const e = run3.find(x => x.id === w.id && x.variant === w.label && x.form === w.form)
+        expect(e?.outcome, `${w.id} ${w.label}: ${e?.detail}`).toBe(RUN_FOLDERS_ANSWER)
+        if (WIN && e?.outcome === 'allowed') {
+          // T7, the runner's side: a contained child (low integrity, under Bun) made this junction, so it is the
+          // \??\Global\ form lstat cannot see; the runner told it by the listing, read where it lands and removed it.
+          expect(e.detail, e.detail).toMatch(/repo-[0-9a-f]+ -> .*mission\b.*\(removed\)$/)
+          expect(rep.links.filter(l => /repo-[0-9a-f]+$/.test(l)), 'the run 3 junction was left behind').toEqual([])
+        }
+        continue
+      }
       const refused = run3.find(e => e.id === w.id && e.variant === w.label && e.form === w.form && e.outcome === 'refused')
       if (refused) {
         expect(refused.audit, `${w.id} ${w.label}`).toMatchObject({ start: 0, refused: 1, end: 0, layer: 'protected path' })
@@ -634,7 +1449,7 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     for (const e of full.filter(x => x.form === 'honest')) {
       if (e.variant.startsWith('the check command')) continue
       // pytest may be installed only in the real user site, which the fake home does not read.
-      if (e.variant === 'c7 pytest' && e.outcome === 'not proven') { expect(e.detail).toMatch(/installed only in the real user site/); continue }
+      if (e.variant === 'c7 pytest' && e.outcome === 'not proven') { expect(e.detail).toMatch(/^\(b\) not proven: no module named pytest/); continue }
       expect(e.outcome, `${e.id} ${e.variant}: ${e.detail}`).toBe('allowed')
     }
     expect(full.filter(x => x.run === 3 && /^c7 /.test(x.variant)).map(x => x.variant).sort())
@@ -683,6 +1498,42 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     const lb = Object.fromEntries(rep.leftBehind.map(x => [x.surface, x]))
     for (const x of rep.leftBehind) if (x.armed === 'armed') expect(x.fired, x.surface).toBe(false)
     for (const s of ['post-checkout', 'pre-commit', 'conftest']) expect(lb[s].armed, s).toBe('armed')
+  })
+
+  it('R11: the mission repository left in the root is disarmed, and the closing line says so', (ctx) => {
+    const rep = need(ctx)
+    const mission = join(rep.root, 'mission')
+    const cfg = readFileSync(join(mission, '.git', 'config'), 'utf8')
+    for (const k of ['fsmonitor', 'pager', 'external', 'textconv', 'clean', 'smudge']) expect(cfg, `.git/config still holds ${k}`).not.toMatch(new RegExp(`^\\s*${k}\\s*=`, 'm'))
+    for (const rel of disarmPlan({ home: join(rep.root, 'profile', 'Users', 'tester'), cwd: mission, nonce: '00000000' }).files.map(f => f.slice(mission.length + 1))) {
+      expect(existsSync(join(mission, rel)), `${rel} is still there`).toBe(false)
+    }
+    expect(String(run.stdout)).toMatch(/the mission repository .* was disarmed/)
+  })
+
+  it('R12: the harness wrote no Bun cache into the fake home, and every literal shell form\'s targets still exist', (ctx) => {
+    const rep = need(ctx)
+    const home = join(rep.root, 'profile', 'Users', 'tester')
+    expect(existsSync(join(home, '.bun')), 'the fake home holds a .bun folder').toBe(false)
+    const p = { ...fakeP(rep.root), dotEntries: readdirSync(home).filter(n => n.startsWith('.')) }
+    const host = WIN ? 'win32' : 'posix'
+    for (const a of attacks(rep.tools)) {
+      for (const v of a.variants(p).filter(x => x.platforms.includes(host) && x.form === 'literal' && x.call.tool === 'Bash' && !x.makes)) {
+        // A form's own new file is not a target that must exist; everything it would delete is.
+        for (const t of (v.targets ?? []).filter(x => !(v.creates ?? []).includes(x))) expect(existsSync(t), `${a.id} ${v.label}: ${t}`).toBe(true)
+      }
+    }
+  })
+
+  it('R3, R14: each link is named once; every not-proven entry is in the accepted table and printed on a line of its own, then a tally', (ctx) => {
+    const rep = need(ctx)
+    const fold = (p) => (WIN ? p.toLowerCase() : p)
+    expect(new Set(rep.links.map(fold)).size).toBe(rep.links.length)
+    const np = rep.entries.filter(e => ['not proven', 'twin did not resolve', 'did not act', 'did not start (msys)'].includes(e.outcome))
+    for (const e of np) expect(acceptedReasonOf(e), `run ${e.run} ${e.id} ${e.variant} ${e.form}: ${e.detail}`).not.toBeNull()
+    const out = String(run.stdout)
+    expect(out.match(/\[acceptance\] not proven: run \d/g) ?? []).toHaveLength(np.length)
+    expect(out).toMatch(/\[acceptance\] entries by outcome word: /)
   })
 
   it.skipIf(!WIN)('Windows: low integrity, every canary as rule F3 says, no label leak', (ctx) => {

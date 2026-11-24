@@ -156,6 +156,17 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
     expect(decide('Write', { file_path: join(fake.heldout, 'x.txt'), content: 'x' }, fake.a1, authoringCtx).kind).toBe('refuse')
   })
 
+  it('8b. the junction from the scratch folder to the mission folder (R15 a) is an ordinary thing a run may do: the path check allows it, for PowerShell and POSIX', () => {
+    // The answer the acceptance's run 3 records for the run-folders form (RUN_FOLDERS_ANSWER in
+    // scripts/__tests__/cynco-containment-acceptance.test.mjs, 'allowed'). Change both together.
+    const seen = allVariants().filter(x => x.v.form === 'run-folders')
+    expect(seen.map(x => x.v.label)).toEqual(['to the mission folder', 'to the mission folder', 'to the mission folder'])
+    for (const { shell, v } of seen) {
+      expect(v.call.input.command, shell).toContain(`repo-${nonce}`)
+      expect(decide(v.call.tool, v.call.input).kind, `${shell}: ${JSON.stringify(decide(v.call.tool, v.call.input)).slice(0, 300)}`).toBe('allow')
+    }
+  })
+
   it('9. the roots do not follow the executor\'s folder: a relative Write from another folder is refused', () => {
     expect(decide('Write', { file_path: 'x.txt', content: 'x' }, join(root, 'outside')).kind).toBe('refuse')
     expect(Object.isFrozen(ctx)).toBe(true)

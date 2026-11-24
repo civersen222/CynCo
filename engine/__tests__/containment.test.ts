@@ -12,11 +12,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import {
-  existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync,
+  copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync,
   symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   acknowledgedVolumes, adoptContainment, containedCommand, containmentHint, containmentOff,
   containmentRecords, containmentSwitch, engineCheckout, establishContainment, launcherFaultOf,
@@ -27,6 +28,28 @@ import {
 } from '../containment.js'
 import { RUN_ID_RE } from '../missionEnv.js'
 import { auditDir, cyncoHome, guardDir } from '../paths.js'
+import { isLinkEntry, listEntries, whyNotAtOwnPath, type EntryKind } from '../realPath.js'
+
+/**
+ * The walks take an entry's kind from the folder's listing (`listEntries`, `isLinkEntry`). A case
+ * that needs the listing to disagree with lstat (what a junction made at low integrity does, F4)
+ * without such a junction sets one of these; by default both answer what the real ones answer.
+ */
+const listing = vi.hoisted(() => ({
+  entries: null as null | ((dir: string, real: (d: string) => Array<{ name: string; kind: EntryKind }>) => Array<{ name: string; kind: EntryKind }>),
+  isLink: null as null | ((p: string, real: (p: string) => boolean | null) => boolean | null),
+  /** Answers the real-path check (`whyNotAtOwnPath`), e.g. to stand for a swap between two of its calls. */
+  whyNot: null as null | ((parentReal: string, name: string, real: (parentReal: string, name: string) => string | null) => string | null),
+}))
+vi.mock('../realPath.js', async importOriginal => {
+  const real = await importOriginal<typeof import('../realPath.js')>()
+  return {
+    ...real,
+    listEntries: (d: string) => (listing.entries ? listing.entries(d, real.listEntries) : real.listEntries(d)),
+    isLinkEntry: (p: string) => (listing.isLink ? listing.isLink(p, real.isLinkEntry) : real.isLinkEntry(p)),
+    whyNotAtOwnPath: (r: string, n: string) => (listing.whyNot ? listing.whyNot(r, n, real.whyNotAtOwnPath) : real.whyNotAtOwnPath(r, n)),
+  }
+})
 
 const ENV_KEYS = ['LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_MARKER']
 
@@ -58,12 +81,22 @@ afterEach(() => {
   setRunContainment(null)
   for (const k of ENV_KEYS) delete process.env[k]
   vi.restoreAllMocks()
+  listing.entries = null
+  listing.isLink = null
+  listing.whyNot = null
   // The links this test made are removed as entries first, so the clean-up below never walks one.
+  // A link that could not be removed is named: the recursive remove below then meets it.
   for (const l of links) {
     try {
       rmdirSync(l)
-    } catch {
-      try { unlinkSync(l) } catch (e) { void e }
+    } catch (asFolder) {
+      try {
+        unlinkSync(l)
+      } catch (asFile) {
+        if ((asFile as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.log(`[containment] the clean-up could not remove the link ${l} (rmdir: ${(asFolder as Error).message}; unlink: ${(asFile as Error).message})`)
+        }
+      }
     }
   }
   rmSync(dir, { recursive: true, force: true })
@@ -1032,6 +1065,26 @@ describe('sweepSandboxes', () => {
     expect(readFileSync(join(sentinel, 'keep.txt'), 'utf-8')).toBe('keep')
   })
 
+  it('a file symbolic link inside an old sandbox is removed as an entry; the file it points at is intact', t => {
+    const target = join(dir, 'target.txt')
+    writeFileSync(target, 'keep')
+    const old = established(establishContainment(base({ now: daysAgo(8) })))
+    const at = join(old.sandbox.scratch, 'fl')
+    try {
+      symlinkSync(target, at, 'file')
+    } catch (e) {
+      // What Windows' rmdir answers for a file symbolic link is then not measured on this system.
+      console.log(`[containment] SKIPPED: a file symbolic link could not be made here (${(e as Error).message}); on Windows that takes Developer Mode or elevation`)
+      t.skip()
+      return
+    }
+    links.push(at)
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed, lines.join('\n')).toEqual([join(L.root, old.runId)])
+    expect(readFileSync(target, 'utf-8')).toBe('keep')
+  })
+
   it('refuses a root that contains the home folder, and removes nothing', () => {
     const old = established(establishContainment(base({ now: daysAgo(8) })))
     const homeInRoot = join(L.root, 'h')
@@ -1049,6 +1102,586 @@ describe('sweepSandboxes', () => {
     expect(containmentRecords({ sandboxRoot: L.root }).map(r => r.runId)).toEqual([a.runId, b.runId])
     expect(containmentRecords({ sandboxRoot: join(dir, 'none') })).toEqual([])
   })
+})
+
+// ─── The walks judge an entry by its folder's listing (F242, the first live-fire run) ──────────────
+
+const daysBack = (d: number) => () => new Date(Date.now() - d * 24 * 3600_000)
+
+/**
+ * A listing of `at`'s folder in which the entry `name` has the kind `kind`, whatever it is on disk;
+ * `isLinkEntry` of that entry answers the same.
+ */
+function listedAs(at: string, name: string, kind: EntryKind): void {
+  listing.entries = (d, real) => real(d).map(e => (fold(d) === fold(at) && e.name === name ? { name, kind } : e))
+  listing.isLink = (p, real) => (fold(p) === fold(join(at, name)) ? kind === 'link' : real(p))
+}
+
+/** The real-path check answers that `name` in the folder `at` resolves elsewhere, as a link to another folder does. */
+function redirected(at: string, name: string): void {
+  listing.whyNot = (r, n, real) => (fold(r) === fold(at) && n === name ? `resolves to ${join(dir, 'elsewhere')}, not to ${join(r, n)}` : real(r, n))
+}
+
+describe('the walks take an entry\'s kind from the listing, not from lstat (pure: a listing that disagrees)', () => {
+  it('sweep: an entry the listing calls a link is never entered, even when lstat calls it a folder', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const looks = join(old.sandbox.scratch, 'looks-linked')
+    mkdirSync(looks)
+    writeFileSync(join(looks, 'keep.txt'), 'keep')
+    listedAs(old.sandbox.scratch, 'looks-linked', 'link')
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    // Removed as an entry: a folder that is not a link and is not empty cannot be, so the sweep stops.
+    expect(res.removed).toEqual([])
+    expect(readFileSync(join(looks, 'keep.txt'), 'utf-8')).toBe('keep')
+    expect(lines.join('\n')).toContain(`the sweep could not finish ${join(L.root, old.runId)}: ${looks} could not be removed as a link`)
+  })
+
+  it('sweep: a file the listing calls a link (what a file carrying a reparse tag is) is removed as an entry, and the run folder goes', () => {
+    // On Windows rmdirSync of a file answers ENOENT, not ENOTDIR (measured under Bun and Node).
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const rp = join(old.sandbox.scratch, 'rp.dat')
+    writeFileSync(rp, 'x')
+    listedAs(old.sandbox.scratch, 'rp.dat', 'link')
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed, lines.join('\n')).toEqual([join(L.root, old.runId)])
+    expect(existsSync(join(L.root, old.runId))).toBe(false)
+    expect(lines.join('\n')).toContain(`${rp} is not a folder link (rmdir answered `)
+  })
+
+  it('sweep: a run folder whose walk stops keeps its record, so every later sweep tries it again and says why; it goes once the cause is gone', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const runDir = join(L.root, old.runId)
+    const stuck = join(old.sandbox.home, 'stuck')
+    mkdirSync(stuck)
+    writeFileSync(join(stuck, 'keep.txt'), 'keep')
+    writeFileSync(join(old.sandbox.scratch, 'later.txt'), 'x')
+    // A real folder holding a file, which the listing calls a link: it cannot be removed as an entry.
+    listedAs(old.sandbox.home, 'stuck', 'link')
+    for (const pass of [1, 2]) {
+      const lines: string[] = []
+      const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+      expect(res, `pass ${pass}: ${lines.join('\n')}`).toEqual({ removed: [], kept: 1 })
+      expect(lines.join('\n'), `pass ${pass}`).toContain(`the sweep could not finish ${runDir}: ${stuck} could not be removed as a link`)
+      expect(existsSync(join(runDir, 'containment.json')), `pass ${pass}`).toBe(true)
+      expect(containmentRecords({ sandboxRoot: L.root }).map(r => r.runId), `pass ${pass}`).toEqual([old.runId])
+    }
+    expect(readFileSync(join(stuck, 'keep.txt'), 'utf-8')).toBe('keep')
+    listing.entries = null
+    listing.isLink = null
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: () => undefined })
+    expect(res.removed).toEqual([runDir])
+    expect(existsSync(runDir)).toBe(false)
+  })
+
+  it('sweep: once a folder is no longer where its path says, nothing more in it is removed', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    for (const n of ['a.txt', 'b.txt']) writeFileSync(join(old.sandbox.scratch, n), n)
+    // The scratch folder passes the check before and after it is listed and fails from then on: a
+    // swap for a link while its entries are being removed.
+    let calls = 0
+    listing.whyNot = (r, n, real) => (n === 'scratch' && ++calls > 2 ? `resolves to ${join(dir, 'elsewhere')}, not to ${join(r, n)}` : real(r, n))
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed).toEqual([])
+    for (const n of ['a.txt', 'b.txt']) expect(existsSync(join(old.sandbox.scratch, n)), `${n}\n${lines.join('\n')}`).toBe(true)
+    expect(lines.join('\n')).toContain(`${old.sandbox.scratch} resolves to ${join(dir, 'elsewhere')}, not to ${old.sandbox.scratch} before an entry in it was removed; the sweep stops there`)
+  })
+
+  it('sweep: a folder that is no longer where its path says after it was listed is not emptied', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    writeFileSync(join(old.sandbox.scratch, 'a.txt'), 'a')
+    let calls = 0
+    listing.whyNot = (r, n, real) => (n === 'scratch' && ++calls === 2 ? `resolves to ${join(dir, 'elsewhere')}, not to ${join(r, n)}` : real(r, n))
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed).toEqual([])
+    expect(existsSync(join(old.sandbox.scratch, 'a.txt'))).toBe(true)
+    expect(lines.join('\n')).toContain(`${old.sandbox.scratch} resolves to ${join(dir, 'elsewhere')}, not to ${old.sandbox.scratch} after it was listed; the sweep stops there`)
+  })
+
+  it('sweep: a run folder its root\'s listing calls a link, or does not show, is kept, and the line says which', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const runDir = join(L.root, old.runId)
+    for (const answer of [true, null] as const) {
+      listing.isLink = (p, real) => (fold(p) === fold(runDir) ? answer : real(p))
+      const lines: string[] = []
+      const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+      expect(res, String(answer)).toEqual({ removed: [], kept: 1 })
+      expect(existsSync(join(runDir, 'containment.json'))).toBe(true)
+      expect(lines.join('\n')).toContain(answer
+        ? `${runDir} is a link; the sweep does not touch it`
+        : `${runDir} is not in the listing of ${L.root}, so whether it is a link is not known; the sweep does not touch it`)
+    }
+  })
+
+  it('sweep: the delete itself refuses a top folder its parent\'s listing calls a link, or does not show', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const runDir = join(L.root, old.runId)
+    for (const second of [true, null] as const) {
+      // The sweep's own check sees a folder; the delete's check, a moment later, does not.
+      let n = 0
+      listing.isLink = (p, real) => (fold(p) === fold(runDir) ? (++n === 1 ? false : second) : real(p))
+      const lines: string[] = []
+      const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+      expect(res, String(second)).toEqual({ removed: [], kept: 1 })
+      expect(existsSync(join(runDir, 'containment.json'))).toBe(true)
+      expect(lines.join('\n')).toContain(second
+        ? `the sweep could not finish ${runDir}: ${runDir} is a link; the sweep stops there and enters nothing`
+        : `the sweep could not finish ${runDir}: ${runDir} is not in the listing of ${L.root}, so whether it is a link is not known; the sweep stops there and enters nothing`)
+    }
+  })
+
+  it('containmentRecords: a run folder the root\'s listing calls a link is not a record, and the sweep does not touch it', () => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    listedAs(L.root, old.runId, 'link')
+    expect(containmentRecords({ sandboxRoot: L.root })).toEqual([])
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: () => undefined })
+    expect(res.removed).toEqual([])
+    expect(existsSync(join(L.root, old.runId, 'containment.json'))).toBe(true)
+  })
+
+  it('release (rule R4): a folder the listing calls a link, which resolves elsewhere, is not walked', () => {
+    mkdirSync(join(L.mission, 'sub', 'deeper'), { recursive: true })
+    writeFileSync(join(L.mission, 'sub', 'deeper', 'h.txt'), 'x')
+    const c = established(establishContainment(winBase(seam().run)))
+    listedAs(L.mission, 'sub', 'link')
+    redirected(L.mission, 'sub')
+    const r = seam()
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled, res.note).toBe(true)
+    const listed = r.calls.filter(x => x.args.length === 2 && x.args[1] === '/L').map(x => x.args[0])
+    expect(listed).toContain(join(L.mission, '*'))
+    expect(listed.some(a => a.startsWith(join(L.mission, 'sub') + (process.platform === 'win32' ? '\\' : '/')))).toBe(false)
+  })
+
+  it('release (rule R4): a folder the listing calls a link that resolves to its own path (a folder carrying a reparse tag) is walked as the folder it is', () => {
+    mkdirSync(join(L.mission, 'tagged', 'deeper'), { recursive: true })
+    writeFileSync(join(L.mission, 'tagged', 'deeper', 'h.txt'), 'x')
+    const c = established(establishContainment(winBase(seam().run)))
+    listedAs(L.mission, 'tagged', 'link')
+    const tagged = join(L.mission, 'tagged')
+    const r = seam({
+      icacls: args => (args[0] === join(L.mission, '*') && args[1] === '/L' && args.length === 2
+        ? { ok: true, out: `${tagged} NT AUTHORITY\\SYSTEM:(I)(F)\r\n          Mandatory Label\\Low Mandatory Level:(OI)(CI)(NW)\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n` }
+        : undefined),
+    })
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled, res.note).toBe(true)
+    const listed = r.calls.filter(x => x.args.length === 2 && x.args[1] === '/L').map(x => x.args[0])
+    expect(listed).toContain(join(tagged, '*'))
+    expect(listed).toContain(join(tagged, 'deeper', '*'))
+    const resets = r.calls.filter(x => x.args[1] === '/L' && x.args[2] === '/setintegritylevel').map(x => [x.args[0], x.args[3]])
+    expect(resets).toEqual([[tagged, '(OI)(CI)M']])
+  })
+
+  it('release (rule R4): a folder the listing calls a folder that resolves elsewhere is not entered, and the release says so', () => {
+    writeFileSync(join(L.outside, 'o.txt'), 'x')
+    const c = established(establishContainment(winBase(seam().run)))
+    const jn = join(L.mission, 'jn')
+    link(L.outside, jn)
+    listedAs(L.mission, 'jn', 'dir')
+    const r = seam()
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    const listed = r.calls.filter(x => x.args.length === 2 && x.args[1] === '/L').map(x => x.args[0])
+    expect(listed).not.toContain(join(jn, '*'))
+    expect(listed.some(a => fold(a).startsWith(fold(L.outside)))).toBe(false)
+    expect(res.relabelled).toBe(false)
+    expect(res.note).toContain(`${jn} was not entered: it resolves to ${L.outside}, not to ${jn}`)
+  })
+
+  it('release (rule R4): a folder swapped for a link after it was queued is not entered', () => {
+    mkdirSync(join(L.mission, 'sub', 'deeper'), { recursive: true })
+    writeFileSync(join(L.mission, 'zz.txt'), 'x')
+    writeFileSync(join(L.outside, 'o.txt'), 'x')
+    const c = established(establishContainment(winBase(seam().run)))
+    const sub = join(L.mission, 'sub')
+    let swapped = false
+    const r = seam({
+      icacls: args => (args[0] === join(L.mission, '*') && args[1] === '/L' && args.length === 2
+        ? { ok: true, out: `${join(L.mission, 'zz.txt')} NT AUTHORITY\\SYSTEM:(I)(F)\r\n          Mandatory Label\\Low Mandatory Level:(NW)\r\n\r\nSuccessfully processed 1 files; Failed processing 0 files\r\n` }
+        : undefined),
+      before: call => {
+        // zz.txt is set back after sub was queued (the listing is in name order on NTFS): sub is
+        // swapped for a link to a folder outside then, as a live low process could.
+        if (swapped || call.args[0] !== join(L.mission, 'zz.txt') || call.args[2] !== '/setintegritylevel') return
+        swapped = true
+        renameSync(sub, join(L.mission, 'sub-away'))
+        link(L.outside, sub)
+      },
+    })
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(swapped).toBe(true)
+    const listed = r.calls.filter(x => x.args.length === 2 && x.args[1] === '/L').map(x => x.args[0])
+    expect(listed).not.toContain(join(sub, '*'))
+    expect(res.note).toContain(`${sub} was not entered: it resolves to ${L.outside}, not to ${sub}`)
+  })
+
+  it('release (rule R4): an entry the listing shows and lstat cannot see, whose label cannot be read, is said', () => {
+    // A junction a low process made whose target is gone: lstat follows it and answers ENOENT (F4),
+    // the folder's listing still shows it.
+    const c = established(establishContainment(winBase(seam().run)))
+    const ghost = join(L.mission, 'ghost')
+    listing.entries = (d, real) => (fold(d) === fold(L.mission) ? [...real(d), { name: 'ghost', kind: 'link' }] : real(d))
+    listing.isLink = (p, real) => (fold(p) === fold(ghost) ? true : real(p))
+    const r = seam({ icacls: args => (args[0] === ghost && args[1] === '/L' && args.length === 2 ? { ok: false, out: 'The system cannot find the file specified.' } : undefined) })
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    expect(res.relabelled).toBe(false)
+    expect(res.note).toContain(`the label of ${ghost} could not be read (The system cannot find the file specified.)`)
+  })
+
+  it('create (hard links): a file with a second name inside what the listing calls a link, which resolves elsewhere, is not counted', () => {
+    mkdirSync(join(L.mission, 'vendor'))
+    writeFileSync(join(L.outside, 'secret.txt'), 'x')
+    linkSync(join(L.outside, 'secret.txt'), join(L.mission, 'vendor', 'alias.txt'))
+    listedAs(L.mission, 'vendor', 'link')
+    redirected(L.mission, 'vendor')
+    expect(establishContainment(winBase(seam().run)).ok).toBe(true)
+  })
+
+  it('create (hard links): a folder the listing calls a link that resolves to its own path is walked: a file with a second name in it is refused', () => {
+    mkdirSync(join(L.mission, 'tagged'))
+    writeFileSync(join(L.outside, 'secret.txt'), 'x')
+    linkSync(join(L.outside, 'secret.txt'), join(L.mission, 'tagged', 'alias.txt'))
+    listedAs(L.mission, 'tagged', 'link')
+    expect(refusal(establishContainment(winBase(seam().run)))).toContain(`holds a file with more than one name (${join(L.mission, 'tagged', 'alias.txt')} has 2)`)
+  })
+
+  it('create (hard links): a file the listing calls a link that has a second name is refused', () => {
+    writeFileSync(join(L.outside, 'secret.txt'), 'x')
+    linkSync(join(L.outside, 'secret.txt'), join(L.mission, 'alias.txt'))
+    listedAs(L.mission, 'alias.txt', 'link')
+    expect(refusal(establishContainment(winBase(seam().run)))).toContain(`holds a file with more than one name (${join(L.mission, 'alias.txt')} has 2)`)
+  })
+
+  it('create (hard links): a folder the listing calls a folder that is not where its path says is refused for that, without the clone advice', () => {
+    mkdirSync(join(L.mission, 'packages', 'a'), { recursive: true })
+    const linked = join(L.mission, 'linked-a')
+    link(join(L.mission, 'packages', 'a'), linked)
+    listedAs(L.mission, 'linked-a', 'dir')
+    expect(refusal(establishContainment(winBase(seam().run)))).toBe(
+      `the mission folder ${L.mission} holds a folder that is not where its path says (${linked} resolves to ${join(L.mission, 'packages', 'a')}, not to ${linked}), so whether a file under it has another name cannot be told; the folder is not labelled`,
+    )
+  })
+
+  it('create (rule M8): an entry the listing calls a link is judged where it lands and never entered', () => {
+    mkdirSync(join(L.mission, 'vendor'))
+    link(L.outside, join(L.mission, 'vendor', 'out'))
+    // Listed as a link that lands inside the folder: not reported, and what is under it is not read.
+    listedAs(L.mission, 'vendor', 'link')
+    redirected(L.mission, 'vendor')
+    expect(establishContainment(base()).ok).toBe(true)
+    // The same folder read as a folder is entered, and the link under it leads out.
+    listing.entries = null
+    listing.isLink = null
+    listing.whyNot = null
+    expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'vendor', 'out')} -> ${L.outside})`)
+  })
+
+  it('create (rule M8): a folder the listing calls a folder that resolves outside is judged where it lands', () => {
+    const jn = join(L.mission, 'jn')
+    link(L.outside, jn)
+    listedAs(L.mission, 'jn', 'dir')
+    expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${jn} -> ${L.outside})`)
+  })
+
+  it('create (rule M9): a .git that is a link is refused by name', () => {
+    const realGit = join(L.mission, 'realgit')
+    mkdirSync(realGit)
+    writeFileSync(join(realGit, 'HEAD'), 'ref: refs/heads/main\n')
+    rmSync(join(L.mission, '.git'), { recursive: true })
+    link(realGit, join(L.mission, '.git'))
+    expect(refusal(establishContainment(base()))).toContain('(.git is a link)')
+  })
+
+  it('create (rule M9): a .git folder its listing calls a link, which lstat calls a folder, is refused as a link', () => {
+    listedAs(L.mission, '.git', 'link')
+    expect(lstatSync(join(L.mission, '.git')).isDirectory()).toBe(true)
+    expect(refusal(establishContainment(base()))).toContain('(.git is a link)')
+  })
+})
+
+// ─── The same walks against a junction a low-integrity process made (Windows) ──────────────────────
+
+const SYSTEM32 = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+const canMakeLow = process.platform === 'win32' && existsSync(join(SYSTEM32, 'icacls.exe')) && existsSync(join(SYSTEM32, 'cmd.exe'))
+if (!canMakeLow) console.log('[containment] SKIPPED: the low-made junction cases need Windows with icacls.exe and cmd.exe; a junction made at low integrity exists only there')
+
+function sys(exe: string, args: string[], verbatim = false): { status: number | null; out: string } {
+  const r = spawnSync(join(SYSTEM32, exe), args, { encoding: 'utf-8', timeout: 60_000, windowsHide: true, windowsVerbatimArguments: verbatim })
+  return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? r.error.message : ''}` }
+}
+
+let sidCache: string | null = null
+function ownSid(): string {
+  if (sidCache) return sidCache
+  const m = /"(S-1-5-[\d-]+)"/.exec(sys('whoami.exe', ['/user', '/fo', 'csv', '/nh']).out)
+  if (!m) throw new Error('whoami /user printed no SID')
+  sidCache = m[1]
+  return sidCache
+}
+
+/** Label a folder (or, with `file`, a program) low, as a run's folders are during the run. Null, or why not. */
+function labelLow(p: string, file = false): string | null {
+  const g = sys('icacls.exe', [p, '/grant', `*${ownSid()}:${file ? '(F)' : '(OI)(CI)(F)'}`])
+  if (g.status !== 0) return `icacls /grant on ${p}: ${g.out.trim()}`
+  const s = sys('icacls.exe', [p, '/setintegritylevel', file ? 'low' : '(OI)(CI)low'])
+  return s.status === 0 ? null : `icacls /setintegritylevel on ${p}: ${s.out.trim()}`
+}
+
+/** Set a folder back to medium, as a release does (F3: a junction made during the run now points at a medium folder). */
+function labelMedium(p: string): void {
+  const s = sys('icacls.exe', [p, '/setintegritylevel', '(OI)(CI)M'])
+  if (s.status !== 0) throw new Error(`icacls could not set ${p} back to medium: ${s.out.trim()}`)
+}
+
+/** The mandatory-label line icacls prints for `p` itself (`''` when it prints none). */
+function labelOf(p: string): string {
+  return sys('icacls.exe', [p, '/L']).out.split(/\r?\n/).find(l => /Mandatory Label/i.test(l))?.trim().replace(/^.*?(Mandatory Label)/i, '$1') ?? ''
+}
+
+/**
+ * A junction at `at` to `target` made by a copy of cmd.exe labelled low (so it runs at
+ * S-1-16-4096): the folder holding `at` and `target` must be writable at low integrity. Checked
+ * with fsutil to be stored in the low form (`\??\Global\...`, fact F1) before a case relies on it;
+ * `skip` names why it could not be made. Every junction made is removed as an entry after the test.
+ */
+function lowJunction(at: string, target: string): { ok: true } | { skip: string } {
+  const cmd = join(dir, 'lowcmd.exe')
+  if (!existsSync(cmd)) {
+    copyFileSync(join(SYSTEM32, 'cmd.exe'), cmd)
+    const why = labelLow(cmd, true)
+    if (why) return { skip: `the copy of cmd.exe could not be labelled low (${why})` }
+  }
+  const made = spawnSync(cmd, ['/c', `mklink /J "${at}" "${target}"`], { encoding: 'utf-8', timeout: 60_000, windowsHide: true, windowsVerbatimArguments: true, cwd: dir })
+  if (made.status !== 0) return { skip: `a low-integrity cmd could not make the junction ${at} -> ${target} (status ${made.status}: ${`${made.stdout ?? ''}${made.stderr ?? ''}`.trim()})` }
+  links.push(at)
+  const q = sys('fsutil.exe', ['reparsepoint', 'query', at]).out
+  const sub = /Substitute Name:\s*(.*)/i.exec(q)?.[1]?.trim() ?? ''
+  if (!sub.startsWith('\\??\\Global\\')) return { skip: `the junction ${at} is not stored in the low form (substitute name ${JSON.stringify(sub)}); fsutil said: ${q.trim().split(/\r?\n/)[0] ?? ''}` }
+  return { ok: true }
+}
+
+function need(t: { skip: () => void }, r: { ok: true } | { skip: string } | string | null): boolean {
+  const why = r === null ? null : typeof r === 'string' ? r : 'skip' in r ? r.skip : null
+  if (why === null) return true
+  console.log(`[containment] SKIPPED: ${why}`)
+  t.skip()
+  return false
+}
+
+/**
+ * Put a reparse point with a tag no filter owns (0x99) on each of `paths` (files this test made),
+ * through FSCTL_SET_REPARSE_POINT, which needs no privilege: a low-integrity process can do the same
+ * to a file it wrote (measured 2026-11-24 by the review of wave 7). The folder's listing then calls
+ * the file a link, lstat answers EACCES and rmdirSync answers ENOENT. Null, or why it could not be set.
+ */
+const TAG_PS = `param([string]$Paths)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CyncoTestReparse {
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string name, uint access, uint share, IntPtr sa, uint disp, uint flags, IntPtr tmpl);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool DeviceIoControl(IntPtr h, uint code, byte[] inBuf, int inSize, IntPtr outBuf, int outSize, out int ret, IntPtr ov);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+  public static string Set(string path) {
+    IntPtr h = CreateFileW(path, 0x40000000 | 0x80000000, 7, IntPtr.Zero, 3, 0x00200000 | 0x02000000, IntPtr.Zero);
+    if (h == new IntPtr(-1)) return "open failed: " + Marshal.GetLastWin32Error();
+    byte[] data = new byte[] { 1, 2, 3, 4 };
+    byte[] buf = new byte[24 + data.Length];
+    BitConverter.GetBytes((uint)0x00000099).CopyTo(buf, 0);
+    BitConverter.GetBytes((ushort)data.Length).CopyTo(buf, 4);
+    Guid.NewGuid().ToByteArray().CopyTo(buf, 8);
+    data.CopyTo(buf, 24);
+    int ret;
+    bool ok = DeviceIoControl(h, 0x000900A4, buf, buf.Length, IntPtr.Zero, 0, out ret, IntPtr.Zero);
+    int err = Marshal.GetLastWin32Error();
+    CloseHandle(h);
+    return ok ? "set" : "FSCTL_SET_REPARSE_POINT failed: " + err;
+  }
+}
+'@
+foreach ($p in $Paths.Split('|')) { [CyncoTestReparse]::Set($p) }
+`
+function tagFiles(...paths: string[]): string | null {
+  const ps1 = join(dir, 'tag-reparse.ps1')
+  writeFileSync(ps1, TAG_PS)
+  const r = sys(join('WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', ps1, paths.join('|')])
+  unlinkSync(ps1)
+  const said = r.out.trim().split(/\r?\n/)
+  if (r.status !== 0 || said.length !== paths.length || said.some(l => l.trim() !== 'set')) return `a reparse tag could not be set on ${paths.join(', ')} (status ${r.status}: ${r.out.trim().slice(0, 300)})`
+  for (const p of paths) links.push(p)
+  return null
+}
+
+/** A runner that runs the real program and records the call. */
+function realRunner(): { run: ContainmentRunner; calls: Call[] } {
+  const calls: Call[] = []
+  const run: ContainmentRunner = (file, args) => {
+    calls.push({ file, args: [...args] })
+    const r = spawnSync(file, args, { encoding: 'utf-8', timeout: 60_000, windowsHide: true })
+    return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, code: r.status }
+  }
+  return { run, calls }
+}
+
+describe.skipIf(!canMakeLow)('the walks against a junction a low-integrity process made (Windows, F4)', () => {
+  it('the fixture: lstat calls the low-made junction a folder, its folder\'s listing calls it a link', t => {
+    const target = join(dir, 'low-target')
+    mkdirSync(target)
+    if (!need(t, labelLow(dir)) || !need(t, lowJunction(join(dir, 'j'), target))) return
+    const st = lstatSync(join(dir, 'j'))
+    expect(st.isSymbolicLink()).toBe(false)
+    expect(st.isDirectory()).toBe(true)
+    expect(isLinkEntry(join(dir, 'j'))).toBe(true)
+    expect(listEntries(dir).find(e => e.name === 'j')?.kind).toBe('link')
+    expect(whyNotAtOwnPath(dir, 'j')).toBe(`resolves to ${target}, not to ${join(dir, 'j')}`)
+  })
+
+  it('sweep (a): a junction in the scratch folder to the mission folder is removed; every file of the mission is still there', t => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    mkdirSync(join(L.mission, 'src'))
+    writeFileSync(join(L.mission, 'work.txt'), 'owner work')
+    writeFileSync(join(L.mission, 'src', 'a.txt'), 'a')
+    // During the run the scratch folder and the mission folder are labelled low; the junction is made then.
+    if (!need(t, labelLow(old.sandbox.scratch)) || !need(t, labelLow(L.mission))) return
+    const j = join(old.sandbox.scratch, 'repo')
+    if (!need(t, lowJunction(j, L.mission))) return
+    labelMedium(L.mission)
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    for (const f of ['work.txt', join('src', 'a.txt'), join('.git', 'HEAD')]) expect(existsSync(join(L.mission, f)), `${f}\n${lines.join('\n')}`).toBe(true)
+    expect(readFileSync(join(L.mission, 'work.txt'), 'utf-8')).toBe('owner work')
+    expect(res.removed, lines.join('\n')).toEqual([join(L.root, old.runId)])
+    expect(existsSync(join(L.root, old.runId))).toBe(false)
+  })
+
+  it('sweep (b): a run folder whose junction points at its own home is removed completely', t => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    writeFileSync(join(old.sandbox.home, 'h.txt'), 'h')
+    if (!need(t, labelLow(old.sandbox.scratch)) || !need(t, labelLow(old.sandbox.home))) return
+    if (!need(t, lowJunction(join(old.sandbox.scratch, 'myhome'), old.sandbox.home))) return
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed, lines.join('\n')).toEqual([join(L.root, old.runId)])
+    expect(existsSync(join(L.root, old.runId))).toBe(false)
+  })
+
+  it('release (c): a junction that loops back and one to a folder with its own Low label: the walk ends, the canary\'s labels are unchanged', t => {
+    const c = established(establishContainment(winBase(seam().run)))
+    mkdirSync(join(L.mission, 'sub'))
+    writeFileSync(join(L.mission, 'work.txt'), 'x')
+    writeFileSync(join(L.mission, 'sub', 'a.txt'), 'x')
+    const canary = join(dir, 'canary')
+    mkdirSync(join(canary, 'inner'), { recursive: true })
+    writeFileSync(join(canary, 'inner', 'c.txt'), 'c')
+    if (!need(t, labelLow(L.mission)) || !need(t, labelLow(canary)) || !need(t, labelLow(join(canary, 'inner')))) return
+    if (!need(t, lowJunction(join(L.mission, 'loop'), L.mission)) || !need(t, lowJunction(join(L.mission, 'out'), canary))) return
+    const before = { canary: labelOf(canary), inner: labelOf(join(canary, 'inner')) }
+    expect(before.inner).toMatch(/^Mandatory Label\\Low Mandatory Level:\(OI\)\(CI\)/)
+    // A junction a low process makes in a folder labelled (OI)(CI) low inherits that label (measured:
+    // `Low Mandatory Level:(I)(OI)(CI)(NW)`). One of them is given a Low label of its own, on the link
+    // itself (/L), as a run could set one, so that the release has a link's own label to set back.
+    for (const l of ['loop', 'out']) expect(labelOf(join(L.mission, l)), l).toMatch(/^Mandatory Label\\Low Mandatory Level:\(I\)/)
+    const own = sys('icacls.exe', [join(L.mission, 'out'), '/L', '/setintegritylevel', 'low'])
+    if (!need(t, own.status === 0 ? null : `icacls could not set the junction's own label: ${own.out.trim()}`)) return
+    expect(labelOf(join(L.mission, 'out'))).toMatch(/^Mandatory Label\\Low Mandatory Level:\((?!I\))/)
+    expect({ canary: labelOf(canary), inner: labelOf(join(canary, 'inner')) }).toEqual(before)
+    const r = realRunner()
+    const t0 = Date.now()
+    const res = releaseContainment(c, { platform: 'win32', run: r.run })
+    const ms = Date.now() - t0
+    expect({ canary: labelOf(canary), inner: labelOf(join(canary, 'inner')) }).toEqual(before)
+    // The link's own label was set back with /L, so its target's was not touched; the inherited one
+    // went with the mission folder's.
+    for (const l of ['loop', 'out']) expect(labelOf(join(L.mission, l)), l).not.toMatch(/Low Mandatory Level/)
+    expect(r.calls.some(x => fold(x.args[0]) === fold(join(L.mission, 'out')) && x.args[1] === '/L' && x.args[2] === '/setintegritylevel' && x.args[3] === 'M')).toBe(true)
+    expect(r.calls.some(x => fold(x.args[0]) === fold(join(L.mission, 'loop')) && x.args[2] === '/setintegritylevel')).toBe(false)
+    // The real folders under the mission folder that hold entries: itself, .git and sub.
+    expect(res.note).toMatch(/set back to medium integrity \(3 folders read for labels set under it[;)]/)
+    expect(res.relabelled, res.note).toBe(true)
+    const throughLink = r.calls.flatMap(x => x.args).filter(a => fold(a).startsWith(fold(join(L.mission, 'loop')) + '/') || fold(a).startsWith(fold(join(L.mission, 'out')) + '/'))
+    expect(throughLink).toEqual([])
+    expect(ms).toBeLessThan(60_000)
+  }, 240_000)
+
+  it('create (d): a low-made junction leading out of the mission folder is refused with rule M\'s words', t => {
+    const oldSandbox = join(dir, 'old-sandbox')
+    mkdirSync(oldSandbox)
+    if (!need(t, labelLow(oldSandbox)) || !need(t, labelLow(L.mission))) return
+    if (!need(t, lowJunction(join(L.mission, 'out'), oldSandbox))) return
+    labelMedium(L.mission)
+    expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'out')} -> ${oldSandbox})`)
+  })
+
+  it('create (d): a low-made junction pointing inside the mission folder is not refused', t => {
+    mkdirSync(join(L.mission, 'packages', 'a'), { recursive: true })
+    writeFileSync(join(L.mission, 'packages', 'a', 'index.js'), '')
+    if (!need(t, labelLow(L.mission))) return
+    if (!need(t, lowJunction(join(L.mission, 'linked-a'), join(L.mission, 'packages', 'a')))) return
+    labelMedium(L.mission)
+    expect(establishContainment(base()).ok).toBe(true)
+  })
+
+  it('create (d): the hard-link walk returns at once on a junction that loops back', t => {
+    if (!need(t, labelLow(L.mission))) return
+    if (!need(t, lowJunction(join(L.mission, 'loop'), L.mission))) return
+    labelMedium(L.mission)
+    const t0 = Date.now()
+    const r = establishContainment(winBase(seam().run))
+    expect(r.ok, r.ok ? '' : r.reason).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(5_000)
+  }, 120_000)
+
+  it('the fixture under Bun: the helpers answer as they do under Node (the engine and the acceptance run under Bun)', t => {
+    const target = join(dir, 'low-target')
+    mkdirSync(target)
+    if (!need(t, labelLow(dir)) || !need(t, lowJunction(join(dir, 'j'), target))) return
+    const probe = join(dir, 'probe.mjs')
+    const helpers = pathToFileURL(fileURLToPath(new URL('../realPath.ts', import.meta.url))).href
+    writeFileSync(probe, [
+      `import { isLinkEntry, listEntries, whyNotAtOwnPath } from ${JSON.stringify(helpers)}`,
+      `import { join } from 'node:path'`,
+      `const [d, n] = process.argv.slice(2)`,
+      `console.log(JSON.stringify({ kind: listEntries(d).find(e => e.name === n)?.kind ?? null, isLink: isLinkEntry(join(d, n)), why: whyNotAtOwnPath(d, n) }))`,
+    ].join('\n'))
+    const r = spawnSync('bun', [probe, dir, 'j'], { encoding: 'utf-8', timeout: 60_000, windowsHide: true, cwd: dir })
+    if (r.error) {
+      need(t, `bun could not be started (${r.error.message}), so the helpers were not run under Bun`)
+      return
+    }
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0)
+    expect(JSON.parse(r.stdout.trim().split(/\r?\n/).pop()!)).toEqual({ kind: 'link', isLink: true, why: `resolves to ${target}, not to ${join(dir, 'j')}` })
+  }, 120_000)
+
+  it('sweep (e): a file carrying a reparse tag in the scratch folder is removed as an entry, and the run folder goes', t => {
+    const old = established(establishContainment(base({ now: daysBack(8) })))
+    const rp = join(old.sandbox.scratch, 'rp.dat')
+    writeFileSync(rp, 'x')
+    if (!need(t, tagFiles(rp))) return
+    expect(listEntries(old.sandbox.scratch).find(e => e.name === 'rp.dat')?.kind).toBe('link')
+    const lines: string[] = []
+    const res = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'linux', log: l => lines.push(l) })
+    expect(res.removed, lines.join('\n')).toEqual([join(L.root, old.runId)])
+    expect(existsSync(join(L.root, old.runId))).toBe(false)
+  }, 120_000)
+
+  it('create (e): a file with a second name that carries a reparse tag is refused (lstat cannot read it)', t => {
+    writeFileSync(join(L.outside, 'secret.txt'), 'x')
+    const alias = join(L.mission, 'alias.dat')
+    linkSync(join(L.outside, 'secret.txt'), alias)
+    if (!need(t, tagFiles(alias))) return
+    expect(listEntries(L.mission).find(e => e.name === 'alias.dat')?.kind).toBe('link')
+    vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    expect(refusal(establishContainment(winBase(seam().run)))).toContain(`holds an entry that could not be read for hard links (${alias}: EACCES`)
+  }, 120_000)
 })
 
 // ─── The models folder of a context comes from modelsDir() (S6) ─────────────────────────────────

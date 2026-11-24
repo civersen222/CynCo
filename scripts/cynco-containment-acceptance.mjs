@@ -10,25 +10,56 @@
 //   bun scripts/cynco-containment-acceptance.mjs --inner <layers-off|full|live|unseen> --phase <mission|daemon-task|authoring> --root <dir> --nonce <hex>
 //       (internal: the orchestrator starts itself this way, with a fake-home environment)
 //
-// Exit codes: 0 PASS; 1 FAIL, ABORT or STOPPED; 2 REFUSED (nothing was run); 3 an inner run's self-check refused.
+// Exit codes: 0 PASS; 1 FAIL, INCOMPLETE, ABORT or STOPPED; 2 REFUSED (nothing was run); 3 an inner run's self-check refused.
 // Every line it prints starts `[acceptance]`; with --json the last stdout line is `REPORT <json>`.
+//
+// The fake stage, in order (rule F2): run 1 the canaries, the listing-only twins and the left-behind
+// plant with the path check off; run 2 the authoring kernel half; runs 3, 4, 5 the full stack (mission,
+// daemon task, authoring policy); with live fire only, run 6 every catalog form handed over with the
+// path check off (one entry for each, a form that is not fired says why), then, as its last acts, the
+// junction from its scratch folder to the mission folder (left for step 8), a junction at the top of the
+// mission folder leading to its scratch folder (canary c0-low, asked of the create-time check after the
+// release) and a junction inside the mission folder that loops back to it (the release walk must end at
+// it); run 7 an unseen script with every layer on; step 8, in this process and only when nothing before
+// it FAILED, the seven-day sweep of the fake sandbox root with a clock eight days ahead, which must not
+// delete through the junction run 6 left from its scratch folder to the mission folder. Then the
+// mission repository is disarmed (its planted git settings unset, its planted files removed), unless its
+// .git is not its own folder. After the RESULT line: one line per not-proven entry and a tally by outcome
+// word; a not-proven entry outside the accepted table (ACCEPTED_NOT_PROVEN) makes the result INCOMPLETE,
+// which does not open the real stage. With live fire on, a PASS needs run 7's entry, the release walk,
+// canary c0-low and step 8's entry, one each (liveProofCoverage).
 //
 // SAFETY (rules S0, S1, S1' of the specification). This file holds destructive command text through
 // the catalog it imports. Such text is started in exactly one place: an inner process, on Windows,
 // under Bun, in a live-fire run, after that process has shown by its canaries that a contained
 // child is at low integrity and cannot create a file in the fake home. An inner process runs
-// `innerSelfCheck` before it imports any engine module, and refuses unless its home, temp and
-// CynCo folders all lie inside the test root it was given and that root carries its sentinel. A
-// destructive mission variant is handed over only after its listing-only twin, run through the same
-// path, printed only paths inside the test root; a literal variant's targets are checked in process.
+// `innerSelfCheck` before it imports any engine module (the two pure helpers of engine/realPath.ts
+// and engine/missionEnv.ts excepted), and refuses unless its home, temp and CynCo folders all lie
+// inside the test root it was given and that root carries its sentinel. A destructive mission variant
+// is handed over only after its listing-only twin, run through the same path, printed only paths
+// inside the test root; a literal variant's targets are checked in process. Every link the fake stage
+// makes (run 3's and run 6's junctions, and the fixture's two links) names folders inside the test root
+// and nothing else; the suite's run 3 has a contained child make one junction and removes it at once.
 // The one other place is the real-profile stage, by hand only, where an attack the full stack fails to
 // refuse runs once. That stage never switches a layer off and never hands over a literal Bash form; it stops
 // at the first attack that is not refused, which has then run (runRealStage says where). Nothing here
-// deletes a folder recursively: single files and single links, by literal path. The test root is
-// left for the caller. No test starts the real-profile stage, and none starts --inner by hand.
+// deletes a folder recursively: single files and single links, by literal path, a link told by its
+// parent's listing (lstat alone cannot see one a low process made: it answers for the target), removed
+// with rmdir, or with unlink when rmdir cannot remove it and the listing still names it. The one recursive
+// delete the stage starts is the engine's own sweep in step 8, on the fake sandbox root only, and only
+// when that root is an ordinary folder inside the test root and EVERY link anywhere under the test root
+// lands inside the test root (a link to outside it is UNSAFE: no sweep). The whole root is checked, not
+// the sandbox root alone, because a sweep that wrongly followed links would go on from the mission folder
+// through the links inside it (the fixture's linked-out leads to the fake home): what it could reach is
+// then the mission folder and the fake home, both inside the test root. The test root is left for the
+// caller. No test starts the real-profile stage, none starts --inner by hand, and the suite runs neither
+// live fire nor step 8.
+// An inner process is given its own Bun caches inside the test root (R12). The two keys stay in its
+// environment, because the launcher Bun starts from it at medium and writes its own cache there; so a
+// contained child inherits them too, pointed at a folder it cannot write, which a real mission's child is not.
 import {
   appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync,
-  readlinkSync, realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
+  realpathSync, rmdirSync, statSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import os from 'node:os'
@@ -37,6 +68,7 @@ import { fileURLToPath } from 'node:url'
 import { ATTACK_ORDER, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET_DOT_FOLDER, attacks, protectedFolderCalls } from './cynco-containment-attacks.mjs'
 import { bashExe, runSync } from './cynco-spawn.mjs'
 import { isContainedRun } from '../engine/missionEnv.js'
+import { isLinkEntry, listEntries, whyNotAtOwnPath } from '../engine/realPath.js'
 
 export const REAL_PROFILE_FLAG = '--real-profile'
 export const REAL_PROFILE_VAR = 'LOCALCODE_CONTAINMENT_REAL_PROFILE'
@@ -52,6 +84,8 @@ const GIT_IDENTITY = ['-c', 'user.name=Acceptance', '-c', 'user.email=acceptance
 const INNER_CAP_MS = 180_000
 const LOW_LABEL = /Mandatory Label\\Low Mandatory Level/i
 const DECOYS = [['.cynco', 'decoy.txt'], [TARGET_DOT_FOLDER, 'decoy.txt'], ['.decoy', 'a.txt']]
+/** The inner process's own Bun cache keys (R12, RS6): the transpiler's, then the installer's. */
+const HARNESS_CACHE_KEYS = Object.freeze(['BUN_RUNTIME_TRANSPILER_CACHE_PATH', 'BUN_INSTALL_CACHE_DIR'])
 /** The inner runs that start with the path check switched off (rule F2); the others have no switch at all. */
 const SWITCH_OF_MODE = { 'layers-off': 'paths', full: null, live: 'paths', unseen: null }
 const INNER_RUNS = [
@@ -65,6 +99,42 @@ const INNER_RUNS = [
 ]
 const NOT_PROVEN = new Set(['twin did not resolve', 'not proven', 'did not act', 'did not start (msys)'])
 const FAILING = new Set(['FAILED', 'UNSAFE'])
+/** The twin's detail when Git Bash could not start at low integrity (twinFirst writes it). */
+const GIT_BASH_DID_NOT_START = 'Git Bash did not start'
+
+/**
+ * The not-proven entries a PASS admits (R14), keyed by id, variant and reason class, each with its
+ * reason in words. Any other not-proven entry makes the result INCOMPLETE: equal counts of different
+ * entries once read as the same nine (live-1), and a proof the runner itself lost read as accepted.
+ */
+export const ACCEPTED_NOT_PROVEN = Object.freeze([
+  {
+    ids: ['authoring'], variants: ['the check command', 'the check command as a Bash call'], reason: 'owner-decision-25',
+    test: (e) => /open owner decision/.test(e.detail ?? ''),
+    words: 'how the gate-authoring check runs under containment is the owner\'s open decision (decision sheet item 25): Bun at low integrity cannot load a module from a folder not labelled low',
+  },
+  {
+    ids: ['honest'], variants: ['c7 pytest'], reason: 'pytest-not-in-fake-site',
+    // Only the cause pytestCause names for a child that answered "No module named pytest" (RH3).
+    test: (e) => /^\(b\) not proven: no module named pytest/.test(e.detail ?? ''),
+    words: 'pytest is installed only in the real user site, which the fake stage does not read; the real-profile stage shows it',
+  },
+  {
+    ids: ['left-behind'], variants: ['textconv', 'pager'], reason: 'did-not-fire-in-control',
+    test: (e) => /did not fire in the control either/.test(e.detail ?? ''),
+    words: 'the textconv and pager surfaces did not fire in the control either (plain git at medium integrity on this git), so the run shows nothing about them either way',
+  },
+  {
+    ids: ['rm-home-cynco', 'rm-all-dot'], variants: ['git-bash'], reason: 'git-bash-did-not-start',
+    test: (e) => e.outcome === 'did not start (msys)' || String(e.detail ?? '').startsWith(GIT_BASH_DID_NOT_START),
+    words: 'a Git Bash form cannot start at low integrity while another Git Bash runs (measured; the dispatch script is one), so its twin or its form did not start',
+  },
+])
+
+/** The row of ACCEPTED_NOT_PROVEN that admits entry `e`, or null. */
+export function acceptedReasonOf(e) {
+  return ACCEPTED_NOT_PROVEN.find(x => x.ids.includes(e.id) && x.variants.includes(e.variant) && x.test(e)) ?? null
+}
 
 // ─── Printing ────────────────────────────────────────────────────────────────────────────────
 
@@ -242,6 +312,11 @@ export function repointedEnv(base, fake, extra = {}) {
   for (const [key, parts] of [['XDG_CONFIG_HOME', ['.config']], ['XDG_CACHE_HOME', ['.cache']], ['XDG_DATA_HOME', ['.local', 'share']], ['XDG_STATE_HOME', ['.local', 'state']]]) {
     if (Object.keys(out).some(k => k.toUpperCase() === key)) set(key, join(fake.home, ...parts))
   }
+  // R12: the inner process's own Bun keeps its caches in the test root, not in the fake home, so the
+  // harness writes nothing there (live-1: a .bun folder appeared and became a target of the attacks). The
+  // low-integrity launcher starts from this environment at medium, so it needs them too (RS6, measured).
+  set(HARNESS_CACHE_KEYS[0], join(fake.root, 'harness-cache', 'transpiler'))
+  set(HARNESS_CACHE_KEYS[1], join(fake.root, 'harness-cache', 'install'))
   set('CYNCO_HOME', fake.state)
   set('LOCALCODE_SANDBOX_ROOT', fake.sandboxRoot)
   set('LOCALCODE_GUARD_DIR', fake.guard)
@@ -284,6 +359,10 @@ export function innerSelfCheck({ env, argv, homedir, root, nonce, readSentinel, 
   for (const k of keys) {
     if (typeof env[k] !== 'string' || env[k] === '') return `${k} is not set`
     if (!inside(env[k])) return `${k} (${env[k]}) is outside the root ${root}`
+  }
+  // The harness's Bun caches (R12): not required, but when set they lie inside the root.
+  for (const k of HARNESS_CACHE_KEYS) {
+    if (typeof env[k] === 'string' && env[k] !== '' && !inside(env[k])) return `${k} (${env[k]}) is outside the root ${root}`
   }
   if (typeof env.HOMEDRIVE !== 'string' || typeof env.HOMEPATH !== 'string') return 'HOMEDRIVE and HOMEPATH are not both set'
   if (!inside(`${env.HOMEDRIVE}${env.HOMEPATH}`)) return `HOMEDRIVE + HOMEPATH (${env.HOMEDRIVE}${env.HOMEPATH}) is outside the root ${root}`
@@ -425,39 +504,69 @@ function sha256(buf) {
   return createHash('sha256').update(buf).digest('hex')
 }
 
-/** (relative path, kind, size, content hash) of every entry under `dir`; a link is recorded as a link, never followed. */
-function treeEntries(dir, o = {}) {
+/**
+ * The file system the oracles read, injectable for their tests. Kinds come from the folder's own
+ * listing (`listEntries`), never from lstat: a junction a low-integrity process makes is stored as
+ * `\??\Global\X:\...`, which lstat answers for with the TARGET's stat and readlink cannot read (brief
+ * facts F1 and F4, measured 2026-11-24), so a walk that asks lstat enters it.
+ */
+const FS = Object.freeze({
+  list: (d) => listEntries(d),
+  lstat: (p) => lstatSync(p),
+  readFile: (p) => readFileSync(p),
+  real: (p) => realpathSync.native(p),
+})
+const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+
+/** Where a link really lands (`realpathSync.native`), or 'unreadable'. */
+function linkReal(io, p) {
+  try {
+    return io.real(p)
+  } catch (e) {
+    return 'unreadable'
+  }
+}
+
+/**
+ * (relative path, kind, size, content hash) of every entry under `dir`. A link (any reparse point, by
+ * the listing) is recorded as `l:<where it really lands>` or `l:unreadable` and never entered.
+ * `o.exclude`: relative paths left out; `o.io`: the file system (tests).
+ */
+export function treeEntries(dir, o = {}) {
+  const io = { ...FS, ...(o.io ?? {}) }
   const exclude = (o.exclude ?? []).map(x => fold(String(x).replace(/\\/g, '/').replace(/\/+$/, '')))
   const out = new Map()
   const walk = (d, rel) => {
-    let names
+    let list
     try {
-      names = readdirSync(d)
+      list = io.list(d)
     } catch (e) {
       out.set(rel || '.', `unreadable:${e?.code ?? e?.message ?? e}`)
       return
     }
-    for (const n of names.sort()) {
+    for (const { name: n, kind } of [...list].sort(byName)) {
       const r = rel ? `${rel}/${n}` : n
       if (exclude.some(x => fold(r) === x || fold(r).startsWith(`${x}/`))) continue
       const p = join(d, n)
+      if (kind === 'link') {
+        out.set(r, `l:${linkReal(io, p)}`)
+        continue
+      }
+      if (kind === 'dir') {
+        out.set(r, 'd')
+        walk(p, r)
+        continue
+      }
       let st
       try {
-        st = lstatSync(p)
+        st = io.lstat(p)
       } catch (e) {
         out.set(r, `gone:${e?.code ?? e?.message}`)
         continue
       }
-      if (st.isSymbolicLink()) {
-        let target = '?'
-        try { target = readlinkSync(p) } catch (e) { target = `unreadable:${e?.code ?? e?.message}` }
-        out.set(r, `l:${target}`)
-      } else if (st.isDirectory()) {
-        out.set(r, 'd')
-        walk(p, r)
-      } else if (st.isFile()) {
+      if (st.isFile()) {
         let h = '?'
-        try { h = sha256(readFileSync(p)) } catch (e) { h = `unreadable:${e?.code ?? e?.message}` }
+        try { h = sha256(io.readFile(p)) } catch (e) { h = `unreadable:${e?.code ?? e?.message}` }
         out.set(r, `f:${st.size}:${h}`)
       } else {
         out.set(r, `o:${st.size}`)
@@ -481,22 +590,29 @@ function treeDiff(before, after, limit = 20) {
   return out.slice(0, limit)
 }
 
-/** Sorted `name<TAB>kind<TAB>direct children` for every top-level dot-entry of `home`. */
-export function censusOf(home) {
+/**
+ * Sorted `name<TAB>kind<TAB>direct children` for every top-level dot-entry of `home`; a link (by the
+ * listing) is `name<TAB>link<TAB>0<TAB><where it really lands, or unreadable>` and is not entered.
+ */
+export function censusOf(home, io = FS) {
   const out = []
-  for (const n of readdirSync(home)) {
+  for (const { name: n, kind: listed } of io.list(home)) {
     if (!n.startsWith('.')) continue
     const p = join(home, n)
+    if (listed === 'link') {
+      out.push(`${n}\tlink\t0\t${linkReal(io, p)}`)
+      continue
+    }
     let kind = 'other', children = 0
-    try {
-      const st = lstatSync(p)
-      if (st.isSymbolicLink()) kind = 'link'
-      else if (st.isDirectory()) {
-        kind = 'dir'
-        try { children = readdirSync(p).length } catch (e) { children = -1 }
-      } else if (st.isFile()) kind = 'file'
-    } catch (e) {
-      kind = `unreadable:${e?.code ?? e?.message}`
+    if (listed === 'dir') {
+      kind = 'dir'
+      try { children = io.list(p).length } catch (e) { children = -1 }
+    } else {
+      try {
+        kind = io.lstat(p).isFile() ? 'file' : 'other'
+      } catch (e) {
+        kind = `unreadable:${e?.code ?? e?.message}`
+      }
     }
     out.push(`${n}\t${kind}\t${children}`)
   }
@@ -504,32 +620,92 @@ export function censusOf(home) {
 }
 
 /**
- * For each top-level dot-entry of `home`: the files and bytes below it, by lstat, links not
- * followed (entry 6.M10), and `unreadable`, the entries below it that could not be read (a loss
- * there would not be counted, so the real stage reports an entry with any as not proven).
+ * For each top-level dot-entry of `home`: the files and bytes below it, `links` (entries the listing
+ * calls a link: counted, never entered; entry 6.M10), and `unreadable`, the entries below it that
+ * could not be read (a loss there would not be counted, so the real stage reports an entry with any
+ * as not proven).
  */
-export function deepCountOf(home) {
+export function deepCountOf(home, io = FS) {
   const out = []
-  for (const n of readdirSync(home).sort()) {
+  for (const { name: n, kind: top } of [...io.list(home)].sort(byName)) {
     if (!n.startsWith('.')) continue
-    let files = 0, bytes = 0, unreadable = 0
-    const walk = (p) => {
-      let st
-      try { st = lstatSync(p) } catch (e) { unreadable++; return }
-      if (st.isSymbolicLink()) return
-      if (st.isDirectory()) {
-        let names = []
-        try { names = readdirSync(p) } catch (e) { unreadable++; return }
-        for (const c of names) walk(join(p, c))
-      } else {
-        files++
-        bytes += st.size
+    let files = 0, bytes = 0, unreadable = 0, links = 0
+    const walk = (p, kind) => {
+      if (kind === 'link') { links++; return }
+      if (kind === 'dir') {
+        let list
+        try { list = io.list(p) } catch (e) { unreadable++; return }
+        for (const c of list) walk(join(p, c.name), c.kind)
+        return
       }
+      let st
+      try { st = io.lstat(p) } catch (e) { unreadable++; return }
+      files++
+      bytes += st.size
     }
-    walk(join(home, n))
-    out.push({ name: n, files, bytes, unreadable })
+    walk(join(home, n), top)
+    out.push({ name: n, files, bytes, unreadable, links })
   }
   return out
+}
+
+/**
+ * How many real folders under `dir` (itself included) hold at least one entry, walking by the listing
+ * and entering no link: what the release walk (engine/containment.ts, rule R4) should say it read
+ * for the mission folder, when it too enters no link. An unreadable folder is not counted.
+ */
+export function foldersHoldingEntries(dir, io = FS) {
+  let n = 0
+  const pending = [dir]
+  while (pending.length > 0) {
+    const d = pending.pop()
+    let list
+    try { list = io.list(d) } catch (e) { continue }
+    if (list.length === 0) continue
+    n++
+    for (const e of list) if (e.kind === 'dir') pending.push(join(d, e.name))
+  }
+  return n
+}
+
+/**
+ * Every link under `dir`, by the listing, none entered, each with where it really lands (null when that
+ * cannot be read). A folder that cannot be listed may hold a link that cannot be judged: it is in the list
+ * as `{ path, real: null, unlistable: true }`, so a safety check counts it and a closing line does not call
+ * it a link.
+ */
+export function linksUnder(dir, io = FS) {
+  const out = []
+  const pending = [dir]
+  while (pending.length > 0) {
+    const d = pending.pop()
+    let list
+    try {
+      list = io.list(d)
+    } catch (e) {
+      out.push({ path: d, real: null, unlistable: true })
+      continue
+    }
+    for (const e of list) {
+      const p = join(d, e.name)
+      if (e.kind === 'link') {
+        const real = linkReal(io, p)
+        out.push({ path: p, real: real === 'unreadable' ? null : real })
+      } else if (e.kind === 'dir') pending.push(p)
+    }
+  }
+  return out
+}
+
+/**
+ * Where a thing a call made really lands (T4): 'run' inside one of `runRoots`, 'test-root' elsewhere inside
+ * `testRoot`, 'outside', or 'unreadable' when its real path (`real`, null) could not be read. Real paths,
+ * case-folded on Windows.
+ */
+export function landingOf(real, runRoots, testRoot) {
+  if (real === null || real === undefined) return 'unreadable'
+  if (runRoots.some(x => insideRoot(x, real))) return 'run'
+  return insideRoot(testRoot, real) ? 'test-root' : 'outside'
 }
 
 /**
@@ -635,26 +811,60 @@ function versionOf(cmd, args = ['--version']) {
   return !r.fault && r.status === 0 ? `${r.stdout}${r.stderr}`.trim().split(/\r?\n/)[0] : null
 }
 
+/** Is there an entry at `p`? A link counts as itself: a junction whose target is gone is there (lstat follows a low-made one). */
 function exists(p) {
   try {
     lstatSync(p)
     return true
   } catch (e) {
-    return false
+    return isLinkEntry(p) === true
   }
 }
 
-/** Remove one file or one link by literal path, never recursively. Returns null or the reason it failed. */
-function removeOne(p) {
+/** Where `p` really lands (`realpathSync.native`), or null when that cannot be read. */
+function nativeReal(p) {
   try {
-    const st = lstatSync(p)
-    if (st.isSymbolicLink() || (WIN && st.isDirectory() && isJunction(p))) {
-      try { rmdirSync(p) } catch (e) { unlinkSync(p) }
-    } else if (st.isDirectory()) {
-      return `${p} is a folder; the acceptance removes single files and links only`
-    } else {
-      unlinkSync(p)
+    return realpathSync.native(p)
+  } catch (e) {
+    return null
+  }
+}
+
+const RM = Object.freeze({ lstat: (p) => lstatSync(p), isLinkEntry: (p) => isLinkEntry(p), rmdir: (p) => rmdirSync(p), unlink: (p) => unlinkSync(p) })
+
+/**
+ * Remove one file or one link by literal path, never recursively. Returns null or the reason it failed.
+ * A link is what lstat calls one OR what the parent's listing calls one (R2): a junction a low process
+ * made reads to lstat as a folder with its target's stat, and readlink throws EINVAL on it as on a plain
+ * folder (fact F4). A link is removed with rmdir, which removes the link alone (F4), then with unlink
+ * when rmdir cannot: it answers ENOTDIR, or ENOENT while the listing still names the link (on Windows
+ * rmdir of something that is not a folder answers ENOENT, measured for a plain file under Bun and Node,
+ * so a file symbolic link would otherwise be reported removed and stay; T3 of wave 7). A folder the
+ * listing does not call a link is never removed. `io` is for tests.
+ */
+export function removeOne(p, io = RM) {
+  const listed = io.isLinkEntry(p)
+  let st = null
+  try {
+    st = io.lstat(p)
+  } catch (e) {
+    if (e?.code !== 'ENOENT') return `${p}: ${e?.message ?? e}`
+    // lstat follows a low-made junction: one whose target is gone answers ENOENT and is still there.
+    if (listed !== true) return null
+  }
+  try {
+    if (listed === true || st?.isSymbolicLink()) {
+      try {
+        io.rmdir(p)
+      } catch (e) {
+        const notAFolder = e?.code === 'ENOTDIR' || (e?.code === 'ENOENT' && io.isLinkEntry(p) === true)
+        if (!notAFolder) throw e
+        io.unlink(p)
+      }
+      return null
     }
+    if (st.isDirectory()) return `${p} is a folder; the acceptance removes single files and links only`
+    io.unlink(p)
     return null
   } catch (e) {
     if (e?.code === 'ENOENT') return null
@@ -662,13 +872,41 @@ function removeOne(p) {
   }
 }
 
-function isJunction(p) {
-  try {
-    readlinkSync(p)
-    return true
-  } catch (e) {
-    return false
-  }
+/** R3: a path is named in report.links once. */
+function addLink(report, p) {
+  if (!report.links.some(x => fold(x) === fold(p))) report.links.push(p)
+}
+
+/** The paths of `list` that are there now, case-folded (to tell afterwards what a call made). */
+function presentSet(list) {
+  return new Set(list.filter(exists).map(fold))
+}
+
+/** R13 and the removals after a call: a path is removed only when this call made it. */
+export function madeByThisCall({ existedBefore, existsNow }) {
+  return existsNow === true && existedBefore !== true
+}
+
+/**
+ * R13, the real stage's registry probe. `before`: whether the key exists before the contained child is
+ * asked to create it (true, false, or null when that could not be read); `after`: whether it exists
+ * then (undefined before the probe is run; null when that could not be read). A key that is there before
+ * (or might be) aborts the stage and is never deleted: it is not this stage's. One whose presence after
+ * the probe cannot be read aborts too (RS10: the probe proved nothing) and is not deleted.
+ * `{ abort, delete, line }`.
+ */
+export function registryProbePlan({ key, before, after }) {
+  if (before === true) return { abort: true, delete: false, line: `ABORT: ${key} already exists before the probe; it is not this stage's, so nothing was run against it and nothing is deleted. No attack was run.` }
+  if (before !== false) return { abort: true, delete: false, line: `ABORT: whether ${key} exists could not be read before the probe; nothing was run against it. No attack was run.` }
+  if (after === true) return { abort: true, delete: true, line: `ABORT: a contained child CREATED ${key}. Low integrity is not holding there.` }
+  if (after === null) return { abort: true, delete: false, line: `ABORT: whether ${key} exists could not be read after the probe, so the probe shows nothing; nothing is deleted.` }
+  return { abort: false, delete: false, line: null }
+}
+
+/** A `reg query` result as presence: true (exit 0), false (exit 1: no such key), null (anything else: a fault, a timeout, another exit). */
+function regPresence(r) {
+  if (r.fault || r.timedOut) return null
+  return r.status === 0 ? true : r.status === 1 ? false : null
 }
 
 function runtimeName() {
@@ -714,6 +952,11 @@ async function innerMain(argv) {
     snap: await import('./cynco-work-snapshot.mjs'),
     author: await import('./cynco-gate-author.mjs'),
   }
+  // The harness's Bun cache keys (R12) stay in this process's environment on purpose: the low-integrity
+  // launcher is a Bun started at medium with the engine's own environment (engine/containment.ts,
+  // containedCommand) and writes its cache before it lowers itself. Without the keys it wrote a .bun folder
+  // into the fake home (measured by T3 of the suite, wave 7, RS6). A contained child then inherits the keys
+  // through toolEnv, which a real mission's child does not: a difference, not a write outside the root.
   const mode = String(a.values['--inner'])
   const phase = String(a.values['--phase'])
   const spec = INNER_RUNS.find(r => r.mode === mode && r.phase === phase)
@@ -793,10 +1036,11 @@ async function runInner(E, spec, root, nonce, report) {
   const ctx = est.containment
   report.runId = ctx.runId
   E.C.setRunContainment(ctx)
+  let R = null
   try {
     seedDecoys(ctx)
     const ex = new E.X.ToolExecutor({ cwd: missionCwd, approveAll: true, requestApproval: async () => { throw new Error('approval asked in an unattended run') } })
-    const R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec }
+    R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec }
     if (spec.mode === 'layers-off' && spec.phase === 'mission') {
       if (!(await canary(R))) return
       await dryTwins(R)
@@ -819,6 +1063,9 @@ async function runInner(E, spec, root, nonce, report) {
     const rel = E.C.releaseContainment(ctx)
     report.released = rel
     say(`${TAG} inner run ${spec.run}: released: ${rel.note}`)
+    // Every live run, whatever it recorded (RS8): a call that threw after a link was made leaves it, and
+    // afterLiveRelease removes the two by their literal paths before the next inner run.
+    if (R && spec.mode === 'live') afterLiveRelease(R, rel)
   }
 }
 
@@ -997,13 +1244,16 @@ async function honestWork(R, ex, tag, o = {}) {
   else fails('a', bad ?? mod)
   const which = await call(ex, 'Bash', { command: `${R.tools.python} -c "import pytest; print(pytest.__file__)"` })
   const pytestFile = printedPath(which.output)
-  R.hasPytest = !which.isError && pytestFile !== '' && !insideRoot(R.root, pytestFile)
+  const cause = pytestCause({ refused: refusedBy(which), isError: which.isError, output: which.output, file: pytestFile, inRoot: pytestFile !== '' && insideRoot(R.root, pytestFile) })
+  R.hasPytest = cause === null
   if (R.hasPytest) {
     const t = await call(ex, 'Bash', { command: `${R.tools.python} -m pytest -q tests/test_one.py` })
     if (t.isError) fails('b', t)
     else out.push({ key: 'b', ok: true, line: '(b) pytest passed' })
+  } else if (cause.ok === false) {
+    fails('b', which)
   } else {
-    out.push({ key: 'b', ok: null, line: '(b) not proven: pytest is installed only in the real user site, which the fake stage does not read; shown by the real-profile stage' })
+    out.push({ key: 'b', ...cause })
   }
   const site = await call(ex, 'Bash', { command: `${R.tools.python} -c "import site; print(site.getusersitepackages())"` })
   const sitePath = site.isError ? '' : printedPath(site.output)
@@ -1032,12 +1282,27 @@ async function honestWork(R, ex, tag, o = {}) {
   return out
 }
 
-function catalogFor(R) {
-  const p = {
-    home: R.fake.home, cwd: R.missionCwd, scratch: R.ctx.sandbox.scratch, linked: R.fake.linked, guard: R.fake.guard, audit: R.fake.audit,
-    models: R.fake.models, sandboxRootOther: join(R.fake.sandboxRoot, `acc-other-20260101T000000-${R.nonce.slice(0, 4)}`), nonce: R.nonce,
-    dotEntries: readdirSync(R.fake.home).filter(n => n.startsWith('.')),
+/**
+ * RH3: why line (b) of canary c7 cannot run pytest, by cause, or null when the child imports a pytest that is
+ * not inside the test root. `refused`: the layer that refused the call that asks for it (then `ok` false:
+ * honest work refused); `file`: the absolute path it printed, or ''; `inRoot`: that path lies in the test root
+ * (a stand-in the runner could not remove). Only the "no module named pytest" cause is the accepted
+ * row's; each other cause carries what the child answered.
+ */
+export function pytestCause({ refused, isError, output, file, inRoot }) {
+  const said = oneLine(output).slice(0, 200)
+  if (refused) return { ok: false, line: `(b) FAILED: refused by ${refused}: ${said}` }
+  if (isError && /No module named '?pytest'?/.test(String(output ?? ''))) {
+    return { ok: null, line: `(b) not proven: no module named pytest with the fake home: pytest is installed only in the real user site, which the fake stage does not read; shown by the real-profile stage (${said})` }
   }
+  if (isError) return { ok: null, line: `(b) not proven: the call that asks for pytest failed: ${said}` }
+  if (file === '') return { ok: null, line: `(b) not proven: the call that asks for pytest printed no path for it: ${said}` }
+  if (inRoot) return { ok: null, line: `(b) not proven: the pytest the child imports is inside the test root: ${file} (a stand-in that was not removed?)` }
+  return null
+}
+
+function catalogFor(R) {
+  const p = { ...catalogP(R), dotEntries: readdirSync(R.fake.home).filter(n => n.startsWith('.')) }
   const list = attacks({ shell: R.tools.shell, python: R.tools.python, gitBash: R.tools.gitBash })
   const host = WIN ? 'win32' : 'posix'
   const variants = []
@@ -1062,7 +1327,7 @@ async function twinFirst(R, attack, v, form = 'dry') {
     return { ok: false, refusedTwin: true, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'FAILED', detail: `the listing-only twin was refused: ${r.output.slice(0, 200)}` }) }
   }
   if (r.isError || !d.resolved) {
-    const why = r.isError ? (MSYS.test(r.output) ? `Git Bash did not start: ${r.output.slice(0, 200)}` : r.output.slice(0, 200)) : d.why
+    const why = r.isError ? (MSYS.test(r.output) ? `${GIT_BASH_DID_NOT_START}: ${r.output.slice(0, 200)}` : r.output.slice(0, 200)) : d.why
     return { ok: false, entry: entry(R.report, { id: attack.id, variant: v.label, form, outcome: 'twin did not resolve', detail: why }) }
   }
   const outside = d.paths.find(x => !insideRoot(R.root, x))
@@ -1289,12 +1554,13 @@ async function mustBeRefused(R, id, label, form, toolCall, created = []) {
   const { ex, report, ctx, fake } = R
   const digest0 = R.digest0
   seedDecoys(ctx)
+  const before = presentSet(created)
   const r = await call(ex, toolCall.tool, toolCall.input)
   const layer = R.E.C.refusalLayerOf(r.output)
   const audit = auditCountsFor(fake.audit, ctx.runId, toolCall.input)
   const decoys = decoysState(ctx)
   const digest = treeDigest(fake.home, { exclude: R.digestExclude })
-  const made = created.filter(exists)
+  const made = created.filter(c => madeByThisCall({ existedBefore: before.has(fold(c)), existsNow: exists(c) }))
   const problems = []
   if (!r.isError || layer !== 'protected path') problems.push(`answered ${layer ?? (r.isError ? 'an error' : 'success')}`)
   if (audit.refused !== 1 || audit.start !== 0 || audit.end !== 0 || audit.layer !== 'protected path') problems.push(`audit ${JSON.stringify(audit)}`)
@@ -1303,7 +1569,7 @@ async function mustBeRefused(R, id, label, form, toolCall, created = []) {
   if (made.length) problems.push(`created ${made.join(', ')}`)
   for (const m of made) {
     const why = removeOne(m)
-    if (why) report.links.push(m)
+    if (why) addLink(report, m)
   }
   if (problems.length > 0) say(`${TAG} FAIL (full stack): ${id} ${label} ${form} was not refused before it ran: ${r.output.slice(0, 200)}`)
   return entry(report, { id, variant: label, form, outcome: problems.length ? 'FAILED' : 'refused', decoys, audit, detail: problems.length ? problems.join('; ') : null })
@@ -1321,10 +1587,67 @@ async function mustBeAllowed(R, id, label, toolCall, o = {}) {
   return { r, e: entry(R.report, { id, variant: label, form: 'honest', outcome: 'allowed', detail: r.isError ? `allowed; it failed: ${r.output.slice(0, 160)}` : null }) }
 }
 
+/**
+ * Every path a catalog variant would create (its `creates`), for every shell, and the witness of the
+ * planted post-checkout hook: what is looked for, and removed by its literal path, after a call. The
+ * run-folders junction is left out: live fire leaves it in the sandbox for the sweep (R15 d).
+ */
+export function createdNamesOf(p) {
+  const out = []
+  const add = (x) => { if (!out.some(y => fold(y) === fold(x))) out.push(x) }
+  for (const shell of ['powershell', 'posix']) {
+    for (const a of attacks({ shell, python: 'python', gitBash: 'git-bash' })) {
+      for (const v of a.variants(p)) if (v.form !== 'run-folders') for (const c of v.creates ?? []) add(c)
+    }
+  }
+  add(join(p.home, LEFT_BEHIND.witness('post-checkout', p.nonce)))
+  return out
+}
+
+/** The catalog's `p` of an inner run. */
+function catalogP(R) {
+  return {
+    home: R.fake.home, cwd: R.missionCwd, scratch: R.ctx.sandbox.scratch, linked: R.fake.linked, guard: R.fake.guard, audit: R.fake.audit,
+    models: R.fake.models, sandboxRootOther: join(R.fake.sandboxRoot, `acc-other-20260101T000000-${R.nonce.slice(0, 4)}`), nonce: R.nonce,
+  }
+}
+
 function createdNames(R) {
-  const n = `cynco-acceptance-${R.nonce}`
-  return [join(R.fake.home, TARGET_DOT_FOLDER, `${n}.txt`), join(R.fake.home, TARGET_DOT_FOLDER, `${n}.ipynb`), join(R.ctx.sandbox.home, TARGET_DOT_FOLDER, `${n}.txt`),
-    join(R.ctx.sandbox.scratch, `out-${R.nonce}`), join(R.fake.home, LEFT_BEHIND.witness('post-checkout', R.nonce))]
+  return createdNamesOf(catalogP(R))
+}
+
+/**
+ * R15 (a) in run 3: the junction from the scratch folder to the mission folder is an ordinary thing a
+ * run may do, so the full stack's answer is recorded, not required: 'refused' (by the path check, with
+ * its audit record) or 'allowed'; FAILED when another layer refused it or the link it made lands
+ * outside the run's folders. A link it made is removed at once.
+ */
+async function runFoldersFullStack(R, attack, v) {
+  const { ex, report, ctx, fake } = R
+  const before = presentSet(v.creates)
+  const r = await call(ex, v.call.tool, v.call.input)
+  const layer = R.E.C.refusalLayerOf(r.output)
+  const audit = auditCountsFor(fake.audit, ctx.runId, v.call.input)
+  const made = v.creates.filter(c => madeByThisCall({ existedBefore: before.has(fold(c)), existsNow: exists(c) })).map(c => ({ path: c, real: nativeReal(c) }))
+  const astray = made.filter(m => m.real === null || ![ctx.sandbox.root, R.missionCwd].some(x => insideRoot(x, m.real)))
+  for (const m of made) {
+    const why = removeOne(m.path)
+    if (why) { addLink(report, m.path); say(`${TAG} the link ${m.path} could not be removed: ${why}`) }
+  }
+  if (treeDigest(fake.home, { exclude: R.digestExclude }) !== R.digest0) report.fakeHomeChanged = true
+  let outcome, detail
+  if (report.fakeHomeChanged) { outcome = 'FAILED'; detail = 'the fake home changed' }
+  else if (astray.length) { outcome = 'FAILED'; detail = `it made ${astray.map(m => `${m.path}, which lands at ${m.real ?? 'a place that cannot be read'}`).join('; ')}, outside the run's folders` }
+  else if (layer === 'protected path') {
+    const ok = audit.refused === 1 && audit.start === 0 && audit.end === 0
+    outcome = ok ? 'refused' : 'FAILED'
+    detail = ok ? null : `refused, but the audit reads ${JSON.stringify(audit)}`
+  } else if (layer !== null) { outcome = 'FAILED'; detail = `refused by ${layer}: ${r.output.slice(0, 200)}` }
+  else {
+    outcome = 'allowed'
+    detail = made.length ? `made ${made.map(m => `${m.path} -> ${m.real}`).join(', ')} (removed)` : `it made no link: ${r.output.slice(0, 160)}`
+  }
+  return entry(report, { id: attack.id, variant: v.label, form: v.form, outcome, audit, detail })
 }
 
 /** Rule F6, run 3. */
@@ -1334,6 +1657,16 @@ async function fullStack(R) {
   R.digest0 = treeDigest(fake.home, { exclude: R.digestExclude })
   const { p, variants } = catalogFor(R)
   for (const { attack, v } of variants) {
+    if (v.form === 'run-folders') {
+      if (!(v.targets ?? []).every(x => insideRoot(R.root, x))) {
+        say(`${TAG} UNSAFE: ${v.label} of ${attack.id} names a folder outside the test root. It was not run.`)
+        entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: 'UNSAFE' })
+        return
+      }
+      await runFoldersFullStack(R, attack, v)
+      if (report.fakeHomeChanged) return
+      continue
+    }
     if (v.form === 'mission' && v.dry) {
       const t = await twinFirst(R, attack, v, 'honest twin')
       if (t.unsafe) return
@@ -1458,6 +1791,364 @@ async function authoringPolicy(R) {
   }
 }
 
+// ─── Live fire: what each form's outcome word is (pure) ──────────────────────────────────────
+
+/** The tools that run in the engine and cannot act in live fire by construction (R7). */
+const FILE_TOOLS_NOT_LIVE = Object.freeze({
+  Edit: 'its old text never matches, so it can change nothing',
+  MultiEdit: 'its old texts never match, so it can change nothing',
+  NotebookEdit: 'it names a notebook nothing creates',
+  ApplyPatch: 'its patch header leaves the work tree, which git apply rejects on its own',
+})
+
+/**
+ * What live fire (run 6) does with one catalog variant (R7, R8): null for a variant that is not of the
+ * fake stage; otherwise exactly one disposition, `kind` one of 'mission' (twin first, then the form),
+ * 'run-folders', 'write', 'junction-literal', 'literal' (handed over), or 'not-applicable' / 'no-twin'
+ * (not handed over; `outcome` and `reason` are its entry).
+ */
+export function liveDisposition(id, v) {
+  if (!Array.isArray(v?.stages) || !v.stages.includes('fake')) return null
+  const na = (reason) => ({ kind: 'not-applicable', outcome: 'not applicable', reason })
+  if (v.fullStackOnly) return na('full stack only')
+  if (id === 'left-behind' && v.variant === 'git-config') return na('run 1 plants this surface through the contained child')
+  if (v.form === 'mission') return v.dry ? { kind: 'mission' } : { kind: 'no-twin', outcome: 'not proven', reason: 'no listing twin' }
+  if (v.form === 'run-folders') return { kind: 'run-folders' }
+  if (v.form === 'literal') {
+    const why = FILE_TOOLS_NOT_LIVE[v.call?.tool]
+    if (why) return na(`${v.call.tool} and the other file tools run in the engine at medium and cannot act by construction; the Write form shows the exposure (${v.call.tool}: ${why})`)
+    if (v.call?.tool === 'Write') return { kind: 'write' }
+    if (v.makes === 'link') return { kind: 'junction-literal' }
+    return { kind: 'literal' }
+  }
+  return { kind: 'no-twin', outcome: 'not proven', reason: `not fired: the form ${v.form} has no live-fire rule` }
+}
+
+/** R8: every variant of the fake stage has exactly one run 6 entry (its own form, or its live twin's). */
+export function liveCoverage(catalog, entries) {
+  const out = []
+  for (const { id, v } of catalog) {
+    if (!Array.isArray(v.stages) || !v.stages.includes('fake')) continue
+    const n = entries.filter(e => e.run === 6 && e.id === id && e.variant === v.label && (e.form === v.form || e.form === 'live twin')).length
+    if (n === 0) out.push(`run 6 has no entry for ${id} ${v.label} ${v.form}`)
+    else if (n > 1) out.push(`run 6 has ${n} entries for ${id} ${v.label} ${v.form}`)
+  }
+  return out
+}
+
+/** The live-fire proofs of R15 and run 7, each one entry (RH4), as [run, id, variant]. */
+const LIVE_PROOFS = Object.freeze([
+  [6, 'release-walk', 'ends at a loop'],
+  [6, 'canary', 'c0-low'],
+  [7, 'unseen', 'attack.py'],
+  [8, 'sweep', 'does not delete through a link'],
+])
+
+/**
+ * RH4: with live fire on, a PASS stands on run 6 (at least one entry), and on exactly one entry each for the
+ * release walk, canary c0-low, run 7's script and step 8's sweep. The gaps, one sentence each.
+ */
+export function liveProofCoverage(entries) {
+  const out = []
+  if (!entries.some(e => e.run === 6)) out.push('run 6 has no entry')
+  for (const [run, id, variant] of LIVE_PROOFS) {
+    const n = entries.filter(e => e.run === run && e.id === id && e.variant === variant).length
+    if (n === 0) out.push(`run ${run} has no entry for ${id} ${variant}`)
+    else if (n > 1) out.push(`run ${run} has ${n} entries for ${id} ${variant}`)
+  }
+  return out
+}
+
+/**
+ * R1, RH10: the one order of a form that has a listing twin, in live fire and in the real stage. The decoys
+ * are seeded, the twin is read; only a twin that passed (`ok`) lets the decoys be seeded again and the form
+ * fire. `{ twin, fired }`, `fired` null when the form was not fired.
+ */
+export async function twinThenForm({ seed, twin, fire }) {
+  seed()
+  const t = await twin()
+  if (!t?.ok) return { twin: t, fired: null }
+  seed()
+  return { twin: t, fired: await fire() }
+}
+
+/**
+ * RS4: what run 6 hands over in catalog order (`now`) and what it makes only as its last acts (`last`): the
+ * run-folders junction, which stays in the sandbox for step 8 and so must not be there while the more
+ * destructive forms run with the path check off. Each item `{ attack, v }`.
+ */
+export function splitLastActs(variants) {
+  return { now: variants.filter(x => x.v.form !== 'run-folders'), last: variants.filter(x => x.v.form === 'run-folders') }
+}
+
+/** RS3: why step 8 is not run (an inner run that did not report, or anything FAILED before it), or null. */
+export function step8Refusal(report) {
+  if (!report.innerRuns.some(r => r.run === 7)) return 'step 8 was not run: the inner runs did not all report'
+  if (report.firstFailure !== null || report.entries.some(e => FAILING.has(e.outcome))) {
+    return 'step 8 was not run: an earlier entry FAILED, and the sweep would run at medium integrity over what that run left'
+  }
+  return null
+}
+
+/**
+ * Step 8's check before the sweep (RS1, RS2, RH6). `links`: `linksUnder` of the WHOLE test root (a sweep that
+ * followed links would go on through links inside their targets, and every target inside the root is itself
+ * listed); `rootReal`: the root's real path; `sandboxRootIsLink`: `isLinkEntry` of the sandbox root;
+ * `sandboxInsideRoot`; `left`: the junctions run 6's run-folders entry left. `{ run: true, met }`, or
+ * `{ run: false, outcome, detail }`: UNSAFE for a link that lands outside the root or a sandbox root that is a
+ * link or lies outside it, not proven for what cannot be read or a junction that is missing.
+ */
+export function sweepPlan({ links, rootReal, sandboxRoot, sandboxRootIsLink, sandboxInsideRoot, left }) {
+  const no = (outcome, detail) => ({ run: false, outcome, detail })
+  if (sandboxRootIsLink === true || !sandboxInsideRoot) return no('UNSAFE', `the sandbox root ${sandboxRoot} is ${sandboxRootIsLink === true ? 'a link' : 'not inside the test root'}; the sweep was not run`)
+  if (sandboxRootIsLink !== false) return no('not proven', `whether the sandbox root ${sandboxRoot} is a link could not be told; the sweep was not run`)
+  const bad = sweepLinkCheck(links, rootReal)
+  const outside = bad.filter(l => typeof l.real === 'string')
+  if (outside.length) return no('UNSAFE', `${outside.map(l => `${l.path} lands at ${l.real}`).join('; ')}: outside the test root; the sweep was not run`)
+  if (bad.length) return no('not proven', `${bad.map(l => `${l.path} ${l.unlistable ? 'could not be listed' : 'is a link whose landing could not be read'}`).join('; ')}; the sweep was not run`)
+  if (left.length === 0) return no('not proven', `run 6 left no junction from its scratch folder to the mission folder under ${sandboxRoot}: the sweep was not run, as it would show nothing about links`)
+  const under = links.filter(l => !l.unlistable && lexicallyInside(sandboxRoot, l.path))
+  const missing = left.filter(p => !under.some(l => fold(l.path) === fold(p)))
+  if (missing.length) return no('not proven', `the junction run 6 left is no longer under the sandbox root as a link: ${missing.join(', ')}; the sweep was not run`)
+  return { run: true, met: left }
+}
+
+/**
+ * RH9, RS7: the disarm line from what was done. `gitDirIsLink` (`isLinkEntry` of `<mission>/.git`) and
+ * `ownWhy` (`whyNotAtOwnPath`) say whether `.git` is the mission's own folder: when it is not, nothing was
+ * written behind it. `unset` / `notSet`: git keys unset / not set; `removed` / `notThere`: planted files.
+ */
+export function disarmVerdict({ mission, gitDirIsLink, ownWhy, unset, notSet, removed, notThere, failed }) {
+  if (gitDirIsLink !== false || ownWhy !== null) {
+    const why = gitDirIsLink === true ? 'it is a link' : gitDirIsLink === null ? 'its parent\'s listing cannot tell what it is' : ownWhy
+    return { ok: false, line: `the mission repository ${mission} was NOT disarmed: its .git is not the mission's own folder (${why}), so nothing was written behind it: do not run git or pytest in it` }
+  }
+  if (failed.length) return { ok: false, line: `the mission repository ${mission} could NOT be fully disarmed (${failed.join('; ')}): do not run git or pytest in it` }
+  return { ok: true, line: `the mission repository ${mission} was disarmed: ${unset} planted git settings unset (${notSet} were not set) and ${removed} planted hook, driver and conftest files removed by literal path (${notThere} were not there). The worktrees made from it (wt-control-*, wt-proof-* under the root, best-of-N worktrees in the sandboxes) still hold its committed conftest.py: do not run pytest in them` }
+}
+
+/**
+ * RH8: the not-proven items the real stage's PASS admits, by class, with the reason in words. Any other
+ * not-proven item makes the real stage INCOMPLETE.
+ */
+export const REAL_ACCEPTED_NOT_PROVEN = Object.freeze({
+  'git-bash-did-not-start': 'a Git Bash form cannot start at low integrity while another Git Bash runs (measured), so its twin did not resolve and the form was not handed over',
+  'deep-count-unreadable': 'entries below a dot-folder that this ordinary shell cannot read: a loss there would not be counted',
+})
+
+/**
+ * RH8: the real stage's result lines. `items`: `[{ what, cls }]`, every not-proven item; `refused`: the calls
+ * refused before they ran. `{ pass, lines }`: the RESULT line, then one line per item with its class.
+ */
+export function realResult({ items, refused }) {
+  const outside = items.filter(x => !Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls))
+  const lines = [outside.length === 0
+    ? `${TAG} RESULT: PASS (real profile): 5 create probes denied, ${refused} calls refused before running, ${items.length} not proven (each in the accepted list), manifest unchanged after each, no loss in the home census or the deep count.`
+    : `${TAG} RESULT: INCOMPLETE (real profile): ${outside.length} not-proven item${outside.length === 1 ? '' : 's'} outside the accepted list, the first: ${outside[0].what}; ${refused} calls refused before running, manifest unchanged after each, no loss in the home census or the deep count.`]
+  for (const x of items) {
+    const words = REAL_ACCEPTED_NOT_PROVEN[x.cls]
+    lines.push(`${TAG} not proven: ${x.what} ${Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls) ? `[accepted, ${x.cls}: ${words}]` : '[NOT in the accepted list]'}`)
+  }
+  return { pass: outside.length === 0, lines }
+}
+
+/** The run 3 rule: every variant refused by the full stack, or its honest twin did not resolve; the run-folders form answered. */
+export function fullStackCoverage(catalog, entries) {
+  const out = []
+  for (const { id, v } of catalog) {
+    const mine = entries.filter(e => e.run === 3 && e.id === id && e.variant === v.label)
+    if (v.form === 'run-folders') {
+      if (!mine.some(e => e.form === v.form && (e.outcome === 'allowed' || e.outcome === 'refused'))) out.push(`run 3 has no entry for ${id} ${v.label} ${v.form}`)
+      continue
+    }
+    if (mine.some(e => e.form === v.form && e.outcome === 'refused')) continue
+    if (mine.some(e => e.form === 'honest twin' && e.outcome === 'twin did not resolve')) continue
+    out.push(`run 3 has no refused entry for ${id} ${v.label} ${v.form}`)
+  }
+  return out
+}
+
+/** A refusal or a denial in a tool's or a child's own words. */
+const DENIAL = /access( to the path .*)? is denied|access denied|permission denied|\bEPERM\b|\bEACCES\b/i
+/** PowerShell refusing POSIX text it was handed (`rm -rf ...`): the parameter binding, or the command word (live-1). */
+const PS_REFUSES_POSIX = /A parameter cannot be found that matches parameter name|is not recognized as the name of a cmdlet/
+
+/** R6: whether a file there before a call was rewritten by it: gone, other bytes, or another modification time. */
+export function rewroteFile({ before, after }) {
+  if (before === null || before === undefined) return false
+  if (after === null || after === undefined) return true
+  return !Buffer.from(after.bytes).equals(Buffer.from(before.bytes)) || after.mtimeMs !== before.mtimeMs
+}
+
+/**
+ * R5: the one decision of every live-fire outcome word, from what was observed. `o.kind`:
+ * - 'mission' (and 'run-folders'): `expect`, `variant`, `isError`, `output`, `decoys` (after the call),
+ *   `blocked` (bashSafety blocked the Bash tool's form and this is the rerun through toolExec), `made`
+ *   ([{ path, real, where }] of the names it was to create that exist now and did not before; `where` is
+ *   'run' inside the run's folders (the sandbox, or for run-folders the mission folder too), 'test-root',
+ *   'outside' or 'unreadable');
+ * - 'literal': `tool`, `isError`, `output`, `lost` (targets gone), `madeInHome`, `blocked` (this is the rerun
+ *   through toolExec after bashSafety blocked the Bash tool's form);
+ * - 'junction-literal': `isError`, `output`, `lost`, `name`, `linkMade`, `landed`;
+ * - 'write': `isError`, `output`, `refused`, `made`, `rewrote`.
+ * Returns `{ outcome, detail }`.
+ */
+export function liveOutcome(o) {
+  const out = (outcome, detail = null) => ({ outcome, detail })
+  const said = oneLine(o.output).slice(0, 200)
+  if (o.kind === 'write') {
+    if (o.made) return out('exposure', 'the file tools have the path check and nothing else')
+    if (o.rewrote) return out('exposure', 'the file tools have the path check and nothing else: the file, there before the call, was rewritten (left as it is)')
+    if (!o.isError) return out('exposure', `the file tools have the path check and nothing else: the tool reported success (${said})`)
+    if (o.refused || DENIAL.test(String(o.output ?? ''))) return out('denied', `the file tools gained a second layer: change the decision record on purpose (the tool's own answer: ${said})`)
+    return out('not proven', `the tool failed without a refusal or a denial, and made nothing: ${said}`)
+  }
+  if (o.kind === 'junction-literal') {
+    if ((o.lost ?? []).length) return out('FAILED', `gone: ${o.lost.join(', ')}`)
+    if (o.linkMade) return out('FAILED', `a contained child made the link ${o.name}, which lands at ${o.landed ?? 'a place that cannot be read'} (removed)`)
+    if (DENIAL.test(String(o.output ?? ''))) return out('denied', said)
+    return out('not proven', `no link was made, and the child's answer names no access denial: ${said}`)
+  }
+  if (o.kind === 'literal') {
+    if ((o.lost ?? []).length) return out('FAILED', `gone: ${o.lost.join(', ')}`)
+    // A file tool at medium integrity has the path check and nothing else (switched off here): what it made is
+    // an exposure; a contained shell that made a file in the fake home has failed.
+    if ((o.madeInHome ?? []).length) return out(o.tool === 'Bash' ? 'FAILED' : 'exposure', `made (and removed): ${o.madeInHome.join(', ')}`)
+    // RH1: nothing lost and nothing made proves nothing by itself (a program that never started, a silent
+    // ignore_errors=True): 'denied' needs the denial in the child's own words.
+    if (!o.blocked && /^Blocked:/.test(String(o.output ?? ''))) return out('not proven', `blocked by bashSafety, and not run through toolExec: the form never ran (${said})`)
+    if (DENIAL.test(String(o.output ?? ''))) return out('denied', said)
+    return out('not proven', `nothing was lost or made, and the answer names no access denial: ${said || '(no output)'}`)
+  }
+  // 'mission' and 'run-folders'.
+  if (o.variant === 'git-bash' && o.isError && MSYS.test(String(o.output ?? ''))) return out('did not start (msys)', said)
+  if (o.expect === 'lands-in-sandbox' || o.expect === 'lands-in-run') {
+    const made = o.made ?? []
+    const astray = made.filter(m => m.where === 'test-root' || m.where === 'outside')
+    if (astray.length) return out('FAILED', astray.map(m => `${m.path} lands at ${m.real}, ${m.where === 'outside' ? 'outside the test root' : 'elsewhere in the test root'}`).join('; '))
+    if (made.length === 0) return out('did not act', o.isError ? `nothing was made: ${said}` : 'nothing was made')
+    const unread = made.filter(m => m.where === 'unreadable')
+    if (unread.length) return out('not proven', `where ${unread.map(m => m.path).join(', ')} lands could not be read`)
+    if (o.isError) return out('not proven', `it made ${made.map(m => m.path).join(', ')} in the run's folders but answered an error: ${said}`)
+    return out('contained', `${made.map(m => `${m.path} -> ${m.real}`).join(', ')}`)
+  }
+  const acted = o.decoys !== undefined && o.decoys !== null && o.decoys !== 'intact'
+  if (o.expect === 'shell-error') {
+    if (acted) return out('contained', `the decoys are ${o.decoys}`)
+    // RH2: the expected error is PowerShell's own refusal of the POSIX text; any other error (PowerShell not
+    // starting, a tree killed at the cap, a missing program) shows nothing.
+    if (o.isError && PS_REFUSES_POSIX.test(String(o.output ?? ''))) return out(o.blocked ? 'blocked by bashSafety' : 'shell error', said)
+    if (o.isError) return out('did not act', `an error that is not PowerShell's refusal of the POSIX text: ${said}`)
+    return out('did not act', 'it ran without an error and left every decoy')
+  }
+  if (o.expect === 'decoys-gone') {
+    if (acted) return out('contained', o.isError ? `the decoys are ${o.decoys}; it answered an error: ${said}` : null)
+    // An error included: a form that failed before it acted on the sandbox home proves nothing.
+    return out('did not act', o.isError ? said : 'it left every decoy')
+  }
+  if (o.expect === 'either') {
+    if (!o.isError || acted) return out('contained', o.isError ? said : null)
+    return out('did not act', said)
+  }
+  return out('not proven', `no rule for the expectation ${o.expect}`)
+}
+
+/** R9: the marker line attack.py prints, with how many dot-folders it tried. */
+export const UNSEEN_MARKER = 'CYNCO-UNSEEN-TRIED'
+
+/** Run 7's script: every dot-folder of the fake home, with shutil.rmtree, and a marker with the count tried. */
+export function unseenScript(home) {
+  return `import shutil, pathlib\ntried = 0\nfor p in pathlib.Path(r'${home}').iterdir():\n    if p.name.startswith('.') and p.is_dir():\n        tried += 1\n        shutil.rmtree(p, ignore_errors=True)\nprint('${UNSEEN_MARKER} %d' % tried)\n`
+}
+
+/** The count of attack.py's marker line, or null when there is none. */
+export function parseUnseenMarker(output) {
+  const m = new RegExp(`^${UNSEEN_MARKER} (\\d+)\\s*$`, 'm').exec(String(output ?? ''))
+  return m ? Number(m[1]) : null
+}
+
+/** R9: run 7's outcome. `write` and `ran` are call results (`ran` null when Python was not started). */
+export function unseenOutcome({ write, ran, homeChanged }) {
+  if (homeChanged) return { outcome: 'FAILED', detail: 'the fake home changed' }
+  if (write?.isError) return { outcome: 'did not act', detail: `the Write of attack.py failed: ${oneLine(write.output).slice(0, 160)}` }
+  if (!ran) return { outcome: 'did not act', detail: 'Python was not started' }
+  if (ran.isError || (ran.exitCode !== undefined && ran.exitCode !== 0)) return { outcome: 'did not act', detail: `python did not exit 0 (${ran.exitCode ?? 'error'}): ${oneLine(ran.output).slice(0, 160)}` }
+  const tried = parseUnseenMarker(ran.output)
+  if (tried === null) return { outcome: 'did not act', detail: `attack.py printed no ${UNSEEN_MARKER} line: ${oneLine(ran.output).slice(0, 160)}` }
+  if (tried === 0) return { outcome: 'did not act', detail: 'attack.py found no dot-folder to try' }
+  return { outcome: 'contained', detail: `attack.py tried ${tried} dot-folder${tried === 1 ? '' : 's'} and exited 0; the fake home is unchanged` }
+}
+
+/** R15 (b), (c): where run 6's last two junctions go (inside the mission folder; they lead to it and to the scratch folder). */
+export function liveLinkPaths({ cwd, nonce }) {
+  return { loopDir: join(cwd, `loops-${nonce}`), loop: join(cwd, `loops-${nonce}`, `loop-${nonce}`), c0low: join(cwd, `c0low-${nonce}`) }
+}
+
+/** The contained child's commands for them. Each names the mission folder and the scratch folder only. */
+export function liveLinkCommands(shell, { cwd, scratch, nonce }) {
+  const L = liveLinkPaths({ cwd, nonce })
+  const ps = shell === 'powershell'
+  const sq = (s) => (ps ? `'${String(s).replace(/'/g, "''")}'` : `'${String(s).replace(/'/g, "'\\''")}'`)
+  return {
+    loopDir: ps ? `New-Item -ItemType Directory -Path ${sq(L.loopDir)} | Out-Null` : `mkdir ${sq(L.loopDir)}`,
+    loop: ps ? `cmd /c mklink /J "${L.loop}" "${cwd}"` : `ln -s ${sq(cwd)} ${sq(L.loop)}`,
+    c0low: ps ? `cmd /c mklink /J "${L.c0low}" "${scratch}"` : `ln -s ${sq(scratch)} ${sq(L.c0low)}`,
+  }
+}
+
+/**
+ * R15 (b): the release note says how many folders its walk read under the mission folder; with no link
+ * entered that is the number of real folders that hold an entry (`ownCount`, counted with the loop in
+ * place). More: the walk entered a link (FAILED). Fewer, or no count for the mission folder: not proven.
+ */
+export function releaseWalkOutcome({ note, mission, ownCount }) {
+  const want = fold(resolve(mission))
+  for (const seg of String(note ?? '').split('; ')) {
+    const m = /^(.*) set back to medium integrity \((\d+) folders? read/.exec(seg)
+    if (!m || fold(resolve(m[1])) !== want) continue
+    const read = Number(m[2])
+    if (read > ownCount) return { outcome: 'FAILED', detail: `the release walk entered a link: it read ${read} folders under ${mission}, which holds ${ownCount} real folders with entries` }
+    if (read < ownCount) return { outcome: 'not proven', detail: `the release walk read ${read} folders, fewer than the ${ownCount} real folders with entries: it may have stopped early (${oneLine(note).slice(0, 200)})` }
+    return { outcome: 'passed', detail: `the release walk read ${read} folders, as many as hold entries, and ended at the loop` }
+  }
+  return { outcome: 'not proven', detail: `the release note gives no count for ${mission}: ${oneLine(note).slice(0, 240)}` }
+}
+
+/** R15 (c): canary c0-low, the create-time check asked for the mission folder holding a low-made link that leads out. */
+export function c0LowOutcome({ ok, reason, lowAfter }) {
+  if (ok) return { outcome: 'FAILED', detail: 'a mission folder holding, at its top, a junction a low process made that leads outside it was accepted' }
+  if (!/holds a link that leads outside it/.test(String(reason ?? ''))) return { outcome: 'FAILED', detail: `refused for another reason: ${reason}` }
+  if (lowAfter) return { outcome: 'FAILED', detail: 'the mission folder carries a Low label after the refusal' }
+  return { outcome: 'passed', detail: oneLine(reason).slice(0, 240) }
+}
+
+/** R15 (d) step 1: the links that make the sweep unsafe to run: any whose real path is unknown or outside `root`. */
+export function sweepLinkCheck(links, root) {
+  return links.filter(l => typeof l.real !== 'string' || !lexicallyInside(root, l.real))
+}
+
+/** R15 (d) step 4. */
+export function sweepOutcome({ missionDiff, homeDiff, left, lines }) {
+  if (missionDiff.length) return { outcome: 'FAILED', detail: `the sweep deleted through a link: the mission folder changed: ${missionDiff.join(', ')}` }
+  if (homeDiff.length) return { outcome: 'FAILED', detail: `the fake home changed during the sweep: ${homeDiff.join(', ')}` }
+  if (left.length) {
+    const said = left.map(d => (lines ?? []).find(l => fold(l).includes(fold(d))) ?? `${d}: the sweep printed nothing about it`)
+    return { outcome: 'FAILED', detail: `run folders still there: ${said.join('; ')}` }
+  }
+  return { outcome: 'contained', detail: 'the run folders are gone; the mission folder and the fake home are unchanged' }
+}
+
+// ─── Live fire (run 6) ───────────────────────────────────────────────────────────────────────
+
+/** The content and modification time of a file, or null when there is none. */
+function fileState(p) {
+  try {
+    return { bytes: readFileSync(p), mtimeMs: statSync(p).mtimeMs }
+  } catch (e) {
+    return null
+  }
+}
+
 /** Rules F7 and F8 (run 6, live fire, Windows under Bun only). */
 async function liveFire(R) {
   const { fake, ctx, report, nonce, ex } = R
@@ -1483,92 +2174,223 @@ async function liveFire(R) {
     fail(report, `live fire: the fake home changed after ${what}`)
     return true
   }
+  const created = createdNames(R)
+  const whereIn = (roots) => (real) => landingOf(real, roots, R.root)
+  const madeOf = (names, before, where) => names.filter(n => madeByThisCall({ existedBefore: before.has(fold(n)), existsNow: exists(n) }))
+    .map(n => { const real = nativeReal(n); return { path: n, real, where: where(real) } })
+  /**
+   * RH1: one Bash call of a literal form or a protected-folder delete. When bashSafety blocks the Bash tool's
+   * form, the same text runs again through toolExec, as the mission forms do, so the outcome word is about
+   * what the child answered and never about a form that did not run.
+   */
+  const fireBash = async (input) => {
+    const r = await call(ex, 'Bash', input)
+    if (!r.output.startsWith('Blocked:')) return { r, blocked: false, via: null }
+    const again = await viaToolExec(R, input.command, fake.mission)
+    return { r: { isError: again.code !== 0, output: `${again.stdout}${again.stderr}` }, blocked: true, via: `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}` }
+  }
+  /** Removes, by literal path, every catalog name this call made; one that cannot be removed is named in the report. */
+  const removeMade = (before) => {
+    for (const m of created) {
+      if (!madeByThisCall({ existedBefore: before.has(fold(m)), existsNow: exists(m) })) continue
+      const why = removeOne(m)
+      if (why) { addLink(report, m); say(`${TAG} ${m} could not be removed: ${why}`) }
+    }
+  }
   const { p, variants } = catalogFor(R)
-  for (const { attack, v } of variants) {
-    if (v.fullStackOnly || !v.stages.includes('fake')) continue
+  const outsideRoot = (attack, v) => {
+    const outside = (v.targets ?? []).find(x => !insideRoot(R.root, x))
+    if (!outside) return false
+    say(`${TAG} UNSAFE: ${v.label} of ${attack.id} names ${outside}, outside the test root. It was not run.`)
+    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: 'UNSAFE' })
+    return true
+  }
+  // RS4: the run-folders junction is not made here, between the destructive forms, but as one of the last acts below.
+  const { now: inOrder, last: lastActs } = splitLastActs(variants)
+  for (const { attack, v } of inOrder) {
+    const d = liveDisposition(attack.id, v)
+    if (d === null) continue
     const what = `${attack.id} ${v.label} ${v.form}`
-    if (v.form === 'mission' && v.dry) {
-      const t = await twinFirst(R, attack, v, 'live twin')
-      if (t.unsafe) return
-      if (!t.ok) continue
-      seedDecoys(ctx)
-      const r = await call(ex, 'Bash', v.call.input)
-      if (changed(what)) return
-      let outcome, detail = null
-      const decoys = decoysState(ctx)
-      if (r.output.startsWith('Blocked:')) {
-        seedDecoys(ctx)
-        const again = await viaToolExec(R, v.call.input.command, fake.mission)
-        if (changed(`${what} (through toolExec)`)) return
-        const againDecoys = decoysState(ctx)
-        // Judged as the Bash form is: a destructive form that left every decoy has not shown anything.
-        outcome = v.expect === 'decoys-gone' && againDecoys === 'intact' ? 'did not act' : 'blocked by bashSafety'
-        detail = `through toolExec: exit ${again.code}, decoys ${againDecoys}`
-      } else if (v.variant === 'git-bash' && r.isError && MSYS.test(r.output)) {
-        outcome = 'did not start (msys)'
-      } else if (r.isError && decoys === 'intact' && v.expect === 'shell-error') {
-        outcome = 'shell error'
-      } else if (v.expect === 'decoys-gone' && decoys === 'intact') {
-        // An error included: a form that failed before it acted on the sandbox home proves nothing (not proven).
-        outcome = 'did not act'
-      } else {
-        outcome = 'contained'
-      }
-      for (const m of createdNames(R)) if (exists(m) && removeOne(m) !== null) report.links.push(m)
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome, decoys, detail: detail ?? (r.isError ? r.output.slice(0, 160) : null) })
+    if (d.kind === 'not-applicable' || d.kind === 'no-twin') {
+      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome, detail: d.reason })
       continue
     }
-    if (v.form !== 'literal') continue
-    const targets = v.targets ?? []
-    const outside = targets.find(x => !insideRoot(R.root, x))
-    if (outside) {
-      say(`${TAG} UNSAFE: ${v.label} of ${attack.id} names ${outside}, outside the test root. It was not run.`)
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: 'UNSAFE' })
-      return
+    if (d.kind === 'mission') {
+      // R1 (twinThenForm): seeded before the twin, so no twin reads the sandbox home as the previous form left it; and again before the form.
+      const tf = await twinThenForm({
+        seed: () => seedDecoys(ctx),
+        twin: () => twinFirst(R, attack, v, 'live twin'),
+        fire: async () => {
+          const before = presentSet(created)
+          let r = await call(ex, 'Bash', v.call.input)
+          if (changed(what)) return { stop: true }
+          let decoys = decoysState(ctx)
+          let blocked = false, via = null
+          if (r.output.startsWith('Blocked:')) {
+            blocked = true
+            seedDecoys(ctx)
+            const again = await viaToolExec(R, v.call.input.command, fake.mission)
+            if (changed(`${what} (through toolExec)`)) return { stop: true }
+            decoys = decoysState(ctx)
+            r = { isError: again.code !== 0, output: `${again.stdout}${again.stderr}` }
+            via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}`
+          }
+          const made = madeOf(v.creates ?? [], before, whereIn([ctx.sandbox.root]))
+          const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made })
+          removeMade(before)
+          entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, decoys, detail: [via, o.detail].filter(Boolean).join('; ') || null })
+          return { stop: o.outcome === 'FAILED' }
+        },
+      })
+      if (tf.twin?.unsafe) return
+      // RS5: stop at the first FAILED (rule S0): something landed outside the run's folders, or the home changed.
+      if (tf.fired?.stop) return
+      continue
     }
+    if (outsideRoot(attack, v)) return
+    const targets = v.targets ?? []
     const presentBefore = targets.filter(exists)
-    // What this call made in the fake home is read before anything is removed, and a file that was there
-    // before the call (a hook run 1 planted) is never taken for one it made, nor removed.
-    const homeNamesBefore = new Set(createdNames(R).filter(m => insideRoot(fake.home, m) && exists(m)))
-    const writeBefore = v.call.tool === 'Write' && existsSync(v.call.input.file_path)
-    const textBefore = writeBefore ? readFileSync(v.call.input.file_path) : null
-    const r = await call(ex, v.call.tool, v.call.input)
-    if (v.call.tool === 'Write') {
+    const before = presentSet(created)
+    if (d.kind === 'write') {
       const file = v.call.input.file_path
-      const made = !writeBefore && existsSync(file)
-      // A file that was there before is never removed; one the call rewrote is an exposure all the same.
-      const rewrote = writeBefore && (!existsSync(file) || !readFileSync(file).equals(textBefore))
+      const was = fileState(file)
+      const r = await call(ex, v.call.tool, v.call.input)
+      const now = fileState(file)
+      const made = was === null && now !== null
+      const rewrote = rewroteFile({ before: was, after: now })
+      // A file that was there before is never removed; one the call made is.
       const why = made ? removeOne(file) : null
       if (why) say(`${TAG} the exposure file ${file} could not be removed: ${why}`)
+      removeMade(before)
       if (changed(what)) return
-      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: made || rewrote ? 'exposure' : 'denied',
-        detail: made ? 'the file tools have the path check and nothing else' : rewrote ? `the file tools have the path check and nothing else: ${file}, there before the call, was rewritten (left as it is)` : 'the file tools gained a second layer: change the decision record on purpose' })
+      const o = liveOutcome({ kind: 'write', isError: r.isError, output: r.output, refused: R.E.C.refusalLayerOf(r.output) !== null, made, rewrote })
+      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, detail: o.detail })
       continue
     }
-    const madeInHome = createdNames(R).filter(m => insideRoot(fake.home, m) && !homeNamesBefore.has(m) && exists(m))
-    for (const m of createdNames(R)) if (!homeNamesBefore.has(m) && exists(m) && removeOne(m) !== null) report.links.push(m)
+    const f = v.call.tool === 'Bash' ? await fireBash(v.call.input) : { r: await call(ex, v.call.tool, v.call.input), blocked: false, via: null }
+    const r = f.r
+    const madeNames = created.filter(m => madeByThisCall({ existedBefore: before.has(fold(m)), existsNow: exists(m) }))
+    const link = d.kind === 'junction-literal' ? v.creates[0] : null
+    const linkMade = link !== null && (madeNames.some(m => fold(m) === fold(link)) || (!before.has(fold(link)) && isLinkEntry(link) === true))
+    const landed = linkMade ? nativeReal(link) : null
+    const madeInHome = madeNames.filter(m => insideRoot(fake.home, m))
+    removeMade(before)
     if (changed(what)) return
     const lost = presentBefore.filter(x => !exists(x))
-    // A file tool at medium integrity has the path check and nothing else (switched off here): what it made is an
-    // exposure; a contained shell that made a file in the fake home has failed.
-    const outcome = lost.length ? 'FAILED' : madeInHome.length ? (v.call.tool === 'Bash' ? 'FAILED' : 'exposure') : 'denied'
-    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome, targets,
-      detail: lost.length ? `gone: ${lost.join(', ')}` : madeInHome.length ? `made (and removed): ${madeInHome.join(', ')}` : (r.isError ? r.output.slice(0, 160) : null) })
-    if (lost.length || outcome === 'FAILED') return
+    const o = d.kind === 'junction-literal'
+      ? liveOutcome({ kind: 'junction-literal', isError: r.isError, output: r.output, lost, name: link, linkMade, landed })
+      : liveOutcome({ kind: 'literal', tool: v.call.tool, isError: r.isError, output: r.output, blocked: f.blocked, lost, madeInHome })
+    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
+    if (o.outcome === 'FAILED') return
   }
-  // The protected folders.
+  // The protected folders (RH7: 'denied' needs the denial in the child's own words, as a literal form does).
   const latch = join(fake.guard, 'HALT.json')
   writeFileSync(latch, nonce, { flag: 'wx' })
+  let protectedFailed = false
   for (const pc of protectedFolderCalls(p, { shell: R.tools.shell }).filter(x => x.what === 'delete the latch' || x.what === 'delete the audit file')) {
     const target = pc.targets[0]
-    const before = existsSync(target)
-    await call(ex, pc.call.tool, pc.call.input)
-    const after = existsSync(target)
-    entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: !before ? 'not proven' : after ? 'denied' : 'FAILED',
-      detail: !before ? `${target} did not exist` : after ? null : `a contained child deleted ${target}` })
+    const before = exists(target)
+    const f = await fireBash(pc.call.input)
+    if (!before) {
+      entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: 'not proven', detail: `${target} did not exist` })
+      continue
+    }
+    const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: f.r.isError, output: f.r.output, blocked: f.blocked, lost: exists(target) ? [] : [target], madeInHome: [] })
+    entry(report, { id: 'protected-folder', variant: pc.what, form: 'live', outcome: o.outcome, detail: [f.via, o.detail].filter(Boolean).join('; ') || null })
+    if (o.outcome === 'FAILED') { protectedFailed = true; break }
   }
   const why = removeOne(latch)
   if (why) say(`${TAG} the latch file ${latch} could not be removed: ${why}`)
+  if (protectedFailed || changed('the protected-folder calls')) return
+  // RS4, R15 (a, d): the junction from the scratch folder to the mission folder, made only now, after every
+  // destructive form; it stays in the sandbox (through run 7) for step 8's sweep.
+  for (const { attack, v } of lastActs) {
+    const d = liveDisposition(attack.id, v)
+    if (d === null) continue
+    if (d.kind !== 'run-folders') {
+      entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: d.outcome ?? 'not proven', detail: d.reason ?? `no live-fire rule for ${d.kind}` })
+      continue
+    }
+    if (outsideRoot(attack, v)) return
+    const before = presentSet(v.creates)
+    const r = await call(ex, v.call.tool, v.call.input)
+    if (changed(`${attack.id} ${v.label} ${v.form}`)) return
+    const made = madeOf(v.creates, before, whereIn([ctx.sandbox.root, R.missionCwd]))
+    const o = liveOutcome({ kind: 'run-folders', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, made })
+    for (const m of made) {
+      if (o.outcome === 'FAILED') {
+        // It leads outside the run's folders: removed at once, never left for anything to walk.
+        const gone = removeOne(m.path)
+        if (gone) addLink(report, m.path)
+      } else {
+        // Left in the sandbox for step 8, the sweep (R15 d); named in the report in case the sweep does not run.
+        addLink(report, m.path)
+      }
+    }
+    // `targets` names what was left, so that step 8 can require exactly that junction (RH6).
+    entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, targets: made.map(m => m.path), detail: o.detail })
+    // RS5: stop at the first FAILED.
+    if (o.outcome === 'FAILED') return
+  }
+  // R15 (c), then (b): the run's last acts before its release, both by the contained child, both links
+  // between folders of this run inside the test root. afterLiveRelease judges and removes them.
+  const L = liveLinkPaths({ cwd: fake.mission, nonce })
+  const cmds = liveLinkCommands(R.tools.shell, { cwd: fake.mission, scratch: ctx.sandbox.scratch, nonce })
+  const c = await call(ex, 'Bash', { command: cmds.c0low })
+  R.c0low = { path: L.c0low, made: isLinkEntry(L.c0low) === true, output: c.output }
+  const ld = await call(ex, 'Bash', { command: cmds.loopDir })
+  const lp = ld.isError ? ld : await call(ex, 'Bash', { command: cmds.loop })
+  const loopMade = isLinkEntry(L.loop) === true
+  // Counted now, with the loop in place and before anything else runs: the release walk then reads the same tree.
+  R.loop = { path: L.loop, made: loopMade, output: lp.output, ownCount: loopMade ? foldersHoldingEntries(fake.mission) : null }
+}
+
+/**
+ * After run 6's release: the loop junction is removed at once (git follows a junction of either form,
+ * fact F6, and a walk that asks lstat enters it, fact F4), then the release walk's count is judged; then
+ * canary c0-low asks the create-time check for the mission folder as canary c0 does, and its junction
+ * is removed before the next inner run.
+ */
+function afterLiveRelease(R, rel) {
+  const { E, fake, report } = R
+  // RS8: a link at either literal path that this run did not record (a call that threw after the child made
+  // it) is removed all the same, before the next inner run; git and an lstat walk would follow it (F4, F6).
+  const L = liveLinkPaths({ cwd: fake.mission, nonce: R.nonce })
+  for (const [recorded, path] of [[R.loop, L.loop], [R.c0low, L.c0low]]) {
+    if (recorded || isLinkEntry(path) !== true) continue
+    const why = removeOne(path)
+    if (why) addLink(report, path)
+    say(`${TAG} run 6 left the junction ${path} without a record of it: ${why === null ? 'removed' : `COULD NOT BE REMOVED (${why}); do not run git in ${fake.mission}`}`)
+  }
+  if (R.loop) {
+    const why = removeOne(R.loop.path)
+    if (why) {
+      addLink(report, R.loop.path)
+      say(`${TAG} the loop junction ${R.loop.path} could not be removed: ${why}. Do not run git in ${fake.mission}, and remove the link with rmdir first.`)
+    }
+    const o = R.loop.made
+      ? releaseWalkOutcome({ note: rel.note, mission: realOf(fake.mission), ownCount: R.loop.ownCount })
+      : { outcome: 'not proven', detail: `the contained child did not make the loop junction: ${oneLine(R.loop.output).slice(0, 200)}` }
+    entry(report, { id: 'release-walk', variant: 'ends at a loop', form: 'live', outcome: o.outcome, detail: o.detail })
+  }
+  if (R.c0low) {
+    let o
+    if (!R.c0low.made) {
+      o = { outcome: 'not proven', detail: `the contained child did not make the junction: ${oneLine(R.c0low.output).slice(0, 200)}` }
+    } else {
+      const c0 = E.C.establishContainment({ test: true, kind: 'mission', label: 'acc-c0-low', missionCwd: fake.mission, sandboxRoot: fake.sandboxRoot, home: fake.home,
+        folders: { state: fake.state, models: fake.models, guard: fake.guard, audit: fake.audit } })
+      if (c0.ok) E.C.releaseContainment(c0.containment)
+      o = c0LowOutcome({ ok: c0.ok, reason: c0.ok ? null : c0.reason, lowAfter: WIN && !c0.ok && lowLabelled(fake.mission) })
+    }
+    const why = removeOne(R.c0low.path)
+    if (why) {
+      addLink(report, R.c0low.path)
+      say(`${TAG} the junction ${R.c0low.path} could not be removed: ${why}`)
+    }
+    say(`${TAG} canary c0-low (a mission folder holding at its top a junction a low process made, leading out, is refused): ${o.outcome === 'passed' ? 'passed' : `${o.outcome}: ${o.detail}`}`)
+    entry(report, { id: 'canary', variant: 'c0-low', form: 'live', outcome: o.outcome, detail: o.detail })
+  }
 }
 
 /** Rule F10 (run 7, every layer on, live fire only). */
@@ -1576,17 +2398,17 @@ async function unseen(R) {
   const { fake, report, ex } = R
   if (!insideRoot(R.root, fake.home)) { entry(report, { id: 'unseen', variant: 'attack.py', form: 'literal', outcome: 'UNSAFE' }); return }
   const base = treeDigest(fake.home, { exclude: ['AppData'] })
-  const script = `import shutil, pathlib\nfor p in pathlib.Path(r'${fake.home}').iterdir():\n    if p.name.startswith('.') and p.is_dir():\n        shutil.rmtree(p, ignore_errors=True)\n`
-  const w = await call(ex, 'Write', { file_path: join(fake.mission, 'attack.py'), content: script })
+  const w = await call(ex, 'Write', { file_path: join(fake.mission, 'attack.py'), content: unseenScript(fake.home) })
   const r = w.isError ? null : await call(ex, 'Bash', { command: `${R.tools.python} attack.py` })
-  const after = treeDigest(fake.home, { exclude: ['AppData'] })
-  if (after !== base) {
+  const homeChanged = treeDigest(fake.home, { exclude: ['AppData'] }) !== base
+  if (homeChanged) {
     report.fakeHomeChanged = true
     say(`${TAG} FAIL (live fire): the fake home changed after unseen attack.py literal. Nothing more was run.`)
   }
   const refused = [w, r].filter(x => x && R.E.C.refusalLayerOf(x.output) !== null).length
-  entry(report, { id: 'unseen', variant: 'attack.py', form: 'literal', outcome: after !== base ? 'FAILED' : 'contained',
-    detail: `${refused === 0 ? 'the path check does not read a script\'s content' : `${refused} of the two calls were refused`}; the token held` })
+  const o = unseenOutcome({ write: w, ran: r, homeChanged })
+  entry(report, { id: 'unseen', variant: 'attack.py', form: 'literal', outcome: o.outcome,
+    detail: `${o.detail}; ${refused === 0 ? 'the path check does not read a script\'s content' : `${refused} of the two calls were refused`}` })
   removeOne(join(fake.mission, 'attack.py'))
 }
 
@@ -1649,7 +2471,7 @@ export async function runFakeStage(a = {}) {
     failWith(`the fake profile could not be built: ${e?.message ?? e}`)
     return finishFake(report)
   }
-  report.links.push(...fake.links)
+  for (const l of fake.links) addLink(report, l)
   if (fake.linkError) say(`${TAG} ${fake.linkError}`)
   report.acknowledged = (a.unprotected ?? []).map(v => String(v.root ?? v).replace(/[\\/]+$/, ''))
   say(`${TAG} the fake stage acknowledges for its own runs: ${report.acknowledged.length ? report.acknowledged.join(';') : 'none'}`)
@@ -1689,7 +2511,7 @@ export async function runFakeStage(a = {}) {
     report.innerRuns.push({ run: inner.run, runId: inner.runId, released: inner.released, notes: inner.notes })
     if (report.tools === null && inner.tools) report.tools = inner.tools
     report.entries.push(...inner.entries)
-    report.links.push(...inner.links)
+    for (const l of inner.links ?? []) addLink(report, l)
     if (spec.run === 1) {
       report.canary = inner.canary
       report.lowIntegrity = inner.lowIntegrity ?? report.lowIntegrity
@@ -1699,6 +2521,24 @@ export async function runFakeStage(a = {}) {
     if (inner.failures.length) failWith(`inner run ${spec.run}: ${inner.failures[0]}`)
     if (inner.canaryFailed || inner.fakeHomeChanged) break
   }
+  if (report.liveFire) {
+    // Run 6's last two junctions, by their literal paths: an inner run 6 that died before its release left
+    // them in the mission folder, where git and any walk that asks lstat would follow them (facts F4, F6).
+    const L = liveLinkPaths({ cwd: fake.mission, nonce })
+    for (const l of [L.loop, L.c0low]) {
+      if (isLinkEntry(l) !== true) continue
+      const why = removeOne(l)
+      say(`${TAG} run 6 left the junction ${l}: ${why === null ? 'removed' : `COULD NOT BE REMOVED (${why}); do not run git in ${fake.mission}`}`)
+      if (why) addLink(report, l)
+    }
+    // Step 8 (R15 d): only after the last inner run, only when every inner run reported, and only when nothing
+    // FAILED before it (RS3): the sweep runs at medium integrity, and would destroy what a failed run left.
+    const no8 = step8Refusal(report)
+    if (no8 === null) await sweepProof(fake, report)
+    else outerEntry(report, { id: 'sweep', variant: 'does not delete through a link', form: 'outer', outcome: 'not proven', detail: no8 })
+  }
+  report.disarm = await disarmMission(fake, nonce)
+  say(`${TAG} ${report.disarm.line}`)
   report.shell = WIN ? 'Windows PowerShell' : 'bash'
   if (census0 !== null) {
     let lost = null
@@ -1712,20 +2552,182 @@ export async function runFakeStage(a = {}) {
   return finishFake(report)
 }
 
-function finishFake(report) {
+/** One entry of this process (step 8), shaped and printed as an inner run's are. */
+function outerEntry(report, e) {
+  const full = { run: 8, phase: 'outer', id: e.id, variant: e.variant, form: e.form, outcome: e.outcome, decoys: null, audit: null, targets: [], detail: e.detail ?? null }
+  report.entries.push(full)
+  say(`${TAG} step 8: ${full.id} ${full.variant} ${full.form}: ${full.outcome}${full.detail ? ` (${oneLine(full.detail).slice(0, 400)})` : ''}`)
+  return full
+}
+
+/**
+ * Step 8 (R15 d): the engine's seven-day sweep on the fake sandbox root, with a clock eight days ahead,
+ * after the last inner run. 1. `sweepPlan`: the sandbox root is an ordinary folder inside the test root,
+ * every link anywhere under the TEST root (by the listing, none entered) lands inside it (else UNSAFE, no
+ * sweep), and the junction run 6 left from its scratch folder to the mission folder is there (else not
+ * proven). If the sweep did delete through links, what it could reach is then the mission folder and the
+ * fake home, both inside the test root. 2. The mission folder and the fake home are read. 3. The sweep runs,
+ * its every line printed. 4. Both unchanged and the run folders gone.
+ */
+async function sweepProof(fake, report) {
+  const id = 'sweep', variant = 'does not delete through a link', form = 'outer'
+  const links = linksUnder(report.root)
+  // RS1: every link found is named in the closing line if it is still there, whatever the sweep does.
+  for (const l of links) if (!l.unlistable) addLink(report, l.path)
+  const left = report.entries.filter(e => e.run === 6 && e.form === 'run-folders' && e.outcome === 'contained').flatMap(e => e.targets ?? [])
+  const plan = sweepPlan({ links, rootReal: realOf(report.root), sandboxRoot: fake.sandboxRoot, sandboxRootIsLink: isLinkEntry(fake.sandboxRoot),
+    sandboxInsideRoot: insideRoot(report.root, fake.sandboxRoot), left })
+  if (!plan.run) {
+    if (plan.outcome === 'UNSAFE') say(`${TAG} UNSAFE: ${plan.detail}`)
+    outerEntry(report, { id, variant, form, outcome: plan.outcome, detail: plan.detail })
+    return
+  }
+  say(`${TAG} step 8: every link under the test root lands inside it: ${links.map(l => `${l.path} -> ${l.real}`).join(', ')}`)
+  const runDirs = listEntries(fake.sandboxRoot).filter(e => e.kind === 'dir' && existsSync(join(fake.sandboxRoot, e.name, 'containment.json'))).map(e => join(fake.sandboxRoot, e.name))
+  const m0 = treeEntries(fake.mission), h0 = treeEntries(fake.home)
+  const C = await import('../engine/containment.js')
+  const lines = []
+  const ahead = Date.now() + 8 * 24 * 3600_000
+  try {
+    const res = C.sweepSandboxes({ sandboxRoot: fake.sandboxRoot, home: fake.home, now: () => new Date(ahead), log: (l) => { lines.push(String(l)); say(`${TAG} (sweep) ${l}`) } })
+    say(`${TAG} step 8: the sweep removed ${res.removed.length} and kept ${res.kept}`)
+  } catch (e) {
+    lines.push(`the sweep threw: ${e?.message ?? e}`)
+    say(`${TAG} step 8: the sweep threw: ${e?.message ?? e}`)
+  }
+  const o = sweepOutcome({ missionDiff: treeDiff(m0, treeEntries(fake.mission)), homeDiff: treeDiff(h0, treeEntries(fake.home)), left: runDirs.filter(exists), lines })
+  // RH6: the detail names the junction the sweep met.
+  outerEntry(report, { id, variant, form, outcome: o.outcome, detail: `the sweep met ${plan.met.join(', ')}: ${o.detail}` })
+}
+
+/**
+ * R11: what the left-behind plant armed in the mission repository (from the catalog's own plant): the
+ * git settings that start a program, and the planted hook, driver and conftest files (the tracked
+ * .gitattributes stays: with its filter and diff settings unset it starts nothing).
+ */
+export function disarmPlan(P) {
+  const calls = LEFT_BEHIND.plant(P, { shell: 'powershell' })
+  const keys = [...new Set(calls.filter(c => c.kind === 'git' && c.argv[0] === 'config').map(c => c.argv[1]))]
+  const files = [...new Set(calls.filter(c => c.kind === 'file' && typeof c.content === 'string' && basename(c.path) !== '.gitattributes').map(c => c.path))]
+  return { keys, files }
+}
+
+/**
+ * R11: the mission repository of the test root disarmed, by the harness's git and removeOne; `{ ok, line }`.
+ * RS7: only when `<mission>/.git` is the mission's own folder (not a link, and where its path says): a config
+ * write or a removal through a `.git` a contained child had replaced would land behind it. RH9: the line
+ * counts what was done.
+ */
+async function disarmMission(fake, nonce) {
+  const failed = []
+  const plan = disarmPlan({ home: fake.home, cwd: fake.mission, nonce })
+  const gitDir = join(fake.mission, '.git')
+  const gitDirIsLink = isLinkEntry(gitDir)
+  const ownWhy = gitDirIsLink === false ? whyNotAtOwnPath(realOf(fake.mission), '.git') : null
+  const n = { unset: 0, notSet: 0, removed: 0, notThere: 0 }
+  if (gitDirIsLink !== false || ownWhy !== null) return disarmVerdict({ mission: fake.mission, gitDirIsLink, ownWhy, ...n, failed })
+  const cfg = join(gitDir, 'config')
+  if (exists(cfg)) {
+    const H = await import('../engine/harnessGit.js')
+    const env = H.harnessGitEnv(process.env, { repo: fake.mission })
+    for (const key of plan.keys) {
+      // --file: the setting is removed from that file; git reads nothing else of the repository for it.
+      const r = runSync(H.harnessGitBin(), ['config', '--file', cfg, '--unset-all', key], { cwd: fake.mission, env, envExact: true, timeoutMs: 30_000 })
+      // Exit 5: the key was not set (a run 1 that never planted it).
+      if (!r.fault && !r.timedOut && r.status === 0) n.unset++
+      else if (!r.fault && !r.timedOut && r.status === 5) n.notSet++
+      else failed.push(`git config --unset-all ${key}: ${r.fault?.code ?? (r.timedOut ? 'timed out' : `exit ${r.status}`)} ${oneLine(r.stderr).slice(0, 120)}`)
+    }
+  } else {
+    n.notSet += plan.keys.length
+  }
+  for (const f of plan.files) {
+    if (!exists(f)) { n.notThere++; continue }
+    const why = removeOne(f)
+    if (why) failed.push(why)
+    else n.removed++
+  }
+  return disarmVerdict({ mission: fake.mission, gitDirIsLink, ownWhy, ...n, failed })
+}
+
+/**
+ * The result of the fake stage, then (R14) one line per not-proven entry and a tally by outcome word.
+ * R1: a twin that resolved in run 1 and printed no path in run 6 is FAILED: the runner lost its own
+ * fixture. R8: runs 3 and 6 cover the catalog (`o.catalog`, else built from the report's tools). A
+ * not-proven entry outside ACCEPTED_NOT_PROVEN makes the result INCOMPLETE, with pass false.
+ */
+export function finishFake(report, o = {}) {
+  const key = (e) => `${e.id}\u0000${e.variant}`
+  const resolved1 = new Set(report.entries.filter(e => e.run === 1 && e.form === 'dry' && e.outcome === 'resolved').map(key))
+  for (const e of report.entries) {
+    if (e.run !== 6 || e.form !== 'live twin' || e.outcome !== 'twin did not resolve' || !resolved1.has(key(e))) continue
+    if (String(e.detail ?? '').startsWith(GIT_BASH_DID_NOT_START)) continue
+    e.outcome = 'FAILED'
+    e.detail = `the runner lost its own fixture: this twin resolved in run 1 and printed no path in run 6 (${e.detail ?? 'no detail'})`
+    say(`${TAG} FAIL: run 6 ${e.id} ${e.variant}: ${e.detail}`)
+  }
+  const catalog = o.catalog ?? (report.tools && report.root ? catalogEntries(report.tools, report.root) : null)
+  // Coverage is asked only of a run in which nothing FAILED: after a FAILED entry the runs stop early, and the
+  // first failure is that entry, not the gaps it left.
+  if (report.firstFailure === null && !report.entries.some(e => FAILING.has(e.outcome))) {
+    const gaps = []
+    if (catalog && report.entries.some(e => e.run === 3)) gaps.push(...fullStackCoverage(catalog, report.entries))
+    if (catalog && report.liveFire && report.entries.some(e => e.run === 6)) gaps.push(...liveCoverage(catalog, report.entries))
+    // RH4: live fire on is a PASS only with its proofs, whatever path skipped them.
+    if (report.liveFire) gaps.push(...liveProofCoverage(report.entries))
+    for (const g of gaps) say(`${TAG} FAIL (coverage): ${g}`)
+    if (gaps.length) report.firstFailure = `coverage: ${gaps.join('; ')}`
+  }
   if (report.firstFailure === null) {
     const bad = report.entries.find(e => FAILING.has(e.outcome))
     if (bad) report.firstFailure = `${bad.id} ${bad.variant} ${bad.form}: ${bad.detail ?? bad.outcome}`
   }
-  report.notProven = report.entries.filter(e => NOT_PROVEN.has(e.outcome)).length
-  report.pass = report.firstFailure === null && report.entries.length > 0
+  const np = report.entries.filter(e => NOT_PROVEN.has(e.outcome))
+  const outside = np.filter(e => acceptedReasonOf(e) === null)
+  report.notProven = np.length
+  report.notProvenOutside = outside.length
+  const ran = report.firstFailure === null && report.entries.length > 0
+  report.pass = ran && outside.length === 0
+  const shown = (e) => `run ${e.run} ${e.id} ${e.variant} ${e.form}: ${e.outcome}${e.detail ? ` (${oneLine(e.detail).slice(0, 240)})` : ''}`
   if (report.pass) {
-    say(`${TAG} RESULT: PASS (fake home): ${report.entries.length} entries, ${report.notProven} not proven, live fire ${report.liveFire ? 'on' : 'off'}, low integrity ${report.lowIntegrity}`)
+    say(`${TAG} RESULT: PASS (fake home): ${report.entries.length} entries, ${report.notProven} not proven (each in the accepted table), live fire ${report.liveFire ? 'on' : 'off'}, low integrity ${report.lowIntegrity}`)
+  } else if (ran) {
+    say(`${TAG} RESULT: INCOMPLETE (fake home): ${outside.length} not-proven entr${outside.length === 1 ? 'y' : 'ies'} outside the accepted table, the first: ${shown(outside[0])}; the real-profile stage does not open on this`)
   } else {
     say(`${TAG} RESULT: FAIL (fake home): ${report.firstFailure ?? 'no entry was recorded'}`)
   }
-  if (report.root && !report.refused) say(`${TAG} the test root was left in place: ${report.root}. Remove links first (${report.links.join(', ') || 'none'}), each with rmdir; then the folder.`)
+  for (const e of np) {
+    const row = acceptedReasonOf(e)
+    say(`${TAG} not proven: ${shown(e)} ${row ? `[accepted, ${row.reason}: ${row.words}]` : '[NOT in the accepted table]'}`)
+  }
+  const tally = new Map()
+  for (const e of report.entries) tally.set(e.outcome, (tally.get(e.outcome) ?? 0) + 1)
+  if (tally.size) say(`${TAG} entries by outcome word: ${[...tally].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([w, n]) => `${w} ${n}`).join(', ')}`)
+  // R3: each link once, and only the ones still there. RS1: also every link still under the test root that the
+  // runner did not record (one a contained child made, one the runner's own removal missed), by the listing.
+  const links = []
+  for (const l of report.links ?? []) if (exists(l) && !links.some(x => fold(x) === fold(l))) links.push(l)
+  const unlisted = []
+  if (report.root && !report.refused && existsSync(report.root)) {
+    for (const l of linksUnder(report.root)) {
+      if (l.unlistable) unlisted.push(l.path)
+      else if (!links.some(x => fold(x) === fold(l.path))) links.push(l.path)
+    }
+  }
+  report.links = links
+  if (report.root && !report.refused) {
+    say(`${TAG} the test root was left in place: ${report.root}. Remove links first (${links.join(', ') || 'none'}), each with rmdir; then the folder.${unlisted.length ? ` These folders could not be listed, so a link in them was not looked for: ${unlisted.join(', ')}.` : ''}${report.disarm ? ` ${report.disarm.line.charAt(0).toUpperCase()}${report.disarm.line.slice(1)}.` : ''}`)
+  }
   return report
+}
+
+/** The catalog of a report's run, for the coverage checks: `{ id, v }` of every variant on this platform. */
+function catalogEntries(tools, root) {
+  const f = fakePaths(root)
+  const p = { home: f.home, cwd: f.mission, scratch: join(f.sandboxRoot, 'run', 'scratch'), linked: f.linked, guard: f.guard, audit: f.audit,
+    models: f.models, sandboxRootOther: join(f.sandboxRoot, 'other'), nonce: '00000000' }
+  const host = WIN ? 'win32' : 'posix'
+  return attacks(tools).flatMap(a => a.variants(p).filter(v => v.platforms.includes(host)).map(v => ({ id: a.id, v })))
 }
 
 async function fakeMain(args) {
@@ -1849,7 +2851,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   }
   let ctx = null
   let code = 1
-  const counts = { refused: 0, notProven: 0, calls: 0 }
+  const counts = { refused: 0, calls: 0 }
+  // RH8: every not-proven item, `{ what, cls }`; realResult says which classes a PASS admits.
+  const notProven = []
   try {
     // G4 step 3.
     const est = C.establishContainment({ kind: 'mission', runId, missionCwd: mission })
@@ -1896,11 +2900,17 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       say(`${TAG} preflight: a contained child was denied creating ${target} (${(r.stderr || r.stdout).trim().split(/\r?\n/)[0] ?? ''})`)
     }
     const key = `HKCU\\Software\\cynco-containment-probe-${nonce}`
+    // R13: asked before the probe; a key that is there already is not this stage's, and nothing deletes it.
+    const pre = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
+    const plan0 = registryProbePlan({ key, before: regPresence(pre) })
+    if (plan0.abort) { say(`${TAG} ${plan0.line}`); return { code: 1 } }
     await viaToolExec(R, `reg add "${key}" /f`, mission)
     const look = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
-    if (look.status === 0) {
-      const del = runSync(sysExe('reg.exe'), ['delete', key, '/f'], { timeoutMs: 20_000 })
-      say(`${TAG} ABORT: a contained child CREATED ${key}. Low integrity is not holding there. The file was deleted (${del.status === 0 ? 'deleted' : `COULD NOT BE DELETED: ${String(del.stderr).trim()}`}). No attack was run.`)
+    // RS10: a query that faulted or timed out is not "absent".
+    const plan = registryProbePlan({ key, before: false, after: regPresence(look) })
+    if (plan.abort) {
+      const del = plan.delete ? runSync(sysExe('reg.exe'), ['delete', key, '/f'], { timeoutMs: 20_000 }) : null
+      say(`${TAG} ${plan.line} The key was ${del === null ? 'left' : del.status === 0 ? 'deleted' : `NOT deleted: ${String(del.stderr).trim()}`}. No attack was run.`)
       return { code: 1 }
     }
     say(`${TAG} preflight: a contained child was denied creating ${key} (reg query finds no such key)`)
@@ -1915,12 +2925,15 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     for (const l of await honestWork(R, ex, 'honest', { realSite: true })) {
       if (l.ok === false) { say(`${TAG} FAIL: honest work failed in the box: ${l.line}`); return { code: 1 } }
       say(`${TAG} honest work: ${l.line}`)
-      if (l.ok === null) counts.notProven++
+      if (l.ok === null) notProven.push({ what: `honest work ${l.line}`, cls: `honest-${l.key}` })
     }
     // G7: the attacks, full stack only, stages including 'real', in order; a manifest reading after every call.
     const p = { home, cwd: mission, scratch: ctx.sandbox.scratch, linked: join(mission, 'no-link'), guard: P2.guardDir(), audit: P2.auditDir() ?? '', models: P2.modelsDir(), sandboxRootOther: '', nonce }
     const list = attacks(tools)
-    const after = async (id, title, v, r) => {
+    // What a call that was not refused may have made, by literal path: the Write form's file in the home's
+    // desk-tools folder, and the mission junction form's link in the scratch folder.
+    const leftovers = [join(home, TARGET_DOT_FOLDER, `cynco-acceptance-${nonce}.txt`), join(ctx.sandbox.scratch, `out-${nonce}`)]
+    const after = async (id, title, v, r, before) => {
       counts.calls++
       say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`)
       const layer = C.refusalLayerOf(r.output)
@@ -1928,10 +2941,12 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       const decoys = decoysState(ctx)
       const ok = r.isError && layer === 'protected path' && audit.refused === 1 && audit.start === 0 && audit.end === 0 && audit.layer === 'protected path'
       const cmp = await I.compareRun(runId, { by: 'acceptance', page })
-      // (c) of G7 on every path, the abort ones among them: a file or a link a call that was not
-      // refused may have made is removed by its literal path, and what happened is printed.
-      for (const m of [join(home, TARGET_DOT_FOLDER, `cynco-acceptance-${nonce}.txt`), join(ctx.sandbox.scratch, `out-${nonce}`)]) {
-        if (exists(m)) { const why = removeOne(m); say(`${TAG} removed ${m}: ${why === null ? 'done' : `COULD NOT BE REMOVED: ${why}`}`) }
+      // (c) of G7 on every path, the abort ones among them: a file or a link the call made is removed by its
+      // literal path (R13: only when it was not there before the call), and what happened is printed.
+      for (const m of leftovers) {
+        const now = exists(m)
+        if (madeByThisCall({ existedBefore: before.get(m), existsNow: now })) { const why = removeOne(m); say(`${TAG} removed ${m}: ${why === null ? 'done' : `COULD NOT BE REMOVED: ${why}`}`) }
+        else if (now) say(`${TAG} ${m} was there before the call and is left as it is`)
       }
       if (!ok || decoys !== 'intact') {
         say(`${TAG} ABORT: attack ${id} (${title}, ${v.label}) was not refused before it ran: ${r.output.slice(0, 200)}. Manifest after it: ${cmp.changed ? 'CHANGED' : 'unchanged'}. The remaining, more destructive attacks were not run.${ok && decoys !== 'intact' ? ' the command ran before the refusal' : ''}`)
@@ -1955,17 +2970,43 @@ async function realBox(C, I, a, fakeReport, unprotected) {
         // Rule 4 of the catalog decides what is 'real'; a literal shell variant never is, and is skipped here a second time.
         if (!v.stages.includes('real') || v.fullStackOnly || (v.form === 'literal' && v.call.tool === 'Bash')) continue
         if (!v.platforms.includes('win32')) continue
-        if (v.dry) {
-          const r = await call(ex, 'Bash', v.dry.input)
-          const d = parseDry(r.output)
-          if (r.isError || !d.resolved) { counts.notProven++; say(`${TAG} twin did not resolve: ${at.id} ${v.label}: ${d.why ?? r.output.slice(0, 160)}; the attack was NOT handed over`); continue }
-          const outside = d.paths.find(x => !insideRoot(ctx.sandbox.home, x))
-          if (outside) { say(`${TAG} UNSAFE: ${v.label} of ${at.id} resolves to ${outside}, outside the test root, on this shell. The destructive form was not run.`); return { code: 1 } }
+        const fire = async () => {
+          const before = new Map(leftovers.map(m => [m, exists(m)]))
+          say(`${TAG} attack ${at.id} (${at.title}, ${v.label}): ${v.call.tool} ${JSON.stringify(v.call.input)}`)
+          const r = await call(ex, v.call.tool, v.call.input)
+          return after(at.id, at.title, v, r, before)
         }
-        seedDecoys(ctx)
-        say(`${TAG} attack ${at.id} (${at.title}, ${v.label}): ${v.call.tool} ${JSON.stringify(v.call.input)}`)
-        const r = await call(ex, v.call.tool, v.call.input)
-        if (!(await after(at.id, at.title, v, r))) return { code: 1 }
+        let ok
+        if (v.dry) {
+          // R1 (twinThenForm): seeded before the twin as well, so the twin never reads the sandbox home as an earlier call left it.
+          const tf = await twinThenForm({
+            seed: () => seedDecoys(ctx),
+            twin: async () => {
+              const r = await call(ex, 'Bash', v.dry.input)
+              const d = parseDry(r.output)
+              if (r.isError || !d.resolved) {
+                const why = oneLine(d.why ?? r.output).slice(0, 160)
+                notProven.push({ what: `twin did not resolve: ${at.id} ${v.label}: ${why}`, cls: v.variant === 'git-bash' && MSYS.test(r.output) ? 'git-bash-did-not-start' : 'twin-did-not-resolve' })
+                say(`${TAG} twin did not resolve: ${at.id} ${v.label}: ${why}; the attack was NOT handed over`)
+                return { ok: false }
+              }
+              const outside = d.paths.find(x => !insideRoot(ctx.sandbox.home, x))
+              if (outside) {
+                say(`${TAG} UNSAFE: ${v.label} of ${at.id} resolves to ${outside}, outside the test root, on this shell. The destructive form was not run.`)
+                return { ok: false, unsafe: true }
+              }
+              return { ok: true }
+            },
+            fire,
+          })
+          if (tf.twin.unsafe) return { code: 1 }
+          if (tf.fired === null) continue
+          ok = tf.fired
+        } else {
+          seedDecoys(ctx)
+          ok = await fire()
+        }
+        if (!ok) return { code: 1 }
       }
     }
     // G7: the end.
@@ -1990,8 +3031,11 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       say(`${TAG} RESULT: FAIL (real profile): ${settle.changed ? 'the settling compare found a change' : lost.length ? `census loss: ${lost.join('; ')}` : deepFail ? 'the deep count fell by more than 2 %' : 'the audit has a gap or an open start'}`)
       return { code: 1 }
     }
-    counts.notProven += unreadable0.length
-    say(`${TAG} RESULT: PASS (real profile): 5 create probes denied, ${counts.refused} calls refused before running, ${counts.notProven} not proven, manifest unchanged after each, no loss in the home census or the deep count.`)
+    for (const e of unreadable0) notProven.push({ what: `deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read`, cls: 'deep-count-unreadable' })
+    // RH8: each not-proven item on a line of its own; one outside the accepted list makes the stage INCOMPLETE.
+    const result = realResult({ items: notProven, refused: counts.refused })
+    for (const l of result.lines) say(l)
+    if (!result.pass) return { code: 1 }
     code = 0
     return { code, mission, box, ctx, fakeReport, tools }
   } finally {
