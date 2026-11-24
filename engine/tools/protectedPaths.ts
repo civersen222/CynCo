@@ -252,10 +252,27 @@ const CATEGORY: Partial<Record<PathRule, string>> = {
 const HINT: Partial<Record<PathRule, string>> = {
   'git-internals': "Git's own files are changed only by git itself: use the Git tool or a git command.",
   'git-config': 'In an unattended run only user.name and user.email may be set. Commits still work, and so does git -c user.name=... -c user.email=... commit.',
-  unresolved: 'If the two are unrelated, run them as separate calls and spell the target literally.',
-  unclassified: 'To read from it use Read, Grep or Get-Content; to use a file from it, copy it into the mission folder first with Copy-Item.',
-  'self-building': 'Write the command out plainly.',
+  unresolved: 'The check reads the command as text and cannot tell where that mutation lands. If the two are unrelated, run them as separate calls and spell the target literally.',
+  unclassified: 'The check cannot tell what that program does with it. If the command only reads it, read it with Read, Grep or Get-Content instead; to use a file from it, copy it into the mission folder first with Copy-Item.',
+  'self-building': 'The check reads the command as text and cannot read text the command builds or decodes. Write the command out plainly.',
+  unreadable: 'Write long content to a file with the Write tool, and run a long program from a file in the mission folder.',
 }
+
+/** The hint for a path found inside an inline program (`python -c`, `node -e`, a here-document fed to one). */
+const INLINE_HINT = 'The check reads an inline program as text and does not know what this call does with that path. If the program only reads it, write the program to a file in the mission folder with the Write tool and run that file (python <file>, node <file>).'
+
+/** A path the scan found inside an inline program rather than as a shell word. */
+function fromInlineProgram(n: NamedPath): boolean {
+  return /shell>(?:[\w.-]*(?:python|py|pypy|node|nodejs|tsx|ts-node|bun|deno|ruby|perl|php|lua|rscript)[\w.]*\s(?:-|eval)|[^>]*(?:heredoc|stdin))/i.test(n.via)
+}
+
+/**
+ * Rules whose refusal names a target the scan read literally: there, another spelling of the same command
+ * is refused the same way, and the text says so. A guessed operand, an unread mutation, a built command or
+ * an unreadable call can be honest work, and the text says what to do instead.
+ */
+const NO_RETRY = new Set<PathRule>(['no-access', 'device', 'unprotected-volume', 'home', 'home-dot', 'state', 'ancestor',
+  'git-internals', 'git-config', 'link-out', 'outside'])
 
 function normText(s: string): string {
   return s.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')
@@ -268,14 +285,18 @@ function shown(raw: string, real: string): string {
   return normText(bare) === normText(real) ? r : `${r} (which resolves to ${real})`
 }
 
-function advice(pc: PathContext, hint: string | undefined): string {
+function advice(pc: PathContext, hint: string | undefined, retry = false): string {
   const also = pc.extraRoots.length ? `, the folders handed to this run (${pc.extraRoots.join(', ')})` : ''
-  const para = `In this run you may create, change, move and delete files only inside the mission folder (${pc.missionCwd})${also} and the scratch folder (${pc.sandbox.scratch}; the shell has it as CYNCO_SCRATCH). Reading elsewhere is allowed, and a file you need from elsewhere can be copied into the mission folder with Copy-Item. Programs you start already see an empty throwaway home, cache and temp folder of their own, so there is nothing to clear. A brief's description of a test environment (an empty cache, an empty user-files folder) describes the grader's own throwaway folders and is never reproduced on this machine. Do not retry with another spelling: do the work inside those folders, or say in your reply what you need and why.`
+  const close = retry
+    ? 'Do not retry with another spelling: do the work inside those folders, or say in your reply what you need and why.'
+    : 'Do the work inside those folders, or say in your reply what you need and why.'
+  const para = `In this run you may create, change, move and delete files only inside the mission folder (${pc.missionCwd})${also} and the scratch folder (${pc.sandbox.scratch}; the shell has it as CYNCO_SCRATCH). Reading elsewhere is allowed, and a file you need from elsewhere can be copied into the mission folder with Copy-Item. Programs you start already see an empty throwaway home, cache and temp folder of their own, so there is nothing to clear. A brief's description of a test environment (an empty cache, an empty user-files folder) describes the grader's own throwaway folders and is never reproduced on this machine. ${close}`
   return `Nothing was run.${hint ? ` ${hint}` : ''}\n\n${para}`
 }
 
-function refusal(pc: PathContext, rule: PathRule, reason: string, target?: string): PathVerdict {
-  const text = refusalText('protected path', reason, advice(pc, HINT[rule]))
+function refusal(pc: PathContext, rule: PathRule, reason: string, target?: string, hint: string | undefined = HINT[rule],
+  noRetry: boolean = NO_RETRY.has(rule)): PathVerdict {
+  const text = refusalText('protected path', reason, advice(pc, hint, noRetry))
   const v: PathVerdict = { kind: 'refuse', rule, reason, text }
   if (target !== undefined && rule !== 'no-access') v.target = target
   return guardNoAccess(pc, v)
@@ -288,7 +309,7 @@ function guardNoAccess(pc: PathContext, v: PathVerdict): PathVerdict {
   if (v.kind !== 'refuse') return v
   const t = normText(v.text)
   if (pc.noAccess.some(n => t.includes(normText(n)))) {
-    return { kind: 'refuse', rule: 'no-access', reason: NO_ACCESS_REASON, text: refusalText('protected path', NO_ACCESS_REASON, advice(pc, undefined)) }
+    return { kind: 'refuse', rule: 'no-access', reason: NO_ACCESS_REASON, text: refusalText('protected path', NO_ACCESS_REASON, advice(pc, undefined, true)) }
   }
   return v
 }
@@ -303,8 +324,8 @@ type Candidate = { rule: PathRule; order: number; make: () => PathVerdict }
  */
 export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, toolCwd: string): PathVerdict {
   const cands: Candidate[] = []
-  const add = (rule: PathRule, order: number, reason: () => string, target?: string) =>
-    cands.push({ rule, order, make: () => refusal(pc, rule, reason(), target) })
+  const add = (rule: PathRule, order: number, reason: () => string, target?: string, hint?: string, noRetry?: boolean) =>
+    cands.push({ rule, order, make: () => refusal(pc, rule, reason(), target, hint ?? HINT[rule], noRetry ?? NO_RETRY.has(rule)) })
   const scan = named.scan
   const realOf = (n: NamedPath): string => n.real()
 
@@ -321,7 +342,7 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
     const order = i + 1
     if (n.device) { add('device', order, () => `${n.raw} is a device or volume path`); return }
     const real = realOf(n)
-    if (n.source === 'field') {
+    if (n.source === 'field' && n.op !== 'link') {
       const j = judgePath(real, n.op, pc, 'field')
       if (!j.allow) add(j.rule, order, () => reasonFor(j.rule, j.detail, n, real), real)
       return
@@ -331,8 +352,9 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
       if (!j.allow) add(j.rule, order, () => NO_ACCESS_REASON)
       return
     }
+    // A link, from the shell or a patch that makes one (R6): both ends inside the roots.
     if (n.op === 'link') {
-      const j = judgePath(real, 'link', pc)
+      const j = judgePath(real, 'link', pc, n.source)
       if (!j.allow && j.rule === 'no-access') { add('no-access', order, () => NO_ACCESS_REASON); return }
       if (n.linkTarget === null || n.linkTarget === undefined) {
         add('link-out', order, () => 'this call would create a link whose two ends cannot both be read from the command', real)
@@ -348,11 +370,16 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
     if (n.op === 'exec' || n.op === 'unclassified') {
       const j = judgePath(real, n.op, pc)
       if (j.allow) return
-      if (j.rule === 'no-access' || j.rule === 'unprotected-volume') { add(j.rule, order, () => reasonFor(j.rule, j.detail, n, real), real); return }
+      const inline = fromInlineProgram(n) ? INLINE_HINT : undefined
+      // A volume nothing protects is refused whatever the program does with it: the inline hint is not given
+      // there. The operand was guessed, not read as a target, so the text does not forbid a retry (the
+      // retry advice follows the operation, not the rule: review 2026-11-23, third).
+      if (j.rule === 'no-access') { add(j.rule, order, () => reasonFor(j.rule, j.detail, n, real), real); return }
+      if (j.rule === 'unprotected-volume') { add(j.rule, order, () => reasonFor(j.rule, j.detail, n, real), real, undefined, false); return }
       const cat = CATEGORY[j.rule] ?? j.rule
       add('unclassified', order, () => n.op === 'exec'
         ? `this command would run the script ${shown(n.raw, real)} (${cat})`
-        : `this command hands ${shown(n.raw, real)} (${cat}) to a program whose effect on it cannot be read from the command`, real)
+        : `this command hands ${shown(n.raw, real)} (${cat}) to a program whose effect on it cannot be read from the command`, real, inline)
       return
     }
     const j = judgePath(real, n.op, pc)
@@ -372,7 +399,8 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
       const hit = denied.has(j.rule) || (severe && j.rule === 'outside' && (n.op === 'mention' || n.op === 'unclassified'))
       if (!hit) return
       const cat = CATEGORY[j.rule] ?? j.rule
-      add('unresolved', i + 1, () => `this command names ${shown(n.raw, real)} (${cat}) and also ${OP_VERB[um.op]} through a variable, a pipeline or a computed path that cannot be read before it runs`, real)
+      add('unresolved', i + 1, () => `this command names ${shown(n.raw, real)} (${cat}) and also ${OP_VERB[um.op]} through a variable, a pipeline or a computed path that cannot be read before it runs`, real,
+        fromInlineProgram(n) ? INLINE_HINT : undefined)
     })
     if (scan && scan.parentClimb > 0) {
       const P = pathModule(pc.platform)
@@ -413,6 +441,8 @@ function isRootish(c: string, pc: PathContext): boolean {
 function reasonFor(rule: PathRule, detail: string, n: NamedPath, real: string): string {
   const op = OP_TEXT[n.op] ?? n.op
   const s = shown(n.raw, real)
+  // A recursive delete through a name nothing set (review 2026-11-23): say what the word really names.
+  if (n.unsetName) return `${n.unsetName} is not set in this command, so ${n.raw.trim()} names a folder at the root of the current drive (${real}) and this call would ${op} it; a variable does not carry over from one call to the next`
   switch (rule) {
     case 'home': return `this call would ${op} ${s}, which is the home folder itself`
     case 'home-dot': return `this call would ${op} ${s}, which is in ${detail}, a dot-entry of the home folder`
@@ -481,6 +511,28 @@ export function checkProtectedPaths(toolName: string, input: Record<string, unkn
     if (pc) return refusal(pc, 'unreadable', reason)
     return { kind: 'refuse', rule: 'unreadable', reason, text: refusalText('protected path', reason) }
   }
+}
+
+/**
+ * One Bash call is judged twice: by `ToolExecutor` before any approval, and by the Bash tool right before
+ * its shell starts, for a caller that skips the executor. A scan can take up to `SCAN_BUDGET_MS` on the
+ * event loop, so the tool skips its own reading of the very input object the executor judged and did not
+ * refuse a moment ago in the same run context, for the same folder and the same command text (review
+ * 2026-11-23, third). Any other caller, or a changed input, is judged again.
+ */
+const judged = new WeakMap<object, { command: string; cwd: string; ctx: RunContainment; at: number }>()
+const JUDGED_FOR_MS = 10_000
+
+export function noteBashJudged(input: Record<string, unknown>, toolCwd: string, ctx: RunContainment | null = runContainment()): void {
+  if (ctx === null || typeof input.command !== 'string') return
+  judged.set(input, { command: input.command, cwd: toolCwd, ctx, at: Date.now() })
+}
+
+export function bashJudgedAlready(input: Record<string, unknown>, toolCwd: string, ctx: RunContainment | null = runContainment()): boolean {
+  const j = judged.get(input)
+  if (j === undefined) return false
+  judged.delete(input)
+  return ctx !== null && j.ctx === ctx && j.cwd === toolCwd && j.command === input.command && Date.now() - j.at < JUDGED_FOR_MS
 }
 
 /**

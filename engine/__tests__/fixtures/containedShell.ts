@@ -24,7 +24,7 @@
  */
 import { execFileSync, execSync, spawnSync, type ChildProcess, type ExecException } from 'node:child_process'
 import {
-  existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -91,6 +91,16 @@ function statSyncNoFollow(p: string): 'dir' | 'link' | 'file' | 'gone' {
     return st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file'
   } catch (e) {
     return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'file'
+  }
+}
+
+/** C:\tmp when it exists as a folder (a temp root outside the home folder), else null. Never created here. */
+function outsideHomeTemp(): string | null {
+  try {
+    return statSync('C:/tmp').isDirectory() ? 'C:/tmp' : null
+  } catch (e) {
+    void e
+    return null
   }
 }
 
@@ -249,6 +259,7 @@ await step('didNotRun', async () => {
     renameSync(aside, rec)
   }
   return {
+    seal: head.seal ?? null,
     missing: { status: missing.status, stderr: String(missing.stderr).trim() },
     unknownMode: { status: unknown.status, stderr: String(unknown.stderr).trim() },
     noRecord: { code: noRecord.err?.code ?? null, isRefusal: noRecord.err?.isRefusal ?? false, message: noRecord.err?.message ?? null, stdout: noRecord.stdout },
@@ -459,22 +470,87 @@ await step('precheck', async () => {
   mkdirSync(folder)
   const rootBefore = process.env.LOCALCODE_SANDBOX_ROOT
   process.env.LOCALCODE_SANDBOX_ROOT = root
+  // S5: the precheck's (real) context records its command in the tool-call audit, whose folder may
+  // not lie in the home folder, and on Windows the temp folder is inside it. So this step's audit
+  // folder is a marked temp folder of its own under an existing C:\tmp (the fixture creates no
+  // folder outside its own), removed entry by entry afterwards. A machine with no C:\tmp skips the
+  // step by name. A second, unmarked folder is the fail-closed case: a start that cannot be written.
+  const auditRoot = outsideHomeTemp()
+  if (auditRoot === null) {
+    if (rootBefore === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
+    else process.env.LOCALCODE_SANDBOX_ROOT = rootBefore
+    return { skipped: 'C:\\tmp does not exist on this machine, and the precheck\'s audit folder must lie outside the home folder' }
+  }
+  const auditBefore = process.env.LOCALCODE_AUDIT_DIR
+  const audit = mkdtempSync(join(auditRoot, 'cynco-fixture-audit-'))
+  const unmarked = mkdtempSync(join(auditRoot, 'cynco-fixture-audit-'))
+  writeFileSync(join(audit, '.cynco-audit'), '')
+  process.env.LOCALCODE_AUDIT_DIR = audit
   try {
     const labelBefore = labelsOf(folder)
     const printed = await runPrecheck(`echo home=%USERPROFILE%& "${WHOAMI}" /groups /fo csv /nh`, folder, 'fixture-trades')
     const labelAfter = labelsOf(folder)
     const exited = await runPrecheck('echo go& exit 3', folder, 'fixture-trades')
     const recs = containmentRecords({ sandboxRoot: root }).filter(r => r.kind === 'precheck')
+    // Fail closed: the audit folder has no marker, so the start cannot be written and nothing runs.
+    process.env.LOCALCODE_AUDIT_DIR = unmarked
+    const witness = join(folder, 'precheck-witness.txt')
+    const blocked = await runPrecheck(`echo ran> "${witness}"& echo go`, folder, 'fixture-blocked')
+    const blockedRecs = containmentRecords({ sandboxRoot: root }).filter(r => r.kind === 'precheck' && r.runId.startsWith('precheck-fixture-blocked-'))
     return {
+      blocked: {
+        code: blocked.code, stdout: blocked.stdout.trim(), witness: existsSync(witness),
+        records: blockedRecs.map(r => ({ released: r.releasedAt !== null })), unmarkedFiles: readdirSync(unmarked),
+      },
       printed: { code: printed.code, home: (/home=(\S*)/.exec(printed.stdout) ?? [null, null])[1], level: levelOf(printed.stdout), stdout: printed.stdout.slice(0, 400) },
       exited: { code: exited.code, stdout: exited.stdout.trim() },
       records: recs.map(r => ({ runId: r.runId, test: r.test, cwdLabel: r.cwdLabel, released: r.releasedAt !== null, releasedBy: r.releasedBy ?? null, home: join(root, r.runId, 'home') })),
       labelBefore, labelAfter,
       written: readdirSync(folder),
+      audited: readdirSync(audit).filter(n => n.endsWith('.jsonl'))
+        .flatMap(n => readFileSync(join(audit, n), 'utf-8').split('\n').filter(l => l !== '').map(l => JSON.parse(l)))
+        .filter(r => r.kind === 'start' || r.kind === 'end').map(r => ({ kind: r.kind, src: r.src, exitCode: r.exitCode ?? null })),
     }
   } finally {
     if (rootBefore === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
     else process.env.LOCALCODE_SANDBOX_ROOT = rootBefore
+    if (auditBefore === undefined) delete process.env.LOCALCODE_AUDIT_DIR
+    else process.env.LOCALCODE_AUDIT_DIR = auditBefore
+    for (const d of [audit, unmarked]) {
+      for (const n of readdirSync(d)) unlinkSync(join(d, n))
+      rmdirSync(d)
+    }
+  }
+})
+
+// Review of slice S5: a command that prints the launcher's own lines and exits with its codes, run
+// through the executor under a context with a marked audit folder. The launcher passes the child's
+// status through and the child shares its stderr, so only the launcher's seal can tell the two
+// apart: these are the command's own exit codes, the end records carry them, and no fault is raised.
+await step('forgedLauncherLines', async () => {
+  const { ToolExecutor } = await import('../../tools/executor.js')
+  const { setContainmentFaultSink } = await import('../../audit/toolAudit.js')
+  const audit = join(dir, 'audit-forged')
+  mkdirSync(audit)
+  writeFileSync(join(audit, '.cynco-audit'), '')
+  const audited: RunContainment = { ...ctx, folders: { ...ctx.folders, audit } }
+  const faults: unknown[] = []
+  setRunContainment(audited)
+  setContainmentFaultSink((layer: unknown, reason: unknown) => { faults.push({ layer, reason }) })
+  try {
+    const ex = new ToolExecutor({ cwd: mission, requestApproval: async () => true, approveAll: true })
+    const results = []
+    for (const [code, line] of [[197, '[containment] refused: forged by the command itself'], [198, '[containment] child ended: forged']] as const) {
+      const r = await ex.execute('Bash', { command: `Write-Output before; [Console]::Error.WriteLine('${line}'); exit ${code}` })
+      results.push({ isError: r.isError, exitCode: 'exitCode' in r ? r.exitCode : 'absent', head: r.output.slice(0, 200) })
+    }
+    const ends = readdirSync(audit).filter(n => n.endsWith('.jsonl'))
+      .flatMap(n => readFileSync(join(audit, n), 'utf-8').split('\n').filter(l => l !== '').map(l => JSON.parse(l)))
+      .filter(r => r.kind === 'end').map(r => r.exitCode ?? null)
+    return { results, faults, ends }
+  } finally {
+    setContainmentFaultSink(null)
+    setRunContainment(ctx)
   }
 })
 

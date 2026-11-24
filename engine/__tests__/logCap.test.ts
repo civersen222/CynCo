@@ -5,7 +5,7 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync,
+  existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync,
 } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -114,6 +114,44 @@ describe('pruneOldFiles', () => {
     expect(r.failed[0]!.error).toMatch(/not an absolute path/)
   })
 
+  // A file name cannot hold a NUL, so even a refusal that failed could delete nothing here.
+  const NEVER_MATCHES = /\0never/
+
+  it.skipIf(process.platform !== 'win32')('refuses a path rooted on the current drive and a volume root (Windows)', () => {
+    for (const d of ['\\no-such-folder-xyz-9', '/no-such-folder-xyz-9']) {
+      const r = pruneOldFiles(d, NEVER_MATCHES, 90)
+      expect(r.deleted).toEqual([])
+      expect(r.failed[0]!.error).toMatch(/not an absolute path/)
+    }
+    for (const d of ['C:\\', 'C:/']) {
+      const r = pruneOldFiles(d, NEVER_MATCHES, 90)
+      expect(r.deleted).toEqual([])
+      expect(r.failed[0]!.error).toMatch(/volume root/)
+    }
+  })
+
+  it('refuses a volume root off Windows too', () => {
+    if (process.platform === 'win32') return
+    const r = pruneOldFiles("/", NEVER_MATCHES, 90)
+    expect(r.failed[0]!.error).toMatch(/volume root/)
+  })
+
+  it('with nameTime, a file goes only when its name is old too; an undated name stays', () => {
+    const dir = root()
+    file(dir, '2020-01-01.jsonl', 400)
+    file(dir, 'undated.jsonl', 400)
+    const young = new Date(NOW)
+    const youngName = `${young.getFullYear()}-${String(young.getMonth() + 1).padStart(2, '0')}-${String(young.getDate()).padStart(2, '0')}.jsonl`
+    file(dir, youngName, 400)
+    const nameTime = (n: string) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(n)
+      return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + 1).getTime() : null
+    }
+    const r = pruneOldFiles(dir, /\.jsonl$/, 90, { nameTime })
+    expect(r.deleted).toEqual(['2020-01-01.jsonl'])
+    expect(readdirSync(dir).sort()).toEqual([youngName, 'undated.jsonl'].sort())
+  })
+
   it('refuses an age limit of 0 (and one that is not a finite number) and deletes nothing', () => {
     const dir = root()
     file(dir, '2026-01-01.jsonl', 10)
@@ -170,6 +208,39 @@ describe('appendCapped', () => {
     expect(text.endsWith('b'.repeat(20))).toBe(true)
     expect(text).not.toContain('Q')
     expect(readdirSync(dir)).toEqual(['stream.log'])
+  })
+
+  it('never truncates or extends a file reached through a hard link', () => {
+    const dir = root()
+    const precious = join(dir, 'precious.db')
+    writeFileSync(precious, 'P'.repeat(4096))
+    const log = join(dir, '.cynco-stream.log')
+    linkSync(precious, log)
+    expect(() => appendCapped(log, 'iteration text\n', 1024)).toThrow(/hard link/)
+    expect(() => appendCapped(log, 'x', 1 << 20)).toThrow(/hard link/)
+    expect(readFileSync(precious, 'utf-8')).toBe('P'.repeat(4096))
+  })
+
+  it('never writes through a symbolic link or a junction with the log name', (ctx) => {
+    const dir = root()
+    const precious = join(dir, 'precious.db')
+    writeFileSync(precious, 'P'.repeat(4096))
+    const log = join(dir, 'stream.log')
+    try {
+      symlinkSync(precious, log, 'file')
+    } catch (e) {
+      console.log(`[test] no file symbolic link here: ${(e as Error).message}`)
+      ctx.skip()
+      return
+    }
+    expect(() => appendCapped(log, 'x'.repeat(10), 100)).toThrow(/not a regular file/)
+    expect(readFileSync(precious, 'utf-8')).toBe('P'.repeat(4096))
+  })
+
+  it('a folder with the log name is not written', () => {
+    const dir = root()
+    mkdirSync(join(dir, 'stream.log'))
+    expect(() => appendCapped(join(dir, 'stream.log'), 'x', 100)).toThrow(/not a regular file/)
   })
 
   it('creates a missing file and never creates a sibling', () => {

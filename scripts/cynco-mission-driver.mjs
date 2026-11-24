@@ -96,7 +96,8 @@ import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-sh
 import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
-import { adoptContainment, setRunContainment, runContainment, operatorRefusal } from '../engine/containment.js'
+import { adoptContainment, setRunContainment, runContainment, operatorRefusal, NO_CONTAINMENT } from '../engine/containment.js'
+import { toolAudit } from '../engine/audit/toolAudit.js'
 import { missionRunId } from '../engine/missionEnv.js'
 import { harnessGitBin, harnessGitEnv } from '../engine/harnessGit.js'
 import { withFixedRule } from '../engine/missionRule.js'
@@ -274,6 +275,15 @@ const SEALED_COUNT = instrumentAssertions.length
   : 0
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
+// F242: the driver's own check and probe commands are recorded, or nothing is dispatched. Before the
+// purges, which are the driver's first change on disk; the socket is not open yet, hence exit 2.
+const audit = toolAudit()
+const auditWhy = audit ? audit.probe('driver') : NO_CONTAINMENT
+if (auditWhy) {
+  console.error(operatorRefusal('[driver]', 'audit', auditWhy, 'dispatched'))
+  process.exit(2)
+}
+
 for (const line of purgeBytecodeCaches(CWD)) console.log(`[driver] ${line}`)
 for (const line of purgeStaleAgentState(CWD)) console.log(`[driver] ${line}`)
 
@@ -349,6 +359,9 @@ let lastActivityAt = Date.now()
 // next 3351 seconds. Null until the engine says otherwise; the string it says is
 // kept, because "a crash happened" and "which crash" are different facts.
 let engineError = null
+// The layer of a containment, audit or integrity fault that set `engineError` (F242), so the last
+// line names where to look; null when it was a session.error or anything else.
+let engineFaultLayer = null
 // F235, the re-prompt (owner's decision 2026-11-17, row 11): a stalled model
 // stream no longer ends the mission the first time. The engine marks that
 // `session.error` with a `stall` field; the first one is held here instead of
@@ -512,6 +525,14 @@ function onMissionMessage(ev) {
       }
     }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
+    // Entry 3.M5: a containment, audit or integrity refusal in the engine ends the mission as the
+    // harness's fault, whatever the model then says (F242).
+    if (m.type === 'governance.alert' && m.severity === 'critical' && !engineError
+        && (m.source === 'containment' || m.source === 'audit' || m.source === 'integrity')) {
+      engineError = `${m.source}: ${String(m.message ?? '')}`
+      engineFaultLayer = m.source
+      console.log(`[driver] ${String(m.source).toUpperCase()} FAULT — the engine refused a tool call, so the run is over: ${engineError}`)
+    }
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
     if (m.type === 'message.complete' && toolCount === 0) {
       // F7: conversation ended without a single tool call — mission cannot have
@@ -721,7 +742,7 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
     if (probeState && shouldProbe({ probeCmd, landed, exitReason })) {
       const probedSha = gitHead(CWD)
       console.log(`[probe] running in ${CWD}: ${probeCmd} (cap ${PROBE_TIMEOUT_MS}ms, run ${probeState.runs + 1})`)
-      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment() })
+      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment(), audit: { handle: audit, src: 'driver-probe' } })
       probeState.runs++
       probeState.lastExit = pr.exitCode
       probeState.lastVerified = pr.verified
@@ -832,7 +853,12 @@ if (!silentAfterDispatch) {
 // still reach the collector, and the delta below turns them into a number on the
 // record rather than a thing that happened to a repo nobody was looking at.
 const toolCountAtExit = toolCount
-if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  Check the engine log for the llama-server exit code before re-dispatching; the mission budget was not the problem.`)
+const FAULT_NEXT_STEP = {
+  audit: 'Run `bun scripts/cynco-audit.mjs check` and read the engine log\'s [tool-audit] lines: the tool-call audit could not be written',
+  containment: 'Read the engine log\'s [containment] lines (the launcher, the sandbox, the run\'s record) and `bun scripts/cynco-sandbox.mjs status`',
+  integrity: 'Read the integrity latch (HALT.json in the guard folder) and its page before anything else is dispatched',
+}
+if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  ${FAULT_NEXT_STEP[engineFaultLayer] ?? 'Check the engine log for the llama-server exit code'} before re-dispatching; the mission budget was not the problem.`)
 else if (silentAfterDispatch) console.log('[driver] NEVER DISPATCHED — no turn ran. This says nothing about the model or the brief; ' +
   'it says this script and the engine did not agree on the wire. Log a failure entry (docs/cynco-failure-log.md).')
 else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
@@ -953,7 +979,7 @@ async function gradeAtCheck({ quarantine }) {
   // CYNCO_CHECK_ORDINAL (final review I1): which of this driver's checks this
   // is, so an instrument can tell the driver's call from anyone else's — the
   // smoke's fail-once fixture fails only for ordinal 1.
-  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment() })
+  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment(), audit: { handle: audit, src: 'driver-marker' } })
   const headAfter = gitHead(CWD)
   return { r, tampered, dirtyAtVerify, resetFiles, patchPath, headBefore, headAfter }
 }

@@ -186,6 +186,28 @@ function refusalReason(text) {
 }
 
 /** The result of a command that was refused before anything was started. */
+/**
+ * The `audit` option (F242): `{ handle, src }`, a tool-call audit handle (engine/audit/toolAudit.ts)
+ * and the source its records carry. The command the caller asked for is recorded before it starts,
+ * and its status and duration after; a handle that cannot write the start refuses the command,
+ * which is then not started and comes back as fault EAUDIT. Absent, nothing changes.
+ */
+function auditStart(audit, cmd, args, cwd) {
+  if (!audit) return null
+  return audit.handle.start({ src: audit.src, command: [cmd, ...(args ?? [])].join(' '), cwd: cwd ?? process.cwd() })
+}
+
+function auditEnd(audit, started, rec) {
+  if (audit && started && started.ok) audit.handle.end(started.call, rec)
+}
+
+function auditRefusedResult(reason) {
+  return {
+    status: null, stdout: '', stderr: `[tool-audit] not run: ${reason}`, elapsedMs: 0, timedOut: false,
+    fault: { code: 'EAUDIT', status: null, signal: null, elapsedMs: 0 },
+  }
+}
+
 function refusedResult(reason) {
   return {
     status: null, stdout: '', stderr: `[spawn] REFUSED: containment: ${reason} — nothing was run`, elapsedMs: 0, timedOut: false,
@@ -263,12 +285,19 @@ function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hook
   // taken out of the launcher's own environment unless the caller named them.
   const launcherEnv = { ...c.env }
   for (const k of COLOUR_FORCING_KEYS) if (!(env && k in env)) delete launcherEnv[k]
-  return { cmd: c.file, args: c.args, shell: undefined, cwd: c.cwd, env: launcherEnv, viaLauncher: true, done }
+  return { cmd: c.file, args: c.args, shell: undefined, cwd: c.cwd, env: launcherEnv, viaLauncher: true, seal: c.seal, done }
 }
 
-function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained } = {}, { spawn = spawnSync, now = () => Date.now(), ...hooks } = {}) {
+function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit } = {}, { spawn = spawnSync, now = () => Date.now(), ...hooks } = {}) {
+  // F242: the record first, before an own containment exists, so an EAUDIT leaves nothing to release.
+  const started = auditStart(audit, cmd, args, cwd)
+  if (started && !started.ok) return auditRefusedResult(started.reason)
   const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
-  if (plan.refused !== undefined) return refusedResult(plan.refused)
+  if (plan.refused !== undefined) {
+    const out = refusedResult(plan.refused)
+    auditEnd(audit, started, { isError: true, exitCode: null, ms: 0, output: out.stderr })
+    return out
+  }
   try {
     const t0 = now()
     const r = spawn(plan.cmd, plan.args, {
@@ -284,17 +313,26 @@ function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained } 
       shell: plan.shell,
     })
     const elapsedMs = Math.max(0, now() - t0)
-    return classified({ status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal ?? null, error: r.error }, elapsedMs, timeoutMs, plan.viaLauncher)
+    const out = classified({ status: r.status ?? null, stdout: r.stdout ?? '', stderr: r.stderr ?? '', signal: r.signal ?? null, error: r.error }, elapsedMs, timeoutMs, plan.viaLauncher, plan.seal)
+    auditEnd(audit, started, { isError: out.status !== 0, exitCode: out.status, ms: elapsedMs, output: String(out.stdout) + String(out.stderr) })
+    return out
+  } catch (e) {
+    // spawnSync throws synchronously only before a process exists (an argument it will not pass,
+    // such as one holding a NUL byte): the start record gets its end, then the throw goes on.
+    auditEnd(audit, started, { isError: true, exitCode: null, ms: 0, output: `not started: ${e?.message ?? e}` })
+    throw e
   } finally {
     plan.done()
   }
 }
 
 /** Rules 1 and 2 above, shared by runSync and runAsync: an ETIMEDOUT is believed only when the time was spent. */
-function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs, viaLauncher = false) {
+function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs, viaLauncher = false, seal = undefined) {
   // Entry 1.M1: a launcher that could not run the command (197 with its refused line), or whose
   // child ended with no status (198 with its line), is a fault, never the command's own exit code.
-  const launcherFault = viaLauncher ? launcherFaultOf(status, stderr) : null
+  // Both count only with the launcher's seal line for this spawn (`seal`): a command that prints
+  // the refused line and exits 197 itself keeps its own status (review of slice S5).
+  const launcherFault = viaLauncher ? launcherFaultOf(status, stderr, seal) : null
   if (launcherFault) {
     return { status: null, stdout, stderr, elapsedMs, timedOut: false, fault: { code: launcherFault.code, status: null, signal, elapsedMs } }
   }
@@ -327,9 +365,15 @@ function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeou
  * `contained` is runSync's option, with the same refusal; the containment is
  * released when the child has closed.
  */
-export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
+export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
+  const started = auditStart(audit, cmd, args, cwd)
+  if (started && !started.ok) return Promise.resolve(auditRefusedResult(started.reason))
   const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
-  if (plan.refused !== undefined) return Promise.resolve(refusedResult(plan.refused))
+  if (plan.refused !== undefined) {
+    const out = refusedResult(plan.refused)
+    auditEnd(audit, started, { isError: true, exitCode: null, ms: 0, output: out.stderr })
+    return Promise.resolve(out)
+  }
   const t0 = now()
   return new Promise((resolveRun) => {
     let stdout = ''
@@ -342,7 +386,10 @@ export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, cont
       settled = true
       clearTimeout(timer)
       plan.done()
-      resolveRun(classified({ stdout, stderr, ...fields }, Math.max(0, now() - t0), timeoutMs, plan.viaLauncher))
+      const elapsedMs = Math.max(0, now() - t0)
+      const out = classified({ stdout, stderr, ...fields }, elapsedMs, timeoutMs, plan.viaLauncher, plan.seal)
+      auditEnd(audit, started, { isError: out.status !== 0, exitCode: out.status, ms: elapsedMs, output: String(out.stdout) + String(out.stderr) })
+      resolveRun(out)
     }
     const timer = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
       ? setTimeout(() => { deadlineHit = true; kill(child) }, timeoutMs)

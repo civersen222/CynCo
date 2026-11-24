@@ -4,12 +4,13 @@
 // the pass run although the gate did not. On Windows the contained run itself is shown by the Bun fixture
 // (containmentLauncher.test.ts, step `precheck`); vitest's Node has no launcher.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runPrecheck } from '../../daemon/precheck.js'
 import { LAUNCHER_UNAVAILABLE, containmentRecords } from '../../containment.js'
 import { SUITE_CONTAINMENT_ENV } from '../setup/containment.js'
+import { AUDIT_MARKER, AUDIT_NOT_WRITTEN } from '../../audit/toolAudit.js'
 
 describe('runPrecheck', () => {
   let dir = ''
@@ -59,6 +60,8 @@ describe('runPrecheck', () => {
     let root = ''
     let mission = ''
     let rootBefore: string | undefined
+    let auditBefore: string | undefined
+    let audit = ''
     beforeEach(() => {
       root = join(dir, 'root')
       mission = join(dir, 'mission')
@@ -66,10 +69,48 @@ describe('runPrecheck', () => {
       mkdirSync(mission)
       rootBefore = process.env.LOCALCODE_SANDBOX_ROOT
       process.env.LOCALCODE_SANDBOX_ROOT = root
+      // S5: the precheck's context records its command; the audit folder is a marked one of this test's own.
+      audit = join(dir, 'audit')
+      mkdirSync(audit)
+      writeFileSync(join(audit, AUDIT_MARKER), '')
+      auditBefore = process.env.LOCALCODE_AUDIT_DIR
+      process.env.LOCALCODE_AUDIT_DIR = audit
     })
     afterEach(() => {
       if (rootBefore === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
       else process.env.LOCALCODE_SANDBOX_ROOT = rootBefore
+      if (auditBefore === undefined) delete process.env.LOCALCODE_AUDIT_DIR
+      else process.env.LOCALCODE_AUDIT_DIR = auditBefore
+    })
+    const records = () => readdirSync(audit).filter(n => n.endsWith('.jsonl'))
+      .flatMap(n => readFileSync(join(audit, n), 'utf-8').split('\n').filter(l => l !== '').map(l => JSON.parse(l)))
+
+    it('S5: one start with src precheck and the command verbatim, and one end with the exit code', async () => {
+      const r = await runPrecheck('echo go; exit 3', mission, 'trades')
+      expect(r.code).toBe(3)
+      const recs = records()
+      const start = recs.find(x => x.kind === 'start')
+      expect(start).toMatchObject({ src: 'precheck', command: 'echo go; exit 3', cwd: mission })
+      expect(start.run.startsWith('precheck-trades-')).toBe(true)
+      expect(recs.find(x => x.kind === 'end')).toMatchObject({ call: start.seq, isError: true, exitCode: 3 })
+    })
+
+    it('S5: a start that cannot be written runs nothing, answers the skip and releases the sandbox', async () => {
+      const d = new Date()
+      const p = (n: number) => String(n).padStart(2, '0')
+      mkdirSync(join(audit, `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.jsonl`))
+      const witness = join(dir, 'ran.txt')
+      const err = console.error
+      console.error = () => undefined
+      try {
+        const r = await runPrecheck(`echo x > "${witness}"`, mission, 'trades')
+        expect(r).toEqual({ code: 0, stdout: `skip: precheck not run: audit: ${AUDIT_NOT_WRITTEN('audit-dir-unwritable')}` })
+        expect(said).toContain(`[daemon] precheck not run: audit: ${AUDIT_NOT_WRITTEN('audit-dir-unwritable')}`)
+      } finally {
+        console.error = err
+      }
+      expect(existsSync(witness)).toBe(false)
+      expect(containmentRecords({ sandboxRoot: root }).every((rec) => rec.releasedAt !== null)).toBe(true)
     })
 
     it('the command sees the sandbox as its home, the mission folder is not labelled, and the record is released', async () => {

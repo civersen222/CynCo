@@ -12,8 +12,10 @@
  * file in place (never a rotated sibling). `oversizedLogs` lists the service logs that grew past a
  * size between starts, so the daemon can page about them. Node built-ins only.
  */
-import { appendFileSync, lstatSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import {
+  closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, unlinkSync, writeSync,
+} from 'node:fs'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -39,20 +41,31 @@ function errText(e: unknown): string {
  * modification time is more than `maxAgeDays` days before `opts.now` (default now), except the
  * names in `opts.keep` (compared case-insensitively on Windows).
  *
- * Refuses, deleting nothing, when `dir` is not absolute, when `maxAgeDays` is not a finite number of
- * at least 1, or when the folder cannot be listed: the refusal is the one `failed` entry, named
- * after the folder. Never recursive; never follows or removes a link or a junction (lstat, isFile).
- * An entry that cannot be examined or removed is reported in `failed` and the rest go on. Never
- * throws.
+ * With `opts.nameTime`, a file also goes only when the time its NAME carries (a date) is itself
+ * older than the limit, so a clock that runs ahead does not delete a file named for today; a name
+ * the function cannot date is kept.
+ *
+ * Refuses, deleting nothing, when `dir` is not absolute (on Windows: a drive letter or a share, never
+ * a path rooted on whichever drive is current), when it is a volume root, when `maxAgeDays` is not a
+ * finite number of at least 1, or when the folder cannot be listed: the refusal is the one `failed`
+ * entry, named after the folder. Never recursive; never follows or removes a link or a junction
+ * (lstat, isFile). An entry that cannot be examined or removed is reported in `failed` and the rest
+ * go on. Never throws.
  */
 export function pruneOldFiles(
   dir: string, nameRe: RegExp, maxAgeDays: number,
-  opts: { now?: number; keep?: string[] } = {},
+  opts: { now?: number; keep?: string[]; nameTime?: (name: string) => number | null } = {},
 ): { deleted: string[]; failed: Array<{ name: string; error: string }> } {
   const deleted: string[] = []
   const failed: Array<{ name: string; error: string }> = []
-  if (typeof dir !== 'string' || dir === '' || !isAbsolute(dir)) {
+  const anchored = typeof dir === 'string' && dir !== '' && isAbsolute(dir)
+    && (process.platform !== 'win32' || /^([A-Za-z]:[\\/]|[\\/]{2}[^\\/])/.test(dir))
+  if (!anchored) {
     failed.push({ name: String(dir), error: 'the folder is not an absolute path; nothing was deleted' })
+    return { deleted, failed }
+  }
+  if (dirname(resolve(dir)) === resolve(dir)) {
+    failed.push({ name: dir, error: 'the folder is a volume root; nothing was deleted' })
     return { deleted, failed }
   }
   if (typeof maxAgeDays !== 'number' || !Number.isFinite(maxAgeDays) || maxAgeDays < 1) {
@@ -74,6 +87,10 @@ export function pruneOldFiles(
     nameRe.lastIndex = 0
     if (!nameRe.test(name)) continue
     if (keep.has(fold(name))) continue
+    if (opts.nameTime) {
+      const t = opts.nameTime(name)
+      if (t === null || !Number.isFinite(t) || !(t < cutoff)) continue
+    }
     const path = join(dir, name)
     try {
       const st = lstatSync(path)
@@ -93,24 +110,49 @@ export function pruneOldFiles(
   return { deleted, failed }
 }
 
+/** The one file `appendCapped` may write: a regular file with no other name, or nothing yet. */
+function ownLogFile(path: string): void {
+  let st
+  try {
+    st = lstatSync(path)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw e
+  }
+  if (!st.isFile()) throw new Error(`${path} is not a regular file (a link, a junction or a folder); it is not written`)
+  if (st.nlink > 1) throw new Error(`${path} has ${st.nlink} names (a hard link); it is not written`)
+}
+
 /**
  * Append `text` to `path`; when the append would take the file past `maxBytes`, restart the file
  * in place with one header line instead. A missing file counts as empty and is created. It never
- * creates a sibling file, so no repository's `.gitignore` is involved. Throws what `fs` throws.
+ * creates a sibling file, so no repository's `.gitignore` is involved.
+ *
+ * The path may lie in a folder a run controls, so it is written only when it is a regular file with
+ * one name (lstat; never a symbolic link, a junction or a hard link: restarting the file would
+ * otherwise empty whatever the name points at), opened without following a final link where the
+ * system can (O_NOFOLLOW), and judged again on the open handle. Throws what `fs` throws, and an
+ * Error naming the path for a file it will not write.
  */
 export function appendCapped(path: string, text: string, maxBytes: number): void {
-  let size = 0
+  ownLogFile(path)
+  const noFollow = (fsConstants as Record<string, number | undefined>).O_NOFOLLOW ?? 0
+  // No O_APPEND: Windows refuses to truncate a handle opened for appending, so the append is a
+  // positioned write at the size read from the same handle (one writer per log).
+  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | noFollow)
   try {
-    size = statSync(path).size
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
-    size = 0
-  }
-  if (size + Buffer.byteLength(text) > maxBytes) {
-    const header = `--- log restarted ${new Date().toISOString()}: it passed ${maxBytes} bytes ---\n`
-    writeFileSync(path, header + text)
-  } else {
-    appendFileSync(path, text)
+    const st = fstatSync(fd)
+    if (!st.isFile() || st.nlink > 1) throw new Error(`${path} is not a regular file with one name; it is not written`)
+    if (st.size + Buffer.byteLength(text) > maxBytes) {
+      // Restart in place on the handle already judged: truncate it, then write from its start.
+      const header = `--- log restarted ${new Date().toISOString()}: it passed ${maxBytes} bytes ---\n`
+      ftruncateSync(fd, 0)
+      writeSync(fd, header + text, 0)
+    } else {
+      writeSync(fd, text, st.size)
+    }
+  } finally {
+    closeSync(fd)
   }
 }
 

@@ -464,3 +464,19 @@ describe('Git tool — flags folded into the subcommand field', () => {
     expect(result.output).toContain('Shell metacharacters not allowed')
   })
 })
+
+// F242, slice S5: the exit code of git rides on the result; a guard refusal carries none.
+describe('Git exitCode', () => {
+  it('is 0 for status, git\'s own status for a failing subcommand, absent for a blocked command', async () => {
+    const ok = await gitTool.execute({ subcommand: 'status' }, OWN_REPO)
+    expect(ok.isError).toBe(false)
+    expect(ok.exitCode).toBe(0)
+    const bad = await gitTool.execute({ subcommand: 'rev-parse', args: '--verify no-such-ref-xyz' }, OWN_REPO)
+    expect(bad.isError).toBe(true)
+    expect(typeof bad.exitCode).toBe('number')
+    expect(bad.exitCode).not.toBe(0)
+    const blocked = await gitTool.execute({ subcommand: 'push', args: '--force origin main' }, NON_REPO_CWD)
+    expect(blocked.output).toContain('dangerous git command blocked')
+    expect('exitCode' in blocked).toBe(false)
+  })
+})

@@ -14,7 +14,8 @@
  * the Bun fixture's (`containmentLauncher.test.ts`).
  */
 import { describe, expect, it, afterAll, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { AUDIT_MARKER } from '../../audit/toolAudit.js'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
@@ -143,6 +144,7 @@ const valueOf = (out: string, key: 'scratch' | 'home') => {
 describe('a mission engine runs a message contained whatever its unattended flag says', () => {
   let ctx: RunContainment
   let mission: string
+  let audit: string
   const switchBefore = process.env.LOCALCODE_CONTAINMENT_OFF
 
   beforeEach(() => {
@@ -151,8 +153,11 @@ describe('a mission engine runs a message contained whatever its unattended flag
     const sb = join(root, 'sandbox', 'run')
     const sandbox = { root: sb, home: join(sb, 'home'), tmp: join(sb, 'tmp'), scratch: join(sb, 'scratch') }
     for (const d of [mission, sandbox.home, sandbox.tmp, sandbox.scratch]) mkdirSync(d, { recursive: true })
-    const folders = { state: join(root, 'state'), models: join(root, 'models'), guard: join(root, 'guard'), audit: null }
-    for (const d of [join(root, 'fakehome'), folders.state, folders.models, folders.guard]) mkdirSync(d, { recursive: true })
+    // S5: the context names a marked audit folder of this test's own, so its tool calls are recorded.
+    audit = join(root, 'audit')
+    const folders = { state: join(root, 'state'), models: join(root, 'models'), guard: join(root, 'guard'), audit }
+    for (const d of [join(root, 'fakehome'), folders.state, folders.models, folders.guard, audit]) mkdirSync(d, { recursive: true })
+    writeFileSync(join(audit, AUDIT_MARKER), '')
     ctx = testContainment({ missionCwd: mission, sandbox, home: join(root, 'fakehome'), folders })
     setRunContainment(ctx)
     process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
@@ -170,6 +175,12 @@ describe('a mission engine runs a message contained whatever its unattended flag
     const out = toolResultText(requests[1])
     expect(fold(valueOf(out, 'scratch') ?? ''), out).toBe(fold(ctx.sandbox.scratch))
     expect(fold(valueOf(out, 'home') ?? ''), out).toBe(fold(ctx.sandbox.home))
+    // ...and its tool call is audited (S5): the start with the full input, then the end.
+    const recs = readdirSync(audit).filter(n => n.endsWith('.jsonl'))
+      .flatMap(n => readFileSync(join(audit, n), 'utf-8').split('\n').filter(l => l !== '').map(l => JSON.parse(l)))
+    const start = recs.find(r => r.kind === 'start')
+    expect(start).toMatchObject({ src: 'tool', tool: 'Bash', input: { command: PRINT }, run: ctx.runId })
+    expect(recs.find(r => r.kind === 'end' && r.call === start.seq)).toMatchObject({ isError: false, exitCode: 0 })
   }, 30000)
 
   it('the same message with the flag behaves the same', async () => {

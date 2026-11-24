@@ -1,6 +1,7 @@
 import { execSync } from 'child_process'
-import { ContainmentRefusal, toolExecSync, toolSpawnRefusal } from '../containment.js'
+import { ContainmentRefusal, refusalReasonOf, toolExecSync, toolSpawnRefusal } from '../containment.js'
 import { harnessGitEnv } from '../harnessGit.js'
+import { toolAudit, containmentFault } from '../audit/toolAudit.js'
 import type { CandidateResult, TestInfo } from './types.js'
 import { parseTestSummary } from '../bridge/testSummary.js'
 
@@ -34,7 +35,16 @@ export function runTests(
   testInfo: TestInfo
 ): { passed: number; total: number; output: string; refused?: string } {
   const refusal = toolSpawnRefusal()
-  if (refusal) return { passed: 0, total: 0, output: '', refused: refusal }
+  if (refusal) {
+    toolAudit()?.refused({ src: 'best-of-n', by: 'site', input: { command: testInfo.command }, cwd, layer: 'containment', reason: refusal })
+    containmentFault('containment', refusalReasonOf(refusal))
+    return { passed: 0, total: 0, output: '', refused: refusal }
+  }
+  // F242: the record of the run is on disk before the candidate's tests start (src best-of-n).
+  const audit = toolAudit()
+  const started = audit ? audit.start({ src: 'best-of-n', command: testInfo.command, cwd }) : null
+  if (started && !started.ok) return { passed: 0, total: 0, output: '', refused: started.reason }
+  const t0 = Date.now()
   let output = ''
   try {
     const result = toolExecSync(testInfo.command, {
@@ -43,13 +53,22 @@ export function runTests(
       maxBuffer: 5 * 1024 * 1024,
     })
     output = result.toString()
+    if (audit && started) audit.end(started.call, { isError: false, exitCode: 0, ms: Date.now() - t0, output })
   } catch (err: unknown) {
-    if (err instanceof ContainmentRefusal) return { passed: 0, total: 0, output: '', refused: err.message }
+    if (err instanceof ContainmentRefusal) {
+      if (audit && started) audit.end(started.call, { isError: true, exitCode: null, ms: Date.now() - t0, output: err.message })
+      containmentFault('containment', refusalReasonOf(err.message))
+      return { passed: 0, total: 0, output: '', refused: err.message }
+    }
     // Non-zero exit (tests failed) — parse anyway
     const e = err as { stdout?: Buffer | string; stderr?: Buffer | string }
     const stdout = e.stdout ? e.stdout.toString() : ''
     const stderr = e.stderr ? e.stderr.toString() : ''
     output = stdout + stderr
+    if (audit && started) {
+      const status = (err as { status?: unknown }).status
+      audit.end(started.call, { isError: true, exitCode: typeof status === 'number' ? status : null, ms: Date.now() - t0, output })
+    }
   }
   const { passed, total } = parseTestOutput(output, testInfo.framework)
   return { passed, total, output }

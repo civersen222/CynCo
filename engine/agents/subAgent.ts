@@ -30,6 +30,7 @@ import type { LocalCodeConfig } from '../config.js'
 import { getJournal } from '../training/decisionJournal.js'
 import { makeJournalEntry } from '../training/types.js'
 import { repairToolCall, isMalformedInput, MALFORMED_KEY } from '../engine/toolCallRepair.js'
+import { toolAudit } from '../audit/toolAudit.js'
 
 // ─── Options ────────────────────────────────────────────────────
 
@@ -99,6 +100,8 @@ export class SubAgent {
       cwd: this.cwd,
       requestApproval: async () => true,
       approveAll: true,
+      // A sub-agent's calls never pass the loop's executeOneTool: these records are their only ones (F242).
+      auditSrc: 'subagent',
     })
 
     // Initial status
@@ -358,12 +361,15 @@ export class SubAgent {
             this.governance.onToolResult(toolUse.name, false, 0)
             const raw = String((toolUse.input as any).raw ?? '')
             const parseError = String((toolUse.input as any).error ?? 'invalid JSON')
+            const content = `Tool call "${toolUse.name}" was not executed: its arguments were not valid JSON. ` +
+              `Parse error: ${parseError}. Offending arguments: ${raw} — ` +
+              `Re-issue the tool call with valid JSON arguments.`
+            // F242 (S5): a call the sub-agent's loop refuses has its record, as the main loop's does.
+            toolAudit()?.refused({ src: 'subagent', by: 'loop', tool: toolUse.name, input: toolUse.input, cwd: this.cwd, reason: content })
             toolResults.push({
               type: 'tool_result',
               tool_use_id: toolUse.id,
-              content: `Tool call "${toolUse.name}" was not executed: its arguments were not valid JSON. ` +
-                `Parse error: ${parseError}. Offending arguments: ${raw} — ` +
-                `Re-issue the tool call with valid JSON arguments.`,
+              content,
               is_error: true,
             })
             this.emitEvent({
@@ -380,10 +386,12 @@ export class SubAgent {
           if (!allowedToolNames.has(toolUse.name)) {
             toolErrors++
             this.governance.onToolResult(toolUse.name, false, 0)
+            const content = `Error: tool "${toolUse.name}" is not allowed for this agent's trust tier`
+            toolAudit()?.refused({ src: 'subagent', by: 'loop', tool: toolUse.name, input: toolUse.input, cwd: this.cwd, reason: content })
             toolResults.push({
               type: 'tool_result',
               tool_use_id: toolUse.id,
-              content: `Error: tool "${toolUse.name}" is not allowed for this agent's trust tier`,
+              content,
               is_error: true,
             })
 

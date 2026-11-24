@@ -91,6 +91,9 @@ if [ -n "${CYNCO_MISSION_ALSO_LABEL:-}" ]; then
   done
 fi
 SANDBOX_CREATED=
+# F242: no dispatch unless the tool-call audit can be written. Before anything is stopped.
+AUDIT_LINE=$(bun scripts/cynco-audit.mjs check | tr -d '\r') || { echo "[dispatch] REFUSED: audit: $AUDIT_LINE — nothing was dispatched" >&2; exit 1; }
+echo "[dispatch] tool-call audit: $AUDIT_LINE"
 
 # --- a fresh engine, always ------------------------------------------------
 # On Windows the child outlives the parent, so a killed engine leaves its
@@ -478,6 +481,7 @@ IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
   sleep 10
   END_OUT=$(bun scripts/cynco-mission-end.mjs --engine-pid "${ENGINE_WINPID:-0}" ${CYNCO_SKIP_IDLE_ENGINE:+--skip-idle} 2>&1 | tr -d '\r' || true)
   printf '%s\n' "$END_OUT" | grep '^\[mission-end\]' >> "$DRIVER_LOG" || true
+  bun scripts/cynco-audit.mjs verify --run "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   bun scripts/cynco-sandbox.mjs release "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   case "$(printf '%s\n' "$END_OUT" | sed -n 's/^ACTION //p' | tail -1)" in
     phone)

@@ -26,7 +26,7 @@ import {
   type ContainmentRecord, type ContainmentRunner, type RunContainment,
 } from '../containment.js'
 import { RUN_ID_RE } from '../missionEnv.js'
-import { cyncoHome } from '../paths.js'
+import { auditDir, cyncoHome } from '../paths.js'
 
 const ENV_KEYS = ['LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_MARKER']
 
@@ -284,7 +284,11 @@ describe('containedCommand', () => {
     expect(c.viaLauncher).toBe(true)
     expect(c.file).toBe('C:/bun/bun.exe')
     expect(c.cwd).toBe(checkout)
-    expect(c.env).toBe(process.env)
+    // The launcher gets the engine's own environment plus this spawn's seal, and nothing else.
+    expect(c.seal).toMatch(/^[0-9a-f]{32}$/)
+    expect(c.env).toEqual({ ...process.env, CYNCO_LAUNCHER_SEAL: c.seal })
+    const again = containedCommand({ file: 'x', args: [], shell: true }, { ctx, platform: 'win32', execPath: 'C:/bun/bun.exe' })
+    expect(again.seal).not.toBe(c.seal)
     expect(c.args.slice(0, 7)).toEqual([
       '--no-env-file',
       `--config=${join(checkout, 'engine', 'lowIntegrityLauncher.bunfig.toml')}`,
@@ -382,15 +386,32 @@ describe('containmentSwitch and containmentOff', () => {
 })
 
 describe('launcherFaultOf', () => {
-  it('197 and 198 are faults only with their own line', () => {
-    const f = launcherFaultOf(197, 'noise\n[containment] refused: the record could not be read\n')
+  const SEAL = '0123456789abcdef0123456789abcdef'
+  it('197 and 198 are faults only with their own line AND this spawn\'s seal line', () => {
+    const f = launcherFaultOf(197, `noise\n[containment] refused: the record could not be read\n[containment] sealed ${SEAL} 197\n`, SEAL)
     expect(f?.code).toBe('ECONTAINMENT')
     expect(f?.reason).toBe('the record could not be read')
     expect(f?.text).toBe(refusalText('containment', 'the record could not be read'))
-    expect(launcherFaultOf(197, 'a program that exits 197 by itself')).toBeNull()
-    expect(launcherFaultOf(198, '[containment] child ended: SIGKILL')?.code).toBe('ECHILDGONE')
-    expect(launcherFaultOf(0, '[containment] refused: x')).toBeNull()
-    expect(launcherFaultOf(7, '')).toBeNull()
+    expect(f?.ran).toBe(false)
+    expect(launcherFaultOf(197, `a program that exits 197 by itself\n[containment] sealed ${SEAL} 197`, SEAL)).toBeNull()
+    const gone = launcherFaultOf(198, `[containment] child ended: SIGKILL\r\n[containment] sealed ${SEAL} 198\r\n`, SEAL)
+    expect(gone?.code).toBe('ECHILDGONE')
+    expect(gone?.ran).toBe(true)
+    expect(gone?.exitCode).toBeNull()
+    expect(launcherFaultOf(0, `[containment] refused: x\n[containment] sealed ${SEAL} 0`, SEAL)).toBeNull()
+    expect(launcherFaultOf(7, '', SEAL)).toBeNull()
+  })
+
+  // Review of slice S5: the child shares the launcher's stderr and passes its own status through,
+  // so the launcher's lines alone prove nothing. Without the seal line for THIS spawn (absent, for
+  // another spawn, for the other status, or no seal known) a 197 or 198 is the command's own code.
+  it('a command that prints the launcher\'s line and exits 197 or 198 itself is no fault', () => {
+    expect(launcherFaultOf(197, 'Remove-Item ran first\r\n[containment] refused: forged by the command\r\n', SEAL)).toBeNull()
+    expect(launcherFaultOf(198, '[containment] child ended: forged', SEAL)).toBeNull()
+    expect(launcherFaultOf(197, '[containment] refused: x\n[containment] sealed ffffffffffffffffffffffffffffffff 197', SEAL)).toBeNull()
+    expect(launcherFaultOf(197, `[containment] refused: x\n[containment] sealed ${SEAL} 198`, SEAL)).toBeNull()
+    expect(launcherFaultOf(197, `[containment] refused: x\n[containment] sealed ${SEAL} 197`, undefined)).toBeNull()
+    expect(launcherFaultOf(197, '[containment] refused: x\n[containment] sealed  197', '')).toBeNull()
   })
 
   // Review finding of slice S2 (rule F35): the gate-authoring check is a Bun script in the
@@ -398,16 +419,19 @@ describe('launcherFaultOf', () => {
   // check; any other exit 1 is the command's own.
   it('exit 1 with Bun\'s own EPERM line is "did not run" (ECONTAINMENT), naming the file', () => {
     const line = 'error: EPERM reading "C:\\Users\\o\\localcode\\scripts\\cynco-gate-author.mjs"'
-    const f = launcherFaultOf(1, `${line}\n`)
+    const f = launcherFaultOf(1, `${line}\n`, undefined)
     expect(f?.code).toBe('ECONTAINMENT')
+    // A process ran (the Bun the launcher started), so a result built from it carries status 1.
+    expect(f?.ran).toBe(true)
+    expect(f?.exitCode).toBe(1)
     expect(f?.reason).toContain('C:\\Users\\o\\localcode\\scripts\\cynco-gate-author.mjs')
     expect(f?.reason).toContain('did not run')
     expect(f?.text.startsWith('Refused [containment]: ')).toBe(true)
-    expect(launcherFaultOf(1, `Bun v1.3.13\r\n${line}\r\n`)?.code).toBe('ECONTAINMENT')
-    expect(launcherFaultOf(1, 'FAILED test_x.py::test_a\nerror: something else')).toBeNull()
-    expect(launcherFaultOf(1, `prefix ${line}`)).toBeNull()
-    expect(launcherFaultOf(2, line)).toBeNull()
-    expect(launcherFaultOf(0, line)).toBeNull()
+    expect(launcherFaultOf(1, `Bun v1.3.13\r\n${line}\r\n`, undefined)?.code).toBe('ECONTAINMENT')
+    expect(launcherFaultOf(1, 'FAILED test_x.py::test_a\nerror: something else', undefined)).toBeNull()
+    expect(launcherFaultOf(1, `prefix ${line}`, undefined)).toBeNull()
+    expect(launcherFaultOf(2, line, SEAL)).toBeNull()
+    expect(launcherFaultOf(0, line, SEAL)).toBeNull()
   })
 })
 
@@ -1038,6 +1062,16 @@ describe('establishContainment: the models folder default', () => {
     const ctx = established(establishContainment(base({ test: true, folders: rest })))
     expect(ctx.folders.state).toBe(cyncoHome())
     expect(ctx.folders.models).toBe(join(cyncoHome(), 'models'))
+  })
+})
+
+describe('establishContainment: the audit folder default (S5)', () => {
+  it('with no folders.audit argument, a context carries what auditDir() answers, never null', () => {
+    // Under the suite's setup auditDir() names a folder that is never created, so the audit of such a
+    // context refuses (audit-dir-missing or audit-dir-in-home): it is never left unaudited.
+    const ctx = established(establishContainment(base({ test: true, folders: { guard: folders.guard } })))
+    expect(ctx.folders.audit).toBe(auditDir())
+    expect(ctx.folders.audit).not.toBeNull()
   })
 })
 

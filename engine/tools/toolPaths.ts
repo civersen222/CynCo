@@ -28,6 +28,7 @@ export type NamedPath = {
   recursive: boolean; children: boolean; inherited: boolean
   anchor: Anchor; device: boolean; linkTarget?: string | null
   verb?: string
+  unsetName?: string   // the shell word started with this name, which nothing in the command set
 }
 export type NamedCall = { paths: NamedPath[]; spellings: string[]; texts: string[]; scan: ShellScan | null; faults: string[] }
 export type NameOpts = {
@@ -194,9 +195,19 @@ function diffGitNames(rest: string): string[] {
  * `copy from|to`. `/dev/null` is ignored; `+++ /dev/null` makes the `---` name a delete. Each name is
  * given as written and with one leading `a/` or `b/` component removed.
  */
-export function patchPaths(patch: string): Array<{ raw: string; op: 'write' | 'delete'; via: string }> {
-  const out: Array<{ raw: string; op: 'write' | 'delete'; via: string }> = []
+export type PatchPath = { raw: string; op: 'write' | 'delete' | 'link'; via: string; linkTarget?: string | null }
+
+export function patchPaths(patch: string): PatchPath[] {
+  const out: PatchPath[] = []
   const seen = new Map<string, number>()
+  // A file the patch makes a symbolic link (mode 120000): its one added line is where the link points,
+  // and it is judged as a link (rule R6), not as a write (review 2026-11-23).
+  let fileAt = 0
+  let linkMode = false
+  let linkTarget: string | null = null
+  const settle = () => {
+    if (linkMode) for (let k = fileAt; k < out.length; k++) if (out[k].op !== 'delete') { out[k].op = 'link'; out[k].linkTarget = linkTarget }
+  }
   const add = (name: string, op: 'write' | 'delete', via: string) => {
     if (!name || name === '/dev/null') return
     const forms = [name]
@@ -215,9 +226,13 @@ export function patchPaths(patch: string): Array<{ raw: string; op: 'write' | 'd
   for (const line0 of patch.split('\n')) {
     const line = line0.replace(/\r$/, '')
     if (line.startsWith('diff --git ')) {
+      settle()
+      fileAt = out.length; linkMode = false; linkTarget = null
       for (const n of diffGitNames(line.slice(11))) add(n, 'write', 'patch:diff')
       continue
     }
+    if (/^(?:new file mode|new mode) 120000\s*$/.test(line)) { linkMode = true; continue }
+    if (linkMode && linkTarget === null && line.startsWith('+') && !line.startsWith('+++')) { linkTarget = line.slice(1); continue }
     if (line.startsWith('--- ')) { lastMinus = headerName(line.slice(4)); add(lastMinus, 'write', 'patch:---'); continue }
     if (line.startsWith('+++ ')) {
       const name = headerName(line.slice(4))
@@ -232,6 +247,7 @@ export function patchPaths(patch: string): Array<{ raw: string; op: 'write' | 'd
     if (cp) { add(unquoteC(cp[2]), 'write', 'patch:copy'); continue }
     if (line.startsWith('deleted file mode') && lastMinus === null) continue
   }
+  settle()
   return out
 }
 
@@ -374,7 +390,16 @@ function fieldPathsWith(toolName: string, input0: Record<string, unknown>, cwd: 
   }
   if (row?.special === 'applyPatch') {
     const patch = input.patch
-    if (typeof patch === 'string') for (const p of patchPaths(patch)) paths.push(fieldPath(p.raw, p.op, p.via, cwd, r))
+    if (typeof patch === 'string') {
+      for (const p of patchPaths(patch)) {
+        const n = fieldPath(p.raw, p.op, p.via, cwd, r)
+        if (p.op === 'link') {
+          const P = r.platform === 'win32' ? nodePath.win32 : nodePath.posix
+          n.linkTarget = p.linkTarget ? P.resolve(P.dirname(n.path), p.linkTarget) : null
+        }
+        paths.push(n)
+      }
+    }
   }
   // The generic rule: nothing the three old checks read is lost.
   for (const k of GENERIC_KEYS) {
@@ -453,6 +478,7 @@ export function namePaths(toolName: string, input: Record<string, unknown>, cwd:
           recursive: s.recursive, children: s.children, inherited: s.inherited, anchor: s.anchor, device: s.device, verb: s.verb,
         }
         if (s.linkTarget !== undefined) n.linkTarget = s.linkTarget
+        if (s.unsetName) n.unsetName = s.unsetName
         paths.push(n)
       }
     }

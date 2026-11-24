@@ -15,6 +15,7 @@ import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { runSync, runAsync, faultSummary, TIMEOUT_ELAPSED_FRACTION, bashBin, gitExeOnPath, bashExe, instrumentEnv } from '../cynco-spawn.mjs'
 import { testContainment } from '../../engine/containment.js'
+import { runCheck, runCheckAsync } from '../cynco-verify.mjs'
 
 /** A spawnSync stand-in: returns `result`, and advances the injected clock by `ms`. */
 const fakeSpawn = (result, ms, clock) => (...args) => { clock.t += ms; return { ...result, _args: args } }
@@ -640,16 +641,24 @@ describe('the contained option', () => {
         expect('FORCE_COLOR' in calls[0].opts.env).toBe(false)
       } finally { if (prev === undefined) delete process.env.FORCE_COLOR; else process.env.FORCE_COLOR = prev }
     })
-    it('197 with the launcher\'s line is ECONTAINMENT, 198 with its line ECHILDGONE, 197 without the line an ordinary status', async () => {
+    // The launcher's own lines end with its seal for this spawn, which only the starter knows: the
+    // fake reads it from the environment the launcher was given (review of slice S5).
+    const sealed = (status, line) => (cmd, args, opts) => ({ status, stdout: '', stderr: `${line}\n[containment] sealed ${opts.env.CYNCO_LAUNCHER_SEAL} ${status}\n` })
+    it('197 with the launcher\'s sealed line is ECONTAINMENT, 198 with it ECHILDGONE, without the seal an ordinary status', async () => {
       const ctx = ctxOf()
-      const refused = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 197, stdout: '', stderr: '[containment] refused: the containment record could not be read\n' })))
+      const refused = runSync('python', [], { contained: ctx }, launcherHooks(sealed(197, '[containment] refused: the containment record could not be read')))
       expect(refused).toMatchObject({ status: null, timedOut: false, fault: { code: 'ECONTAINMENT', status: null } })
-      const gone = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 198, stdout: '', stderr: '[containment] child ended: signal SIGKILL\n' })))
+      const gone = runSync('python', [], { contained: ctx }, launcherHooks(sealed(198, '[containment] child ended: signal SIGKILL')))
       expect(gone.fault?.code).toBe('ECHILDGONE')
       const own = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 197, stdout: '', stderr: 'the gate itself exits 197\n' })))
       expect(own).toMatchObject({ status: 197, fault: null, timedOut: false })
-      const a = await runAsync('python', [], { contained: ctx }, launcherHooks(asyncChild(197, '[containment] refused: no\n')))
+      // The gate prints the launcher's line itself and exits 197: its own status, not a fault.
+      const forged = runSync('python', [], { contained: ctx }, launcherHooks(() => ({ status: 197, stdout: '', stderr: '[containment] refused: forged by the gate\n' })))
+      expect(forged).toMatchObject({ status: 197, fault: null, timedOut: false })
+      const a = await runAsync('python', [], { contained: ctx }, launcherHooks((cmd, args, opts) => asyncChild(197, `[containment] refused: no\n[containment] sealed ${opts.env.CYNCO_LAUNCHER_SEAL} 197\n`)(cmd, args, opts)))
       expect(a.fault?.code).toBe('ECONTAINMENT')
+      const af = await runAsync('python', [], { contained: ctx }, launcherHooks(asyncChild(197, '[containment] refused: no\n')))
+      expect(af.fault).toBeNull()
       // Without the launcher, 197 is the command's own code whatever it printed.
       const plain = runSync('python', [], {}, { spawn: () => ({ status: 197, stdout: '', stderr: '[containment] refused: no\n' }) })
       expect(plain).toMatchObject({ status: 197, fault: null })
@@ -668,5 +677,128 @@ describe('the contained option', () => {
       const plain = runSync('bun', ['x.mjs'], {}, { spawn: () => ({ status: 1, stdout: '', stderr: line }) })
       expect(plain).toMatchObject({ status: 1, fault: null })
     })
+  })
+})
+
+// F242, slice S5 (03-audit-logs 2.17): the `audit` option. The command the caller asked for is
+// recorded before it starts and its status after; a handle whose start refuses starts nothing and
+// the result is fault EAUDIT. Absent, nothing changes (every case above runs without it).
+describe('the audit option', () => {
+  /** A stand-in handle that records the order of its calls. */
+  const handleOf = (refuse = null) => {
+    const events = []
+    let n = 0
+    return {
+      events,
+      handle: {
+        start(rec) { events.push(['start', rec]); return refuse ? { ok: false, reason: refuse } : { ok: true, call: ++n } },
+        end(call, rec) { events.push(['end', call, rec]) },
+      },
+    }
+  }
+
+  it('runSync: start before the spawn, end after it with the status', () => {
+    const order = []
+    const h = handleOf()
+    const clock = clockOf()
+    const spawn = (...args) => { order.push('spawn'); clock.t += 5; return { status: 3, stdout: 'o', stderr: 'e' } }
+    const startSpy = h.handle.start
+    h.handle.start = (rec) => { order.push('start'); return startSpy(rec) }
+    const r = runSync('python', ['gate.py', '-q'], { cwd: '/w', timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn, now: () => clock.t })
+    expect(r.status).toBe(3)
+    expect(order).toEqual(['start', 'spawn'])
+    expect(h.events[0]).toEqual(['start', { src: 'gate', command: 'python gate.py -q', cwd: '/w' }])
+    expect(h.events[1]).toEqual(['end', 1, { isError: true, exitCode: 3, ms: 5, output: 'oe' }])
+  })
+
+  it('runSync with the F155 retry: two attempts give two start and end pairs', () => {
+    const h = handleOf()
+    const clock = clockOf()
+    let calls = 0
+    const spawn = () => { calls++; clock.t += 3; return calls === 1 ? ETIMEDOUT : { status: 0, stdout: 'ok', stderr: '' } }
+    const r = runSync('bun', ['x.mjs'], { timeoutMs: 7_200_000, retryImpossibleTimeout: true, onStaleRetry: () => {}, audit: { handle: h.handle, src: 'gate' } }, { spawn, now: () => clock.t })
+    expect(r.status).toBe(0)
+    expect(h.events.map(e => e[0])).toEqual(['start', 'end', 'start', 'end'])
+    expect(h.events[1][2]).toMatchObject({ isError: true, exitCode: null })
+    expect(h.events[3]).toEqual(['end', 2, { isError: false, exitCode: 0, ms: 3, output: 'ok' }])
+  })
+
+  it('runAsync: start before the spawn, end in settle with the status', async () => {
+    const h = handleOf()
+    const order = []
+    const startSpy = h.handle.start
+    h.handle.start = (rec) => { order.push('start'); return startSpy(rec) }
+    const spawn = () => {
+      order.push('spawn')
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.pid = 7
+      setTimeout(() => { child.stdout.emit('data', 'hi'); child.emit('close', 0, null) }, 5)
+      return child
+    }
+    const r = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'driver-marker' } }, { spawn })
+    expect(r.status).toBe(0)
+    expect(order).toEqual(['start', 'spawn'])
+    expect(h.events[1][0]).toBe('end')
+    expect(h.events[1][2]).toMatchObject({ isError: false, exitCode: 0, output: 'hi' })
+  })
+
+  it('a handle whose start refuses: nothing is spawned, fault EAUDIT, not a timeout', async () => {
+    const h = handleOf('the record of this call could not be written before it ran (audit-dir-missing)')
+    let spawned = 0
+    const r = runSync('python', ['gate.py'], { timeoutMs: 1000, retryImpossibleTimeout: true, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { spawned++; return { status: 0 } } })
+    expect(r).toEqual({
+      status: null, stdout: '', stderr: '[tool-audit] not run: the record of this call could not be written before it ran (audit-dir-missing)',
+      elapsedMs: 0, timedOut: false, fault: { code: 'EAUDIT', status: null, signal: null, elapsedMs: 0 },
+    })
+    expect(faultSummary(r.fault)).toBe('code EAUDIT, status null, after 0 ms')
+    const a = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { spawned++; return null } })
+    expect(a.fault?.code).toBe('EAUDIT')
+    expect(a.timedOut).toBe(false)
+    expect(spawned).toBe(0)
+    expect(h.events.every(e => e[0] === 'start')).toBe(true)
+  })
+
+  // Review of slice S5: a spawn that throws before any process exists (an argument it will not pass) does
+  // not leave a start with no end; the throw goes on to the caller as before.
+  it('runSync: a spawn that throws closes the start with an end, then throws', () => {
+    const h = handleOf()
+    const boom = new TypeError('The argument \'args[0]\' must be a string without null bytes')
+    expect(() => runSync('python', ['a\u0000b'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { throw boom } })).toThrow(boom)
+    expect(h.events.map(e => e[0])).toEqual(['start', 'end'])
+    expect(h.events[1][2]).toMatchObject({ isError: true, exitCode: null, ms: 0 })
+    expect(h.events[1][2].output).toContain('null bytes')
+  })
+
+  it('a containment refusal after a written start closes the start with an end', () => {
+    const SWITCH = 'LOCALCODE_CONTAINMENT_OFF'
+    const before = process.env[SWITCH]
+    process.env[SWITCH] = 'nonsense'
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-spawn-audit-'))
+    try {
+      const sandbox = { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch: join(dir, 'run', 'scratch') }
+      const ctx = testContainment({ missionCwd: join(dir, 'mission'), sandbox, home: join(dir, 'realhome'), folders: { state: dir, models: dir, guard: dir, audit: null } })
+      const h = handleOf()
+      const r = runSync('python', ['gate.py'], { contained: ctx, timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { throw new Error('must not spawn') } })
+      expect(r.fault?.code).toBe('ECONTAINMENT')
+      expect(h.events.map(e => e[0])).toEqual(['start', 'end'])
+      expect(h.events[1][2]).toMatchObject({ isError: true, exitCode: null, ms: 0 })
+    } finally {
+      if (before === undefined) delete process.env[SWITCH]
+      else process.env[SWITCH] = before
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('runCheck and runCheckAsync with that fault: verified null, spawnFailed, and the harness-fault line names EAUDIT', async () => {
+    const h = handleOf('the record of this call could not be written before it ran (audit-dir-missing)')
+    const audit = { handle: h.handle, src: 'driver-probe' }
+    const s = runCheck('echo x', tmpdir(), 30_000, { audit })
+    const a = await runCheckAsync('echo x', tmpdir(), 30_000, { audit })
+    for (const r of [s, a]) {
+      expect(r.verified).toBeNull()
+      expect(r.spawnFailed).toBe(true)
+      expect(r.harnessFault).toContain('code EAUDIT')
+      expect(r.output).toContain('[check] HARNESS FAULT: spawn failed: code EAUDIT')
+    }
   })
 })

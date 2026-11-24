@@ -6,6 +6,7 @@ import { parseGateOutput, gateInterpreter } from './cynco-gate-parse.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
 import { harnessGitEnv } from '../engine/harnessGit.js'
+import { harnessAudit } from '../engine/audit/toolAudit.js'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 
 export const GATE_TIMEOUT_MS = 7_200_000
@@ -25,7 +26,8 @@ export const defaultIo = {
   // gate run of a wave follows a long idle gap, and a bare spawnSync would
   // report that stale deadline as a two-hour timeout. `runSync` measures.
   run(cmd, args, opts = {}) {
-    return runSync(cmd, args, opts)
+    // F242: a contained run of workspace code is recorded before it starts; hashes only (src 'gate').
+    return runSync(cmd, args, opts.contained ? { ...opts, audit: { handle: harnessAudit(), src: 'gate' } } : opts)
   },
   // I4: a failed `git diff` used to come back as an empty list, and an empty
   // list is the exact signal sweepTestsFor reads as "the diff shipped no test

@@ -73,6 +73,19 @@ describe('field paths', () => {
     const n = nameW('ApplyPatch', { patch })
     expect(n.paths.some(p => p.path === 'C:\\Users\\u\\proj\\gone.py' && p.op === 'delete' && p.via === 'patch:---')).toBe(true)
   })
+  it('a file the patch makes a symbolic link (mode 120000) is a link to its one added line (review 2026-11-23)', () => {
+    const patch = ['diff --git a/link b/link', 'new file mode 120000', '--- /dev/null', '+++ b/link', '@@ -0,0 +1 @@', '+D:/DCIM',
+      '\\ No newline at end of file', 'diff --git a/x.py b/x.py', '--- a/x.py', '+++ b/x.py', '@@ -1 +1 @@', '-a', '+b'].join('\n')
+    const pp = patchPaths(patch)
+    const links = pp.filter(p => p.raw === 'link' || p.raw === 'b/link')
+    expect(links.length).toBeGreaterThan(0)
+    for (const p of links) expect([p.op, p.linkTarget]).toEqual(['link', 'D:/DCIM'])
+    expect(pp.find(p => p.raw === 'x.py')?.op).toBe('write')
+    const n = nameW('ApplyPatch', { patch })
+    expect(n.paths.find(p => p.path === 'C:\\Users\\u\\proj\\link')?.linkTarget).toBe('D:\\DCIM')
+    const rel = nameW('ApplyPatch', { patch: patch.replace('+D:/DCIM', '+../x.py') })
+    expect(rel.paths.find(p => p.path === 'C:\\Users\\u\\proj\\link')?.linkTarget).toBe('C:\\Users\\u\\x.py')
+  })
   it('Glob with ../other/** or an absolute pattern names the fixed prefix as a list path', () => {
     const up = nameW('Glob', { pattern: '../other/**/*.py' })
     expect(up.paths.map(p => [p.path, p.op, p.children])).toEqual([['C:\\Users\\u\\other', 'list', true]])

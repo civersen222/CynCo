@@ -446,3 +446,36 @@ describe('bashToolEnv — what the model\'s shell inherits', () => {
     }
   }, 20000)
 })
+
+// F242, slice S5: the exit code of the one process the call ran rides on the result (types.ts).
+describe('Bash exitCode', () => {
+  it('is 0 on success and the shell status on failure', async () => {
+    const ok = await bashTool.execute({ command: 'echo hello' }, tmpdir())
+    expect(ok.exitCode).toBe(0)
+    const bad = await bashTool.execute({ command: 'exit 3' }, tmpdir())
+    expect(bad.isError).toBe(true)
+    expect(bad.exitCode).toBe(3)
+  })
+
+  it('is null when Stop or the timeout ended the command', async () => {
+    const timedOut = await bashTool.execute({ command: 'sleep 30', timeout: 1000 }, tmpdir())
+    expect(timedOut.isError).toBe(true)
+    expect(timedOut.exitCode).toBeNull()
+    const ac = new AbortController()
+    const running = bashTool.execute({ command: 'sleep 30' }, tmpdir(), ac.signal)
+    setTimeout(() => ac.abort(), 500)
+    const stopped = await running
+    expect(stopped.output).toContain('stopped')
+    expect(stopped.exitCode).toBeNull()
+  }, 20000)
+
+  it('is absent when the call was refused before a process started', async () => {
+    const blocked = await bashTool.execute({ command: 'rm -rf /' }, tmpdir())
+    expect(blocked.output.startsWith('Blocked:')).toBe(true)
+    expect('exitCode' in blocked).toBe(false)
+    const ac = new AbortController()
+    ac.abort()
+    const late = await bashTool.execute({ command: 'echo x' }, tmpdir(), ac.signal)
+    expect('exitCode' in late).toBe(false)
+  })
+})

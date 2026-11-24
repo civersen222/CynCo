@@ -492,7 +492,13 @@ describe('the review of 2026-11-23', () => {
     expect(pathsOf(scan('for d in ~/.*/; do rm -rf "$d"; done', X, XBASE), 'unclassified')).toContain('/home/u')
   })
   it('%X% with a one-letter name and a cmd set binding', () => {
-    expect(pathsOf(scan('cmd /c "set X=D:\\v && rd /s /q %X%"'), 'delete')).toEqual(['D:\\v'])
+    // cmd expands %X% when it reads the line, before a `set X=` on that line has run (measured, review
+    // 2026-11-23, third): the delete is through a name the scan cannot read, and the value stays beside it.
+    const same = scan('cmd /c "set X=D:\\v && rd /s /q %X%"')
+    expect(pathsOf(same, 'delete')).toEqual([])
+    expect(same.unresolvedMutation).toEqual({ op: 'delete', verb: 'rd', recursive: true })
+    expect(pathsOf(same, 'unclassified')).toEqual(['D:\\v'])
+    // A PowerShell assignment has run before cmd starts: cmd sees its value.
     expect(pathsOf(scan("$env:X='D:\\v'; cmd /c rd /s /q %X%"), 'delete')).toEqual(['D:\\v'])
   })
   it('the Windows folder variables are anchored to the real home', () => {
@@ -533,5 +539,222 @@ describe('the review of 2026-11-23', () => {
     expect(scan('& "C:\\Py\\python.exe" -m pytest').selfBuilding).toBeNull()
     expect(scan('git status && (cd sub; git status)', X, XBASE).selfBuilding).toBeNull()
     expect(scan('cmd /c "dir & (echo x)"').selfBuilding).toBeNull()
+  })
+})
+
+describe('the second review of 2026-11-23: what the scan reads', () => {
+  it('a PowerShell string that ends in a backslash is closed at its quote, and the POSIX reading is kept beside it', () => {
+    const s = scan('Write-Host "cleaning C:\\"; Remove-Item -Recurse -Force C:\\Users\\u\\.cynco')
+    expect(lower(pathsOf(s, 'delete'))).toContain('c:\\users\\u\\.cynco')
+    // In a bash payload a backslash still escapes the quote.
+    expect(scan('bash -c "echo \\"x\\"; rm -rf ~/.cache"').paths.some(p => p.op === 'delete')).toBe(true)
+  })
+  it('$HOME is the real home whatever $env:HOME, $HOME = or HOME= set; $env:HOME reads its assignment', () => {
+    for (const c of ['$env:HOME = "C:\\x"; Remove-Item -Recurse "$HOME\\.cache"', '$HOME = "C:\\x"; Remove-Item -Recurse "$HOME\\.cache"']) {
+      expect(lower(pathsOf(scan(c), 'delete'))).toEqual(['c:\\users\\u\\.cache'])
+    }
+    expect(lower(pathsOf(scan('$env:HOME = "C:\\x"; Remove-Item -Recurse "$env:HOME\\.cache"'), 'delete'))).toEqual(['c:\\x\\.cache'])
+  })
+  it('a multi-letter $env: assignment is not read as the variable $env plus text', () => {
+    expect(scan("$env:GITX='D:\\DCIM'; echo hi").paths.some(p => p.op === 'mention' && p.path === 'D:\\DCIM')).toBe(true)
+  })
+  it('the pipeline item after text is a child of that text and an unresolved mutation; first, it inherits', () => {
+    const s = scan("'.cache' | % { Remove-Item \"$HOME\\$_\" -Recurse }")
+    expect(lower(pathsOf(s, 'delete'))).toContain('c:\\users\\u')
+    expect(s.unresolvedMutation?.op).toBe('delete')
+    expect(lower(pathsOf(scan('Get-ChildItem build | % { Remove-Item -Recurse "$_\\obj" }'), 'delete'))).toEqual(['c:\\users\\u\\proj\\build'])
+  })
+  it('a group followed by a member is one unreadable operand, not a path inside the mission folder', () => {
+    const s = scan('Remove-Item (Get-ChildItem D:\\ -Directory).FullName -Recurse')
+    expect(pathsOf(s, 'delete')).toEqual([])
+    expect(s.unresolvedMutation).toEqual({ op: 'delete', verb: 'remove-item', recursive: true })
+  })
+  it('code calls are read in the order of the text: a chdir holds for the calls after it', () => {
+    expect(pathsOf(scan(`python -c "import os, shutil; os.chdir('D:/'); shutil.rmtree('Video')"`), 'delete')).toEqual(['D:\\Video'])
+    expect(pathsOf(scan(`python -c "import os, shutil; shutil.rmtree('Video'); os.chdir('D:/')"`), 'delete')).toEqual(['C:\\Users\\u\\proj\\Video'])
+  })
+  it('the shell reading of an inline program keeps only the verb table: a division, `as f:` and an arrow are not paths', () => {
+    for (const c of [`python -c "print(10 / 3)"`, `python -c "with open('a.txt') as f: print(f.read())"`, `node -e "[1].filter(l=>/x/.test(l))"`]) {
+      expect(scan(c).paths.filter(p => p.op !== 'read' && p.op !== 'mention')).toEqual([])
+    }
+  })
+  it('a PowerShell expression statement names no program operand', () => {
+    for (const c of ['$t[($n-30)..($n-1)]', '$_ -match "\\[ERROR\\]"', "$p -replace '\\\\', '/'"]) {
+      expect(scan(c).paths.filter(p => p.op === 'unclassified')).toEqual([])
+    }
+  })
+  it('Start-Process -ArgumentList as a comma list is the argv: a quoted -c carries the program', () => {
+    expect(pathsOf(scan("Start-Process -FilePath python -ArgumentList '-c','import shutil; shutil.rmtree(''D:/DCIM'')'"), 'delete')).toEqual(['D:\\DCIM'])
+  })
+  it('a patch that makes a symbolic link names a link, with the line it points to', () => {
+    // Pinned in toolPaths.test.ts through namePaths; here the shell scan is not involved.
+    expect(scan('git apply --unsafe-paths x.patch').selfBuilding).toMatch(/unsafe-paths/)
+  })
+})
+
+describe('the second review of 2026-11-23: cost', () => {
+  // Generous bounds: the scan runs on the engine's event loop (F225), and each of these was seconds to
+  // minutes before; under a loaded suite the time can grow, the shape cannot.
+  const gens: Record<string, (n: number) => string> = {
+    'a repeated require alias': n => `node -e "${"const f=require('fs');".repeat(n / 22)} f.rmSync('x')"`,
+    'a repeated import alias': n => `python -c "${'from os import remove as r\n'.repeat(n / 27)}r('x')"`,
+    'a long import list': n => `python -c "from os import ${'a,'.repeat(n / 2)}b"`,
+    'many assignments': n => Array.from({ length: n / 12 }, (_, i) => `$v${i} = 'a'; `).join('') + 'Remove-Item $v1',
+    'a long param list': n => `& { param(${'$a,'.repeat(n / 3)}$a) Remove-Item $a }`,
+    'repeated code assignments': n => `python -c "${"x='a';".repeat(n / 6)}"`,
+    'a long pipeline': n => `Get-ChildItem ${'| % { $_ } '.repeat(n / 11)}`,
+    'a chain of mutating elements': n => `Get-ChildItem build ${'| Remove-Item -Recurse '.repeat(n / 23)}`,
+    'nested cmd for loops': n => 'cmd /c "for /d %d in (x\\*) do '.repeat(n / 32) + 'rd /s /q %d',
+  }
+  const timeOf = (text: string): number => {
+    const t0 = performance.now()
+    scanShellText(text, BASE, W, { platform: 'win32' })
+    return performance.now() - t0
+  }
+  for (const [name, g] of Object.entries(gens)) {
+    it(`${name}: 100 KB is read in well under the budget, and four times the text costs at most about four times as much`, () => {
+      const big = g(100 * 1024)
+      expect(big.length).toBeLessThan(128 * 1024)
+      expect(timeOf(big)).toBeLessThan(3000)
+      const small = timeOf(g(16 * 1024)) + timeOf(g(16 * 1024))
+      const large = timeOf(g(64 * 1024)) + timeOf(g(64 * 1024))
+      // Linear would be 4; quadratic 16. The floor keeps a fast small case from making the ratio noise.
+      expect(large / Math.max(small, 20)).toBeLessThan(9)
+    })
+  }
+  it('a scan that runs past its budget stops and names the fault', () => {
+    let t = 0
+    const real = performance.now.bind(performance)
+    performance.now = () => (t += 100)
+    try {
+      const s = scanShellText('Remove-Item a; '.repeat(200), BASE, W, { platform: 'win32' })
+      expect(s.faults.some(f => /took longer than \d+ ms to read/.test(f))).toBe(true)
+    } finally {
+      performance.now = real
+    }
+  })
+  it('a text longer than 128 KiB once its here-strings are set aside is a fault; the here-string body is not counted', () => {
+    expect(scan(`python -c "${'print(1)\n'.repeat(15000)}"`).faults.some(f => /longer than 128 KiB/.test(f))).toBe(true)
+    expect(scan(`@'\n${'x = 1\n'.repeat(40000)}'@ | Set-Content big.py`).faults).toEqual([])
+  })
+})
+
+// The third review of 2026-11-23: what the scan itself reads now. The verdicts are in protectedPaths.test.ts
+// (THIRD_ATTACKS, THIRD_PASSES); these pin the readings they rest on.
+describe('the third review of 2026-11-23', () => {
+  it('an element that changes the items hands a later mutation nothing it can read', () => {
+    for (const cmd of [
+      'Split-Path $PWD | Remove-Item -Recurse -Force',
+      'Get-ChildItem (Split-Path $PWD) -Force | Remove-Item -Recurse -Force',
+      'Get-Item . | Select-Object -ExpandProperty Parent | Get-ChildItem -Force | Remove-Item -Recurse -Force',
+      'Get-Item . | ForEach-Object Parent | Remove-Item -Recurse -Force',
+      'Get-Item . | % { $_.Root } | Get-ChildItem | Remove-Item -Recurse -Force',
+      '(Get-Item .).Parent.GetDirectories() | Remove-Item -Recurse -Force',
+      'Get-ChildItem (Get-Item $PWD).Parent -Force | Remove-Item -Recurse -Force',
+      "Get-Item . | Select-Object @{n='LiteralPath';e={'D:\\DCIM'}} | Remove-Item -Recurse -Force",
+    ]) {
+      const s = scan(cmd)
+      expect(s.unresolvedMutation, cmd).toEqual({ op: 'delete', verb: 'remove-item', recursive: true })
+      expect(pathsOf(s, 'delete'), cmd).toEqual([])
+      expect(s.parentClimb, cmd).toBeGreaterThan(cmd.includes('LiteralPath') ? -1 : 0)
+    }
+  })
+  it('filters and item sources pass the items on', () => {
+    const s = scan('Get-ChildItem build | Where-Object { $_.Length -gt 0 } | Sort-Object Name | Select-Object -First 3 | Remove-Item -Recurse')
+    expect(pathsOf(s, 'delete')).toEqual(['C:\\Users\\u\\proj\\build'])
+    expect(s.unresolvedMutation).toBeNull()
+    expect(pathsOf(scan('Get-ChildItem D:\\x | Select-Object -ExpandProperty FullName | Remove-Item'), 'delete')).toEqual(['D:\\x'])
+  })
+  it('a here-string used as a value is the text it holds', () => {
+    for (const cmd of ["Remove-Item @'\nD:\\DCIM\n'@ -Recurse", "$p = @'\nD:\\DCIM\n'@; Remove-Item $p -Recurse", "Remove-Item -Recurse (@'\nD:\\DCIM\n'@)",
+      "Remove-Item -Recurse $(@'\nD:\\DCIM\n'@)"]) {
+      expect(pathsOf(scan(cmd), 'delete'), cmd).toEqual(['D:\\DCIM'])
+    }
+    // At the head of a pipeline it is an item; fed to a writer or an interpreter it is text.
+    const head = scan("@'\nD:\\DCIM\nD:\\Video\n'@ | Remove-Item -Recurse")
+    expect(pathsOf(head, 'delete')).toEqual(['D:\\DCIM', 'D:\\Video'])
+    expect(ofOp(scan("@'\nD:\\DCIM\n'@ | Set-Content list.txt"), 'mention')).toEqual([])
+    // A double-quoted one has its variables read.
+    expect(lower(pathsOf(scan('$p = @"\n$env:USERPROFILE\\.ssh\n"@; Remove-Item $p -Recurse'), 'delete'))).toEqual(['c:\\users\\u\\.ssh'])
+  })
+  it('a list bound to a variable is judged on every element, whatever the index', () => {
+    expect(pathsOf(scan("$a = 'x','D:\\DCIM'; Remove-Item $a[1] -Recurse"), 'delete')).toEqual(['C:\\Users\\u\\proj\\x', 'D:\\DCIM'])
+    expect(pathsOf(scan("$a = 'x','D:\\DCIM'; Remove-Item $a -Recurse"), 'delete')).toEqual(['C:\\Users\\u\\proj\\x', 'D:\\DCIM'])
+    expect(pathsOf(scan("$a = 'D:\\DCIM','x'; $a | Remove-Item -Recurse"), 'delete')).toEqual(['D:\\DCIM', 'C:\\Users\\u\\proj\\x'])
+  })
+  it("cmd's /c glued to its command, and a caret inside a word, are read as cmd reads them", () => {
+    for (const cmd of ['cmd /c"rd /s /q D:\\DCIM"', 'cmd.exe /k"rd /s /q D:\\DCIM"', 'cmd /crd /s /q D:\\DCIM', 'cmd /c "rd /s /q D^:\\DCIM"',
+      'cmd /c "rd /s /q ^D:\\DCIM"', 'cmd /c rd /s /q D^:\\DCIM']) {
+      expect(pathsOf(scan(cmd), 'delete'), cmd).toEqual(['D:\\DCIM'])
+    }
+    // A caret before one of cmd's operators keeps that character as text.
+    expect(pathsOf(scan('cmd /c "echo a^> D:\\x"'), 'write')).toEqual([])
+  })
+  it('Start-Process is bound as PowerShell binds it: program, argument list, working folder', () => {
+    for (const cmd of [
+      "Start-Process -FilePath cmd -ArgumentList '/c','rd','/s','/q','D:\\DCIM'", "saps cmd '/c','rd /s /q D:\\DCIM'",
+      "Start-Process -Wait -FilePath cmd -ArgumentList '/c','rd /s /q D:\\DCIM'", 'Start-Process cmd -ArgumentList "/c rd /s /q D:\\DCIM" -Wait',
+      "Start-Process cmd -WorkingDirectory D:\\ -ArgumentList '/c','rd /s /q DCIM'", "Start-Process -NoNewWindow cmd -Args '/c','rd /s /q D:\\DCIM'",
+    ]) {
+      expect(pathsOf(scan(cmd), 'delete'), cmd).toEqual(['D:\\DCIM'])
+    }
+    expect(lower(pathsOf(scan("Start-Process powershell -ArgumentList '-c','Remove-Item ~\\.cache -Recurse'"), 'delete'))).toEqual(['c:\\users\\u\\.cache'])
+    expect(pathsOf(scan("Start-Process cmd -ArgumentList '/c','dir' -RedirectStandardOutput D:\\out.txt"), 'write')).toEqual(['D:\\out.txt'])
+    const honest = scan("Start-Process -FilePath python -ArgumentList '-c','print(1)' -Wait")
+    expect(honest.paths.filter(p => p.op !== 'mention')).toEqual([])
+  })
+  it("git's -c core.worktree is the work tree, as --work-tree is; GIT_CONFIG_* in the environment is not read", () => {
+    expect(pathsOf(scan('git -c core.worktree=D:/DCIM clean -fdx'), 'write')).toContain('D:\\DCIM')
+    expect(pathsOf(scanArgv(['git', '-c', 'core.worktree=D:/DCIM', 'reset', '--hard'], BASE, W, { platform: 'win32' }), 'write')).toContain('D:\\DCIM')
+    expect(scan('$env:GIT_CONFIG_PARAMETERS="\'core.worktree=D:/x\'"; git clean -fdx').selfBuilding).toContain('GIT_CONFIG_')
+    expect(scan('git -c core.worktree=. status').selfBuilding).toBeNull()
+  })
+  it('a home name assigned where it may not run stays the real home', () => {
+    for (const cmd of ['if ($false) { $env:USERPROFILE = "$PWD\\h" }; Remove-Item -Recurse "$env:USERPROFILE\\.cache"',
+      '$false -and ($env:USERPROFILE = "$PWD\\h"); Remove-Item -Recurse "$env:USERPROFILE\\.cache"']) {
+      expect(lower(pathsOf(scan(cmd), 'delete')), cmd).toEqual(['c:\\users\\u\\.cache'])
+    }
+    // At the top level the assignment holds, as before.
+    expect(lower(pathsOf(scan('$env:USERPROFILE = "$PWD\\h"; Remove-Item -Recurse "$env:USERPROFILE\\.cache"'), 'delete'))).toEqual(['c:\\users\\u\\proj\\h\\.cache'])
+  })
+  it('an empty subexpression or default is a name nothing set: the root of the current drive', () => {
+    for (const cmd of ['Remove-Item -Recurse "$()\\*"', 'Remove-Item -Recurse "$($null)\\*"', 'rm -rf "$(echo)"/*', 'rm -rf "${UNSET:-}"/*']) {
+      const d = ofOp(scan(cmd), 'delete')
+      expect(d.map(p => p.path), cmd).toEqual(['C:\\'])
+    }
+    expect(pathsOf(scan('rm -rf "${OUT:-build}"/x'), 'delete')).toContain('C:\\Users\\u\\proj\\build\\x')
+  })
+  it('the format operator over literals is the text it makes', () => {
+    expect(pathsOf(scan("Remove-Item -Recurse -Force ('{0}:\\DCIM' -f 'D')"), 'delete')).toEqual(['D:\\DCIM'])
+    expect(pathsOf(scan("Remove-Item -Recurse ('{0}\\{1}' -f 'D:','x')"), 'delete')).toEqual(['D:\\x'])
+  })
+  it('a code literal is a program operand only when it can only be a path', () => {
+    for (const lit of ["'/'", "'x:'", "'/a/b'", "r'\\[ask\\]'", "'\\n\\n'", "'/** a'"]) {
+      expect(ofOp(scan(`python -c "print(${lit})"`), 'unclassified'), lit).toEqual([])
+    }
+    expect(pathsOf(scan(`python -c "print(open(r'D:\\Video\\a.txt'))"`), 'read', 'unclassified')).toEqual(['D:\\Video\\a.txt'])
+    expect(pathsOf(scan(`python -c "x('D:\\\\')"`), 'unclassified')).toEqual(['D:\\'])
+    expect(pathsOf(scan(`python3 -c "print('/home/u/.ssh')"`, X, XBASE), 'unclassified')).toEqual(['/home/u/.ssh'])
+  })
+  it('here-documents: two on one line, and an opener inside a body, are read as a shell reads them', () => {
+    const s = scan('cat <<A <<B\na1\nA\nb1\nB\necho done')
+    expect(s.texts).toContain('a1')
+    expect(s.texts).toContain('b1')
+    const t = scan("python - <<'EOF'\nprint('<<X')\nEOF\nrm -rf build")
+    expect(pathsOf(t, 'delete')).toEqual(['C:\\Users\\u\\proj\\build'])
+    // An unclosed opener is text, and a closed one after it is still a body.
+    const u = scan("@'\nnever closed\n@\"\nbody\n\"@ | Set-Content a.txt")
+    expect(u.texts).toContain('body')
+  })
+  it('a scan that ran past its budget is a fault however few steps asked', () => {
+    let t = 0
+    const real = performance.now.bind(performance)
+    performance.now = () => (t += 1000)
+    try {
+      expect(scanShellText('Remove-Item build', BASE, W, { platform: 'win32' }).faults.some(f => /took longer than \d+ ms to read/.test(f))).toBe(true)
+      expect(scanArgv(['git', 'status'], BASE, W, { platform: 'win32' }).faults.some(f => /took longer than \d+ ms to read/.test(f))).toBe(true)
+    } finally {
+      performance.now = real
+    }
   })
 })

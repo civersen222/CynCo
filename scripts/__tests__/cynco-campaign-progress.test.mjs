@@ -16,6 +16,9 @@ import { graderContainment } from './fixtures/graderContainment.mjs'
 // test context instead (fixtures/graderContainment.mjs).
 vi.mock('../../engine/containment.js', async (importOriginal) =>
   (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
+// S5: the gate runs are recorded (hashes only) in a marked audit folder of the fixture's own.
+vi.mock('../../engine/audit/toolAudit.js', async (importOriginal) =>
+  (await import('./fixtures/graderContainment.mjs')).graderAuditModule(await importOriginal()))
 
 // Review M4: every temp dir this file creates is removed when it is done.
 const tempDirs = []

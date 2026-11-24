@@ -126,7 +126,10 @@ export function makeHaltCapture(): {
   /** An engine error the loop swallowed, or the iteration limit (where the stuck-15 halt also lands): the run did
    *  not finish, whatever text it left. Before 2026-10-28 both fell through to extractOutcome's ok:true fallback. */
   endedEarly: () => string | null
+  /** A containment, audit or integrity refusal happened: the run did not finish, whatever the model then said. */
+  refused: () => string | null
 } {
+  let refused: string | null = null
   let lastCriticalMsg: string | null = null
   let halted = false
   let engineError: string | null = null
@@ -135,6 +138,11 @@ export function makeHaltCapture(): {
     emit: (e: EngineEvent) => {
       if (e.type === 'governance.alert' && e.severity === 'critical' && e.message) {
         lastCriticalMsg = e.message
+      }
+      // Entry 3.M5: the first refusal of these layers wins and ends the run as refused (F242).
+      if (e.type === 'governance.alert' && e.severity === 'critical' && !refused
+          && (e.source === 'containment' || e.source === 'audit' || e.source === 'integrity')) {
+        refused = `REFUSED: ${e.source}: ${e.message}`
       }
       if (e.type === 'message.complete' && e.stopReason === 'halted') {
         halted = true
@@ -149,6 +157,7 @@ export function makeHaltCapture(): {
     haltReason: () => (halted ? (lastCriticalMsg ?? 'algedonic kill switch halted the loop') : null),
     endedEarly: () => engineError ? `Engine error: ${engineError}`
       : iterationLimit ? 'Iteration limit reached before the run finished' : null,
+    refused: () => refused,
   }
 }
 
@@ -239,11 +248,13 @@ export async function runGovernedLoop(opts: {
   // fallback returned ok:true, so a run where every model call timed out —
   // no turns, no files written — reported success to the daemon ledger.
   const haltReason = haltCapture.haltReason()
+  // A refusal first: it is the most specific cause, and the word must be REFUSED:, never HALTED: (entry 3.M5).
   const failure =
-    timedOut ? 'Internal deadline exceeded'
-    : haltReason ? `HALTED: ${haltReason}`
-    : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
-    : haltCapture.endedEarly() ?? null
+    haltCapture.refused() ?? (
+      timedOut ? 'Internal deadline exceeded'
+      : haltReason ? `HALTED: ${haltReason}`
+      : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
+      : haltCapture.endedEarly() ?? null)
   if (failure) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: failure, ...meta }
   }

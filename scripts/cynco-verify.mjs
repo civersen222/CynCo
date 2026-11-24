@@ -214,8 +214,11 @@ const PYTEST_NO_TESTS = 5
  * the run's sandbox (on Windows through the low-integrity launcher). A check
  * that could not be run contained is a harness fault (`ECONTAINMENT`), never a
  * failed delivery. No default: without it the check runs as it always has.
+ *
+ * `audit` (F242): `{ handle, src }`, forwarded to runSync: the check is recorded before it starts, and
+ * a record that cannot be written is a harness fault (`EAUDIT`) with nothing started.
  */
-export function runCheck(command, cwd, timeoutMs, { contained } = {}) {
+export function runCheck(command, cwd, timeoutMs, { contained, audit } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
   // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: an
@@ -223,7 +226,7 @@ export function runCheck(command, cwd, timeoutMs, { contained } = {}) {
   // F166: the suite gate parses pytest's plain `FAILED ` lines, so the check
   // gets the colourless instrument environment rather than whatever
   // colour-forcing the operator's shell exported.
-  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true, ...(contained ? { contained } : {}) })
+  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true, ...(contained ? { contained } : {}), ...(audit ? { audit } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 
@@ -234,12 +237,12 @@ export function runCheck(command, cwd, timeoutMs, { contained } = {}) {
  * same result shape, through runAsync. `env` is laid over the instrument
  * environment — the driver hands each marker check its CYNCO_CHECK_ORDINAL
  * (final review I1), so a fixture can tell the driver's call from any other.
- * `contained` is runCheck's option.
+ * `contained` and `audit` are runCheck's options.
  */
-export async function runCheckAsync(command, cwd, timeoutMs, { env, contained } = {}) {
+export async function runCheckAsync(command, cwd, timeoutMs, { env, contained, audit } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
-  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}), ...(contained ? { contained } : {}) })
+  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}), ...(contained ? { contained } : {}), ...(audit ? { audit } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 

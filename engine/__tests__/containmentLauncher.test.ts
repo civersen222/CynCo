@@ -189,10 +189,12 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
 
   it('did not run: 197 with the launcher\'s line, and a missing record is a ContainmentRefusal ECONTAINMENT', () => {
     const v = ok('didNotRun')
+    // Each of the launcher's own 197 lines is followed by its seal line for this spawn.
+    expect(v.seal).toMatch(/^[0-9a-f]{32}$/)
     expect(v.missing.status).toBe(197)
-    expect(v.missing.stderr).toBe('[containment] refused: the command could not be started (ENOENT)')
+    expect(v.missing.stderr.split(/\r?\n/)).toEqual(['[containment] refused: the command could not be started (ENOENT)', `[containment] sealed ${v.seal} 197`])
     expect(v.unknownMode.status).toBe(197)
-    expect(v.unknownMode.stderr).toBe('[containment] refused: unknown launcher mode --bogus-mode')
+    expect(v.unknownMode.stderr.split(/\r?\n/)).toEqual(['[containment] refused: unknown launcher mode --bogus-mode', `[containment] sealed ${v.seal} 197`])
     expect(v.noRecord.code).toBe('ECONTAINMENT')
     expect(v.noRecord.isRefusal).toBe(true)
     expect(v.noRecord.message).toMatch(/^Refused \[containment\]: the containment record .* could not be read/)
@@ -308,8 +310,13 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.witness).toBe(false)
   })
 
-  it('the daemon precheck runs contained with no label on its folder, answers its exit code, and is released', () => {
+  it('the daemon precheck runs contained with no label on its folder, answers its exit code, and is released', (t) => {
     const v = ok('precheck')
+    if (v.skipped) {
+      console.log(`[containmentLauncher] precheck case skipped: ${v.skipped}`)
+      t.skip()
+      return
+    }
     const slash = (p: unknown) => String(p).toLowerCase().replace(/\\/g, '/')
     expect(v.printed.code, v.printed.stdout).toBe(0)
     expect(v.printed.level, v.printed.stdout).toBe('S-1-16-4096')
@@ -327,6 +334,27 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.labelBefore).toEqual([])
     expect(v.labelAfter).toEqual([])
     expect(v.written).toEqual([])
+    // S5: each precheck command has a start and an end in the tool-call audit, the second with its code.
+    expect(v.audited).toEqual([
+      { kind: 'start', src: 'precheck', exitCode: null }, { kind: 'end', src: 'precheck', exitCode: 0 },
+      { kind: 'start', src: 'precheck', exitCode: null }, { kind: 'end', src: 'precheck', exitCode: 3 },
+    ])
+    // S5 fail closed (review): an audit folder without its marker; the start is not written, so the
+    // command does not run, the answer is the skip line, and the sandbox is released all the same.
+    expect(v.blocked.code).toBe(0)
+    expect(v.blocked.stdout).toMatch(/^skip: precheck not run: audit: /)
+    expect(v.blocked.witness).toBe(false)
+    expect(v.blocked.records).toEqual([{ released: true }])
+    expect(v.blocked.unmarkedFiles).toEqual([])
+  })
+
+  // Review of slice S5: the launcher's lines printed by the command itself, with its codes.
+  it('a command that prints the launcher\'s lines and exits 197 or 198 keeps its own exit code, and no fault is raised', () => {
+    const v = ok('forgedLauncherLines')
+    expect(v.results.map((r: { exitCode: unknown }) => r.exitCode), JSON.stringify(v.results)).toEqual([197, 198])
+    for (const r of v.results) expect(r.isError).toBe(true)
+    expect(v.faults).toEqual([])
+    expect(v.ends).toEqual([197, 198])
   })
 
   // S2c, entry 1.B2 (06 entry A7): the authoring check inside an authoring mission's containment.

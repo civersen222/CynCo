@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { sandboxRoot } from '../../paths.js'
+import { auditDir, sandboxRoot } from '../../paths.js'
 
 const LIVE = ['c:/cynco-sandbox', 'c:/cynco-audit', 'c:/cynco-guard']
 const fold = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
@@ -33,6 +33,8 @@ function testFiles(dir: string, out: string[] = []): string[] {
 
 describe('containment defaults under the suite', () => {
   it('the sandbox root is not the live default and does not exist', () => expectNotLive('sandboxRoot()', sandboxRoot()))
+
+  it('the audit folder is not the live default and does not exist (S5)', () => expectNotLive('auditDir()', auditDir()))
 
   it('no test file names the real-profile flag or its variable', () => {
     const root = process.cwd()

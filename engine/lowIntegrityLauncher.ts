@@ -24,7 +24,11 @@
  *
  * Exit codes: the child's own; 197 with one stderr line `[containment] refused: <reason>` when it
  * could not lower itself or could not start the child (nothing was run); 198 with
- * `[containment] child ended: <signal or no status>` when the child ended with no status. The
+ * `[containment] child ended: <signal or no status>` when the child ended with no status. When the
+ * starter put a seal in this process's environment (`LAUNCHER_SEAL_ENV`, taken out before anything
+ * else, so the child never holds it), each of the two lines is followed by
+ * `[containment] sealed <seal> <status>`: the child shares this stderr, and only the seal tells the
+ * starter the line is this process's own (`launcherFaultOf`). The
  * launcher holds no handle to its child beyond the spawn and asks for no breakaway from a job, so
  * the Job Object the caller takes on this process's pid holds the child and everything it starts
  * (F201, F210).
@@ -37,8 +41,12 @@
 import { readFileSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import {
-  containmentFromRecord, LAUNCHER_CHILD_GONE_EXIT, LAUNCHER_REFUSED_EXIT, LAUNCHER_UNAVAILABLE, toolEnv,
+  containmentFromRecord, LAUNCHER_CHILD_GONE_EXIT, LAUNCHER_REFUSED_EXIT, LAUNCHER_SEAL_ENV, LAUNCHER_SEAL_PREFIX,
+  LAUNCHER_UNAVAILABLE, toolEnv,
 } from './containment.js'
+
+/** This spawn's seal, taken out of the environment first thing in `main`; undefined when none was given. */
+let seal: string | undefined
 
 /** TokenIntegrityLevel, the TOKEN_INFORMATION_CLASS of the mandatory label. */
 const TOKEN_INTEGRITY_LEVEL = 25
@@ -217,9 +225,15 @@ function say(fd: 1 | 2, line: string): void {
   writeSync(fd, `${line}\n`)
 }
 
+/** The launcher's own 197 or 198, its line, and the seal line that proves the line is its own. */
+function exitOwn(status: number, line: string): never {
+  say(2, line)
+  if (seal !== undefined) say(2, `${LAUNCHER_SEAL_PREFIX}${seal} ${status}`)
+  process.exit(status)
+}
+
 function refuse(reason: string): never {
-  say(2, `[containment] refused: ${reason}`)
-  process.exit(LAUNCHER_REFUSED_EXIT)
+  exitOwn(LAUNCHER_REFUSED_EXIT, `[containment] refused: ${reason}`)
 }
 
 /** One create in this (already low) process: `created`, or the error code that denied it. */
@@ -238,6 +252,13 @@ function tryCreate(path: string): string {
 }
 
 function main(argv: readonly string[]): never {
+  // 0. The seal leaves the environment before anything can copy it (Windows keys are case-blind).
+  for (const k of Object.keys(process.env)) {
+    if (k.toUpperCase() !== LAUNCHER_SEAL_ENV) continue
+    const v = process.env[k]
+    if (seal === undefined && typeof v === 'string' && v !== '') seal = v
+    delete process.env[k]
+  }
   // 1. Where it can run at all, and what it was asked.
   if (process.platform !== 'win32') refuse(LAUNCHER_UNAVAILABLE('not Windows'))
   if (typeof (globalThis as { Bun?: { version?: string } }).Bun?.version !== 'string') refuse(LAUNCHER_UNAVAILABLE('not Bun'))
@@ -280,8 +301,7 @@ function main(argv: readonly string[]): never {
   // 6. The child's exit code, or a named reason why there is none.
   if (r.error) refuse(`the command could not be started (${(r.error as NodeJS.ErrnoException).code ?? r.error.message})`)
   if (r.status === null) {
-    say(2, `[containment] child ended: ${r.signal ?? 'no status'}`)
-    process.exit(LAUNCHER_CHILD_GONE_EXIT)
+    exitOwn(LAUNCHER_CHILD_GONE_EXIT, `[containment] child ended: ${r.signal ?? 'no status'}`)
   }
   process.exit(r.status)
 }

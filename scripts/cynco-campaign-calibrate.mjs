@@ -7,11 +7,13 @@ import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
 import { campaignHome } from './cynco-campaign-home.mjs'
 import { harnessGitEnv } from '../engine/harnessGit.js'
+import { harnessAudit } from '../engine/audit/toolAudit.js'
 
 export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
   // measurement and anything else spawnSync reports is a named harness fault.
-  run: (cmd, args, opts = {}) => runSync(cmd, args, opts),
+  // F242: a contained run of workspace code is recorded before it starts; hashes only (src 'gate').
+  run: (cmd, args, opts = {}) => runSync(cmd, args, opts.contained ? { ...opts, audit: { handle: harnessAudit(), src: 'gate' } } : opts),
   exists: existsSync,
   readFile: (p) => readFileSync(p, 'utf8'),
   writeFile: (p, s) => writeFileSync(p, s, 'utf8'),

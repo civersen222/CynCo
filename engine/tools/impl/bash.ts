@@ -1,8 +1,8 @@
-import { toolExec, toolSpawnRefusal, containmentHint } from '../../containment.js'
+import { ContainmentRefusal, toolExec, toolSpawnRefusal, containmentHint } from '../../containment.js'
 import type { ToolImpl } from '../types.js'
 import { ownProcessTree } from '../../processTree.js'
 import { checkBashSafety } from '../bashSafety.js'
-import { checkProtectedPaths } from '../protectedPaths.js'
+import { bashJudgedAlready, checkProtectedPaths } from '../protectedPaths.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
 import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble, stripTrailingStderrMerge } from '../shellInfo.js'
@@ -169,8 +169,9 @@ export const bashTool: ToolImpl = {
 
     // F242, layer 2: asked here as well as in ToolExecutor.execute, so a refused command is never run
     // whoever called the tool. Judged on the model's own text, before any translation.
-    const guard = checkProtectedPaths('Bash', input, cwd)
-    if (guard.kind === 'refuse') return { output: guard.text, isError: true }
+    // The executor's own reading of this very input is not repeated (`bashJudgedAlready`).
+    const guard = bashJudgedAlready(input, cwd) ? null : checkProtectedPaths('Bash', input, cwd)
+    if (guard?.kind === 'refuse') return { output: guard.text, isError: true }
 
     const shellInfo = getShellInfo()
 
@@ -219,6 +220,7 @@ export const bashTool: ToolImpl = {
         output: `Error: command stopped after ${Date.now() - startedAt}ms — the turn was stopped, and the ` +
           `command and the processes it started were killed. Output collected before the kill:\n${partial}`,
         isError: true,
+        exitCode: null,
       })
       // A bare "timeout after 60000ms" leaves the model unable to tell
       // "my command hangs" from "my budget was too small" — opposite
@@ -230,6 +232,7 @@ export const bashTool: ToolImpl = {
           `making progress rather than hanging, retry it with a larger ` +
           `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}${containmentHint('timeout', partial)}`,
         isError: true,
+        exitCode: null,
       })
       const killFor = (why: 'stopped' | 'timeout') => {
         if (ended || answered) return
@@ -265,12 +268,27 @@ export const bashTool: ToolImpl = {
           return
         }
         if (err) {
-          const faultCode = (err as { code?: unknown }).code
-          if (faultCode === 'ECONTAINMENT' || faultCode === 'ECHILDGONE') { resolve({ output: (err as Error).message, isError: true }); return }
+          // A launcher fault (engine/containment.ts). Only the launcher's own sealed 197 means the
+          // shell never started; that one carries no exit code, so it is read as a refusal made
+          // before a process ran. Its sealed 198, and Bun's EPERM line under a shell that ran, came
+          // from a command that did run: they carry the status, so the command cannot end its own
+          // run as a harness fault (review of slice S5).
+          const fault: unknown = err
+          if (fault instanceof ContainmentRefusal) {
+            if (!fault.ran) { resolve({ output: fault.message, isError: true }); return }
+            if (fault.code === 'ECHILDGONE') { resolve({ output: fault.message, isError: true, exitCode: null }); return }
+            const base = failedOutput(stderr, stdout, fault.exitCode ?? 1, `shell=${shell}`)
+            resolve({ output: formatBashFailure(command, base + containmentHint('failure', base)), isError: true, exitCode: fault.exitCode })
+            return
+          }
           const base = failedOutput(stderr, stdout, (err as any).code,
             `shell=${shell}, signal=${(err as any).signal ?? 'none'}`)
           const rawOutput = base + containmentHint('failure', base)
-          resolve({ output: formatBashFailure(command, rawOutput), isError: true })
+          resolve({
+            output: formatBashFailure(command, rawOutput), isError: true,
+            // The shell's status; a string code (ERR_CHILD_PROCESS_STDIO_MAXBUFFER) is no status.
+            exitCode: typeof (err as any).code === 'number' ? (err as any).code : null,
+          })
           return
         }
         // F60. Only when a merge was stripped, so the model gets exactly what it
@@ -281,7 +299,7 @@ export const bashTool: ToolImpl = {
         // Hint on success only. A failing command already has the model's full
         // attention on its own error; adding tool advice there buries the reason
         // it failed under advice it did not ask for.
-        resolve({ output: withToolHint(command, succeeded) + containmentHint('success', String(stderr ?? '')), isError: false })
+        resolve({ output: withToolHint(command, succeeded) + containmentHint('success', String(stderr ?? '')), isError: false, exitCode: 0 })
       })
       const tree = ownProcessTree(child.pid)
       const deadline = setTimeout(() => killFor('timeout'), timeout)

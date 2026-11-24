@@ -11,11 +11,18 @@
 //   vi.mock('../../engine/containment.js', async (importOriginal) =>
 //     (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
 //   beforeAll(() => graderContainment.start()); afterAll(() => graderContainment.stop())
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+//
+// The graders also record every contained gate run in the tool-call audit (S5, `harnessAudit()` in
+// their `defaultIo.run`), whose default folder refuses in the suite. A test that runs a real gate
+// mocks that module too, so the records go to a marked folder of its own (`graderContainment.audit`):
+//
+//   vi.mock('../../engine/audit/toolAudit.js', async (importOriginal) =>
+//     (await import('./fixtures/graderContainment.mjs')).graderAuditModule(await importOriginal()))
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const state = { roots: [], calls: [], switchBefore: undefined, started: false }
+const state = { roots: [], calls: [], switchBefore: undefined, started: false, audit: null }
 
 export const graderContainment = {
   /** What each establish was asked, in order. */
@@ -30,7 +37,28 @@ export const graderContainment = {
     else process.env.LOCALCODE_CONTAINMENT_OFF = state.switchBefore
     for (const r of state.roots.splice(0)) rmSync(r, { recursive: true, force: true })
     state.started = false
+    state.audit = null
   },
+  /** The marked audit folder the graders' records went to, or null when none was asked for. */
+  get audit() { return state.audit?.dir ?? null },
+}
+
+/** The real audit module with `harnessAudit` writing into a marked temp folder of this fixture. */
+export function graderAuditModule(actual) {
+  return {
+    ...actual,
+    harnessAudit() {
+      if (!state.audit) {
+        const root = mkdtempSync(join(tmpdir(), 'cynco-grader-audit-'))
+        state.roots.push(root)
+        const dir = join(root, 'audit')
+        mkdirSync(dir)
+        writeFileSync(join(dir, actual.AUDIT_MARKER), '')
+        state.audit = { dir, handle: actual.createToolAudit({ dir }) }
+      }
+      return state.audit.handle
+    },
+  }
 }
 
 /** The real module with `establishContainment` and `releaseContainment` replaced. */

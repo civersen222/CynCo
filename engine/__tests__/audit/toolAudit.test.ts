@@ -17,7 +17,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  AUDIT_FILE_RE, AUDIT_MARKER, AUDIT_NOT_WRITTEN, WITHHELD_SRC, auditRefusal, containmentFault, createToolAudit,
+  AUDIT_FILE_RE, AUDIT_GAP_RANGES, AUDIT_MARKER, AUDIT_NOT_WRITTEN, WITHHELD_SRC, auditRefusal, containmentFault, createToolAudit,
   harnessAudit, resolveAuditDir, setContainmentFaultSink, toolAudit, verifyAuditFiles, type AuditSrc,
 } from '../../audit/toolAudit.js'
 import { auditDir } from '../../paths.js'
@@ -154,7 +154,9 @@ describe('resolveAuditDir', () => {
     expect(!r.ok && r.reason).toContain('is on D:\\')
     // compared without case, and a volume given as "d:" is the same one
     expectReason(resolveAuditDir({ dir: 'd:\\x', home: 'C:\\Users\\x', unprotectedVolumes: ['D:'], platform: 'win32' }), 'audit-dir-not-ntfs')
-    expect(codeOf(resolveAuditDir({ dir: 'D:\\x', home: 'C:\\Users\\x', unprotectedVolumes: ['E:\\'], platform: 'win32' }))).not.toBe('audit-dir-not-ntfs')
+    // A letter with no drive behind it: a folder that passes the volume check has its real path asked,
+    // and asking the camera drive (D:) wakes a sleeping USB disk (it timed out once under the full suite).
+    expect(codeOf(resolveAuditDir({ dir: 'Q:\\x', home: 'C:\\Users\\x', unprotectedVolumes: ['E:\\'], platform: 'win32' }))).not.toBe('audit-dir-not-ntfs')
   })
 
   it('a folder inside the home folder, and one that contains it, give audit-dir-in-home', () => {
@@ -187,6 +189,38 @@ describe('resolveAuditDir', () => {
     const res = resolveAuditDir({ dir: link, home })
     expectReason(res, 'audit-dir-in-home')
     expect(!res.ok && res.reason).toContain(realPathOf(join(home, 'x')))
+  })
+
+  it('a rooted path with no drive letter gives audit-dir-relative on Windows', () => {
+    const r = resolveAuditDir({ dir: '\\no-such-audit-xyz', home: 'C:\\Users\\x', unprotectedVolumes: ['C:\\'], platform: 'win32' })
+    expectReason(r, 'audit-dir-relative')
+    expect(!r.ok && r.reason).toContain('names no drive letter')
+    expectReason(resolveAuditDir({ dir: '/no-such-audit-xyz', home: 'C:\\Users\\x', platform: 'win32' }), 'audit-dir-relative')
+  })
+
+  it.skipIf(process.platform !== 'win32')('a junction on C: to a folder on an unprotected volume is judged by where it lands', (ctx) => {
+    // The junction points at Q:, named as unprotected, whose folder does not exist: nothing on Q: is touched.
+    const r = root()
+    const link = dirLink('Q:\\cynco-audit-not-there', join(r, 'link'))
+    if (link === null) { ctx.skip(); return }
+    expect(realPathOf(link).toUpperCase().startsWith('Q:')).toBe(true)
+    const res = resolveAuditDir({ dir: link, home: join(r, 'home'), unprotectedVolumes: ['Q:\\'] })
+    expectReason(res, 'audit-dir-not-ntfs')
+    expect(!res.ok && res.reason).toContain('resolves to Q:')
+  })
+
+  it('a folder inside the sandbox root or an extra root, or around one, gives audit-dir-in-workspace', () => {
+    const r = root()
+    const sb = join(r, 'sandbox-root')
+    const extra = join(r, 'extra')
+    mkdirSync(join(sb, 'audit'), { recursive: true })
+    mkdirSync(join(extra, 'audit'), { recursive: true })
+    const base = { home: join(r, 'home'), missionCwd: join(r, 'mission'), workspaceRoots: [sb, extra] }
+    expectReason(resolveAuditDir({ ...base, dir: join(sb, 'audit') }), 'audit-dir-in-workspace')
+    expectReason(resolveAuditDir({ ...base, dir: join(extra, 'audit') }), 'audit-dir-in-workspace')
+    const res = resolveAuditDir({ ...base, dir: join(extra, 'audit') })
+    expect(!res.ok && res.reason).toContain('a folder a contained run may write')
+    expect(resolveAuditDir({ ...base, dir: join(r, 'audit') }).ok).toBe(true)
   })
 
   it('a good folder resolves to its real path', () => {
@@ -228,7 +262,7 @@ describe('open', () => {
     expect(createToolAudit({ dir }).probe('dispatch')).toMatch(/^audit-dir-foreign: /)
   })
 
-  it('a marked folder opens with one open record (seq 1, argv, cwd, ppid); a second open writes nothing', () => {
+  it('a marked folder opens with one open record (seq 1, the arguments hashed, cwd, ppid); a second open writes nothing', () => {
     const { dir } = marked()
     const a = createToolAudit({ dir, run: 'r-1', now: () => FIXED })
     expect(a.open()).toEqual({ ok: true, dir: realPathOf(dir) })
@@ -237,11 +271,35 @@ describe('open', () => {
     expect(recs).toHaveLength(1)
     const r = recs[0]!
     expect(r).toMatchObject({ v: 1, kind: 'open', seq: 1, run: 'r-1', dir: realPathOf(dir), cwd: process.cwd(), ppid: process.ppid })
-    expect(r.argv).toEqual(process.argv.slice(1))
+    const args = JSON.stringify(process.argv.slice(2))
+    expect(r.script).toBe(process.argv[1])
+    expect(r.argc).toBe(process.argv.length - 2)
+    expect(r.argvSha256).toBe(sha(args))
+    expect(r.argvBytes).toBe(Buffer.byteLength(args, 'utf8'))
+    expect(r.argv).toBeUndefined()
     expect(r.ts).toBe(FIXED.toISOString())
     expect(r.proc).toMatch(/^\d+-[0-9a-z]+$/)
     expect(a.open().ok).toBe(true)
     expect(lines(day)).toHaveLength(1)
+  })
+})
+
+describe('the open record never carries the process\'s arguments as text (rule 10)', () => {
+  it('a process started with a withheld check command as an argument: the command is not in the day file', () => {
+    const { dir } = marked()
+    const secret = `bun gates/SEALED_GATE_${letters(16)}.test.ts`
+    const saved = process.argv
+    process.argv = [...saved.slice(0, 2), 'brief.md', 'MARK', secret]
+    try {
+      const a = createToolAudit({ dir, now: () => FIXED })
+      expect(a.open().ok).toBe(true)
+    } finally {
+      process.argv = saved
+    }
+    const text = readFileSync(join(dir, `${localDate(FIXED)}.jsonl`), 'utf-8')
+    expect(text).not.toContain(secret)
+    expect(text).not.toContain(secret.slice(13, 25))
+    expect(lines(join(dir, `${localDate(FIXED)}.jsonl`))[0]!.argc).toBe(3)
   })
 })
 
@@ -677,7 +735,8 @@ describe('verifyAuditFiles', () => {
     const pr = r.procs[0]!
     expect(pr.proc).toBe(p)
     expect(pr.records).toBe(6)
-    expect(pr.gaps).toEqual([4])
+    expect(pr.gaps).toEqual([{ from: 4, to: 4 }])
+    expect(pr.gapCount).toBe(1)
     expect(pr.firstSeq).toBe(1)
     expect(pr.headMissing).toBe(false)
     expect(pr.runs).toEqual(['run-1'])
@@ -709,7 +768,168 @@ describe('verifyAuditFiles', () => {
     a.end(s.call, { isError: false, ms: 1, output: '' })
     const r = verifyAuditFiles(dayFiles(dir).map(n => join(dir, n)))
     expect(r.unparsable).toBe(0)
-    expect(r.procs[0]).toMatchObject({ records: 3, firstSeq: 1, gaps: [], headMissing: false, openStarts: [] })
+    expect(r.procs[0]).toMatchObject({ records: 3, firstSeq: 1, gaps: [], gapCount: 0, headMissing: false, openStarts: [] })
+  })
+
+  it('a seq that is huge, fractional, negative or zero is unparsable, and a far seq costs nothing', () => {
+    const dir = root()
+    const p = join(dir, '2026-11-23.jsonl')
+    writeFileSync(p, [
+      rec('a-1', 1, 'open'), rec('a-1', 20_000_000, 'probe'), rec('b-1', 1.5, 'open'),
+      rec('c-1', -3, 'open'), rec('d-1', 0, 'open'), rec('e-1', 2 ** 60, 'open'),
+    ].join('\n') + '\n')
+    const t0 = Date.now()
+    const r = verifyAuditFiles([p])
+    expect(Date.now() - t0).toBeLessThan(1000)
+    expect(r.unparsable).toBe(4)
+    expect(r.procs).toHaveLength(1)
+    expect(r.procs[0]!.gaps).toEqual([{ from: 2, to: 19_999_999 }])
+    expect(r.procs[0]!.gapCount).toBe(19_999_998)
+  })
+
+  it('lists at most AUDIT_GAP_RANGES ranges and counts them all', () => {
+    const dir = root()
+    const p = join(dir, '2026-11-23.jsonl')
+    const recs: string[] = []
+    for (let s = 1; s <= 2 * (AUDIT_GAP_RANGES + 50); s += 2) recs.push(rec('a-1', s, 'probe'))
+    writeFileSync(p, recs.join('\n') + '\n')
+    const pr = verifyAuditFiles([p]).procs[0]!
+    expect(pr.gaps).toHaveLength(AUDIT_GAP_RANGES)
+    expect(pr.gapCount).toBe(AUDIT_GAP_RANGES + 49)
+  })
+
+  it('a torn last line: the record written onto the fragment is still read', () => {
+    const dir = root()
+    const p = join(dir, '2026-11-23.jsonl')
+    writeFileSync(p, rec('a-1', 1, 'open') + '\n' + '{"v":1,"ts":"2026-11-23T1' + '\0'.repeat(8) + rec('b-1', 1, 'open') + '\n')
+    const r = verifyAuditFiles([p])
+    expect(r.unparsable).toBe(1)
+    expect(r.procs.map(x => x.proc).sort()).toEqual(['a-1', 'b-1'])
+  })
+})
+
+describe('the review of 2026-11-23: the writer', () => {
+  it('a record that cannot be serialised is a failed write: start refuses with its code, nothing throws', () => {
+    const { dir } = marked()
+    const sink = vi.fn()
+    setContainmentFaultSink(sink)
+    const a = createToolAudit({ dir, now: () => FIXED })
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    const throwing = { toJSON() { throw new Error('no') } }
+    for (const input of [{ n: 10n }, cyclic, throwing]) {
+      expect(a.start({ src: 'tool', tool: 'Bash', input, cwd: '/w' })).toEqual({ ok: false, reason: AUDIT_NOT_WRITTEN('audit-record-unserialisable') })
+      expect(a.start({ src: 'contract', input, cwd: '/w' })).toEqual({ ok: false, reason: AUDIT_NOT_WRITTEN('audit-record-unserialisable') })
+      expect(() => a.refused({ src: 'tool', by: 'executor', input, cwd: '/w', reason: 'x' })).not.toThrow()
+      expect(() => a.refused({ src: 'gate', by: 'executor', input, cwd: '/w', reason: 'x' })).not.toThrow()
+    }
+    expect(a.start({ src: 'tool', input: {}, cwd: '/w', escalate: cyclic })).toEqual({ ok: false, reason: AUDIT_NOT_WRITTEN('audit-record-unserialisable') })
+    expect(a.start({ src: 'gate', command: 'x', cwd: '/w', escalate: cyclic })).toEqual({ ok: false, reason: AUDIT_NOT_WRITTEN('audit-record-unserialisable') })
+    expect(sink).toHaveBeenCalledWith('audit', AUDIT_NOT_WRITTEN('audit-record-unserialisable'))
+    expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[tool-audit\] audit-record-unserialisable: /))
+    // The numbers were consumed: the next good record shows the gaps.
+    const ok = a.start({ src: 'tool', input: {}, cwd: '/w' })
+    expect(ok.ok).toBe(true)
+    const v = verifyAuditFiles(dayFiles(dir).map(n => join(dir, n))).procs[0]!
+    expect(v.gapCount).toBeGreaterThan(0)
+  })
+
+  it('a withheld start hashes its escalate note: no target or reason text is written', () => {
+    const { dir } = marked()
+    const target = letters(24)
+    const note = { rule: 'unresolved', reason: `delete ${target}`, targets: [target], recursive: true, isolation: 'verified' }
+    expect(createToolAudit({ dir, now: () => FIXED }).start({ src: 'contract', command: 'x', cwd: '/w', escalate: note }).ok).toBe(true)
+    const text = readFileSync(join(dir, `${localDate(FIXED)}.jsonl`), 'utf-8')
+    expect(text).not.toContain(target.slice(0, 12))
+    const s = lines(join(dir, `${localDate(FIXED)}.jsonl`)).find(x => x.kind === 'start')!
+    expect(s.escalate).toBeUndefined()
+    expect(s.escalateSha256).toBe(sha(JSON.stringify(note)))
+  })
+
+  it('the first write to a day file whose last record was torn starts on a line of its own', () => {
+    const { dir } = marked()
+    const day = join(dir, `${localDate(FIXED)}.jsonl`)
+    writeFileSync(day, '{"v":1,"ts":"2026-11-23T12:00:00.000Z","kind":"start","proc":"9-x","seq":1,"ca' + '\0'.repeat(8))
+    const a = createToolAudit({ dir, now: () => FIXED, proc: '2-b' })
+    expect(a.start({ src: 'tool', input: {}, cwd: '/w' }).ok).toBe(true)
+    const r = verifyAuditFiles([day])
+    expect(r.unparsable).toBe(1)
+    const pr = r.procs.find(x => x.proc === '2-b')!
+    expect(pr).toMatchObject({ records: 2, firstSeq: 1, gapCount: 0 })
+  })
+
+  it('a day file deleted after it was written is not recreated by an end or a refused record', () => {
+    const { dir } = marked()
+    const a = createToolAudit({ dir, now: () => FIXED })
+    const s = a.start({ src: 'tool', input: {}, cwd: '/w' })
+    if (!s.ok) throw new Error(s.reason)
+    const day = join(dir, `${localDate(FIXED)}.jsonl`)
+    unlinkSync(day)
+    a.end(s.call, { isError: false, ms: 1, output: '' })
+    a.refused({ src: 'tool', by: 'executor', cwd: '/w', reason: 'x' })
+    expect(existsSync(day)).toBe(false)
+    expect(a.probe('dispatch')).toMatch(/^audit-file-shrunk: /)
+  })
+
+  it('retention by name as well as age: an old mtime on a young name keeps the file, and a file dated after the clock stops the prune', () => {
+    const { dir } = marked()
+    const today = localDate(FIXED)
+    const put = (name: string, t: Date) => { writeFileSync(join(dir, name), '{}\n'); utimesSync(join(dir, name), t, t) }
+    // A file named for a day after the clock: nothing at all is pruned, even a truly old one.
+    put('2026-11-01.jsonl', new Date(2026, 9, 1))
+    put('2026-12-25.jsonl', new Date(2026, 9, 1))
+    expect(createToolAudit({ dir, now: () => FIXED, keepDays: 1 }).open().ok).toBe(true)
+    expect(readdirSync(dir)).toContain('2026-11-01.jsonl')
+    expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/^\[tool-audit\] retention skipped: 2026-12-25\.jsonl is dated after the clock/))
+    // A modification time 200 days old on files named for today and yesterday: both stay; an old name goes.
+    const { dir: d2 } = marked()
+    const longAgo = new Date(FIXED.getTime() - 200 * 86_400_000)
+    const putIn = (name: string, t: Date) => { writeFileSync(join(d2, name), '{}\n'); utimesSync(join(d2, name), t, t) }
+    const yesterday = localDate(new Date(FIXED.getTime() - 86_400_000))
+    putIn(`${today}.1.jsonl`, longAgo)
+    putIn(`${yesterday}.jsonl`, longAgo)
+    putIn('2026-03-01.jsonl', longAgo)
+    expect(createToolAudit({ dir: d2, now: () => FIXED, keepDays: 90 }).open().ok).toBe(true)
+    const left = readdirSync(d2)
+    expect(left).toContain(`${today}.1.jsonl`)
+    expect(left).toContain(`${yesterday}.jsonl`)
+    expect(left).not.toContain('2026-03-01.jsonl')
+  })
+
+  it('harnessAudit refuses a folder inside the sandbox root', () => {
+    const r = root()
+    const sb = join(r, 'sandbox-root')
+    mkdirSync(join(sb, 'audit'), { recursive: true })
+    writeFileSync(join(sb, 'audit', AUDIT_MARKER), '')
+    const saved = process.env.LOCALCODE_SANDBOX_ROOT
+    process.env.LOCALCODE_SANDBOX_ROOT = sb
+    try {
+      expect(harnessAudit({ dir: join(sb, 'audit'), home: join(r, 'home') }).probe('dispatch')).toMatch(/^audit-dir-in-workspace: /)
+    } finally {
+      process.env.LOCALCODE_SANDBOX_ROOT = saved
+    }
+    expect(readdirSync(join(sb, 'audit'))).toEqual([AUDIT_MARKER])
+  })
+
+  it('toolAudit refuses a context whose audit folder is inside its sandbox or an extra root', () => {
+    const r = root()
+    const sbAudit = join(r, 'sb', 'audit')
+    mkdirSync(sbAudit, { recursive: true })
+    writeFileSync(join(sbAudit, AUDIT_MARKER), '')
+    expect(toolAudit(ctxFor(r, sbAudit))!.start({ src: 'tool', input: {}, cwd: '/w' }))
+      .toEqual({ ok: false, reason: AUDIT_NOT_WRITTEN('audit-dir-in-workspace') })
+    const extra = join(r, 'extra')
+    mkdirSync(join(extra, 'audit'), { recursive: true })
+    writeFileSync(join(extra, 'audit', AUDIT_MARKER), '')
+    const ctx = testContainment({
+      missionCwd: join(r, 'mission'),
+      sandbox: { root: join(r, 'sb'), home: join(r, 'sb', 'home'), tmp: join(r, 'sb', 'tmp'), scratch: join(r, 'sb', 'scratch') },
+      home: join(r, 'home'), extraRoots: [extra],
+      folders: { state: join(r, 'state'), models: join(r, 'models'), guard: join(r, 'guard'), audit: join(extra, 'audit') },
+    })
+    expect(toolAudit(ctx)!.probe('capability')).toMatch(/^audit-dir-in-workspace: /)
+    expect(readdirSync(join(extra, 'audit'))).toEqual([AUDIT_MARKER])
+    expect(readdirSync(sbAudit)).toEqual([AUDIT_MARKER])
   })
 })
 

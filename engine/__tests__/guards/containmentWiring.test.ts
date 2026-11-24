@@ -173,7 +173,7 @@ const SPAWN_SITES: Record<string, { count: number; class: SpawnClass; git?: true
   'engine/tools/impl/applyPatch.ts': { count: 1, class: 'contained', reason: 'git apply for the model, through toolExecSync.' },
   'engine/tools/contractVerify.ts': { count: 2, class: 'contained', git: true, reason: 'contract commands and verify-first through toolExec; the contract\'s git reads are harness git.' },
   'engine/bestOfN/sampler.ts': { count: 3, class: 'contained', git: true, reason: 'runTests through toolExecSync; the two git apply calls are harness git.' },
-  'engine/lsp/manager.ts': { count: 3, class: 'contained', reason: 'tsc and py_compile diagnostics through toolExecSync; the which / where lookup of a fixed server name runs in the engine\'s own folder.' },
+  'engine/lsp/manager.ts': { count: 2, class: 'contained', reason: 'tsc and py_compile diagnostics through one toolExecSync in runDiag (recorded by the tool-call audit, S5); the which / where lookup of a fixed server name runs in the engine\'s own folder.' },
   'engine/daemon/precheck.ts': { count: 1, class: 'contained', reason: 'a trigger\'s precheck command through toolExec in a precheck sandbox of its own.' },
   'engine/vsm/verifyFirst.ts': { count: 1, class: 'contained', via: 'engine/tools/contractVerify.ts', reason: 'calls the run it is handed (this.run), which the loop builds from runCommandDetailed: toolExec.' },
 
@@ -447,8 +447,9 @@ describe('containment wiring: slice S2, call by call (F242)', () => {
 
   it('the driver\'s probe and marker check run under its adopted containment (9.7)', () => {
     const src = read('scripts/cynco-mission-driver.mjs')
-    expect(src).toContain('runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment() })')
-    expect(src).toContain('runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment() })')
+    // S5 adds the audit option to the same options objects; the containment stays first.
+    expect(src).toContain('runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment(), audit: ')
+    expect(src).toContain('runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment(), audit: ')
   })
 
   it('a contract command starts through toolExec and never through a bare exec (9.7)', () => {
@@ -565,12 +566,15 @@ describe('containment wiring: the model is sent to its scratch folder, never to 
 describe('the protected-path check (S4, F242 layer 2)', () => {
   it('the executor asks the path check where the design says', () => {
     const ex = read('engine/tools/executor.ts').replace(/\r\n/g, '\n')
-    const secret = ex.indexOf('secretPathOf(toolName')
-    const guard = ex.indexOf('checkProtectedPaths(toolName, input, this.cwd)')
-    const run = ex.indexOf('await tool.execute(')
+    // Since S5 the checks live in preRun, which execute asks before the tool runs.
+    const pre = ex.slice(ex.indexOf('private async preRun('))
+    const secret = pre.indexOf('secretPathOf(toolName')
+    const guard = pre.indexOf('checkProtectedPaths(toolName, input, this.cwd)')
     expect(secret).toBeGreaterThan(-1)
     expect(guard).toBeGreaterThan(secret)
-    expect(run).toBeGreaterThan(guard)
+    const exec = ex.slice(ex.indexOf('  async execute(toolName'), ex.indexOf('private async preRun('))
+    expect(exec.indexOf('await this.preRun(toolName, input)')).toBeGreaterThan(-1)
+    expect(exec.indexOf('await tool.execute(')).toBeGreaterThan(exec.indexOf('await this.preRun(toolName, input)'))
     expect(ex).toContain('redactSealed(guard.text)')
 
     const bash = read('engine/tools/impl/bash.ts').replace(/\r\n/g, '\n')
@@ -580,5 +584,110 @@ describe('the protected-path check (S4, F242 layer 2)', () => {
     expect(safety).toBeGreaterThan(-1)
     expect(bashGuard).toBeGreaterThan(safety)
     expect(spawn).toBeGreaterThan(bashGuard)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------
+// S5 (work package 3): the tool-call audit sits where the design says (03-audit-logs 8.1).
+// ---------------------------------------------------------------------------------------------
+
+describe('the tool-call audit (S5, F242)', () => {
+  const src = (rel: string) => read(rel).replace(/\r\n/g, '\n')
+  /** From a declaration to the end of its body: the first line that closes at the declaration's indent. */
+  const body = (text: string, decl: string) => {
+    const at = text.indexOf(decl)
+    expect(at, decl).toBeGreaterThan(-1)
+    const lineStart = text.lastIndexOf('\n', at) + 1
+    const indent = /^[ \t]*/.exec(text.slice(lineStart))![0]
+    const end = text.indexOf(`\n${indent}}\n`, at)
+    return text.slice(at, end === -1 ? undefined : end)
+  }
+
+  it('the executor: one tool.execute, the start before it and before its try, the code at both rebuild sites', () => {
+    const ex = src('engine/tools/executor.ts')
+    expect(ex.split('tool.execute(').length - 1).toBe(1)
+    const run = ex.indexOf('tool.execute(')
+    const start = ex.indexOf('audit.start(')
+    const tryAt = ex.lastIndexOf('try {', run)
+    expect(start).toBeGreaterThan(-1)
+    expect(start).toBeLessThan(tryAt)
+    expect(ex.indexOf('exitCode: result.exitCode', ex.indexOf('const capped = {'))).toBeGreaterThan(ex.indexOf('const capped = {'))
+    expect(ex.indexOf('exitCode: capped.exitCode', ex.indexOf('DOOM LOOP DETECTED'))).toBeGreaterThan(ex.indexOf('DOOM LOOP DETECTED'))
+    expect(ex).toContain("audit?.refused({")
+    expect(ex).toContain('export function refusalFaultOf(')
+  })
+
+  it('the loop: one auditDenied call per denial site plus the AskUser redirect, and the fault sink', () => {
+    const loop = src('engine/bridge/conversationLoop.ts')
+    const calls = loop.split('auditDenied(').length - 1
+    const denials = (loop.match(/^[ \t]+this\.recordToolOutcome\(toolName, 'denied', toolResultsThisTurn\)$/gm) ?? []).length
+    expect(denials).toBeGreaterThan(0)
+    expect(calls).toBe(denials + 1)
+    expect(loop).toContain('setContainmentFaultSink(')
+    expect(loop).toMatch(/const recordDenial = \(\) => this\.governance\.onToolResult\(/)
+  })
+
+  it('each site that runs workspace code without the executor asks the audit before it starts the command', () => {
+    const sites: Array<[string, string, string]> = [
+      ['engine/tools/contractVerify.ts', 'export function runCommandDetailed(', 'toolExec('],
+      ['engine/bestOfN/sampler.ts', 'export function runTests(', 'toolExecSync('],
+      ['engine/lsp/manager.ts', 'private runDiag(', 'toolExecSync('],
+      ['engine/daemon/precheck.ts', 'export function runPrecheck(', 'toolExec('],
+    ]
+    for (const [file, decl, spawn] of sites) {
+      const b = body(src(file), decl)
+      const audit = b.indexOf('toolAudit(')
+      expect(audit, `${file}: toolAudit( in ${decl}`).toBeGreaterThan(-1)
+      expect(b.indexOf(spawn), `${file}: ${spawn} after toolAudit(`).toBeGreaterThan(audit)
+    }
+  })
+
+  it('the daemon hands refuseRun to both runners; the boot asks the audit before the model loads', () => {
+    expect(src('engine/daemon/main.ts').split('refuse: refuseRun').length - 1).toBe(2)
+    const main = src('engine/main.ts')
+    expect(main.indexOf("probe('preflight')")).toBeGreaterThan(-1)
+    expect(main.indexOf('await bootstrapProvider(')).toBeGreaterThan(main.indexOf("probe('preflight')"))
+  })
+
+  it('the scripts: runCheck forwards audit, the driver probes before its first change on disk, the graders record', () => {
+    const verify = src('scripts/cynco-verify.mjs')
+    expect(body(verify, 'export function runCheck(')).toContain('...(audit ? { audit } : {})')
+    expect(body(verify, 'export async function runCheckAsync(')).toContain('...(audit ? { audit } : {})')
+    const driver = src('scripts/cynco-mission-driver.mjs')
+    expect(driver.indexOf("probe('driver')")).toBeGreaterThan(-1)
+    expect(driver.indexOf('purgeBytecodeCaches(CWD)')).toBeGreaterThan(driver.indexOf("probe('driver')"))
+    expect(driver).toContain("audit: { handle: audit, src: 'driver-probe' }")
+    expect(driver).toContain("audit: { handle: audit, src: 'driver-marker' }")
+    for (const f of ['scripts/cynco-campaign-grade.mjs', 'scripts/cynco-campaign-calibrate.mjs']) {
+      expect(src(f), f).toContain("audit: { handle: harnessAudit(), src: 'gate' }")
+    }
+  })
+
+  it('the dispatch: the audit gate before anything is stopped, the verify inside the watcher before its case', () => {
+    const sh = src('scripts/dispatch-mission.sh')
+    const check = sh.indexOf('bun scripts/cynco-audit.mjs check')
+    expect(check).toBeGreaterThan(-1)
+    expect(sh.indexOf('PHONE_ENGINE_TASK=')).toBeGreaterThan(check)
+    expect(sh.indexOf('trap dispatch_abandoned EXIT')).toBeGreaterThan(check)
+    const watch = sh.indexOf('while kill -0 "$DRIVER_PID"')
+    const verify = sh.indexOf('bun scripts/cynco-audit.mjs verify --run "$RUN_ID"')
+    const esac = sh.indexOf('esac', watch)
+    expect(verify).toBeGreaterThan(watch)
+    expect(esac).toBeGreaterThan(verify)
+  })
+
+  // Review of slice S5: the one call the loop makes on a tool object outside the executor (the
+  // CodeIndex-first card, whose regex fallback starts rg or PowerShell with the model's pattern) has its
+  // start written before it runs and its end after; a start that cannot be written runs nothing.
+  it('the CodeIndex-first card records its own CodeIndex call', () => {
+    const loop = src('engine/bridge/conversationLoop.ts')
+    const call = loop.indexOf('ci = await codeIndexTool.execute(ciInput, ciCwd)')
+    const start = loop.indexOf("ciAudit.start({ src: 'tool', tool: 'CodeIndex', input: ciInput, cwd: ciCwd })")
+    expect(start).toBeGreaterThan(-1)
+    expect(call).toBeGreaterThan(start)
+    expect(loop.slice(start, call)).toContain('if (ciStarted && !ciStarted.ok) return')
+    expect(loop.indexOf('ciAudit.end(ciStarted.call', call)).toBeGreaterThan(call)
+    // No other `.execute(` on a tool object in the loop.
+    expect(loop.match(/codeIndexTool\.execute\(/g)?.length).toBe(1)
   })
 })

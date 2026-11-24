@@ -353,6 +353,7 @@ export function s5DispatchRefusal({ capabilities }) {
 export const CAP_CONTAINED = 'contained-tools'
 export const CAP_CONTAINED_OVERLAY = 'contained-overlay'
 export const CAP_PATH_GUARD = 'path-guard'
+export const CAP_TOOL_AUDIT = 'tool-audit'
 
 /** F242: is this engine a contained mission engine? Null to dispatch, a sentence to print and refuse on. */
 export function containmentDispatchRefusal({ capabilities, platform = process.platform }) {
@@ -362,6 +363,7 @@ export function containmentDispatchRefusal({ capabilities, platform = process.pl
     missing.push(platform === 'win32' ? CAP_CONTAINED : `${CAP_CONTAINED} or ${CAP_CONTAINED_OVERLAY}`)
   }
   if (!has(CAP_PATH_GUARD)) missing.push(CAP_PATH_GUARD)
+  if (!has(CAP_TOOL_AUDIT)) missing.push(CAP_TOOL_AUDIT)
   if (missing.length === 0) return null
   const said = Array.isArray(capabilities)
     ? `the engine advertised [${capabilities.join(', ')}]`

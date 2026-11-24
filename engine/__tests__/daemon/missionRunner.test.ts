@@ -1049,3 +1049,53 @@ describe('MissionRunner schedule.json overrides', () => {
     expect(lines.some((l) => l.includes('poll') && /cron/.test(l))).toBe(true)
   })
 })
+
+// F242, entry 3.M3: a run that may not start is stopped in fire(), before the trigger's precheck.
+describe('MissionRunner refuse (S5)', () => {
+  const cmdConfig: MissionConfig = {
+    ...config,
+    triggers: [{ id: 'trades', kind: 'interval', everyMinutes: 120, precheck: 'command', missedPolicy: 'skip',
+                 precheckCommand: 'python dynasty/mfl.py gate cynco --pass trades --check', prompt: 'Answer offers', cwd: 'C:/repo' }],
+  }
+  function setup(refuse?: () => string | null) {
+    writeFileSync(join(dir, 'mfl-dynasty', 'mission.json'), JSON.stringify(cmdConfig), 'utf-8')
+    const prechecks: any[] = []
+    const made = makeDeps({
+      runPrecheck: async (command: string) => { prechecks.push(command); return { code: 0, stdout: 'go' } },
+      ...(refuse ? { refuse } : {}),
+    })
+    const ledger = MissionLedger.load(join(dir, 'mfl-dynasty'))
+    ledger.setNextFire('trades', new Date(2026, 5, 11, 11, 59).toISOString())
+    return { ...made, prechecks, ledger, runner: new MissionRunner(ledger, made.deps as any) }
+  }
+
+  it('an audit refusal runs neither the precheck nor the pass, records a failed run and pages once at normal priority', async () => {
+    const { runner, ranTasks, published, prechecks, ledger } = setup(() => 'audit: x')
+    await runner.tick()
+    expect(prechecks).toEqual([])
+    expect(ranTasks).toEqual([])
+    const runs = ledger.recentRuns(1)
+    expect(runs[0].ok).toBe(false)
+    expect(runs[0].summary).toBe('REFUSED: audit: x')
+    expect(published).toHaveLength(1)
+    expect(published[0]).toEqual({ title: 'CynCo refused a run of mission mfl-dynasty', message: 'REFUSED: audit: x' })
+    expect('priority' in published[0]).toBe(false)
+  })
+
+  it('an integrity refusal is recorded and not paged here (the latch paged)', async () => {
+    const { runner, ranTasks, published, ledger } = setup(() => 'integrity: y')
+    await runner.tick()
+    expect(ranTasks).toEqual([])
+    expect(ledger.recentRuns(1)[0].summary).toBe('REFUSED: integrity: y')
+    expect(published).toEqual([])
+  })
+
+  it('with refuse absent or answering null, the precheck and the pass run as before', async () => {
+    for (const refuse of [undefined, () => null]) {
+      const { runner, ranTasks, prechecks } = setup(refuse)
+      await runner.tick()
+      expect(prechecks).toHaveLength(1)
+      expect(ranTasks).toHaveLength(1)
+    }
+  })
+})

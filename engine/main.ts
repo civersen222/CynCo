@@ -186,7 +186,17 @@ import { bootstrapProvider } from './bootstrapProvider.js'
       const fault = pathGuardFault()
       if (fault) refuseBoot('containment', fault)
     }
-    // step 5 (S5): toolAudit probe    step 6 (S7): models record, tripwire
+    {
+      // Step 5: this run's tool calls can be recorded, or it does not start (F242).
+      const { toolAudit } = await import('./audit/toolAudit.js')
+      const audit = toolAudit()
+      if (!audit) refuseBoot('containment', c.NO_CONTAINMENT)
+      else {
+        const why = audit.probe('preflight')
+        if (why) refuseBoot('audit', why)
+      }
+    }
+    // step 6 (S7): models record, tripwire
   }
 }
 // Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops

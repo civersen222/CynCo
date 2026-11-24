@@ -27,7 +27,7 @@ import {
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { cyncoHome, modelsDir, sandboxRoot } from './paths.js'
+import { auditDir, cyncoHome, modelsDir, sandboxRoot } from './paths.js'
 import { isContainedRun, RUN_ID_RE } from './missionEnv.js'
 import { isInside, realPathOf } from './realPath.js'
 
@@ -152,6 +152,16 @@ export function refusalLayerOf(output: string): RefusalLayer | null {
   return null
 }
 
+/**
+ * The reason a refusal text carries, as every fault is raised with it: the first line after the
+ * `Refused [<layer>]:` prefix, at most 300 characters. One form for the executor and for the sites
+ * that start a process without it, so the operator reads the same text from every source.
+ */
+export function refusalReasonOf(text: string): string {
+  const line = String(text).slice(String(text).indexOf(':') + 1).trim().split('\n')[0] ?? ''
+  return line.trim().slice(0, 300)
+}
+
 /** `<tag> REFUSED: <layer>: <reason> — nothing was <run | dispatched>`, for stderr, a log or an outcome. */
 export function operatorRefusal(tag: string, layer: RefusalLayer, reason: string, what: 'run' | 'dispatched'): string {
   return `${tag} REFUSED: ${layer}: ${reason} — nothing was ${what}`
@@ -169,6 +179,19 @@ export const DISPATCH_RUN_PREFIX = '[dispatch] run '
 export const LAUNCHER_REFUSED_EXIT = 197
 export const LAUNCHER_CHILD_GONE_EXIT = 198
 
+/**
+ * The per-spawn seal (review of slice S5): `containedCommand` puts a fresh random value in the
+ * launcher's OWN environment under this key, the launcher takes it out of its environment before it
+ * builds the child's (and `toolEnv` strips the key for every child), and the launcher ends its own
+ * 197 and 198 with `[containment] sealed <seal> <status>` on stderr. The child shares that stderr and
+ * passes its status through, so without the seal a command could print the refused line, exit 197
+ * and have its own call booked as one that never ran. The child's environment never holds the value,
+ * and a low-integrity process cannot read the memory of the medium-integrity processes that do
+ * (Windows' no-read-up policy on process objects; not measured here).
+ */
+export const LAUNCHER_SEAL_ENV = 'CYNCO_LAUNCHER_SEAL'
+export const LAUNCHER_SEAL_PREFIX = '[containment] sealed '
+
 /** A sandbox is removed by the sweep this many days after it was created. */
 export const SANDBOX_KEEP_DAYS = 7
 
@@ -177,15 +200,23 @@ const LONG_COMMAND_CHARS = 8000
 const LAUNCHER_SCRIPT = 'lowIntegrityLauncher.ts'
 const LAUNCHER_CONFIG = 'lowIntegrityLauncher.bunfig.toml'
 
-/** A refusal made before a spawn, or a launcher that could not run (codes ECONTAINMENT / ECHILDGONE). */
+/**
+ * A refusal made before a spawn, or a launcher that could not run (codes ECONTAINMENT / ECHILDGONE).
+ * `ran` is true when a process the caller started did run (the launcher's child ended with no status,
+ * or a Bun it started could not load its script): then `exitCode` is that process's status, or null.
+ */
 export class ContainmentRefusal extends Error {
   code: 'ECONTAINMENT' | 'ECHILDGONE'
   reason: string
-  constructor(code: 'ECONTAINMENT' | 'ECHILDGONE', reason: string, text: string) {
+  ran: boolean
+  exitCode: number | null
+  constructor(code: 'ECONTAINMENT' | 'ECHILDGONE', reason: string, text: string, ran = false, exitCode: number | null = null) {
     super(text)
     this.name = 'ContainmentRefusal'
     this.code = code
     this.reason = reason
+    this.ran = ran
+    this.exitCode = exitCode
   }
 }
 
@@ -233,7 +264,7 @@ function unknownLayerReason(word: string): string {
 export const SECRET_ENV = [/^CYNCO_NTFY_/, /^GH_TOKEN$/, /^GITHUB_TOKEN$/, /^LOCALCODE_API_KEY$/, /^OPENAI_API_KEY$/]
 
 /** Keys the harness reads and no tool child may hold, in every mode (Phase 7 final review I1). */
-const ALWAYS_STRIP = [/^LOCALCODE_MISSION_/, /^CYNCO_MARKER_CHECK/, /^CYNCO_MISSION_ALSO_LABEL$/]
+const ALWAYS_STRIP = [/^LOCALCODE_MISSION_/, /^CYNCO_MARKER_CHECK/, /^CYNCO_MISSION_ALSO_LABEL$/, /^CYNCO_LAUNCHER_SEAL$/]
 /** Keys that name the containment's own folders and switches; stripped when a context is set. */
 const CONTEXT_STRIP = /^LOCALCODE_(SANDBOX_ROOT|GUARD_DIR|AUDIT_DIR|MODELS_DIR|CONTAINMENT_|UNPROTECTED_VOLUMES_OK)/
 
@@ -303,6 +334,8 @@ export interface ContainedSpawn {
   env: Record<string, string | undefined>; viaLauncher: boolean
   /** A long command written to the run folder; the caller deletes it when the child has ended. */
   commandFile?: string
+  /** The launcher's seal for this spawn (`LAUNCHER_SEAL_ENV`); set exactly when `viaLauncher`. */
+  seal?: string
 }
 
 let commandFileSeq = 0
@@ -362,7 +395,11 @@ export function containedCommand(cmd: ToolCommand, o: {
     ...[...pairs].flatMap(([k, v]) => ['--env', `${k}=${v}`]),
     ...mode,
   ]
-  const out: ContainedSpawn = { file: o.execPath ?? process.execPath, args, cwd: engineCheckout(), env: process.env, viaLauncher: true }
+  const seal = randomBytes(16).toString('hex')
+  const out: ContainedSpawn = {
+    file: o.execPath ?? process.execPath, args, cwd: engineCheckout(),
+    env: { ...process.env, [LAUNCHER_SEAL_ENV]: seal }, viaLauncher: true, seal,
+  }
   if (commandFile !== undefined) out.commandFile = commandFile
   return out
 }
@@ -412,34 +449,42 @@ const BUN_LOW_READ = /^error: EPERM reading "([^"\r\n]+)"\s*$/m
  * A launcher exit that means "did not run" (197 with its refused line), "ended with no status"
  * (198 with its line), or a Bun the launcher started that could not load its own script at low
  * integrity (exit 1 with Bun's `error: EPERM reading "<file>"` line; the gate-authoring check is
- * the known case, 01-isolation entry 1.B2 part 2). A program that itself exits 197 without the line
- * is an ordinary exit code. A command that prints Bun's line itself and exits 1 reads as "did not
- * run" too: never as a pass.
+ * the known case, 01-isolation entry 1.B2 part 2). A 197 or 198 counts only when stderr carries the
+ * launcher's seal line for THIS spawn (`seal`, from `containedCommand`): the child shares the
+ * launcher's stderr and passes its own status through, so a command that prints the refused line
+ * and exits 197 itself is an ordinary exit code (review of slice S5). With no seal no 197 or 198 is
+ * a fault. A command that prints Bun's line itself and exits 1 reads as "did not run" for a harness
+ * check, never as a pass; `ran` is true for it and for 198, because a process did run, so a tool
+ * result built from either carries an exit code and is never read as a refusal made before a spawn.
  */
-export function launcherFaultOf(status: number | null | undefined, stderr: string | Buffer | null | undefined)
-  : { code: 'ECONTAINMENT' | 'ECHILDGONE'; reason: string; text: string } | null {
+export function launcherFaultOf(status: number | null | undefined, stderr: string | Buffer | null | undefined, seal: string | undefined)
+  : { code: 'ECONTAINMENT' | 'ECHILDGONE'; reason: string; text: string; ran: boolean; exitCode: number | null } | null {
   if (status === 1) {
     const m = BUN_LOW_READ.exec(stderr == null ? '' : String(stderr))
     if (m === null) return null
     const reason = `Bun at low integrity could not read ${m[1]} (EPERM), a file outside the folders the run may write, so the command did not run`
     return {
-      code: 'ECONTAINMENT', reason,
+      code: 'ECONTAINMENT', reason, ran: true, exitCode: 1,
       text: refusalText('containment', reason, 'A Bun script that lives outside the mission folder cannot be run inside a contained run on this Bun; nothing it would have done was done.'),
     }
   }
   if (status !== LAUNCHER_REFUSED_EXIT && status !== LAUNCHER_CHILD_GONE_EXIT) return null
+  if (typeof seal !== 'string' || seal.length < 16) return null
   const lines = (stderr == null ? '' : String(stderr)).split(/\r?\n/)
+  const sealAt = lines.lastIndexOf(`${LAUNCHER_SEAL_PREFIX}${seal} ${status}`)
+  if (sealAt < 0) return null
+  const before = lines.slice(0, sealAt).reverse()
   if (status === LAUNCHER_REFUSED_EXIT) {
-    const line = lines.find(l => l.startsWith('[containment] refused: '))
+    const line = before.find(l => l.startsWith('[containment] refused: '))
     if (line === undefined) return null
     const reason = line.slice('[containment] refused: '.length).trim()
-    return { code: 'ECONTAINMENT', reason, text: refusalText('containment', reason) }
+    return { code: 'ECONTAINMENT', reason, text: refusalText('containment', reason), ran: false, exitCode: null }
   }
-  const line = lines.find(l => l.startsWith('[containment] child ended: '))
+  const line = before.find(l => l.startsWith('[containment] child ended: '))
   if (line === undefined) return null
   const reason = `the contained command ended without an exit status (${line.slice('[containment] child ended: '.length).trim()})`
   return {
-    code: 'ECHILDGONE', reason,
+    code: 'ECHILDGONE', reason, ran: true, exitCode: null,
     text: refusalText('containment', reason, 'It started and then ended without an exit status, so its result is unknown: check what it changed before running it again.'),
   }
 }
@@ -476,9 +521,9 @@ ctx: RunContainment | null = runContainment()): ChildProcess {
   return execFile(c.file, c.args, { ...rest, cwd: c.cwd, env: c.env }, (err, stdout, stderr) => {
     removeCommandFile(c.commandFile)
     const code = err && typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : null
-    const fault = err ? launcherFaultOf(code, stderr) : null
+    const fault = err ? launcherFaultOf(code, stderr, c.seal) : null
     if (fault) {
-      callback(new ContainmentRefusal(fault.code, fault.reason, fault.text) as unknown as ExecException, stdout, stderr)
+      callback(new ContainmentRefusal(fault.code, fault.reason, fault.text, fault.ran, fault.exitCode) as unknown as ExecException, stdout, stderr)
       return
     }
     // execFile's error carries the same fields exec's does (code, killed, signal, cmd).
@@ -499,8 +544,8 @@ export function toolExecSync(command: string, options: ExecSyncOptions = {}, ctx
     return execFileSync(c.file, c.args, { ...rest, cwd: c.cwd, env: c.env })
   } catch (e) {
     const err = e as { status?: number | null; stderr?: string | Buffer | null }
-    const fault = launcherFaultOf(err.status, err.stderr)
-    if (fault) throw new ContainmentRefusal(fault.code, fault.reason, fault.text)
+    const fault = launcherFaultOf(err.status, err.stderr, c.seal)
+    if (fault) throw new ContainmentRefusal(fault.code, fault.reason, fault.text, fault.ran, fault.exitCode)
     throw e
   } finally {
     removeCommandFile(c.commandFile)
@@ -518,6 +563,10 @@ export function containmentHint(kind: 'failure' | 'success' | 'timeout', output:
   }
   if (MSYS_SIGNATURE.test(output)) {
     return `\n[containment] ${MSYS_IN_CONTAINED_RUN}. Use the PowerShell form instead (Select-String, Select-Object -First / -Last, Get-Content -Tail, Get-ChildItem). A git hook written as a shell script fails the same way.`
+  }
+  const bun = kind === 'failure' ? BUN_LOW_READ.exec(output) : null
+  if (bun !== null) {
+    return `\n[containment] Bun at low integrity could not load ${bun[1]} (EPERM): a Bun script outside the folders this run may write cannot be run inside a contained run on this Bun. The shell itself ran, so whatever the command did before that line was done.`
   }
   return ''
 }
@@ -896,7 +945,7 @@ function probe(runner: ContainmentRunner | undefined, runDir: string, labelled: 
 // ─── establishContainment ────────────────────────────────────────────────────────────────────
 
 function defaultFolders(): RunContainment['folders'] {
-  return { state: cyncoHome(), models: modelsDir(), guard: 'C:/cynco-guard', audit: null }
+  return { state: cyncoHome(), models: modelsDir(), guard: 'C:/cynco-guard', audit: auditDir() }
 }
 
 /** Rules M1 to M9 for one folder; null when it may be a write root of the run. */

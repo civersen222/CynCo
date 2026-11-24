@@ -9,7 +9,8 @@
  * (the Git tool). Both are pure: no file system, no environment, no process; the home folders and the
  * platform are parameters, and a relative word is resolved against the given base, never against this
  * process's own working folder. Neither throws: a caught error or a hard limit is a sentence in
- * `faults`.
+ * `faults`. The one thing read from outside is the clock: a scan runs on the engine's event loop and
+ * stops at `SCAN_BUDGET_MS` with a fault, as it stops at `MAX_SCANNED_TEXT` (review 2026-11-23).
  *
  * This is a tripwire, not a parser: it approximates four languages, and where two shells read a text
  * differently both readings are emitted. What it cannot read is reported as an unresolved mutation or a
@@ -37,6 +38,8 @@ export type ShellPath = {
   linkTarget?: string | null  // for op 'link': the target, or null when it could not be read
   verb: string                // the verb or call that classified it
   via: string                 // 'shell', 'shell>cmd /c', 'shell>python -c', 'shell>encoded', 'shell>heredoc', 'argv'
+  /** The word started with this name, which nothing in the command set: it is empty when the command runs. */
+  unsetName?: string
 }
 export type ShellScan = {
   paths: ShellPath[]
@@ -58,6 +61,10 @@ type MutOp = 'write' | 'delete' | 'move' | 'link'
 // ─── Limits and markers ────────────────────────────────────────────────────────────────────────
 
 const MAX_TEXT = 1024 * 1024
+/** The longest text read as a command or a program, once here-string and here-document bodies are lifted out. */
+export const MAX_SCANNED_TEXT = 128 * 1024
+/** The longest one scan may run on the event loop (the dashboard, the phone and Stop are answered from it: F225). */
+export const SCAN_BUDGET_MS = 500
 const MAX_DEPTH = 4
 const MAX_PATHS = 512
 
@@ -68,12 +75,16 @@ const S1 = '\u0003'
 const UNREAD = '\u0004'
 /** In an expanded word: the pipeline's current item (`$_`, `$PSItem`, `{}`). */
 const PIPE = '\u0005'
+/** In a token: a subexpression that is empty when the command runs (`"$()"`, `"$($null)"`, `"$(echo)"`). */
+const EMPTY_SUB = '\u0006'
 
 const WILDCARD = /[*?[]/
 
 // ─── The scan's shared state ───────────────────────────────────────────────────────────────────
 
-type Binding = { pos: number; value: string | null; here: number | null }
+/** unset: the right-hand side was only a name nothing set, so the name is empty too. */
+/** cmdSet: made by cmd's `set X=...`, which a `%X%` on the same line does not see (cmd expands the line first). */
+type Binding = { pos: number; value: string | null; here: number | null; unset?: true; list?: string[]; cmdSet?: true }
 type Entry =
   | { k: 'anchor'; anchor: Exclude<Anchor, null>; tail: string; orig: string }
   | { k: 'text'; text: string; orig: string }
@@ -83,7 +94,7 @@ type Entry =
   | { k: 'here'; body: number; orig: string }
   | { k: 'doc'; body: number; orig: string }
 
-type Body = { text: string; use: 'code' | 'data' | null }
+type Body = { text: string; use: 'code' | 'data' | null; q?: string }
 
 interface Run {
   homes: HomeMap
@@ -91,6 +102,24 @@ interface Run {
   table: Entry[]
   bodies: Body[]
   out: ShellScan
+  seen: Set<string>
+  deadline: number
+  /** Literals are read as PowerShell writes them (a backslash is an ordinary character), not as code. */
+  psStrings: boolean
+  /** The shell texts whose literals are swept once the whole command is read (`sweepLiterals`). */
+  sweeps: Array<{ ctx: Ctx; toks: Tok[] }>
+}
+
+function newRun(homes: HomeMap, platform: Platform): Run {
+  return { homes, platform, table: [], bodies: [], out: emptyScan(), seen: new Set(), deadline: performance.now() + SCAN_BUDGET_MS, psStrings: false, sweeps: [] }
+}
+
+/** True once the scan has run past its budget; the first time, the fault that refuses the call. */
+function overBudget(run: Run): boolean {
+  if (performance.now() <= run.deadline) return false
+  const f = `the command took longer than ${SCAN_BUDGET_MS} ms to read`
+  if (!run.out.faults.includes(f)) run.out.faults.push(f)
+  return true
 }
 
 function emptyScan(): ShellScan {
@@ -126,6 +155,10 @@ function renderOrig(run: Run, s: string, dropBodies = false): string {
 }
 
 function emit(run: Run, p: ShellPath): void {
+  // The same path named the same way twice (two readings of one text) is one entry.
+  const key = `${p.op}\u0000${p.path}\u0000${p.raw}\u0000${p.via}\u0000${p.verb}\u0000${p.recursive}\u0000${p.inherited}\u0000${p.linkTarget ?? ''}`
+  if (run.seen.has(key)) return
+  run.seen.add(key)
   if (run.out.paths.length >= MAX_PATHS) {
     if (run.out.truncated === null) run.out.truncated = `more than ${MAX_PATHS} paths in one command`
     return
@@ -146,9 +179,16 @@ function unresolved(run: Run, op: MutOp, verb: string, recursive: boolean, text:
 function countClimbs(text: string): number {
   let n = 0
   n += (text.match(/(?:^|[\\/'"`\s(,=])\.\.(?=[\\/'"`\s),]|$)/gm) ?? []).length
-  n += (text.match(/\.parent\b/g) ?? []).length
-  n += (text.match(/\bdirname\s*\(/g) ?? []).length
-  n += (text.match(/\bSplit-Path\b[^;|\n]*-Parent\b/gi) ?? []).length
+  n += (text.match(/\.parent\b/gi) ?? []).length
+  // cmd's `%~dpX` is the folder an item is in.
+  n += (text.match(/%%?~[a-z]*p[a-z]*(?:\$\w+:)?[A-Za-z](?![\w%])/gi) ?? []).length
+  n += (text.match(/\bdirname\b/g) ?? []).length
+  // `Split-Path` answers the parent unless it is asked for the leaf, the extension or a yes/no; the
+  // members `Parent` and `Root` named as a property (`-ExpandProperty Parent`, `% Root`, `.Root`) climb too
+  // (review 2026-11-23, third).
+  n += [...text.matchAll(/\bSplit-Path\b([^;|\n]*)/gi)].filter(m => !/-(?:Leaf|LeafBase|Extension|IsAbsolute|NoQualifier)\b/i.test(m[1])).length
+  n += (text.match(/(?:-ExpandProperty|-Expand|-Exp|ForEach-Object|%|-MemberName)\s+['"]?(?:Parent|Root|PSDrive)\b/gi) ?? []).length
+  n += (text.match(/\.(?:root|psdrive)\b/gi) ?? []).length
   n += (text.match(/\bGetDirectoryName\s*\(/g) ?? []).length
   return n
 }
@@ -171,87 +211,137 @@ const ANCHOR_NAMES: Record<string, Exclude<Anchor, null>> = {
 const USER_NAMES = new Set(['USERNAME', 'USER', 'LOGNAME'])
 
 const OS_MOD = String.raw`(?:(?:require\(\s*['"](?:node:)?os['"]\s*\)|\bos)\.)?`
-const NOT_ASSIGN = String.raw`(?!\s*[-+*/]?=(?!=))`
+// `(?!\w)` first: a name may not stop short of its end to dodge the assignment test (`$env:GIT` of
+// `$env:GITX=`, review 2026-11-23).
+const NOT_ASSIGN = String.raw`(?!\w)(?!\s*[-+*/]?=(?!=))`
+/** A PowerShell variable's scope prefix (`$script:X`, `${global:X}`). */
+const PS_SCOPE = String.raw`(?:script|global|local|private|using):`
 
 /**
  * Every spelling the substitution pass replaces, in the order they are tried. Each alternative has
  * its own named groups; the callback below reads which one matched.
  */
-const SUBST = new RegExp([
-  String.raw`(?<hd>(?:\$env:HOMEDRIVE|\$\{env:HOMEDRIVE\}|%HOMEDRIVE%)(?:\$env:HOMEPATH|\$\{env:HOMEPATH\}|%HOMEPATH%))`,
-  String.raw`(?<gfp>(?:\[(?:System\.)?Environment\]::)?GetFolderPath\s*\((?<gfpArg>[^()]*(?:\([^()]*\)[^()]*)*)\))`,
-  String.raw`(?<gev>(?:\[(?:System\.)?Environment\]::)?GetEnvironmentVariable\s*\(\s*['"](?<gevN>\w+)['"][^()]*\))`,
-  String.raw`(?<tmpp>(?:\[(?:System\.)?IO\.Path\]::)?GetTempPath\s*\(\s*\))`,
-  String.raw`(?<rp>\(\s*Resolve-Path\s+~\s*\)(?:\.Path)?)`,
-  String.raw`(?<gl>\(\s*Get-Location\s*\)(?:\.Path)?)`,
-  String.raw`(?<pwds>\$\(\s*pwd\s*\))`,
-  String.raw`(?<envi>(?:\bos\.)?\benviron(?:\[\s*(?<eq1>['"])(?<en1>\w+)\k<eq1>\s*\]${NOT_ASSIGN}|\.get\(\s*(?<eq2>['"])(?<en2>\w+)\k<eq2>\s*(?:,[^()]*)?\)))`,
-  String.raw`(?<penv>\bprocess\.env(?:\.(?<pe1>\w+)|\[\s*['"](?<pe2>\w+)['"]\s*\])${NOT_ASSIGN})`,
-  String.raw`(?<benv>\bBun\.env\.(?<be>\w+))`,
-  String.raw`(?<genv>(?:\bos\.)?\bgetenv\(\s*['"](?<ge>\w+)['"]\s*(?:,[^()]*)?\))`,
-  String.raw`(?<plenv>\$ENV\{(?<pl>\w+)\})`,
-  String.raw`(?<rbenv>\bENV\[\s*['"](?<rb>\w+)['"]\s*\])`,
-  String.raw`(?<denv>\$\{env:(?<de>\w+)\}${NOT_ASSIGN})`,
-  String.raw`(?<psenv>\$env:(?<pse>\w+)${NOT_ASSIGN})`,
-  String.raw`(?<psdrv>(?<![\w$:])Env:\\?(?<pd>\w+))`,
-  String.raw`(?<brace>\$\{(?<br>\w+)\})`,
-  String.raw`(?<item>\$(?:_|PSItem)(?!\w))`,
-  String.raw`(?<keep>\$(?:null|true|false)(?!\w))`,
-  String.raw`(?<dvar>\$(?<dv>[A-Za-z_]\w*)${NOT_ASSIGN})`,
-  String.raw`(?<dpos>\$(?:\d|[@*#?$!]))`,
-  String.raw`(?<pct>%(?<pc>[A-Za-z_]\w*)%)`,
-  // A cmd `for` variable (`%d`, `%%d` in a batch): a value the scan cannot read.
-  String.raw`(?<forv>%%?[A-Za-z](?![\w%]))`,
-  String.raw`(?<bang>!(?<bg>[A-Za-z_]\w*)!)`,
-  String.raw`(?<phome>(?:\bpathlib\.)?\bPath\.home\(\s*\))`,
-  String.raw`(?<pcwd>(?:\bpathlib\.)?\bPath\.cwd\(\s*\))`,
-  String.raw`(?<expu>(?:\bos\.path\.)?\bexpanduser\(\s*(?:(?<exq>['"])(?<ext>[^'"]*)\k<exq>|(?<exa>[^()'"\s][^()'"]*))\s*\))`,
-  String.raw`(?<uinfo>${OS_MOD}\buserInfo\(\s*\)\.homedir)`,
-  String.raw`(?<hdir>${OS_MOD}\bhomedir\(\s*\))`,
-  String.raw`(?<pwuid>(?:\bpwd\.)?\bgetpwuid\([^()]*(?:\([^()]*\))?[^()]*\)(?:\.pw_dir|\[\s*5\s*\])?)`,
-  String.raw`(?<dhome>\bDir\.home\b)`,
-  String.raw`(?<otmp>${OS_MOD}\btmpdir\(\s*\))`,
-  String.raw`(?<gtmp>(?:\btempfile\.)?\bgettempdir\(\s*\))`,
-  String.raw`(?<mktmp>(?:\btempfile\.)?\bmk[sd]temp\([^()]*\))`,
-  String.raw`(?<gcwd>\bos\.getcwd\(\s*\)|\bprocess\.cwd\(\s*\))`,
-  String.raw`(?<guser>\bgetpass\.getuser\(\s*\)|\bos\.getlogin\(\s*\))`,
-].join('|'), 'gi')
+const SUBST_PARTS: Array<[string[], string]> = [
+  [['homedrive'], String.raw`(?<hd>(?:\$env:HOMEDRIVE|\$\{env:HOMEDRIVE\}|%HOMEDRIVE%)(?:\$env:HOMEPATH|\$\{env:HOMEPATH\}|%HOMEPATH%))`],
+  [['getfolderpath'], String.raw`(?<gfp>(?:\[(?:System\.)?Environment\]::)?GetFolderPath\s*\((?<gfpArg>[^()]*(?:\([^()]*\)[^()]*)*)\))`],
+  [['getenvironmentvariable'], String.raw`(?<gev>(?:\[(?:System\.)?Environment\]::)?GetEnvironmentVariable\s*\(\s*['"](?<gevN>\w+)['"][^()]*\))`],
+  [['gettemppath'], String.raw`(?<tmpp>(?:\[(?:System\.)?IO\.Path\]::)?GetTempPath\s*\(\s*\))`],
+  [['resolve-path'], String.raw`(?<rp>\(\s*Resolve-Path\s+~\s*\)(?:\.Path)?)`],
+  [['get-location'], String.raw`(?<gl>\(\s*Get-Location\s*\)(?:\.Path)?)`],
+  [['pwd'], String.raw`(?<pwds>\$\(\s*pwd\s*\))`],
+  [['environ'], String.raw`(?<envi>(?:\bos\.)?\benviron(?:\[\s*(?<eq1>['"])(?<en1>\w+)\k<eq1>\s*\]${NOT_ASSIGN}|\.get\(\s*(?<eq2>['"])(?<en2>\w+)\k<eq2>\s*(?:,[^()]*)?\)))`],
+  [['process.env'], String.raw`(?<penv>\bprocess\.env(?:\.(?<pe1>\w+)|\[\s*['"](?<pe2>\w+)['"]\s*\])${NOT_ASSIGN})`],
+  [['bun.env'], String.raw`(?<benv>\bBun\.env\.(?<be>\w+))`],
+  [['getenv'], String.raw`(?<genv>(?:\bos\.)?\bgetenv\(\s*['"](?<ge>\w+)['"]\s*(?:,[^()]*)?\))`],
+  [['$env{'], String.raw`(?<plenv>\$ENV\{(?<pl>\w+)\})`],
+  [['env['], String.raw`(?<rbenv>\bENV\[\s*['"](?<rb>\w+)['"]\s*\])`],
+  [['${env:'], String.raw`(?<denv>\$\{env:(?<de>\w+)\}${NOT_ASSIGN})`],
+  [['$env:'], String.raw`(?<psenv>\$env:(?<pse>\w+)${NOT_ASSIGN})`],
+  [['env:'], String.raw`(?<psdrv>(?<![\w$:])Env:\\?(?<pd>\w+))`],
+  // A POSIX default (`${X:-}`, `${X:=dir}`): the name when it is set, the default when it is not.
+  [['${'], String.raw`(?<pdef>\$\{(?<pdn>[A-Za-z_]\w*):?[-=](?<pdd>[^}]*)\})`],
+  [['${'], String.raw`(?<brace>\$\{(?:${PS_SCOPE})?(?<br>\w+)\}${NOT_ASSIGN})`],
+  [['$'], String.raw`(?<item>\$(?:_|PSItem)(?!\w))`],
+  [['$'], String.raw`(?<keep>\$(?:null|true|false)(?!\w))`],
+  // `$env:X=` (an assignment, which psenv leaves alone) is not the variable `$env`.
+  [['$'], String.raw`(?<dvar>\$(?!env:)(?:${PS_SCOPE})?(?<dv>[A-Za-z_]\w*)${NOT_ASSIGN})`],
+  [['$'], String.raw`(?<dpos>\$(?:\d|[@*#?$!]))`],
+  [['%'], String.raw`(?<pct>%(?<pc>[A-Za-z_]\w*)%)`],
+  // cmd's substring and substitution of a variable (`%X:~0,3%`, `%X:a=b%`) compute the text they name.
+  [['%'], String.raw`(?<pcsub>%[A-Za-z_]\w*:(?:~[^%\n]*|[^%=\n]*=[^%\n]*)%)`],
+  // A cmd `for` variable (`%d`, `%%d` in a batch, with its modifiers `%~fd`, `%~dpnxf`): a value the scan cannot read.
+  [['%'], String.raw`(?<forv>%%?(?:~[fdpnxsatz]*(?:\$\w+:)?)?[A-Za-z](?![\w%]))`],
+  [['!'], String.raw`(?<bang>!(?<bg>[A-Za-z_]\w*)!)`],
+  [['path.home'], String.raw`(?<phome>(?:\bpathlib\.)?\bPath\.home\(\s*\))`],
+  [['path.cwd'], String.raw`(?<pcwd>(?:\bpathlib\.)?\bPath\.cwd\(\s*\))`],
+  [['expanduser'], String.raw`(?<expu>(?:\bos\.path\.)?\bexpanduser\(\s*(?:(?<exq>['"])(?<ext>[^'"]*)\k<exq>|(?<exa>[^()'"\s][^()'"]*))\s*\))`],
+  [['userinfo'], String.raw`(?<uinfo>${OS_MOD}\buserInfo\(\s*\)\.homedir)`],
+  [['homedir'], String.raw`(?<hdir>${OS_MOD}\bhomedir\(\s*\))`],
+  [['getpwuid'], String.raw`(?<pwuid>(?:\bpwd\.)?\bgetpwuid\([^()]*(?:\([^()]*\))?[^()]*\)(?:\.pw_dir|\[\s*5\s*\])?)`],
+  [['dir.home'], String.raw`(?<dhome>\bDir\.home\b)`],
+  [['tmpdir'], String.raw`(?<otmp>${OS_MOD}\btmpdir\(\s*\))`],
+  [['gettempdir'], String.raw`(?<gtmp>(?:\btempfile\.)?\bgettempdir\(\s*\))`],
+  [['temp('], String.raw`(?<mktmp>(?:\btempfile\.)?\bmk[sd]temp\([^()]*\))`],
+  [['getcwd', 'process.cwd'], String.raw`(?<gcwd>\bos\.getcwd\(\s*\)|\bprocess\.cwd\(\s*\))`],
+  [['getuser', 'getlogin'], String.raw`(?<guser>\bgetpass\.getuser\(\s*\)|\bos\.getlogin\(\s*\))`],
+]
+
+const substCache = new Map<string, RegExp>()
+
+/**
+ * The substitution pattern for one text: only the spellings whose fixed part the text contains, so a long
+ * text with none of them is not tried at every position against all of them (review 2026-11-23, cost).
+ */
+function substRe(text: string): RegExp | null {
+  const lower = text.toLowerCase()
+  const parts: string[] = []
+  let key = ''
+  for (const [k, [triggers, source]] of SUBST_PARTS.entries()) {
+    if (!triggers.some(t => lower.includes(t))) continue
+    parts.push(source)
+    key += `${k},`
+  }
+  if (parts.length === 0) return null
+  let re = substCache.get(key)
+  if (!re) {
+    if (substCache.size >= 256) substCache.clear()
+    re = new RegExp(parts.join('|'), 'gi')
+    substCache.set(key, re)
+  }
+  return re
+}
 
 type Bindings = Map<string, Binding[]>
 
-/** The binding of `keys` that holds at `pos`: undefined when none was assigned before it, null when unreadable. */
-function bindingAt(bindings: Bindings, keys: string[], pos: number): Binding | null | undefined {
+/**
+ * The binding of `keys` that holds at `pos`, counting only assignments made before `limit`: undefined
+ * when none was assigned before it, null when it is assigned more than once (unreadable). Each list is in
+ * position order and only grows at its end, so this is constant time (a copy per assignment was quadratic).
+ */
+function bindingAt(bindings: Bindings, keys: string[], pos: number, limit = Infinity): Binding | null | undefined {
   for (const key of keys) {
     const list = bindings.get(key)
     if (!list) continue
-    const before = list.filter(b => b.pos <= pos)
-    if (before.length === 0) continue
-    if (list.length > 1) return null
-    return before[0]
+    let n = list.length
+    while (n > 0 && list[n - 1].pos >= limit) n--
+    if (n === 0 || list[0].pos > pos) continue
+    if (n > 1) return null
+    return list[0]
   }
   return undefined
 }
+
+/** PowerShell's automatic variables that an assignment does not change: `$HOME` is the real home whatever `$env:HOME` says. */
+const PS_FIXED = new Set(['HOME', 'PWD', 'PSHOME', 'PID'])
 
 function anchorEntry(run: Run, anchor: Exclude<Anchor, null>, orig: string, tail = ''): string {
   return sentinel(run, { k: 'anchor', anchor, tail, orig })
 }
 
 /** One env-style name read at `pos`: the propagation table first, then the anchor table. */
-function envName(run: Run, bindings: Bindings, name: string, pos: number, orig: string, keyOrder: 'env' | 'var', unknown: 'u' | 'keep'): string {
+function envName(run: Run, bindings: Bindings, name: string, pos: number, orig: string, keyOrder: 'env' | 'var', unknown: 'u' | 'keep', limit = Infinity): string {
   const lower = name.toLowerCase()
-  const keys = keyOrder === 'env' ? [`env:${lower}`, lower] : [lower, `env:${lower}`]
-  const b = bindingAt(bindings, keys, pos)
+  const upper = name.toUpperCase()
+  // `$name` is a shell variable, never the environment variable of that name (review 2026-11-23, R4).
+  const keys = keyOrder === 'env' ? [`env:${lower}`, lower] : PS_FIXED.has(upper) ? [] : [lower]
+  const b = bindingAt(bindings, keys, pos, limit)
   if (b === null) return sentinel(run, { k: 'u', orig })
   if (b !== undefined) return sentinel(run, { k: 'bound', b, orig })
-  const upper = name.toUpperCase()
   const anchor = ANCHOR_NAMES[upper]
   if (anchor) return anchorEntry(run, anchor, orig)
   if (USER_NAMES.has(upper)) return sentinel(run, { k: 'text', text: run.homes.user, orig })
   return unknown === 'u' ? sentinel(run, { k: 'u', orig, unset: true }) : orig
 }
 
-function substitute(run: Run, text: string, bindings: Bindings, offset = 0): string {
-  return text.replace(SUBST, (m: string, ...rest: unknown[]) => {
+function substitute(run: Run, text: string, bindings: Bindings, offset = 0, limit = Infinity): string {
+  const re = substRe(text)
+  if (re === null) return text
+  let n = 0
+  let over = false
+  return text.replace(re, (m: string, ...rest: unknown[]) => {
+    // Past the budget the rest is left as written: the fault already refuses the call.
+    if ((++n & 255) === 0 && !over) over = overBudget(run)
+    if (over) return m
     const groups = rest[rest.length - 1] as Record<string, string | undefined>
     const pos = offset + (rest[rest.length - 3] as number)
     const g = (k: string) => groups[k]
@@ -262,28 +352,47 @@ function substitute(run: Run, text: string, bindings: Bindings, offset = 0): str
       if (/ApplicationData/i.test(arg)) return anchorEntry(run, 'appdata', m)
       return anchorEntry(run, 'home', m)
     }
-    if (g('gev') !== undefined) return envName(run, bindings, g('gevN') ?? '', pos, m, 'env', 'u')
+    if (g('gev') !== undefined) return envName(run, bindings, g('gevN') ?? '', pos, m, 'env', 'u', limit)
     if (g('tmpp') !== undefined || g('otmp') !== undefined || g('gtmp') !== undefined || g('mktmp') !== undefined) return anchorEntry(run, 'temp', m)
     if (g('rp') !== undefined || g('phome') !== undefined || g('uinfo') !== undefined || g('hdir') !== undefined
       || g('pwuid') !== undefined || g('dhome') !== undefined) return anchorEntry(run, 'home', m)
     if (g('gl') !== undefined || g('pwds') !== undefined || g('pcwd') !== undefined || g('gcwd') !== undefined) return anchorEntry(run, 'cwd', m)
-    if (g('envi') !== undefined) return envName(run, bindings, g('en1') ?? g('en2') ?? '', pos, m, 'env', 'u')
-    if (g('penv') !== undefined) return envName(run, bindings, g('pe1') ?? g('pe2') ?? '', pos, m, 'env', 'u')
-    if (g('benv') !== undefined) return envName(run, bindings, g('be') ?? '', pos, m, 'env', 'u')
-    if (g('genv') !== undefined) return envName(run, bindings, g('ge') ?? '', pos, m, 'env', 'u')
-    if (g('plenv') !== undefined) return envName(run, bindings, g('pl') ?? '', pos, m, 'env', 'u')
-    if (g('rbenv') !== undefined) return envName(run, bindings, g('rb') ?? '', pos, m, 'env', 'u')
-    if (g('denv') !== undefined) return envName(run, bindings, g('de') ?? '', pos, m, 'env', 'u')
-    if (g('psenv') !== undefined) return envName(run, bindings, g('pse') ?? '', pos, m, 'env', 'u')
-    if (g('psdrv') !== undefined) return envName(run, bindings, g('pd') ?? '', pos, m, 'env', 'u')
-    if (g('brace') !== undefined) return envName(run, bindings, g('br') ?? '', pos, m, 'var', 'u')
+    if (g('envi') !== undefined) return envName(run, bindings, g('en1') ?? g('en2') ?? '', pos, m, 'env', 'u', limit)
+    if (g('penv') !== undefined) return envName(run, bindings, g('pe1') ?? g('pe2') ?? '', pos, m, 'env', 'u', limit)
+    if (g('benv') !== undefined) return envName(run, bindings, g('be') ?? '', pos, m, 'env', 'u', limit)
+    if (g('genv') !== undefined) return envName(run, bindings, g('ge') ?? '', pos, m, 'env', 'u', limit)
+    if (g('plenv') !== undefined) return envName(run, bindings, g('pl') ?? '', pos, m, 'env', 'u', limit)
+    if (g('rbenv') !== undefined) return envName(run, bindings, g('rb') ?? '', pos, m, 'env', 'u', limit)
+    if (g('denv') !== undefined) return envName(run, bindings, g('de') ?? '', pos, m, 'env', 'u', limit)
+    if (g('psenv') !== undefined) return envName(run, bindings, g('pse') ?? '', pos, m, 'env', 'u', limit)
+    if (g('psdrv') !== undefined) return envName(run, bindings, g('pd') ?? '', pos, m, 'env', 'u', limit)
+    if (g('pdef') !== undefined) {
+      const name = g('pdn') ?? ''
+      const dflt = g('pdd') ?? ''
+      if (dflt === '' || bindingAt(bindings, [name.toLowerCase()], pos, limit) !== undefined || ANCHOR_NAMES[name.toUpperCase()]) {
+        return envName(run, bindings, name, pos, m, 'var', 'u', limit)
+      }
+      return /[$`%]/.test(dflt) ? sentinel(run, { k: 'u', orig: m }) : sentinel(run, { k: 'text', text: dflt, orig: m })
+    }
+    if (g('brace') !== undefined) return envName(run, bindings, g('br') ?? '', pos, m, 'var', 'u', limit)
     if (g('item') !== undefined) return sentinel(run, { k: 'p', orig: m })
     if (g('keep') !== undefined) return m
-    if (g('dvar') !== undefined) return envName(run, bindings, g('dv') ?? '', pos, m, 'var', 'u')
+    if (g('dvar') !== undefined) return envName(run, bindings, g('dv') ?? '', pos, m, 'var', 'u', limit)
     if (g('dpos') !== undefined) return sentinel(run, { k: 'u', orig: m })
-    if (g('pct') !== undefined) return envName(run, bindings, g('pc') ?? '', pos, m, 'env', 'u')
+    if (g('pct') !== undefined) {
+      // cmd expands `%X%` when it reads the line, before any `set X=` on that line has run (review
+      // 2026-11-23, third): cmd's own assignment on the same line does not reach it. A PowerShell
+      // assignment before `cmd /c` has run when cmd starts, so it does.
+      const at = rest[rest.length - 3] as number
+      const lineStart = offset + text.lastIndexOf('\n', at) + 1
+      const name = g('pc') ?? ''
+      const b = bindingAt(bindings, [`env:${name.toLowerCase()}`, name.toLowerCase()], pos, limit)
+      const sameLineSet = b !== null && b !== undefined && b.cmdSet === true && b.pos >= lineStart
+      return envName(run, bindings, name, pos, m, 'env', 'u', sameLineSet ? Math.min(limit, lineStart) : limit)
+    }
+    if (g('pcsub') !== undefined) { markSelfBuilding(run, `cmd's ${m}, which computes the text it names`); return sentinel(run, { k: 'u', orig: m }) }
     if (g('forv') !== undefined) return sentinel(run, { k: 'u', orig: m })
-    if (g('bang') !== undefined) return envName(run, bindings, g('bg') ?? '', pos, m, 'env', 'keep')
+    if (g('bang') !== undefined) return envName(run, bindings, g('bg') ?? '', pos, m, 'env', 'u', limit)
     if (g('expu') !== undefined) {
       const lit = g('ext')
       if (lit === undefined) return anchorEntry(run, 'home', m)
@@ -298,12 +407,12 @@ function substitute(run: Run, text: string, bindings: Bindings, offset = 0): str
 // ─── (c2) Single-assignment constant propagation ──────────────────────────────────────────────
 
 /** The end of the statement that starts at `i`: the first `;`, newline, `|`, `}` or `)` outside quotes and brackets. */
-function statementEnd(s: string, i: number, stopAtSpace: boolean): number {
+function statementEnd(s: string, i: number, stopAtSpace: boolean, backslash = true): number {
   let depth = 0
   for (let j = i; j < s.length; j++) {
     const c = s[j]
     if (c === "'" || c === '"' || c === '`') {
-      const k = closingQuote(s, j)
+      const k = closingQuote(s, j, backslash)
       j = k
       continue
     }
@@ -317,10 +426,10 @@ function statementEnd(s: string, i: number, stopAtSpace: boolean): number {
   return s.length
 }
 
-function closingQuote(s: string, j: number): number {
+function closingQuote(s: string, j: number, backslash = true): number {
   const q = s[j]
   for (let k = j + 1; k < s.length; k++) {
-    if (q !== "'" && (s[k] === '\\' || s[k] === '`')) { k++; continue }
+    if (q !== "'" && ((backslash && s[k] === '\\') || s[k] === '`')) { k++; continue }
     if (s[k] === q) {
       if (q === "'" && s[k + 1] === "'") { k++; continue }
       return k
@@ -329,8 +438,13 @@ function closingQuote(s: string, j: number): number {
   return s.length
 }
 
-const PS_ASSIGN = /(^|[\s;{(|&])\$(env:)?([A-Za-z_]\w*)\s*([-+*/]?)=(?!=)/g
+// `$X =`, `$env:X =`, `${X} =`, `${env:X} =`, `[string]$X =`, `$script:X =` (review 2026-11-23).
+const PS_ASSIGN = /(^|[\s;{(|&=])(?:\[[^\]\n]+\]\s*)*\$(?:\{(env:|(?:script|global|local|private|using):)?([A-Za-z_]\w*)\}|(env:|(?:script|global|local|private|using):)?([A-Za-z_]\w*))\s*([-+*/]?)=(?!=)/g
 const POSIX_ASSIGN = /(^|[\s;&|(\n])(export\s+)?([A-Za-z_]\w*)=/g
+/** cmd's quoted `set "X=value"`. */
+const CMD_SET_QUOTED = /(^|[\s;&|(\n])set\s+"([A-Za-z_]\w*)=([^"\n]*)"/gi
+/** `Set-Variable -Name X -Value V`, `New-Variable X V`, `sv X V`: the value as written. */
+const PS_SET_VARIABLE = /(^|[\s;&|(\n{])(?:Set-Variable|New-Variable|sv|nv)\b([^;|\n}]*)/gi
 const CODE_ENV_ASSIGN = /(?:\bos\.environ\[\s*['"](\w+)['"]\s*\]|\bprocess\.env(?:\.(\w+)|\[\s*['"](\w+)['"]\s*\]))\s*=(?!=)/g
 const PS_PARAM = /\bparam\s*\(([^)]*)\)/gi
 const LOOP_VARS = [
@@ -341,19 +455,61 @@ const LOOP_VARS = [
 ]
 
 /** Reads every shell assignment of a text once (finding 2.M1 part 1). */
-function findShellAssignments(run: Run, text: string): Bindings {
-  const found: Array<{ key: string; pos: number; rhs: string; rhsAt: number; dialect: 'ps' | 'posix' | 'code' }> = []
+function findShellAssignments(run: Run, text: string, psText = false): Bindings {
+  const found: Array<{ key: string; pos: number; rhs: string; rhsAt: number; dialect: 'ps' | 'posix' | 'code'; cmdSet?: true }> = []
+  let depth: ((pos: number) => number) | null = null
   for (const m of text.matchAll(PS_ASSIGN)) {
     const start = (m.index ?? 0) + m[0].length
-    const end = statementEnd(text, start, false)
-    const key = `${m[2] ? 'env:' : ''}${m[3].toLowerCase()}`
-    found.push({ key, pos: (m.index ?? 0) + m[1].length, rhs: m[4] ? '\u0000' : text.slice(start, end), rhsAt: start, dialect: 'ps' })
+    const end = statementEnd(text, start, false, !psText)
+    const env = (m[2] ?? m[4]) === 'env:'
+    const key = `${env ? 'env:' : ''}${(m[3] ?? m[5]).toLowerCase()}`
+    // A home or temp name assigned inside a block, a condition or a group (`if ($false) { $env:USERPROFILE
+    // = ... }`, `$false -and ($env:USERPROFILE = ...)`) may never run: the name stays the real folder
+    // (review 2026-11-23, third). Nothing else is judged by where it is assigned.
+    if (ANCHOR_NAMES[(m[3] ?? m[5]).toUpperCase()]) {
+      depth ??= depthIndex(text, psText)
+      if (depth((m.index ?? 0) + m[1].length) > 0) continue
+    }
+    // A chained assignment (`$X = $Y = 'v'`) binds both names to the last value.
+    let rhs = m[6] ? '\u0000' : text.slice(start, end)
+    let rhsAt = start
+    for (let guard = 0; guard < 8; guard++) {
+      const chain = rhs.match(/^\s*\$(?:\{[^}]*\}|[\w:]+)\s*=(?!=)/)
+      if (!chain) break
+      rhs = rhs.slice(chain[0].length); rhsAt += chain[0].length
+    }
+    found.push({ key, pos: (m.index ?? 0) + m[1].length, rhs, rhsAt, dialect: 'ps' })
+  }
+  for (const m of text.matchAll(CMD_SET_QUOTED)) {
+    const at = (m.index ?? 0) + m[0].indexOf('"')
+    found.push({ key: m[2].toLowerCase(), pos: (m.index ?? 0) + m[1].length, rhs: `"${m[3]}"`, rhsAt: at, dialect: 'ps', cmdSet: true })
+  }
+  for (const m of text.matchAll(PS_SET_VARIABLE)) {
+    const args = tokenize(m[2]).filter((t): t is WordTok => t.kind === 'w').map(t => ({ t, text: t.pieces.map(p => p.t).join('') }))
+    let name: string | null = null
+    let value: WordTok | null = null
+    const pos: WordTok[] = []
+    for (let k = 0; k < args.length; k++) {
+      const lower = args[k].text.toLowerCase()
+      if (/^-n(?:a(?:me?)?)?$/.test(lower) && args[k + 1]) { name = args[++k].text; continue }
+      if (/^-v(?:a(?:l(?:ue?)?)?)?$/.test(lower) && args[k + 1]) { value = args[++k].t; continue }
+      if (lower.startsWith('-')) continue
+      pos.push(args[k].t)
+    }
+    if (name === null && pos[0]) name = pos.shift()!.pieces.map(p => p.t).join('')
+    if (value === null && pos[0]) value = pos[0]
+    if (name === null || !/^[A-Za-z_]\w*$/.test(name)) continue
+    const at = (m.index ?? 0) + m[1].length
+    const rhsAt = value ? (m.index ?? 0) + m[0].length - m[2].length + value.start : 0
+    found.push({ key: name.toLowerCase(), pos: at, rhs: value ? m[2].slice(value.start, value.end) : '\u0000', rhsAt, dialect: 'ps' })
   }
   for (const m of text.matchAll(POSIX_ASSIGN)) {
     const start = (m.index ?? 0) + m[0].length
     const end = statementEnd(text, start, true)
     const key = m[3].toLowerCase()
-    found.push({ key, pos: (m.index ?? 0) + m[1].length, rhs: text.slice(start, end), rhsAt: start, dialect: 'posix' })
+    const at = (m.index ?? 0) + m[1].length
+    const cmdSet = /(?:^|[\s;&|("'])set\s+$/i.test(text.slice(Math.max(0, at - 16), at)) ? { cmdSet: true as const } : {}
+    found.push({ key, pos: at, rhs: text.slice(start, end), rhsAt: start, dialect: 'posix', ...cmdSet })
   }
   for (const m of text.matchAll(CODE_ENV_ASSIGN)) {
     const start = (m.index ?? 0) + m[0].length
@@ -371,34 +527,56 @@ function findShellAssignments(run: Run, text: string): Bindings {
   }
   found.sort((a, b) => a.pos - b.pos)
   const bindings: Bindings = new Map()
-  for (const f of found) {
-    const b: Binding = { pos: f.pos, value: null, here: null }
+  for (const [fi, f] of found.entries()) {
+    if ((fi & 63) === 63 && overBudget(run)) break
+    const b: Binding = { pos: f.pos, value: null, here: null, ...(f.cmdSet ? { cmdSet: true as const } : {}) }
     const list = bindings.get(f.key) ?? []
     list.push(b)
     bindings.set(f.key, list)
     if (f.rhs === '\u0000') continue
     const lead = f.rhs.length - f.rhs.trimStart().length
-    const rhsSub = substitute(run, f.rhs.trim(), bindingsBefore(bindings, f.pos), f.rhsAt + lead)
+    // Only the assignments made before this one count for its right-hand side.
+    const rhsSub = substitute(run, f.rhs.trim(), bindings, f.rhsAt + lead, f.pos)
     const v = f.dialect === 'code' ? evalExpr(run, rhsSub, new Map()) : shellRhsValue(run, rhsSub, f.dialect)
-    if (v && typeof v === 'object') { b.here = v.here; b.value = null }
-    else b.value = v
+    if (v && typeof v === 'object') {
+      if ('here' in v) { b.here = v.here; b.value = null } else { b.unset = true; b.value = null }
+    } else b.value = v
+    // A PowerShell list (`$a = 'x','D:\DCIM'`): every element, so `$a[1]` or `$a` is judged on each of them,
+    // never on the first one alone (review 2026-11-23, third).
+    if (f.dialect === 'ps') {
+      const list = listElements(rhsSub)
+      if (list !== null) b.list = list
+    }
   }
   return bindings
 }
 
-function bindingsBefore(bindings: Bindings, pos: number): Bindings {
-  const out: Bindings = new Map()
-  for (const [k, list] of bindings) {
-    const before = list.filter(b => b.pos < pos)
-    if (before.length) out.set(k, before)
+/** The bracket depth (`(`, `{`, `[`) at each position of a text, quotes and sentinels skipped; built once, read in constant time. */
+function depthIndex(text: string, psText: boolean): (pos: number) => number {
+  const at = new Uint16Array(text.length + 1)
+  let d = 0
+  for (let j = 0; j < text.length; j++) {
+    at[j] = d
+    const c = text[j]
+    if (c === "'" || c === '"') {
+      const k = Math.min(closingQuote(text, j, !psText), text.length - 1)
+      for (let x = j + 1; x <= k; x++) at[x] = d
+      j = k
+      continue
+    }
+    if (c === '(' || c === '{' || c === '[') d = Math.min(d + 1, 65535)
+    else if ((c === ')' || c === '}' || c === ']') && d > 0) d--
   }
-  return out
+  at[text.length] = d
+  return (pos: number) => at[Math.max(0, Math.min(pos, text.length))]
 }
 
-/** The value a shell right-hand side binds, or null when it is unreadable. */
-function shellRhsValue(run: Run, rhs: string, dialect: 'ps' | 'posix'): string | null | { here: number } {
+/** The value a shell right-hand side binds, or null when it is unreadable; `unset` when it is only a name nothing set. */
+function shellRhsValue(run: Run, rhs: string, dialect: 'ps' | 'posix'): string | null | { here: number } | { unset: true } {
   if (rhs === '') return dialect === 'posix' ? '' : null
-  const toks = tokenize(rhs)
+  // `$null` and `[string]::Empty` are empty strings in a path (review 2026-11-23).
+  if (/^(?:\$null|\[(?:System\.)?String\]::Empty)$/i.test(rhs)) return ''
+  const toks = tokenize(rhs, dialect === 'posix')
   if (toks.length !== 1 || toks[0].kind !== 'w') return null
   const w = toks[0]
   const value = w.pieces.map(p => p.t).join('')
@@ -407,11 +585,27 @@ function shellRhsValue(run: Run, rhs: string, dialect: 'ps' | 'posix'): string |
   if (only) {
     const e = run.table[Number(only[1])]
     if (e?.k === 'here') return { here: e.body }
+    if ((e?.k === 'u' && e.unset) || (e?.k === 'bound' && e.b.unset)) return { unset: true }
   }
   // An unquoted PowerShell right-hand side that is not a variable is a command, not a value.
   if (dialect === 'ps' && w.pieces[0].q === 'n' && !w.pieces[0].t.startsWith(S0)) return null
   if (hasUnreadableSentinel(run, value)) return null
   return value
+}
+
+/** The elements of a right-hand side that is one comma list word (`'a','b'`, `a,b`), or null. */
+function listElements(rhs: string): string[] | null {
+  const toks = tokenize(rhs, false)
+  if (toks.length !== 1 || toks[0].kind !== 'w') return null
+  const pieces = toks[0].pieces
+  if (!pieces.some(p => p.q === 'n' && p.t.includes(','))) return null
+  const groups: Piece[][] = [[]]
+  for (const p of pieces) {
+    if (p.q !== 'n') { groups[groups.length - 1].push(p); continue }
+    p.t.split(',').forEach((t, k) => { if (k > 0) groups.push([]); if (t !== '') groups[groups.length - 1].push({ t, q: 'n' }) })
+  }
+  const out = groups.filter(g => g.length).map(g => g.map(p => p.t).join(''))
+  return out.length >= 2 ? out.slice(0, MAX_PATHS) : null
 }
 
 function hasUnreadableSentinel(run: Run, s: string): boolean {
@@ -445,8 +639,14 @@ function matchParen(s: string, open: number): number {
 
 const CARET_ESCAPABLE = new Set(['&', '|', '<', '>', '(', ')', '^', '%', '!', '"'])
 
-function tokenize(s: string): Tok[] {
+/**
+ * The words and operators of a text. `posixQuotes`: a backslash escapes `"`, `$` and a backtick inside
+ * double quotes, as a POSIX shell reads it; PowerShell and cmd read the backslash as an ordinary
+ * character, so `"D:\"` is closed at its second quote there (review 2026-11-23).
+ */
+function tokenize(s: string, posixQuotes = true, run?: Run): Tok[] {
   const toks: Tok[] = []
+  let tick = 0
   let pieces: Piece[] = []
   let subs: string[] = []
   let wStart = -1
@@ -467,6 +667,8 @@ function tokenize(s: string): Tok[] {
   const op = (o: string, a: number, b: number) => { endWord(a); toks.push({ kind: 'op', op: o, start: a, end: b }) }
   let i = 0
   while (i < s.length) {
+    // A long text is read against the budget: past it the rest is not tokenized (the fault refuses the call).
+    if (run !== undefined && (++tick & 4095) === 0 && overBudget(run)) break
     const c = s[i]
     if (c === ' ' || c === '\t' || c === '\r') { endWord(i); i++; continue }
     if (c === '\n') { op('\n', i, i + 1); i++; continue }
@@ -490,11 +692,16 @@ function tokenize(s: string): Tok[] {
       while (j < s.length && s[j] !== '"') {
         const d = s[j]
         if (d === '`' && j + 1 < s.length) { t += s[j + 1]; j += 2; continue }
-        if (d === '\\' && (s[j + 1] === '"' || s[j + 1] === '$' || s[j + 1] === '`')) { t += s[j + 1]; j += 2; continue }
+        if (posixQuotes && d === '\\' && (s[j + 1] === '"' || s[j + 1] === '$' || s[j + 1] === '`')) { t += s[j + 1]; j += 2; continue }
         if (d === '$' && s[j + 1] === '(') {
           const k = matchParen(s, j + 1)
-          subs.push(s.slice(j + 2, k))
-          t += UNREAD; j = k + 1; continue
+          const inner = s.slice(j + 2, k)
+          subs.push(inner)
+          // `"$($x)"` is `"$x"`: a subexpression that is one name reads as the name. One that is empty
+          // when it runs (`$()`, `$($null)`, `$('')`, `$(echo)`) is an empty name (review 2026-11-23, third).
+          t += new RegExp(`^\\s*${S0}\\d+${S1}\\s*$`).test(inner) ? inner.trim()
+            : /^\s*(?:\$null|''|""|echo|Write-Output)?\s*$/i.test(inner) ? EMPTY_SUB : UNREAD
+          j = k + 1; continue
         }
         if (d === S0) { const k = s.indexOf(S1, j); const e = k < 0 ? s.length : k + 1; t += s.slice(j, e); j = e; continue }
         t += d; j++
@@ -540,45 +747,106 @@ function tokenize(s: string): Tok[] {
 
 // ─── Here-documents and here-strings ──────────────────────────────────────────────────────────
 
-const HERE_STRING = /@(['"])[ \t]*\r?\n([\s\S]*?)\r?\n\1@/g
+/** A here-string's opener: `@'` or `@"`, then the end of its line. */
+const HERE_STRING_OPEN = /@(['"])[ \t]*\r?\n/g
 const HERE_DOC = /(^|[\s(;|&])<<(-?)[ \t]*(['"]?)([A-Za-z_]\w*)\3(?=[\s;|&)]|$)/g
+/** At most this many here-documents are lifted out of one text. */
+const MAX_HERE_DOCS = 64
 
-/** Lifts every here-string and here-document body out of a text; the text keeps a sentinel word in its place. */
+/**
+ * Lifts every here-string and here-document body out of a text; the text keeps a sentinel word in its
+ * place. Linear in the text (review 2026-11-23, third: a lazy pattern per opener and a terminator search
+ * per opener were quadratic, and an engine reading a 1 MiB command was blocked for minutes): a
+ * here-string opener is paired with the next closer of its quote, and once one has none no later opener
+ * of that quote is tried; a here-document's terminator is looked up in an index of the text's lines.
+ */
 function liftBodies(run: Run, text: string): string {
-  let out = text.replace(HERE_STRING, (m: string, _q: string, body: string) => {
-    run.bodies.push({ text: body, use: null })
-    return ` ${sentinel(run, { k: 'here', body: run.bodies.length - 1, orig: m })} `
-  })
-  for (let guard = 0; guard < 64; guard++) {
-    HERE_DOC.lastIndex = 0
-    let m: RegExpExecArray | null = null
-    let found: { m: RegExpExecArray; bodyStart: number; bodyEnd: number; after: number } | null = null
-    while ((m = HERE_DOC.exec(out)) !== null) {
-      const lineEnd = out.indexOf('\n', m.index + m[0].length)
-      if (lineEnd < 0) break
-      const tag = m[4]
-      const strip = m[2] === '-'
-      let k = lineEnd + 1
-      let bodyEnd = -1; let after = -1
-      while (k <= out.length) {
-        const e = out.indexOf('\n', k)
-        const line = out.slice(k, e < 0 ? out.length : e).replace(/\r$/, '')
-        if ((strip ? line.replace(/^\t+/, '') : line) === tag) { bodyEnd = k; after = e < 0 ? out.length : e; break }
-        if (e < 0) break
-        k = e + 1
-      }
-      if (bodyEnd < 0) continue
-      found = { m, bodyStart: lineEnd + 1, bodyEnd, after }
-      break
-    }
-    if (!found) break
-    const { m: hm, bodyStart, bodyEnd, after } = found
-    run.bodies.push({ text: out.slice(bodyStart, Math.max(bodyStart, bodyEnd - 1)), use: null })
-    const marker = sentinel(run, { k: 'doc', body: run.bodies.length - 1, orig: hm[0].slice(hm[1].length) })
-    const markerAt = hm.index + hm[1].length
-    out = out.slice(0, markerAt) + ` ${marker} ` + out.slice(hm.index + hm[0].length, bodyStart - 1) + out.slice(after)
+  let out = ''
+  let last = 0
+  const noClose = new Set<string>()
+  HERE_STRING_OPEN.lastIndex = 0
+  for (let m = HERE_STRING_OPEN.exec(text); m !== null; m = HERE_STRING_OPEN.exec(text)) {
+    const q = m[1]
+    if (noClose.has(q)) { if (noClose.size === 2) break; continue }
+    const bodyStart = m.index + m[0].length
+    const close = text.indexOf(`\n${q}@`, bodyStart)
+    if (close < 0) { noClose.add(q); continue }
+    const end = close + 3
+    const body = text.slice(bodyStart, close).replace(/\r$/, '')
+    run.bodies.push({ text: body, use: null, q })
+    out += `${text.slice(last, m.index)} ${sentinel(run, { k: 'here', body: run.bodies.length - 1, orig: text.slice(m.index, end) })} `
+    last = end
+    HERE_STRING_OPEN.lastIndex = end
   }
-  return out
+  out += text.slice(last)
+  return liftHereDocs(run, out)
+}
+
+function liftHereDocs(run: Run, out: string): string {
+  if (!out.includes('<<')) return out
+  const starts: number[] = [0]
+  for (let i = out.indexOf('\n'); i >= 0; i = out.indexOf('\n', i + 1)) starts.push(i + 1)
+  const lineText = (n: number) => out.slice(starts[n], n + 1 < starts.length ? starts[n + 1] - 1 : out.length).replace(/\r$/, '')
+  const lineOf = (pos: number) => { let lo = 0; let hi = starts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (starts[mid] <= pos) lo = mid; else hi = mid - 1 } return lo }
+  // The lines that could end a here-document (an identifier, optionally after tabs), by their text.
+  const buildIndex = () => {
+    const exact = new Map<string, number[]>()
+    const stripped = new Map<string, number[]>()
+    for (let n = 0; n < starts.length; n++) {
+      const t = lineText(n)
+      if (t.length > 256 || !/^\t*[A-Za-z_]\w*$/.test(t)) continue
+      const add = (mp: Map<string, number[]>, k: string) => { const l = mp.get(k); if (l) l.push(n); else mp.set(k, [n]) }
+      if (!t.startsWith('\t')) add(exact, t)
+      add(stripped, t.replace(/^\t+/, ''))
+    }
+    return { exact, stripped }
+  }
+  let lines: { exact: Map<string, number[]>; stripped: Map<string, number[]> } | null = null
+  const firstAtOrAfter = (list: number[] | undefined, from: number): number => {
+    if (!list) return -1
+    let lo = 0; let hi = list.length
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid] < from) lo = mid + 1; else hi = mid }
+    return lo < list.length ? list[lo] : -1
+  }
+  const edits: Array<{ from: number; to: number; put: string }> = []
+  const nextBodyLine = new Map<number, number>()
+  let skipFrom = -1
+  let skipTo = -1
+  let lifted = 0
+  HERE_DOC.lastIndex = 0
+  for (const m of out.matchAll(HERE_DOC)) {
+    if (lifted >= MAX_HERE_DOCS) break
+    const at = m.index ?? 0
+    if (at >= skipFrom && at < skipTo) continue
+    const lineEnd = out.indexOf('\n', at + m[0].length)
+    if (lineEnd < 0) break
+    lines ??= buildIndex()
+    const opener = lineOf(at)
+    const first = nextBodyLine.get(opener) ?? opener + 1
+    const term = firstAtOrAfter((m[2] === '-' ? lines.stripped : lines.exact).get(m[4]), first)
+    if (term < 0) continue
+    const bodyStart = starts[first]
+    const bodyEnd = starts[term]
+    const after = term + 1 < starts.length ? starts[term + 1] - 1 : out.length
+    run.bodies.push({ text: out.slice(bodyStart, Math.max(bodyStart, bodyEnd - 1)), use: null })
+    const marker = sentinel(run, { k: 'doc', body: run.bodies.length - 1, orig: m[0].slice(m[1].length) })
+    edits.push({ from: at + m[1].length, to: at + m[0].length, put: ` ${marker} ` })
+    edits.push({ from: bodyStart - 1, to: after, put: '' })
+    nextBodyLine.set(opener, term + 1)
+    if (skipTo === bodyStart - 1) skipTo = after
+    else { skipFrom = bodyStart - 1; skipTo = after }
+    lifted++
+  }
+  if (edits.length === 0) return out
+  edits.sort((a, b) => a.from - b.from)
+  let res = ''
+  let pos = 0
+  for (const e of edits) {
+    if (e.from < pos) continue
+    res += out.slice(pos, e.from) + e.put
+    pos = e.to
+  }
+  return res + out.slice(pos)
 }
 
 // ─── (j) Self-building markers ─────────────────────────────────────────────────────────────────
@@ -597,7 +865,20 @@ const MARKERS: Array<[RegExp, string]> = [
   [/(?:^|[;|{(\n]|&&|\|\|)\s*[&.]\s*\$?\(/, 'a call operator applied to a computed command'],
   [/\.InvokeScript\s*\(|\.InvokeCommand\.|\bNewScriptBlock\s*\(/i, 'a script run through the engine API'],
   [/\b(?:Invoke-Command|icm|Start-Job|sajb|Start-ThreadJob)\b[^\n]*\s-Arg\w*/i, 'a script block handed its arguments'],
+  // Review 2026-11-23 (second): a script block run with its own parameters (`& { param($p) ... } D:\x`),
+  // a runspace handed a script, and C# compiled from the command.
+  [/(?:^|[;|{(\n]|&&|\|\|)\s*[&.]\s*\{\s*param\s*\(/i, 'a script block handed its arguments'],
+  [/\.Add(?:Script|Command)\s*\(|\[(?:System\.Management\.Automation\.)?PowerShell\]::Create\s*\(/i, 'a script run through the engine API'],
+  [/\bAdd-Type\b[^\n]*-(?:TypeDefinition|MemberDefinition)\b/i, 'Add-Type, which compiles code the command carries'],
 ]
+
+/** Markers that only an inline program carries. */
+function codeMarker(code: string): string | null {
+  if (/\bos\.(?:exec|spawn)[lv]p?e?\s*\(|\bos\.posix_spawnp?\s*\(/.test(code)) return 'a program started through os.exec* or os.spawn*'
+  if (/\bctypes\b/.test(code)) return 'ctypes, which calls the system directly'
+  if (/(?<![\w.$])(?:eval|exec|Function)\s*\(\s*(?!['"`])[^)\s]/.test(code)) return 'eval or exec of text built at run time'
+  return null
+}
 
 function findMarker(text: string): string | null {
   for (const [re, name] of MARKERS) if (re.test(text)) return name
@@ -612,7 +893,7 @@ function markSelfBuilding(run: Run, marker: string | null): void {
 
 // ─── (f) Path candidates ───────────────────────────────────────────────────────────────────────
 
-type Expanded = { text: string; anchor: Anchor; pipe: boolean; here: number | null; doc: number | null; leadUnset: boolean }
+type Expanded = { text: string; anchor: Anchor; pipe: boolean; here: number | null; doc: number | null; leadUnset: boolean; leadName: string }
 
 function anchorPath(run: Run, a: Exclude<Anchor, null>, base: string): string | null {
   switch (a) {
@@ -643,8 +924,10 @@ function expand(run: Run, value: string, base: string, tilde: boolean, depth = 0
   let here: number | null = null
   let doc: number | null = null
   let leadUnset = false
+  let leadName = ''
   for (let i = 0; i < value.length; i++) {
     const c = value[i]
+    if (c === EMPTY_SUB) { if (text === '') { leadUnset = true; leadName = 'the empty subexpression $()' } text += UNREAD; continue }
     if (c !== S0) { text += c; continue }
     const { e, end } = entryAt(run, value, i)
     i = end - 1
@@ -660,13 +943,15 @@ function expand(run: Run, value: string, base: string, tilde: boolean, depth = 0
       case 'text': text += e.text; break
       case 'bound': {
         if (e.b.here !== null) { if (text === '') here = e.b.here; text += UNREAD; break }
+        if (e.b.unset) { if (text === '') { leadUnset = true; leadName = e.orig } text += UNREAD; break }
         if (e.b.value === null || depth > 8) { text += UNREAD; break }
         const inner = expand(run, e.b.value, base, true, depth + 1)
         if (text === '' && anchor === null) anchor = inner.anchor
+        if (text === '' && inner.leadUnset) { leadUnset = true; leadName = e.orig }
         text += inner.text
         break
       }
-      case 'u': if (text === '' && e.unset) leadUnset = true; text += UNREAD; break
+      case 'u': if (text === '' && e.unset) { leadUnset = true; leadName = e.orig } text += UNREAD; break
       case 'p': pipe = true; text += PIPE; break
       case 'here': if (text === '') here = e.body; break
       case 'doc': if (text === '') doc = e.body; break
@@ -674,7 +959,7 @@ function expand(run: Run, value: string, base: string, tilde: boolean, depth = 0
   }
   if (tilde && /^~(?:[\\/]|$)/.test(text)) { text = run.homes.home + text.slice(1); anchor = 'home' }
   if (text.includes(PIPE)) pipe = true
-  return { text, anchor, pipe, here, doc, leadUnset }
+  return { text, anchor, pipe, here, doc, leadUnset, leadName }
 }
 
 type Cand = { path: string; children: boolean; device: boolean; relative: boolean } | 'unreadable' | null
@@ -710,8 +995,10 @@ function toPath(run: Run, text0: string, relAllowed: boolean, base: string, anch
     const byUnread = cut === uIdx
     if (lastSep < 0) {
       if (byUnread) return 'unreadable'
-      if (!relAllowed) return null
-      s = '.'
+      // `D:*` is everything in D:'s current folder: the drive word is kept (review 2026-11-23).
+      if (/^[A-Za-z]:$/.test(prefix)) s = prefix
+      else if (!relAllowed) return null
+      else s = '.'
     } else {
       s = prefix.slice(0, lastSep + 1)
       if (byUnread && s.replace(/[\\/]/g, '') === '' && !anchored) return 'unreadable'
@@ -773,9 +1060,16 @@ interface Seg {
   groups: Array<{ start: number; end: number; opener: string }>
   /** The command was written after PowerShell's call operator (`& "C:\x\tool.exe" ...`). */
   call?: boolean
+  /** The inside of a method call's parentheses (`$o.DeleteFolder('D:\x')`): arguments a method the scan cannot read is handed. */
+  methodArgs?: boolean
+  /**
+   * A group followed at once by a member or an index (`(Get-Item .).Parent`): its value is not the items
+   * its own command named, so they never flow down the pipeline around it (review 2026-11-23, third).
+   */
+  transformed?: boolean
 }
 
-function segment(toks: Tok[]): Seg[] {
+function segment(toks: Tok[], text: string): Seg[] {
   const segs: Seg[] = []
   let nextId = 0
   let nextPipe = 0
@@ -784,9 +1078,12 @@ function segment(toks: Tok[]): Seg[] {
   let cur = mk(nextPipe++, 0, null, 0)
   const stack: Array<{ seg: Seg; opener: string; hadWords: boolean; at: number }> = []
   let pending: string | null = null
-  const close = (s: Seg) => { if ((s.words.length || s.redirects.length) && !segs.includes(s)) segs.push(s) }
+  // A set, not a search of the list: a text of many statements has as many segments (review 2026-11-23, third, cost).
+  const added = new Set<Seg>()
+  const close = (s: Seg) => { if ((s.words.length || s.redirects.length) && !added.has(s)) { added.add(s); segs.push(s) } }
   const touch = (s: Seg, a: number, b: number) => { s.start = Math.min(s.start, a); s.end = Math.max(s.end, b) }
-  for (const t of toks) {
+  for (let ti = 0; ti < toks.length; ti++) {
+    const t = toks[ti]
     if (t.kind === 'w') {
       if (pending !== null) { cur.redirects.push({ op: pending, target: t }); pending = null }
       else cur.words.push(t)
@@ -808,11 +1105,31 @@ function segment(toks: Tok[]): Seg[] {
         touch(cur, t.start, t.end)
         stack.push({ seg: cur, opener: t.op, hadWords: cur.words.length > 0, at: t.start })
         cur = mk(nextPipe++, 0, cur.pipeline, cur.pipeIndex)
+        // `.Name(` or `::Name(` right before the parenthesis: the arguments of a method call.
+        if (t.op === '(' && /(?:\.|::)[A-Za-z_]\w*$/.test(text.slice(Math.max(0, t.start - 128), t.start))) cur.methodArgs = true
         break
       }
       case ')': case '}': {
         const top = stack.pop()
         const group = top ? { start: top.at, end: t.end, opener: top.opener } : null
+        const next = toks[ti + 1]
+        // A group followed at once by a member or an index (`(Get-ChildItem $HOME).FullName`,
+        // `(gci D:\)[0].FullName`) is one operand whose value cannot be read (review 2026-11-23).
+        // At the head of a pipeline (`(Get-Item .).Parent.GetDirectories() | ...`) it is the same: an
+        // unreadable value, and the group's own items are not what flows on (review 2026-11-23, third).
+        if (top && top.opener !== '{' && group && next?.kind === 'w' && next.start === t.end
+          && /^(?:\.|\[|::)/.test(next.pieces.map(p => p.t).join(''))) {
+          const w: WordTok = { kind: 'w', pieces: [{ t: UNREAD, q: 'n' }], start: group.start, end: next.end, subs: [] }
+          top.seg.words.push(w)
+          touch(top.seg, w.start, w.end)
+          top.seg.subexpr = true
+          top.seg.groups.push(group)
+          cur.transformed = true
+          close(cur)
+          cur = top.seg
+          ti++
+          break
+        }
         if (top && top.opener !== '{' && top.hadWords) {
           // An expression group handed to a path verb (`Remove-Item ($env:USERPROFILE + '\.x')`) is
           // one of its operands; any other group is a subexpression whose value cannot be read.
@@ -842,6 +1159,8 @@ function isPathVerb(w: WordTok): boolean {
 function expressionWord(inner: Seg): WordTok | null {
   const ws = inner.words
   if (ws.length === 0 || inner.redirects.length) return null
+  const formatted = formatWord(ws)
+  if (formatted !== null) return formatted
   const first = ws[0].pieces[0]
   if (!first || !(first.q !== 'n' || first.t.startsWith(S0) || first.t.startsWith('$'))) return null
   if (ws.length % 2 === 0) return null
@@ -849,6 +1168,30 @@ function expressionWord(inner: Seg): WordTok | null {
   const pieces: Piece[] = []
   for (let k = 0; k < ws.length; k += 2) pieces.push(...ws[k].pieces)
   return { kind: 'w', pieces, start: ws[0].start, end: ws[ws.length - 1].end, subs: ws.flatMap(w => w.subs) }
+}
+
+/**
+ * `'{0}:\DCIM' -f 'D'`: PowerShell's format operator over literals is the text it makes (review
+ * 2026-11-23, third). Null for any other shape, or an operand that is not a literal.
+ */
+function formatWord(ws: WordTok[]): WordTok | null {
+  if (ws.length !== 3 || ws[1].pieces.length !== 1 || ws[1].pieces[0].q !== 'n' || ws[1].pieces[0].t.toLowerCase() !== '-f') return null
+  if (!ws[0].pieces.length || ws[0].pieces.some(p => p.q === 'n')) return null
+  const fmt = ws[0].pieces.map(p => p.t).join('')
+  const args: string[] = []
+  let cur: string | null = null
+  for (const p of ws[2].pieces) {
+    if (p.q !== 'n') { cur = (cur ?? '') + p.t; continue }
+    if (!/^,+$/.test(p.t)) return null
+    if (cur === null) return null
+    args.push(cur); cur = null
+  }
+  if (cur === null) return null
+  args.push(cur)
+  let ok = true
+  const text = fmt.replace(/\{(\d+)(?:[,:][^}]*)?\}/g, (_m: string, n: string) => { const a = args[Number(n)]; if (a === undefined) ok = false; return a ?? '' })
+  if (!ok) return null
+  return { kind: 'w', pieces: [{ t: text, q: 's' }], start: ws[0].start, end: ws[2].end, subs: [] }
 }
 
 // ─── (e) The verb table ────────────────────────────────────────────────────────────────────────
@@ -873,8 +1216,36 @@ const MEMBER_MUTATIONS: Record<string, MutOp> = { delete: 'delete', moveto: 'mov
 const NOTHING_VERBS = new Set(['echo', 'write-host', 'write-output', 'write-verbose', 'printf', 'print'])
 const CD_VERBS = new Set(['cd', 'chdir', 'set-location', 'sl', 'pushd', 'push-location'])
 const POP_VERBS = new Set(['popd', 'pop-location'])
-const INTERPRETERS = new Set(['python', 'python3', 'py', 'pythonw', 'node', 'bun', 'deno', 'ruby', 'perl', 'php',
-  'powershell', 'pwsh', 'cmd', 'bash', 'sh', 'zsh', 'wsl'])
+/**
+ * The interpreter a program name is (`python3.12`, `pypy3`, `pythonw` are python; `nodejs`, `tsx`,
+ * `ts-node` are node), or null (review 2026-11-23: an exact-name table missed the versioned ones).
+ */
+function interpFamily(v: string): string | null {
+  if (/^(?:python\d*(?:\.\d+)*w?|py|pypy\d*(?:\.\d+)*)$/.test(v)) return 'python'
+  if (/^(?:node|nodejs|tsx|ts-node)$/.test(v)) return 'node'
+  if (/^(?:lua\d*(?:\.\d+)*|luajit)$/.test(v)) return 'lua'
+  if (/^(?:bun|deno|ruby|perl|php|rscript|powershell|pwsh|cmd|bash|sh|zsh|dash|wsl)$/.test(v)) return v === 'dash' ? 'sh' : v
+  return null
+}
+function isInterpreter(v: string): boolean {
+  return interpFamily(v) !== null
+}
+/** Runners that start the program named after them: `uv run`, `poetry run`, `npx`, `pnpm dlx` ... */
+const RUNNERS: Record<string, { sub?: string[]; valueFlags: string[] }> = {
+  uv: { sub: ['run'], valueFlags: ['--with', '-w', '--python', '-p', '--project', '--directory', '--env-file', '--group', '--extra', '--package', '--index'] },
+  uvx: { valueFlags: ['--with', '-w', '--python', '-p', '--from', '--index'] },
+  poetry: { sub: ['run'], valueFlags: ['-C', '--directory', '-P', '--project'] },
+  pipenv: { sub: ['run'], valueFlags: [] },
+  conda: { sub: ['run'], valueFlags: ['-n', '--name', '-p', '--prefix', '--cwd'] },
+  mamba: { sub: ['run'], valueFlags: ['-n', '--name', '-p', '--prefix', '--cwd'] },
+  pdm: { sub: ['run'], valueFlags: ['-p', '--project'] },
+  hatch: { sub: ['run'], valueFlags: ['-e', '--env'] },
+  npx: { valueFlags: ['-p', '--package'] },
+  bunx: { valueFlags: ['-p', '--package'] },
+  pnpm: { sub: ['dlx', 'exec'], valueFlags: ['-C', '--dir', '--filter'] },
+  npm: { sub: ['exec', 'x'], valueFlags: ['-p', '--package', '-w', '--workspace'] },
+  yarn: { sub: ['dlx', 'exec'], valueFlags: ['-p', '--package'] },
+}
 const SCRIPT_EXT = /\.(?:py|js|mjs|cjs|ts|ps1|bat|cmd|sh|rb|pl|php)$/i
 const CMD_FAMILY = new Set(['rd', 'rmdir', 'del', 'erase', 'copy', 'xcopy', 'robocopy', 'move', 'ren', 'rename', 'mklink', 'type',
   'dir', 'attrib', 'icacls', 'takeown', 'findstr', 'fc', 'comp', 'tree', 'more', 'where', 'start', 'md', 'mkdir', 'fsutil',
@@ -886,9 +1257,12 @@ const PS_VALUE_PARAMS = new Set(['filter', 'include', 'exclude', 'itemtype', 'ty
   'first', 'last', 'skip', 'tail', 'totalcount', 'head', 'inputobject', 'property', 'windowstyle', 'verb', 'redirectstandardoutput',
   'redirectstandarderror', 'redirectstandardinput', 'aclobject', 'executionpolicy', 'ep', 'file', 'version', 'outputformat',
   'inputformat', 'configurationname', 'command', 'c', 'encodedcommand', 'width', 'outvariable', 'ov', 'errorvariable', 'ev',
-  'membername', 'pipelinevariable', 'pv'])
+  'membername', 'pipelinevariable', 'pv',
+  // PowerShell's pattern and string operators: their operand is a pattern or a text, never a path (review 2026-11-23).
+  ...['match', 'notmatch', 'like', 'notlike', 'replace', 'split', 'join', 'contains', 'notcontains']
+    .flatMap(o => [o, `c${o}`, `i${o}`])])
 const RECURSIVE_FLAGS = new Set(['-recurse', '-r', '-rf', '-fr', '--recursive', '/s', '/mir', '-rec'])
-const WRAPPERS = new Set(['sudo', 'nohup', 'time', 'env', 'xargs', 'start-process', 'saps', 'start', 'exec', 'command', 'nice', 'timeout'])
+const WRAPPERS = new Set(['sudo', 'nohup', 'time', 'env', 'xargs', 'start-process', 'saps', 'start', 'exec', 'command', 'nice', 'timeout', 'call'])
 
 function verbName(w: string): string {
   // `@rd` in cmd is `rd` with its echo turned off.
@@ -917,7 +1291,18 @@ interface Ctx {
   segPaths: Map<number, ShellPath[]>
   segs: Seg[]
   origText: string
+  /** The shell that reads this text: PowerShell, cmd or a POSIX shell. */
+  dialect: Dialect
+  /** The shell reading of an inline program: only the verb table's mutations count (review 2026-11-23). */
+  codeAsShell: boolean
+  /** `segs` by pipeline and by the pipeline a group is written in (`segsIn`). */
+  index?: { of: Seg[]; pipeline: Map<number | null, Seg[]>; parent: Map<number | null, Seg[]>; at: Map<string, Seg>; parentAt: Map<string, Seg[]> }
+  /** `earlierInPipe`'s running unions, by `pipeline:upTo`. */
+  unions?: Map<string, Flow>
 }
+
+type Dialect = 'ps' | 'cmd' | 'posix'
+type PayloadOpts = { dialect?: Dialect; baseUnreadable?: boolean }
 
 function wordOf(ctx: Ctx, tok: WordTok): Word {
   const value = tok.pieces.map(p => p.t).join('')
@@ -958,9 +1343,20 @@ function commaParts(w: Word): Word[] {
   })
 }
 
+/** The elements of a list a word names (`$a`, `$a[1]`, `$a[0..2]`): every one, never the indexed one alone. */
+function boundList(ctx: Ctx, w: Word): string[] | null {
+  const m = w.value.match(new RegExp(`^${S0}(\\d+)${S1}(?:\\[[^\\]]*\\])*$`))
+  if (!m) return null
+  const e = ctx.run.table[Number(m[1])]
+  return e?.k === 'bound' && e.b.list ? e.b.list : null
+}
+
 function emitWord(ctx: Ctx, seg: Seg | null, w: Word, op: PathOp, o: EmitOpts): Emitted {
   let status: Emitted = 'none'
-  for (const part of commaParts(w)) {
+  const list = boundList(ctx, w)
+  const parts = list !== null ? list.map(v => ({ ...literalWord(v), raw: w.raw })) : commaParts(w)
+  for (const [n, part] of parts.entries()) {
+    if ((n & 63) === 63 && overBudget(ctx.run)) break
     const r = emitOne(ctx, seg, part, op, o)
     if (r === 'ok') status = 'ok'
     else if (r !== 'none' && status === 'none') status = r
@@ -971,19 +1367,43 @@ function emitWord(ctx: Ctx, seg: Seg | null, w: Word, op: PathOp, o: EmitOpts): 
 function emitOne(ctx: Ctx, seg: Seg | null, w: Word, op: PathOp, o: EmitOpts): Emitted {
   const values = w.quotedFirst !== null ? [w.quotedFirst, w.value] : [w.value]
   let status: Emitted = 'none'
+  // PowerShell's splatting (`Remove-Item @args`) hands the command a table the scan does not read.
+  if (ctx.dialect === 'ps' && w.tok.pieces.length === 1 && w.tok.pieces[0].q === 'n' && /^@[A-Za-z_]\w*$/.test(w.value)) return 'unreadable'
   for (const v of values) {
     const x = expand(ctx.run, v, ctx.base, ctx.tilde)
-    if (x.here !== null || x.doc !== null) continue
-    if (x.pipe) { if (status === 'none') status = 'pipe'; continue }
+    if (x.doc !== null) continue
+    if (x.here !== null) {
+      // A here-string used as a value (an operand, a variable bound to one, a group, the head of a
+      // pipeline) is the text it holds: each line is a word (review 2026-11-23, third). One fed to an
+      // interpreter is a program, read as one where it is consumed.
+      if (seg !== null && hereFedAsText(ctx, seg)) continue
+      const tail = x.text.startsWith(UNREAD) ? x.text.slice(1) : x.text
+      for (const line of hereLines(ctx, x.here)) {
+        const r = emitOne(ctx, seg, { ...literalWord(line.value + tail), raw: line.raw }, op, o)
+        if (r === 'ok') status = 'ok'
+        else if (r !== 'none' && status === 'none') status = r
+      }
+      continue
+    }
+    let aroundItem = false
+    if (x.pipe) {
+      // The pipeline's item first (`$_`, `$_.FullName`, `"$_\obj"`): what the earlier elements named.
+      if (x.text.startsWith(PIPE)) { if (status === 'none') status = 'pipe'; continue }
+      // Text before it (`"D:\$_"`, `"$HOME\$_"`): the item is a name the scan cannot read, inside what
+      // the text before it names (review 2026-11-23).
+      x.text = x.text.replace(/\u0005(?:\.\w+)*/g, UNREAD)
+      aroundItem = true
+    }
     const c = toPath(ctx.run, x.text, o.relAllowed, ctx.base, x.anchor !== null)
     if (c === null) continue
+    if (aroundItem && isMut(op)) unresolved(ctx.run, op, o.verb, o.recursive === true, ctx.origText)
     // A recursive delete or move through a word that starts with a name nothing set, followed by a
     // separator (`"$EMPTY"/*`, `"$env:UNSET\.cache"`): the name is empty when the command runs, and the
     // word is the root of the current drive (entry 4.M3's incident shape; review 2026-11-23).
     if (c === 'unreadable' && x.leadUnset && (op === 'delete' || op === 'move') && o.recursive && /^\u0004+[\\/]/.test(x.text)) {
       const root = ctx.run.platform === 'posix' ? '/' : /^[A-Za-z]:/.test(ctx.base) ? `${ctx.base.slice(0, 2).toUpperCase()}\\` : null
       if (root !== null) {
-        const p: ShellPath = { raw: w.raw, path: root, op, recursive: true, children: true, inherited: false, anchor: null, device: false, verb: o.verb, via: ctx.via }
+        const p: ShellPath = { raw: w.raw, path: root, op, recursive: true, children: true, inherited: false, anchor: null, device: false, verb: o.verb, via: ctx.via, unsetName: x.leadName }
         emit(ctx.run, p)
         if (seg) { const list = ctx.segPaths.get(seg.id) ?? []; list.push(p); ctx.segPaths.set(seg.id, list) }
         status = 'ok'
@@ -1006,6 +1426,20 @@ function emitOne(ctx: Ctx, seg: Seg | null, w: Word, op: PathOp, o: EmitOpts): E
     status = 'ok'
   }
   return status
+}
+
+/** The lines of a here-string body as words: a double-quoted one has its variables read, as PowerShell expands them. */
+function hereLines(ctx: Ctx, idx: number): Array<{ value: string; raw: string }> {
+  const b = ctx.run.bodies[idx]
+  if (!b) return []
+  const out: Array<{ value: string; raw: string }> = []
+  for (const l of b.text.split(/\r?\n/)) {
+    const line = l.trim()
+    if (line === '' || line.length > 1024) continue
+    out.push({ value: b.q === '"' ? substitute(ctx.run, line, new Map()) : line, raw: line })
+    if (out.length >= 64) break
+  }
+  return out
 }
 
 function isMut(op: PathOp): op is MutOp {
@@ -1109,7 +1543,15 @@ function namedPaths(p: Parsed, ...names: string[]): Word[] {
 // ─── Segment classification ────────────────────────────────────────────────────────────────────
 
 function classifySegments(ctx: Ctx): void {
-  for (const seg of ctx.segs) {
+  const cds = ctx.codeAsShell ? [] : codeCdCalls(ctx)
+  let k = 0
+  for (const [n, seg] of ctx.segs.entries()) {
+    if ((n & 31) === 31 && overBudget(ctx.run)) return
+    // A folder change made through a .NET or engine call before this command (review 2026-11-23).
+    for (; k < cds.length && cds[k].at < seg.start; k++) {
+      if (cds[k].path === null) ctx.baseUnreadable = true
+      else { ctx.base = cds[k].path as string; ctx.baseUnreadable = false }
+    }
     try {
       classifySegment(ctx, seg)
     } catch (e) {
@@ -1118,20 +1560,159 @@ function classifySegments(ctx: Ctx): void {
   }
 }
 
-function inheritedSources(ctx: Ctx, seg: Seg, pipeItem: boolean): ShellPath[] {
-  const out: ShellPath[] = []
-  for (const other of ctx.segs) {
-    if (other.pipeline === seg.pipeline && other.pipeIndex < seg.pipeIndex) out.push(...(ctx.segPaths.get(other.id) ?? []))
-    // A group written in an earlier element of this pipeline (`@('D:\x') | Remove-Item`,
-    // `(Get-ChildItem D:\x) | Remove-Item`): its paths flow down the pipeline too.
-    else if (other.parentPipeline === seg.pipeline && other.parentPipeIndex < seg.pipeIndex) out.push(...(ctx.segPaths.get(other.id) ?? []))
-  }
-  if ((pipeItem || out.length === 0) && seg.parentPipeline !== null) {
-    for (const other of ctx.segs) {
-      if (other.pipeline === seg.parentPipeline && other.pipeIndex < seg.parentPipeIndex) out.push(...(ctx.segPaths.get(other.id) ?? []))
+const CD_CALL = /\[(?:System\.)?IO\.Directory\]::SetCurrentDirectory\s*\(|\.SetLocation\s*\(|\[(?:System\.)?Environment\]::CurrentDirectory\s*=(?!=)/gi
+
+/** `[IO.Directory]::SetCurrentDirectory(...)`, `$ExecutionContext.SessionState.Path.SetLocation(...)`, `[Environment]::CurrentDirectory = ...`. */
+function codeCdCalls(ctx: Ctx): Array<{ at: number; path: string | null }> {
+  const out: Array<{ at: number; path: string | null }> = []
+  const run = ctx.run
+  const was = run.psStrings
+  run.psStrings = ctx.dialect === 'ps'
+  try {
+    for (const m of ctx.textSub.matchAll(CD_CALL)) {
+      const at = m.index ?? 0
+      const end = at + m[0].length
+      const expr = m[0].endsWith('(') ? callArgs(ctx.textSub, end - 1, !run.psStrings).args[0] : ctx.textSub.slice(end, statementEnd(ctx.textSub, end, false, false)).trim()
+      const v = expr === undefined ? null : evalExpr(run, expr, new Map())
+      const c = v === null ? null : toPath(run, expand(run, v, ctx.base, true).text, true, ctx.base, false)
+      out.push({ at, path: c && c !== 'unreadable' && !c.children ? c.path : null })
     }
+  } finally {
+    run.psStrings = was
   }
   return out
+}
+
+/** The segments of one pipeline, or the groups written in one: indexed once, so a lookup is not a walk of every segment. */
+function segsIn(ctx: Ctx, by: 'pipeline' | 'parent', key: number | null): Seg[] {
+  if (!ctx.index || ctx.index.of !== ctx.segs) {
+    const pipeline = new Map<number | null, Seg[]>()
+    const parent = new Map<number | null, Seg[]>()
+    const at = new Map<string, Seg>()
+    const parentAt = new Map<string, Seg[]>()
+    const add = <K>(m: Map<K, Seg[]>, k: K, s: Seg) => { const l = m.get(k); if (l) l.push(s); else m.set(k, [s]) }
+    for (const s of ctx.segs) {
+      add(pipeline, s.pipeline, s); add(parent, s.parentPipeline, s)
+      const k = `${s.pipeline}:${s.pipeIndex}`
+      if (!at.has(k)) at.set(k, s)
+      if (s.parentPipeline !== null) add(parentAt, `${s.parentPipeline}:${s.parentPipeIndex}`, s)
+    }
+    ctx.index = { of: ctx.segs, pipeline, parent, at, parentAt }
+  }
+  return (by === 'pipeline' ? ctx.index.pipeline : ctx.index.parent).get(key) ?? []
+}
+
+/** The element before this one in its pipeline. */
+function previousInPipe(ctx: Ctx, seg: Seg): Seg | undefined {
+  segsIn(ctx, 'pipeline', seg.pipeline)
+  return ctx.index?.at.get(`${seg.pipeline}:${seg.pipeIndex - 1}`)
+}
+
+/** What flows down a pipeline to one element: the items, and whether an element before it changed them. */
+type Flow = { paths: ShellPath[]; opaque: boolean }
+
+/**
+ * Pipeline elements whose output is the items they were handed or named, so a later element acts on
+ * those items (review 2026-11-23, third). Filters pass their input on and name no item of their own (their
+ * operands are property names and patterns). Any other element (`Split-Path`, `Join-Path`,
+ * `Select-Object -ExpandProperty Parent` or a calculated property, `ForEach-Object { ... }`, a program)
+ * hands on something the scan cannot read, so what reaches a later mutation is unresolved.
+ */
+const ITEM_SOURCES = new Set(['get-item', 'gi', 'get-childitem', 'gci', 'ls', 'dir', 'resolve-path', 'rvpa', 'convert-path', 'cvpa',
+  'select-string', 'sls', 'find', 'xargs', 'tee-object', 'tee', 'out-null', 'write-output', 'echo', 'write-host'])
+const ITEM_FILTERS = new Set(['where-object', 'where', '?', 'sort-object', 'sort', 'get-unique', 'gu'])
+/** `Select-Object` parameters that keep the items themselves. */
+const SELECT_KEEPS = new Set(['-first', '-last', '-skip', '-skiplast', '-unique', '-index', '-wait'])
+/** Members of an item that are the item's own path. */
+const PATH_MEMBERS = new Set(['fullname', 'pspath', 'path', 'literalpath'])
+/** Elements that hand on another path than the one they were given, in every shell. */
+const PATH_TRANSFORMS = new Set(['split-path', 'join-path', 'dirname', 'basename', 'readlink'])
+
+/** Whether an element passes items on (`pass`), and whether the paths it names itself join them (`own`). */
+function passesItems(ctx: Ctx, seg: Seg): { pass: boolean; own: boolean } {
+  if (seg.words.length === 0) return { pass: true, own: true }
+  if (seg.transformed) return { pass: false, own: false }
+  const words = seg.words.map(t => wordOf(ctx, t))
+  let k = 0
+  while (k < words.length && (words[k].text === '&' || words[k].text === '.')) k++
+  const head = words[k]
+  if (!head) return { pass: true, own: true }
+  if (!seg.call && isValueWord(head)) return { pass: true, own: true }
+  const verb = verbName(head.text)
+  if (PATH_TRANSFORMS.has(verb)) return { pass: false, own: false }
+  // cmd and a POSIX shell hand on text lines: only the transforms above are known to change them.
+  if (ctx.dialect !== 'ps' || ctx.codeAsShell) return { pass: true, own: true }
+  if (seg.call) return { pass: false, own: false }
+  const rest = words.slice(k + 1)
+  if (verb === 'select-object' || verb === 'select') {
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i].text.toLowerCase()
+      if (SELECT_KEEPS.has(t)) { if (/^\d[\d,]*$/.test(rest[i + 1]?.text ?? '')) i++; continue }
+      if ((t === '-expandproperty' || t === '-expand' || t === '-exp') && PATH_MEMBERS.has((rest[i + 1]?.text ?? '').toLowerCase())) { i++; continue }
+      return { pass: false, own: false }
+    }
+    return { pass: seg.groups.length === 0, own: false }
+  }
+  if (verb === 'foreach-object' || verb === '%' || verb === 'foreach') {
+    const member = rest.find(w => !w.text.startsWith('-'))
+    const m = (member?.text ?? '').toLowerCase()
+    if (seg.groups.length === 0 && member && (PATH_MEMBERS.has(m) || MEMBER_MUTATIONS[m] !== undefined)) return { pass: true, own: false }
+    return { pass: false, own: false }
+  }
+  if (ITEM_FILTERS.has(verb)) return { pass: true, own: false }
+  if (ITEM_SOURCES.has(verb) || DELETE_VERBS.has(verb) || MOVE_VERBS.has(verb) || COPY_VERBS.has(verb) || NEW_ITEM.has(verb)
+    || WRITE_TARGET_FIRST.has(verb) || WRITE_ALL.has(verb) || CONTENT_VERBS.has(verb)) return { pass: true, own: true }
+  return { pass: false, own: false }
+}
+
+/**
+ * What the elements of a pipeline before `upTo` named, and the groups written in them (`@('D:\x') |
+ * Remove-Item`, `(Get-ChildItem D:\x) | Remove-Item`: a group's paths flow down the pipeline too), each
+ * path once, and whether an element on the way changed the items (`opaque`). Built element by element and
+ * kept, so a long pipeline costs linear time (review 2026-11-23).
+ */
+function earlierInPipe(ctx: Ctx, pipeline: number, upTo: number): Flow {
+  ctx.unions ??= new Map()
+  let from = upTo
+  while (from > 0 && !ctx.unions.has(`${pipeline}:${from}`)) from--
+  let acc: Flow = from > 0 ? ctx.unions.get(`${pipeline}:${from}`) as Flow : { paths: [], opaque: false }
+  for (let k = from; k < upTo; k++) {
+    segsIn(ctx, 'pipeline', pipeline)
+    const own = ctx.index?.at.get(`${pipeline}:${k}`)
+    const pass = own ? passesItems(ctx, own) : { pass: true, own: true }
+    const next = pass.pass ? [...acc.paths] : []
+    const keys = new Set(next.map(p => `${p.path}\u0000${p.op}\u0000${p.children}`))
+    const add = (list: ShellPath[]) => {
+      for (const p of list) {
+        const key = `${p.path}\u0000${p.op}\u0000${p.children}`
+        if (keys.has(key) || next.length >= MAX_PATHS) continue
+        keys.add(key); next.push(p)
+      }
+    }
+    if (pass.pass && pass.own) {
+      if (own) add(ctx.segPaths.get(own.id) ?? [])
+      for (const other of ctx.index?.parentAt.get(`${pipeline}:${k}`) ?? []) {
+        if (other.pipeline === pipeline || other.transformed || !passesItems(ctx, other).pass) continue
+        add(ctx.segPaths.get(other.id) ?? [])
+      }
+    }
+    acc = { paths: next, opaque: acc.opaque || !pass.pass }
+    ctx.unions.set(`${pipeline}:${k + 1}`, acc)
+  }
+  return acc
+}
+
+function inheritedSources(ctx: Ctx, seg: Seg, pipeItem: boolean): Flow {
+  const mine = earlierInPipe(ctx, seg.pipeline, seg.pipeIndex)
+  const out: ShellPath[] = [...mine.paths]
+  let opaque = mine.opaque
+  // Inside a script block (`gci x | % { Remove-Item $_ }`): what the pipeline around the block named.
+  if ((pipeItem || out.length === 0) && seg.parentPipeline !== null) {
+    const around = earlierInPipe(ctx, seg.parentPipeline, seg.parentPipeIndex)
+    out.push(...around.paths)
+    opaque ||= around.opaque
+  }
+  return { paths: out, opaque }
 }
 
 function hasEarlier(ctx: Ctx, seg: Seg): boolean {
@@ -1154,13 +1735,23 @@ function mutate(ctx: Ctx, seg: Seg, targets: Word[], op: MutOp, verb: string, re
     else if (r === 'pipe') pipe = true
   }
   if (pipe && !emitted) {
-    const all = hasEarlier(ctx, seg) ? inheritedSources(ctx, seg, true) : []
+    const flow: Flow = hasEarlier(ctx, seg) ? inheritedSources(ctx, seg, true) : { paths: [], opaque: false }
+    const all = flow.paths
+    // An element on the way changed the items (`Split-Path`, `Select-Object -ExpandProperty Parent`, a
+    // script block): what arrives cannot be read (review 2026-11-23, third).
+    if (flow.opaque) unreadable = true
     // What a content reader sends down the pipeline is the file's lines, not the file: the targets come
     // from text the scan cannot read (review 2026-11-23).
     const sources = all.filter(s => !CONTENT_VERBS.has(s.verb))
     if (sources.length < all.length) unreadable = true
+    // Each source once: a chain of mutating elements (`gci x | ri | ri | ...`) would otherwise pass on
+    // twice as many copies at every step (review 2026-11-23, cost).
+    const once = new Set<string>()
     for (const s of sources) {
       if (s.path === null) continue
+      const key = `${s.path}\u0000${s.children}`
+      if (once.has(key) || once.size >= MAX_PATHS) continue
+      once.add(key)
       const p: ShellPath = { ...s, op, recursive, inherited: true, verb, via: ctx.via }
       delete p.linkTarget
       emit(ctx.run, p)
@@ -1175,8 +1766,9 @@ function mutate(ctx: Ctx, seg: Seg, targets: Word[], op: MutOp, verb: string, re
 
 function classifySegment(ctx: Ctx, seg: Seg): void {
   let words = seg.words.map(t => wordOf(ctx, t))
-  // Redirects: a write on every target except the null devices (any verb, after `echo` too).
-  for (const r of seg.redirects) {
+  // Redirects: a write on every target except the null devices (any verb, after `echo` too). In the
+  // shell reading of an inline program a `>` is a comparison or an arrow, not a redirect.
+  for (const r of ctx.codeAsShell ? [] : seg.redirects) {
     if (r.op === '<') { if (r.target) emitWord(ctx, seg, wordOf(ctx, r.target), 'read', { relAllowed: true, verb: '<' }); continue }
     ctx.run.out.sawWrite = true
     if (!r.target) { unresolved(ctx.run, 'write', r.op, false, ctx.origText); continue }
@@ -1206,23 +1798,62 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
   if (words.length === 0) { consumeDocs(ctx, seg, docWords, null); return }
   // A value written where a command would stand (`'D:\x' | Remove-Item`, `'a','b' | ...`,
   // `$env:USERPROFILE | ...`, the inside of `@('D:\x')`): what it names flows down the pipeline, so it is
-  // a mention a later verb inherits (review 2026-11-23). The words are still classified below, in case the
-  // head is a quoted program.
-  if (!seg.call && isValueWord(words[0])) {
-    for (const w of words) if (isValueWord(w)) emitWord(ctx, seg, w, 'mention', { relAllowed: true, verb: 'value' })
+  // a mention a later verb inherits (review 2026-11-23). In PowerShell such a segment is an expression
+  // (`$t[($n-30)..($n-1)]`, `$_ -match "\[x\]"`), never a command: nothing else in it is a path. In cmd
+  // and a POSIX shell the words are still classified below, in case the head is a quoted program.
+  if (!seg.call && !ctx.codeAsShell && isValueWord(words[0])) {
+    for (let k = 0; k < words.length; k++) {
+      const w = words[k]
+      if (looksLikeParam(w) && PS_VALUE_PARAMS.has(w.text.slice(1).toLowerCase())) { k++; continue }
+      if (!isValueWord(w)) continue
+      emitWord(ctx, seg, w, 'mention', { relAllowed: true, verb: 'value' })
+      // A drive or share written as a method's argument (`$fso.DeleteFolder('D:\x')`): what the method does
+      // with it cannot be read, so it is a program operand.
+      if (seg.methodArgs && ctx.dialect === 'ps') emitAbsolute(ctx, seg, w, 'method')
+    }
   }
-  // Wrappers.
+  if (!seg.call && (ctx.codeAsShell || ctx.dialect === 'ps') && isExpressionHead(words[0])) { consumeDocs(ctx, seg, docWords, null); return }
+  // Wrappers and runners.
   for (let guard = 0; guard < 16 && words.length; guard++) {
     const v = verbName(words[0].text)
     if (words[0].text === '.' || words[0].text === '&') { words = words.slice(1); continue }
+    const runner = RUNNERS[v]
+    if (runner) {
+      const unwrapped = unwrapRunner(ctx, v, runner, words.slice(1))
+      if (unwrapped === 'done') return
+      if (unwrapped !== null) { words = unwrapped; continue }
+    }
     if (!WRAPPERS.has(v) && !(v === 'wsl' && !words.slice(1).some(w => /^-(?:l?c)$/i.test(w.text)))) break
+    if ((v === 'start-process' || v === 'saps' || (v === 'start' && ctx.dialect === 'ps')) && !ctx.codeAsShell) {
+      const sp = startProcess(ctx, seg, words.slice(1))
+      if (sp === 'done') return
+      if (sp !== null) { words = sp; continue }
+    }
     words = unwrapWrapper(v, words.slice(1))
   }
   if (words.length === 0) { consumeDocs(ctx, seg, docWords, null); return }
+  // `cd..`, `cd\`, `chdir..`: PowerShell's built-in functions and cmd's spellings of cd (review 2026-11-23).
+  const glued = words[0].tok.pieces.length === 1 && words[0].tok.pieces[0].q === 'n' ? words[0].text.match(/^(cd|chdir)([.\\/].*)$/i) : null
+  if (glued) words = [literalWord(glued[1]), literalWord(glued[2]), ...words.slice(1)]
   const program = words[0]
   const verb = verbName(program.text)
   const operands = words.slice(1)
   consumeDocs(ctx, seg, docWords, verb)
+  // A script block's `param(...)` is a statement of its own: what follows it on the line is the next one.
+  if (verb === 'param' && ctx.dialect === 'ps' && !ctx.codeAsShell) {
+    const g = seg.groups.find(x => x.opener === '(')
+    const after = g ? seg.words.filter(t => t.start >= g.end) : []
+    if (after.length) classifySegment(ctx, { ...seg, words: after, redirects: [], groups: seg.groups.filter(x => x !== g) })
+    return
+  }
+  // cmd's `if [/i] [not] exist X | defined X | errorlevel N | A==B COMMAND`: the command is classified.
+  if (verb === 'if' && operands.length && !ctx.codeAsShell) {
+    const body = cmdIfBody(operands)
+    if (body.length) classifySegment(ctx, { ...seg, words: body.map(w => w.tok), redirects: [], groups: [] })
+    return
+  }
+  if (ctx.codeAsShell && !(DELETE_VERBS.has(verb) || MOVE_VERBS.has(verb) || COPY_VERBS.has(verb) || NEW_ITEM.has(verb)
+    || WRITE_TARGET_FIRST.has(verb) || WRITE_ALL.has(verb))) return
   // `D:` alone switches the current drive, in PowerShell and in cmd (review 2026-11-23).
   if (operands.length === 0 && program.tok.pieces.length === 1 && program.tok.pieces[0].q === 'n' && /^[A-Za-z]:\\?$/.test(program.text)) {
     return driveSwitch(ctx, program.text)
@@ -1233,7 +1864,7 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
   // A here-string piped into this segment.
   heresPipedInto(ctx, seg, verb)
   if (verb === 'git') return classifyGit(ctx, seg, operands, renderOrig(ctx.run, ctx.textSub.slice(seg.start, seg.end)))
-  if (INTERPRETERS.has(verb)) return interpreter(ctx, seg, verb, operands)
+  if (isInterpreter(verb)) return interpreter(ctx, seg, verb, operands)
   if (verb === 'find') return findVerb(ctx, seg, operands)
   if (CD_VERBS.has(verb)) return cdVerb(ctx, seg, verb, operands)
   if (POP_VERBS.has(verb)) {
@@ -1241,11 +1872,13 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
     if (top) { ctx.base = top.base; ctx.baseUnreadable = top.unreadable } else ctx.baseUnreadable = true
     return
   }
-  const p = parseArgs(operands, verb, new Set(), seg.groups)
+  // `cp -t DIR` / `--target-directory DIR`: the destination is named first (review 2026-11-23).
+  const p = parseArgs(operands, verb, verb === 'cp' ? CP_VALUE_FLAGS : new Set(), seg.groups)
   if (verb === 'foreach-object' || verb === '%' || verb === 'foreach') {
-    // `% Delete`, `ForEach-Object -MemberName MoveTo -ArgumentList ...`: a method of each pipeline item.
+    // `% Delete`, `ForEach-Object 'Delete'`, `ForEach-Object -MemberName MoveTo -ArgumentList ...`: a
+    // method of each pipeline item.
     const member = (namedPaths(p, 'membername')[0] ?? p.positional[0])
-    const mop = member && member.tok.pieces[0]?.q === 'n' ? MEMBER_MUTATIONS[member.text.toLowerCase()] : undefined
+    const mop = member && member.tok.pieces.length === 1 ? MEMBER_MUTATIONS[member.text.toLowerCase()] : undefined
     if (mop) {
       mutate(ctx, seg, [], mop, `ForEach-Object ${member.text}`, true)
       if (mop === 'move') mutate(ctx, seg, namedPaths(p, 'argumentlist', 'args').length ? namedPaths(p, 'argumentlist', 'args') : p.positional.slice(1), 'write', `ForEach-Object ${member.text}`, true)
@@ -1298,14 +1931,55 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
     for (const w of [...p.positional, ...namedPaths(p, 'path', 'literalpath', 'lp', 'pspath', 'filepath')]) emitWord(ctx, seg, w, op, { relAllowed: true, verb })
     return
   }
-  // Everything else: operands are unclassified; -OutFile, -Destination and -DestinationPath are writes.
+  // Everything else: operands are unclassified; -OutFile, -Destination and -DestinationPath are writes. A
+  // drive or share written inside an operand (`mshta "javascript:...('D:\\x')"`, an `Add-Type` source) is a
+  // program operand too (review 2026-11-23); a `-Value` is a mention, as an assignment's value is.
   const writes = namedPaths(p, 'outfile', 'destination', 'dest', 'destinationpath')
   if (writes.length) mutate(ctx, seg, writes, 'write', verb, false)
-  for (const w of [...p.positional, ...namedPaths(p, 'path', 'literalpath', 'filepath', 'target')]) emitWord(ctx, seg, w, 'unclassified', { relAllowed: false, verb })
+  const programOperand = (w: Word) => { if (emitWord(ctx, seg, w, 'unclassified', { relAllowed: false, verb }) !== 'ok') emitAbsolute(ctx, seg, w, verb) }
+  for (const w of [...p.positional, ...namedPaths(p, 'path', 'literalpath', 'filepath', 'target')]) programOperand(w)
+  for (const w of namedPaths(p, 'value')) emitWord(ctx, seg, w, 'mention', { relAllowed: false, verb })
   for (const [name, list] of p.named) {
     if (PS_PATH_PARAMS.has(name) || PS_VALUE_PARAMS.has(name)) continue
-    for (const w of list) emitWord(ctx, seg, w, 'unclassified', { relAllowed: false, verb })
+    for (const w of list) programOperand(w)
   }
+}
+
+const CP_VALUE_FLAGS = new Set(['-t', '--target-directory'])
+
+/** A word that starts an expression rather than a command in PowerShell: a value, an index, a type, a number. */
+function isExpressionHead(w: Word): boolean {
+  return isValueWord(w) || /^\[|^\d[\d.]*$/.test(w.text) || (w.tok.pieces[0]?.q === 'n' && w.tok.pieces[0].t.startsWith('$'))
+}
+
+/** Drive, share and device spellings written inside a word (`'...Delete(@"D:\x",true)...'`). */
+const EMBEDDED_ABS = /(?<![\w\\/:])(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9$_-][\w.$-]*[\\/]|\\\\[?.][\\/])[^\s'"`;,|&<>(){}\u0002-\u0005]*/g
+
+/**
+ * Each drive-absolute, share or device spelling inside a word, as a program operand: judged against the
+ * always-denied set only (a volume nothing protects, the home and its dot-entries, CynCo's folders).
+ * A doubled backslash (`D:\\x`, as code escapes it) is read as one.
+ */
+function emitAbsolute(ctx: Ctx, seg: Seg | null, w: Word, verb: string): void {
+  if (!/[\\/]/.test(w.text)) return
+  for (const m of w.text.matchAll(EMBEDDED_ABS)) {
+    const lit = m[0].startsWith('\\\\') ? `\\\\${m[0].slice(2).replace(/\\\\/g, '\\')}` : m[0].replace(/\\\\/g, '\\')
+    emitWord(ctx, seg, { ...literalWord(lit), raw: lit }, 'unclassified', { relAllowed: false, verb })
+  }
+}
+
+/** cmd's `if` with its condition taken off: the command it runs. */
+function cmdIfBody(operands: Word[]): Word[] {
+  let k = 0
+  const lower = (j: number) => (operands[j]?.tok.pieces.length === 1 && operands[j].tok.pieces[0].q === 'n' ? operands[j].text.toLowerCase() : '')
+  if (lower(k) === '/i') k++
+  if (lower(k) === 'not') k++
+  const kw = lower(k)
+  if (kw === 'exist' || kw === 'defined' || kw === 'errorlevel' || kw === 'cmdextversion') k += 2
+  else if (operands[k] && /==/.test(operands[k].text)) k += 1
+  else if (/^(?:==|equ|neq|lss|leq|gtr|geq)$/.test(lower(k + 1))) k += 3
+  else return []
+  return operands.slice(k)
 }
 
 /** A word that is a value rather than a command name: quoted, a variable or home spelling, or a list. */
@@ -1347,7 +2021,7 @@ function cmdFor(ctx: Ctx, seg: Seg, operands: Word[]): void {
   const hi = doAt >= 0 ? operands[doAt].tok.start : Infinity
   for (const g of seg.groups) {
     if (g.start < lo || g.end > hi) continue
-    for (const s of ctx.segs) {
+    for (const s of segsIn(ctx, 'parent', seg.pipeline)) {
       if (s === seg || s.start < g.start || s.end > g.end) continue
       for (const t of s.words) emitWord(ctx, seg, wordOf(ctx, t), 'mention', { relAllowed: false, verb: 'for' })
     }
@@ -1386,6 +2060,93 @@ function assignment(ctx: Ctx, seg: Seg, rhs: Word[]): void {
   }
 }
 
+/**
+ * `uv run [opts] PROGRAM ...`, `npx [opts] PROGRAM ...`, `pnpm dlx ...`: the words from PROGRAM on. A
+ * `-c` / `--call` of npx and `npm exec` is a shell command, scanned as one ('done'). null: not a run.
+ */
+function unwrapRunner(ctx: Ctx, v: string, runner: (typeof RUNNERS)[string], rest: Word[]): Word[] | 'done' | null {
+  let i = 0
+  if (runner.sub) {
+    if (!rest[0] || !runner.sub.includes(rest[0].text.toLowerCase())) return null
+    i = 1
+  }
+  const vf = new Set(runner.valueFlags)
+  while (i < rest.length) {
+    const t = rest[i].text
+    if (t === '--') { i++; break }
+    if ((t === '-c' || t === '--call') && (v === 'npx' || v === 'npm' || v === 'pnpm' || v === 'yarn' || v === 'bunx')) {
+      const payload = rest[i + 1]
+      if (!payload) return 'done'
+      ctx.run.out.texts.push(renderOrig(ctx.run, payload.value))
+      scanPayload(ctx.run, payload.value, ctx.base, `${ctx.via}>${v} -c`, ctx.depth + 1, 'shell', { dialect: ctx.run.platform === 'win32' ? 'cmd' : 'posix' })
+      return 'done'
+    }
+    if (/^--[\w-]+=/.test(t)) { i++; continue }
+    if (t.startsWith('-') && t !== '-') { i += vf.has(t) ? 2 : 1; continue }
+    break
+  }
+  return rest.slice(i)
+}
+
+/** Start-Process's parameters, with their aliases; the switches take no value. */
+const SP_PARAMS = ['argumentlist', 'credential', 'filepath', 'loaduserprofile', 'nonewwindow', 'passthru', 'redirectstandarderror',
+  'redirectstandardinput', 'redirectstandardoutput', 'usenewenvironment', 'verb', 'wait', 'windowstyle', 'workingdirectory', 'environment']
+const SP_ALIASES: Record<string, string> = { args: 'argumentlist', runas: 'credential', pspath: 'filepath', path: 'filepath', lup: 'loaduserprofile',
+  nnw: 'nonewwindow', rse: 'redirectstandarderror', rsi: 'redirectstandardinput', rso: 'redirectstandardoutput' }
+const SP_SWITCHES = new Set(['loaduserprofile', 'nonewwindow', 'passthru', 'usenewenvironment', 'wait'])
+
+/**
+ * `Start-Process` (`saps`, PowerShell's `start`) read as PowerShell binds it (review 2026-11-23, third):
+ * every switch is skipped wherever it stands, a parameter is matched by any unambiguous prefix, the first
+ * positional word is -FilePath and the second -ArgumentList. The program and its argument list (a comma
+ * list is one argument per element, a single string is the whole command line) are scanned as the command
+ * line the program is started with, in -WorkingDirectory when there is one. 'done' when it was scanned so,
+ * the words to classify when there is no argument list, null when there is no program.
+ */
+function startProcess(ctx: Ctx, seg: Seg, rest: Word[]): Word[] | 'done' | null {
+  const named = new Map<string, Word>()
+  const positional: Word[] = []
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i]
+    const m = w.tok.pieces[0]?.q === 'n' ? w.text.match(/^-([A-Za-z]+)(?::([\s\S]+))?$/) : null
+    if (!m) { positional.push(w); continue }
+    const lower = m[1].toLowerCase()
+    const name = SP_ALIASES[lower] ?? (SP_PARAMS.filter(p => p.startsWith(lower)).length === 1 ? SP_PARAMS.find(p => p.startsWith(lower)) : undefined)
+    if (name === undefined) continue
+    if (SP_SWITCHES.has(name)) continue
+    if (m[2] !== undefined) { named.set(name, { ...w, value: w.value.slice(w.value.indexOf(':') + 1), text: m[2], raw: m[2], quotedFirst: null, tok: { ...w.tok, pieces: [{ t: m[2], q: 'n' }] } }); continue }
+    const next = rest[i + 1]
+    const group = seg.groups.find(g => g.opener !== '{' && g.start >= w.tok.end && (next === undefined || g.end <= next.tok.start))
+    if (group) { named.set(name, unreadableWord('(...)')); continue }
+    if (next !== undefined) { named.set(name, next); i++ }
+  }
+  const prog = named.get('filepath') ?? positional[0]
+  if (prog === undefined) return null
+  const args = named.get('argumentlist') ?? (named.has('filepath') ? positional[0] : positional[1])
+  for (const k of ['redirectstandardoutput', 'redirectstandarderror']) {
+    const w = named.get(k)
+    if (w) mutate(ctx, seg, [w], 'write', `Start-Process -${k}`, false)
+  }
+  const input = named.get('redirectstandardinput')
+  if (input) emitWord(ctx, seg, input, 'read', { relAllowed: true, verb: 'Start-Process' })
+  if (args === undefined) return [prog]
+  const quote = (s: string) => (/[\s"]/.test(s) && !s.includes(S0) ? `"${s.replace(/"/g, '')}"` : s)
+  const list = commaParts(args)
+  const argText = list.length > 1 || args.tok.pieces.some(p => p.q === 'n' && p.t.includes(',')) ? list.map(w => quote(w.value)).join(' ') : args.value
+  let base = ctx.base
+  let baseUnreadable = ctx.baseUnreadable
+  const wd = named.get('workingdirectory')
+  if (wd) {
+    const p = pathOfWord(ctx, wd)
+    if (p === null) baseUnreadable = true
+    else { base = p; baseUnreadable = false }
+  }
+  const text = `${quote(prog.value)} ${argText}`
+  ctx.run.out.texts.push(renderOrig(ctx.run, text))
+  scanPayload(ctx.run, text, base, `${ctx.via}>Start-Process`, ctx.depth + 1, 'shell', { dialect: ctx.run.platform === 'win32' ? 'cmd' : 'posix', baseUnreadable })
+  return 'done'
+}
+
 function unwrapWrapper(v: string, rest: Word[]): Word[] {
   let i = 0
   const valueFlags: Record<string, Set<string>> = {
@@ -1401,8 +2162,11 @@ function unwrapWrapper(v: string, rest: Word[]): Word[] {
     const fp = rest.findIndex(w => /^-filepath$/i.test(w.text))
     if (fp >= 0 && fp + 1 < rest.length) {
       const prog = rest[fp + 1]
-      const others = rest.filter((_, k) => k !== fp && k !== fp + 1)
-      return [prog, ...others]
+      // `-ArgumentList 'a','b'`: the list is the program's argv (review 2026-11-23).
+      const al = rest.findIndex(w => /^-(?:argumentlist|args)$/i.test(w.text))
+      const argv = al >= 0 && rest[al + 1] ? commaParts(rest[al + 1]) : []
+      const others = rest.filter((_, k) => k !== fp && k !== fp + 1 && (al < 0 || (k !== al && k !== al + 1)))
+      return [prog, ...argv, ...others]
     }
     while (i < rest.length && (CMD_SWITCH.test(rest[i].text) || (v === 'start' && rest[i].text === '' && rest[i].tok.pieces[0].q !== 'n'))) i++
     return rest.slice(i)
@@ -1425,18 +2189,34 @@ function consumeDocs(ctx: Ctx, seg: Seg, docs: Word[], verb: string | null): voi
   for (const w of docs) {
     const x = expand(ctx.run, w.value, ctx.base, false)
     if (x.doc === null) continue
-    const consumer = verb !== null && (INTERPRETERS.has(verb) || verb === 'iex' || verb === 'invoke-expression')
+    const consumer = verb !== null && (isInterpreter(verb) || verb === 'iex' || verb === 'invoke-expression')
     const piped = laterPipeHasInterpreter(ctx, seg)
     useBody(ctx, x.doc, consumer || piped ? 'code' : 'data', 'shell>heredoc')
   }
 }
 
+/** Programs and writers that take the text of what they are handed, never a path in it. */
+const TEXT_CONSUMERS = new Set(['out-string', 'convertfrom-json', 'convertfrom-csv', 'convertfrom-stringdata', 'set-clipboard', 'scb',
+  'iex', 'invoke-expression', ...WRITE_TARGET_FIRST, 'tee-object', 'tee'])
+
+/**
+ * A here-string at the head of a pipeline whose next element takes it as text (an interpreter, a writer,
+ * a converter): a program or a file's content, never a list of paths.
+ */
+function hereFedAsText(ctx: Ctx, seg: Seg): boolean {
+  if (laterPipeHasInterpreter(ctx, seg)) return true
+  segsIn(ctx, 'pipeline', seg.pipeline)
+  const next = ctx.index?.at.get(`${seg.pipeline}:${seg.pipeIndex + 1}`)
+  if (!next || next.words.length === 0) return false
+  return TEXT_CONSUMERS.has(verbName(wordOf(ctx, next.words[0]).text))
+}
+
 function laterPipeHasInterpreter(ctx: Ctx, seg: Seg): boolean {
-  for (const other of ctx.segs) {
-    if (other.pipeline !== seg.pipeline || other.pipeIndex <= seg.pipeIndex || other.words.length === 0) continue
+  for (const other of segsIn(ctx, 'pipeline', seg.pipeline)) {
+    if (other.pipeIndex <= seg.pipeIndex || other.words.length === 0) continue
     const first = wordOf(ctx, other.words[0])
     const v = verbName(first.text)
-    if (INTERPRETERS.has(v) || v === 'iex' || v === 'invoke-expression') return true
+    if (isInterpreter(v) || v === 'iex' || v === 'invoke-expression') return true
   }
   return false
 }
@@ -1444,13 +2224,11 @@ function laterPipeHasInterpreter(ctx: Ctx, seg: Seg): boolean {
 /** Here-strings of the earlier segment of a pipeline that this segment consumes. */
 function heresPipedInto(ctx: Ctx, seg: Seg, verb: string): void {
   if (seg.pipeIndex === 0) return
-  const code = INTERPRETERS.has(verb) || verb === 'iex' || verb === 'invoke-expression'
-  for (const other of ctx.segs) {
-    if (other.pipeline !== seg.pipeline || other.pipeIndex !== seg.pipeIndex - 1) continue
-    for (const t of other.words) {
-      const x = expand(ctx.run, t.pieces.map(p => p.t).join(''), ctx.base, false)
-      if (x.here !== null) useBody(ctx, x.here, code ? 'code' : 'data', 'shell>heredoc')
-    }
+  const code = isInterpreter(verb) || verb === 'iex' || verb === 'invoke-expression'
+  const other = previousInPipe(ctx, seg)
+  for (const t of other?.words ?? []) {
+    const x = expand(ctx.run, t.pieces.map(p => p.t).join(''), ctx.base, false)
+    if (x.here !== null) useBody(ctx, x.here, code ? 'code' : 'data', 'shell>heredoc')
   }
 }
 
@@ -1460,16 +2238,30 @@ function useBody(ctx: Ctx, idx: number, use: 'code' | 'data', via: string): void
   if (!body || body.use !== null) return
   body.use = use
   ctx.run.out.texts.push(body.text)
-  if (use === 'code') scanPayload(ctx.run, body.text, ctx.base, via, ctx.depth + 1, 'both')
+  if (use === 'code') scanPayload(ctx.run, body.text, ctx.base, via, ctx.depth + 1, 'both', { baseUnreadable: ctx.baseUnreadable })
 }
 
 function cdVerb(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
   // cmd's `cd /d X:\dir` and `chdir /d`: the switch is not the target (review 2026-11-23).
   if (verb === 'cd' || verb === 'chdir' || verb === 'pushd') operands = operands.filter(w => !(w.tok.pieces[0]?.q === 'n' && /^\/[A-Za-z?]$/.test(w.text)))
-  const p = parseArgs(operands, verb)
+  const p = parseArgs(operands, verb, new Set(), seg.groups)
   const target = namedPaths(p, 'path', 'literalpath')[0] ?? p.positional[0]
   if (verb === 'pushd' || verb === 'push-location') ctx.dirStack.push({ base: ctx.base, unreadable: ctx.baseUnreadable })
-  if (!target) { if (verb === 'cd' || verb === 'chdir') { ctx.base = ctx.run.homes.home; ctx.baseUnreadable = false } return }
+  if (!target) {
+    // A folder handed down the pipeline (`'D:\' | Set-Location`, `Get-Item D:\ | Set-Location`): the one
+    // path the earlier elements named, or a folder the scan cannot read. A group as the target
+    // (`cd (Get-PSDrive D).Root`) cannot be read either (review 2026-11-23).
+    if (hasEarlier(ctx, seg)) {
+      const flow = inheritedSources(ctx, seg, true)
+      const from = flow.paths.filter(s => s.path !== null && !CONTENT_VERBS.has(s.verb))
+      const one = !flow.opaque && from.length === 1 && !from[0].children ? from[0].path : null
+      if (one !== null) { ctx.base = one; ctx.baseUnreadable = false } else ctx.baseUnreadable = true
+      return
+    }
+    if (seg.groups.some(g => g.opener !== '{')) { ctx.baseUnreadable = true; return }
+    if (verb === 'cd' || verb === 'chdir') { ctx.base = ctx.run.homes.home; ctx.baseUnreadable = false }
+    return
+  }
   if (target.text === '-') { ctx.baseUnreadable = true; return }
   emitWord(ctx, seg, target, 'cd', { relAllowed: true, verb })
   const next = pathOfWord(ctx, target)
@@ -1492,7 +2284,7 @@ function moveVerb(ctx: Ctx, seg: Seg, verb: string, p: Parsed): void {
 }
 
 function copyVerb(ctx: Ctx, seg: Seg, verb: string, p: Parsed): void {
-  const dstNamed = namedPaths(p, 'destination', 'dest')
+  const dstNamed = namedPaths(p, 'destination', 'dest', 't', 'target-directory', '--target-directory')
   const srcNamed = namedPaths(p, 'path', 'literalpath', 'lp')
   let sources: Word[]
   let dests: Word[]
@@ -1564,7 +2356,14 @@ function findVerb(ctx: Ctx, seg: Seg, operands: Word[]): void {
   const expr = operands.slice(k).map(w => w.text.toLowerCase())
   let del = expr.includes('-delete')
   for (let j = 0; j < expr.length - 1; j++) {
-    if ((expr[j] === '-exec' || expr[j] === '-execdir' || expr[j] === '-ok') && /^(?:rm|rmdir|unlink|shred)$/.test(verbName(expr[j + 1]))) del = true
+    if (expr[j] !== '-exec' && expr[j] !== '-execdir' && expr[j] !== '-ok' && expr[j] !== '-okdir') continue
+    if (/^(?:rm|rmdir|unlink|shred)$/.test(verbName(expr[j + 1]))) del = true
+    // The command run on each file is a command of its own, in which `{}` cannot be read (review 2026-11-23).
+    let e = j + 1
+    while (e < expr.length && !/^\\?[;+]$|^\\$/.test(expr[e])) e++
+    const body = operands.slice(k + j + 1, k + e).map(w => (w.text === '{}' ? { ...w.tok, pieces: [{ t: UNREAD, q: 'n' as const }] } : w.tok))
+    if (body.length) classifySegment(ctx, { ...seg, words: body, redirects: [], groups: [] })
+    j = e
   }
   // cmd's find.exe is a text search: `find "text" file`; its operands are reads.
   if (del) mutate(ctx, seg, paths.length ? paths : [literalWord('.')], 'delete', 'find', true)
@@ -1671,10 +2470,16 @@ function payloadOf(ctx: Ctx, words: Word[], from: number): { text: string | null
   return { text: ctx.textSub.slice(a, b), viaVariable: false }
 }
 
-function interpreter(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
+function interpreter(ctx: Ctx, seg: Seg, verb0: string, operands: Word[]): void {
+  const verb = interpFamily(verb0) ?? verb0
   const texts = operands.map(w => w.text)
   const lower = texts.map(t => t.toLowerCase())
   const selfBuildingVar = () => markSelfBuilding(ctx.run, 'an inline program passed through a variable that cannot be read')
+  const dialectOf = (v: string): Dialect => v === 'cmd' ? 'cmd' : v === 'powershell' || v === 'pwsh' ? 'ps' : 'posix'
+  const scanText = (text: string, via: string, mode: 'shell' | 'both') => {
+    ctx.run.out.texts.push(renderOrig(ctx.run, text))
+    scanPayload(ctx.run, text, ctx.base, via, ctx.depth + 1, mode, { dialect: dialectOf(verb), baseUnreadable: ctx.baseUnreadable })
+  }
   const runPayload = (from: number, via: string, mode: 'shell' | 'both', encoded = false) => {
     const pl = payloadOf(ctx, operands, from)
     if (pl.viaVariable) { selfBuildingVar(); return }
@@ -1683,16 +2488,24 @@ function interpreter(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
       const decoded = decodeEncoded(pl.text)
       if (decoded === null) { markSelfBuilding(ctx.run, 'an -EncodedCommand that does not decode to text'); return }
       ctx.run.out.texts.push(decoded)
-      scanPayload(ctx.run, decoded, ctx.base, 'shell>encoded', ctx.depth + 1, 'shell')
+      scanPayload(ctx.run, decoded, ctx.base, 'shell>encoded', ctx.depth + 1, 'shell', { dialect: 'ps', baseUnreadable: ctx.baseUnreadable })
       return
     }
-    ctx.run.out.texts.push(renderOrig(ctx.run, pl.text))
-    scanPayload(ctx.run, pl.text, ctx.base, via, ctx.depth + 1, mode)
+    scanText(pl.text, via, mode)
   }
   if (verb === 'cmd') {
+    // Every switch up to /c, /k or /r, with or without a value (`/v:on`, `/t:0A`); /r is /c (review 2026-11-23).
     let k = 0
-    while (k < lower.length && /^\/[a-z]$/.test(lower[k]) && lower[k] !== '/c' && lower[k] !== '/k') k++
-    if (k < lower.length && (lower[k] === '/c' || lower[k] === '/k')) return runPayload(k + 1, 'shell>cmd /c', 'shell')
+    while (k < lower.length && CMD_SWITCH.test(lower[k]) && operands[k].tok.pieces[0]?.q === 'n' && !/^\/[ckr]/.test(lower[k])) k++
+    if (k < lower.length && /^\/[ckr]$/.test(lower[k])) return runPayload(k + 1, 'shell>cmd /c', 'shell')
+    // `/c"rd /s /q D:\x"`, `/crd ...`: cmd takes the text glued to the switch as the start of its command
+    // (measured; review 2026-11-23, third).
+    if (k < lower.length && /^\/[ckr]./.test(lower[k]) && operands[k].tok.pieces[0]?.q === 'n') {
+      const w = operands[k]
+      const head = [w.tok.pieces[0].t.slice(2), ...w.tok.pieces.slice(1).map(p => p.t)].join('')
+      const tail = k + 1 < operands.length ? ctx.textSub.slice(operands[k + 1].tok.start, operands[operands.length - 1].tok.end) : ''
+      return scanText([head, tail].filter(s => s !== '').join(' '), 'shell>cmd /c', 'shell')
+    }
     if (k >= lower.length) fromStdin(ctx, seg, verb, 'shell')
     return otherOperands(ctx, seg, verb, operands, 0)
   }
@@ -1725,20 +2538,30 @@ function interpreter(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
     if (lower.includes('-s') || !lower.some(t => !t.startsWith('-'))) fromStdin(ctx, seg, verb, 'shell')
     return otherOperands(ctx, seg, verb, operands, 0)
   }
-  const codeFlag: Record<string, RegExp> = {
-    python: /^-c$/, python3: /^-c$/, py: /^-c$/, pythonw: /^-c$/,
-    node: /^(?:-e|--eval|-p|--print)$/, bun: /^(?:-e|--eval|-p|--print)$/,
-    ruby: /^-e$/, perl: /^-[a-z]*e$/, php: /^-r$/,
-  }
-  const re = codeFlag[verb]
-  if (re) {
-    const k = lower.findIndex(t => re.test(t))
-    if (k >= 0) {
-      if (verb === 'perl' && lower.some(t => /^-[a-z]*i/.test(t))) {
-        const files = operands.slice(k + 2).filter(w => !/^-/.test(w.text))
-        mutate(ctx, seg, files, 'write', 'perl -i', false)
+  // An inline program: a short-option cluster that ends in the code letter (`python -Bc`, `node -pe`,
+  // `ruby -we`), the long forms with and without `=`, and the code written onto the flag (`python -c"..."`);
+  // only the options before the script or the module are read (review 2026-11-23).
+  const code = CODE_FLAGS[verb]
+  if (code) {
+    for (let k = 0; k < operands.length; k++) {
+      const w = operands[k]
+      const first = w.tok.pieces[0]
+      const t = lower[k]
+      // A quoted flag is still a flag to the program (`Start-Process ... -ArgumentList '-c','...'`).
+      if (!first || !t.startsWith('-') || t === '-') break
+      const via = `shell>${verb0} ${texts[k].split(/\s/)[0]}`
+      if (code.flag.test(t)) {
+        if (verb === 'perl' && lower.some(x => /^-[a-z]*i/.test(x))) {
+          const files = operands.slice(k + 2).filter(x => !/^-/.test(x.text))
+          mutate(ctx, seg, files, 'write', 'perl -i', false)
+        }
+        return runPayload(k + 1, via, 'both')
       }
-      return runPayload(k + 1, `shell>${verb} ${operands[k].text}`, 'both')
+      const long = w.value.match(/^--(?:eval|print)=([\s\S]*)$/)
+      if (long && (verb === 'node' || verb === 'bun')) return scanText(long[1], via, 'both')
+      if (first.q === 'n' && w.tok.pieces.length > 1 && code.flag.test(first.t.toLowerCase())) return scanText(w.tok.pieces.slice(1).map(p => p.t).join(''), via, 'both')
+      if (code.stop.test(t)) break
+      if (code.value.test(t)) k++
     }
   }
   if (verb === 'deno' && lower[0] === 'eval') return runPayload(1, 'shell>deno eval', 'both')
@@ -1749,6 +2572,18 @@ function interpreter(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
   return otherOperands(ctx, seg, verb, operands, 0, m)
 }
 
+/** Per interpreter: the flag that carries code, an option that ends the interpreter's options, one that takes a value. */
+const CODE_FLAGS: Record<string, { flag: RegExp; stop: RegExp; value: RegExp }> = {
+  python: { flag: /^-[a-z]*c$/i, stop: /^-[a-z]*m$/i, value: /^-[a-zA-Z]*[WX]$/ },
+  node: { flag: /^(?:-[a-z]*[ep]|--eval|--print)$/i, stop: /^--$/, value: /^(?:-r|--require|--import|--loader|-c|--conditions|--env-file)$/ },
+  bun: { flag: /^(?:-[a-z]*[ep]|--eval|--print)$/i, stop: /^--$/, value: /^(?:-r|--preload|--cwd|--config|--env-file)$/ },
+  ruby: { flag: /^-[a-z]*e$/i, stop: /^--$/, value: /^-[a-z]*[ir]$/i },
+  perl: { flag: /^-[a-z]*e$/i, stop: /^--$/, value: /^-[a-z]*[IM]$/ },
+  php: { flag: /^-r$/, stop: /^--$/, value: /^-[cdz]$/ },
+  lua: { flag: /^-e$/, stop: /^--$/, value: /^-l$/ },
+  rscript: { flag: /^-e$/, stop: /^--$/, value: /^$/ },
+}
+
 /**
  * An interpreter that reads its program from standard input inside a pipeline (`echo ... | powershell -`,
  * `'...' | python -`): the text written by an `echo` or a value at the head of the pipeline is scanned as
@@ -1757,7 +2592,7 @@ function interpreter(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): void {
  */
 function fromStdin(ctx: Ctx, seg: Seg, verb: string, mode: 'shell' | 'both'): void {
   if (seg.pipeIndex === 0) return
-  const prev = ctx.segs.find(o => o.pipeline === seg.pipeline && o.pipeIndex === seg.pipeIndex - 1)
+  const prev = previousInPipe(ctx, seg)
   const unread = `a program fed to ${verb} on standard input that cannot be read`
   if (!prev || prev.words.length === 0) { markSelfBuilding(ctx.run, unread); return }
   const words = prev.words.map(t => wordOf(ctx, t))
@@ -1770,7 +2605,8 @@ function fromStdin(ctx: Ctx, seg: Seg, verb: string, mode: 'shell' | 'both'): vo
   if (pl.viaVariable) { markSelfBuilding(ctx.run, unread); return }
   if (pl.text === null) return
   ctx.run.out.texts.push(renderOrig(ctx.run, pl.text))
-  scanPayload(ctx.run, pl.text, ctx.base, `shell>${verb} stdin`, ctx.depth + 1, mode)
+  const dialect: Dialect = verb === 'cmd' ? 'cmd' : verb === 'powershell' || verb === 'pwsh' ? 'ps' : 'posix'
+  scanPayload(ctx.run, pl.text, ctx.base, `shell>${verb} stdin`, ctx.depth + 1, mode, { dialect, baseUnreadable: ctx.baseUnreadable })
 }
 
 /** The interpreter's script operand (exec) and the rest (unclassified); `-m module` names nothing. */
@@ -1787,7 +2623,7 @@ function otherOperands(ctx: Ctx, seg: Seg, verb: string, operands: Word[], from:
       scriptSeen = true
       if (SCRIPT_EXT.test(t)) { emitWord(ctx, seg, w, 'exec', { relAllowed: true, verb }); continue }
     }
-    emitWord(ctx, seg, w, 'unclassified', { relAllowed: false, verb })
+    if (emitWord(ctx, seg, w, 'unclassified', { relAllowed: false, verb }) !== 'ok') emitAbsolute(ctx, seg, w, verb)
   }
 }
 
@@ -1817,7 +2653,53 @@ const GIT_VALUE_FLAGS = new Set(['-m', '--message', '-F', '--file', '-b', '-B', 
 const GIT_MESSAGE_SUBS = new Set(['commit', 'merge', 'tag', 'stash', 'notes', 'revert'])
 const GIT_CONFIG_READ = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l'])
 
+/**
+ * Settings that make git run a program or reach outside the work tree: `-c` with one of them runs what
+ * the command text carries (review 2026-11-23).
+ */
+const GIT_RUNNING_KEY = /^(?:alias\.[^=]*=\s*!|core\.(?:sshcommand|pager|editor|fsmonitor|hookspath|gitproxy|askpass)\b|diff\.external\b|diff\.[^=]+\.(?:textconv|command)\b|filter\.[^=]+\.(?:clean|smudge|process)\b|merge\.[^=]+\.driver\b|sequence\.editor\b|credential\.helper\b|gpg\.(?:[^=.]+\.)?program\b|protocol\.[^=]*allow\b|uploadpack\.packobjectshook\b|url\.[^=]*\.(?:insteadof|pushinsteadof)\b|include\.path\b|includeif\.|pager\.|interactive\.difffilter\b|sendemail\.|remote\.[^=]+\.(?:uploadpack|receivepack|proxy)\b|http\.proxy\b)/i
+
+/** `GIT_WORK_TREE=...`, `$env:GIT_DIR = ...` anywhere in the text: the word assigned to each (review 2026-11-23). */
+function gitEnvWords(ctx: Ctx): Array<[string, Word]> {
+  const out: Array<[string, Word]> = []
+  for (const m of ctx.textSub.matchAll(/(?:\$\{?env:)?\b(GIT_WORK_TREE|GIT_DIR)\}?\s*=(?!=)\s*/gi)) {
+    const at = (m.index ?? 0) + m[0].length
+    const tok = tokenize(ctx.textSub.slice(at, statementEnd(ctx.textSub, at, true, ctx.dialect === 'posix')), ctx.dialect === 'posix')[0]
+    if (!tok || tok.kind !== 'w') continue
+    const value = tok.pieces.map(p => p.t).join('')
+    out.push([m[1].toUpperCase(), { tok, value, text: expand(ctx.run, value, ctx.base, ctx.tilde).text, raw: renderOrig(ctx.run, value), quotedFirst: null }])
+  }
+  return out
+}
+
 function classifyGit(ctx: Ctx, seg: Seg | null, args: Word[], segText: string): void {
+  // The work tree an environment variable names is where a destructive subcommand acts; the folder of the
+  // other commands is unchanged by it.
+  const env = ctx.via === 'argv' ? [] : gitEnvWords(ctx)
+  // Settings handed to git through the environment (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_KEY_<n>`) can
+  // move the work tree or name a program, and are not read (review 2026-11-23, third).
+  if (ctx.via !== 'argv' && /\bGIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)\b\}?\s*=(?!=)/i.test(ctx.textSub)) {
+    markSelfBuilding(ctx.run, 'git settings handed in through GIT_CONFIG_* in the environment')
+  }
+  const saved = { base: ctx.base, unreadable: ctx.baseUnreadable }
+  for (const [name, w] of env) {
+    ctx.run.out.sawWrite = true
+    const r = emitWord(ctx, seg, w, 'write', { relAllowed: true, verb: `git (${name})` })
+    if (r !== 'ok') unresolved(ctx.run, 'write', `git (${name})`, false, ctx.origText)
+    if (name === 'GIT_WORK_TREE') {
+      const p = pathOfWord(ctx, w)
+      if (p === null) ctx.baseUnreadable = true
+      else { ctx.base = p; ctx.baseUnreadable = false }
+    }
+  }
+  try {
+    classifyGitArgs(ctx, seg, args, segText)
+  } finally {
+    if (env.length) { ctx.base = saved.base; ctx.baseUnreadable = saved.unreadable }
+  }
+}
+
+function classifyGitArgs(ctx: Ctx, seg: Seg | null, args: Word[], segText: string): void {
   const out = ctx.run.out
   let i = 0
   const gitVerb = (sub: string) => `git ${sub}`.trim()
@@ -1840,15 +2722,43 @@ function classifyGit(ctx: Ctx, seg: Seg | null, args: Word[], segText: string): 
     }
     if (/^--(?:git-dir|work-tree)=/.test(t)) { gwrite(valueOf(args[i], t.indexOf('=') + 1), t.slice(0, t.indexOf('='))); i++; continue }
     if ((t === '--git-dir' || t === '--work-tree') && args[i + 1]) { gwrite(args[i + 1], t); i += 2; continue }
-    if (t === '-c') { i += 2; continue }
+    if (t === '-c' || t === '--config-env') {
+      const kv = args[i + 1]?.text ?? ''
+      // `-c core.worktree=<p>` moves the work tree as `--work-tree <p>` does (review 2026-11-23, third).
+      if (/^core\.worktree=/i.test(kv) && args[i + 1]) {
+        if (t === '-c') gwrite(valueOf(args[i + 1], kv.indexOf('=') + 1), '-c core.worktree')
+        else { out.sawWrite = true; unresolved(ctx.run, 'write', 'git --config-env core.worktree', false, ctx.origText) }
+      }
+      // A pager or an editor named by a bare program name (`core.pager=cat`, an empty value) carries no
+      // command text and is honest work; every other such setting, and a pager with an argument, a path or
+      // a shell character, runs what the command carries.
+      const value = kv.includes('=') ? kv.slice(kv.indexOf('=') + 1) : ''
+      const bareOk = /^(?:core\.(?:pager|editor)|sequence\.editor|pager\.[^=]*)=/i.test(kv) && !/[\s\\/!;&|`$<>%]/.test(value)
+      if ((GIT_RUNNING_KEY.test(kv) && !bareOk) || /\bext::/.test(kv)) {
+        markSelfBuilding(ctx.run, `git -c ${kv.replace(/=.*$/s, '')}, a setting that runs a program`)
+      }
+      i += 2; continue
+    }
     if (t.startsWith('-')) { i++; continue }
     break
   }
   const sub = (args[i]?.text ?? '').toLowerCase()
   const rest = args.slice(i + 1)
   const v = gitVerb(sub)
-  const effect = bashEffect(segText)
+  // Read from the subcommand on, so a `-c` before it cannot hide a destructive command (review 2026-11-23).
+  const effect = bashEffect(segText) === 'revert' ? 'revert' : bashEffect(['git', ...args.slice(i).map(w => /[\s'"]/.test(w.text) ? `"${w.text.replace(/"/g, '')}"` : w.text)].join(' '))
   if (effect === 'revert' || sub === 'rm' || (sub === 'worktree' && rest[0]?.text.toLowerCase() === 'remove')) out.gitDestructive = true
+  // A command git runs for this subcommand (`rebase -x`, `filter-branch --tree-filter`, `difftool -x`,
+  // `grep -O`, `submodule foreach`, `--upload-pack`): scanned as the shell text git hands to its shell.
+  const runs = (text: string) => {
+    out.texts.push(renderOrig(ctx.run, text))
+    scanPayload(ctx.run, text, ctx.base, `${ctx.via}>git ${sub}`, ctx.depth + 1, 'shell', { dialect: 'posix', baseUnreadable: ctx.baseUnreadable })
+  }
+  const RUN_FLAGS: Record<string, RegExp> = {
+    rebase: /^(?:-x|--exec)$/, 'filter-branch': /^--[\w-]*-filter$/, difftool: /^(?:-x|--extcmd)$/, mergetool: /^(?:-x|--extcmd)$/,
+    clone: /^(?:-u|--upload-pack)$/, fetch: /^--upload-pack$/, pull: /^--upload-pack$/, 'ls-remote': /^--upload-pack$/, push: /^--receive-pack$/,
+    archive: /^--exec$/,
+  }
 
   // Operands and options, with the values of known value-taking options taken out.
   const operands: Word[] = []
@@ -1860,6 +2770,16 @@ function classifyGit(ctx: Ctx, seg: Seg | null, args: Word[], segText: string): 
     const t = w.text
     if (dashed) { afterDash.push(w); continue }
     if (t === '--') { dashed = true; continue }
+    const runFlag = RUN_FLAGS[sub]
+    if (runFlag && runFlag.test(t) && rest[k + 1]) { runs(rest[++k].value); continue }
+    const runEq = t.match(/^(--[\w-]+)=([\s\S]*)$/)
+    if (runFlag && runEq && runFlag.test(runEq[1])) { runs(w.value.slice(w.value.indexOf('=') + 1)); continue }
+    if (sub === 'grep' && /^(?:-O.|--open-files-in-pager=)/.test(t)) { runs(t.startsWith('-O') ? w.value.slice(2) : w.value.slice(w.value.indexOf('=') + 1)); continue }
+    // `apply` / `am` `--directory`, `checkout-index --prefix`: where the files are written (review 2026-11-23).
+    if ((sub === 'apply' || sub === 'am') && /^--directory=/.test(t)) { gwrite(valueOf(w, 12), sub); continue }
+    if ((sub === 'apply' || sub === 'am') && t === '--directory' && rest[k + 1]) { gwrite(rest[++k], sub); continue }
+    if (sub === 'checkout-index' && /^--prefix=/.test(t)) { gwrite(valueOf(w, 9), sub); continue }
+    if ((sub === 'apply' || sub === 'am') && t === '--unsafe-paths') { markSelfBuilding(ctx.run, `git ${sub} --unsafe-paths, which writes wherever the patch says`); continue }
     if (/^--output=/.test(t)) { gwrite(valueOf(w, 9), sub); continue }
     if ((t === '-o' || t === '--output') && rest[k + 1] && !(sub === 'commit' && t === '-o')) { gwrite(rest[++k], sub); continue }
     if (sub === 'commit' && (t === '-F' || t === '--file') && rest[k + 1]) { emitWord(ctx, seg, rest[++k], 'read', { relAllowed: true, verb: v }); continue }
@@ -1877,6 +2797,15 @@ function classifyGit(ctx: Ctx, seg: Seg | null, args: Word[], segText: string): 
     operands.push(w)
   }
   const all = [...operands, ...afterDash]
+  if ((sub === 'branch' && flags.some(f => f === '-D' || /^-[a-zA-Z]*D/.test(f) || ((f === '-d' || f === '--delete') && flags.some(g => g === '-f' || g === '--force'))))
+    || (sub === 'switch' && flags.some(f => f === '-f' || f === '--force' || f === '--discard-changes'))
+    || (sub === 'checkout-index' && flags.some(f => f === '-f' || f === '--force'))) out.gitDestructive = true
+  if (operands.some(w => /^ext::/i.test(w.text))) markSelfBuilding(ctx.run, `git ${sub} with an ext:: address, which runs a program`)
+  if (sub === 'submodule' && operands[0]?.text.toLowerCase() === 'foreach') {
+    const cmd = rest.slice(rest.indexOf(operands[0]) + 1).filter(w => !/^--(?:recursive|quiet)$/.test(w.text))
+    if (cmd.length) runs(cmd.length === 1 ? cmd[0].value : cmd.map(w => w.value).join(' '))
+    return
+  }
   const readAbs = (ws: Word[]) => { for (const w of ws) emitWord(ctx, seg, w, 'read', { relAllowed: false, verb: v }) }
   const writeAbs = (ws: Word[]) => { for (const w of ws) gwrite(w, sub, false) }
 
@@ -1947,7 +2876,8 @@ const CODE_CALLS: Array<{ re: RegExp; kind: CallKind; recursive?: boolean; style
   { re: new RegExp(`${FS_MOD}(?:rmdir|rmdirSync|unlink|unlinkSync)\\s*\\(`, 'g'), kind: 'delete', style: 'args' },
   { re: new RegExp(`${BARE}(?:rmSync|rmdirSync|unlinkSync)\\s*\\(`, 'g'), kind: 'delete', style: 'args' },
   { re: /\brimraf(?:\.sync|Sync)?\s*\(/g, kind: 'delete', recursive: true, style: 'args' },
-  { re: /\bDeno\.remove\s*\(/g, kind: 'delete', style: 'args' },
+  { re: /\bDeno\.remove(?:Sync)?\s*\(/g, kind: 'delete', style: 'args' },
+  { re: /\bDeno\.rename(?:Sync)?\s*\(/g, kind: 'move', style: 'args' },
   { re: /\bFile\.delete\s*\(/g, kind: 'delete', style: 'args' },
   { re: /\bFileUtils\.rm(?:_rf|_r|_f)?\s*\(/g, kind: 'delete', recursive: true, style: 'args' },
   { re: /\[(?:System\.)?IO\.(?:File|Directory)\]::Delete\s*\(/gi, kind: 'delete', style: 'args' },
@@ -1969,7 +2899,7 @@ const CODE_CALLS: Array<{ re: RegExp; kind: CallKind; recursive?: boolean; style
   { re: /\bBun\.write\s*\(/g, kind: 'write', style: 'args' },
   { re: /(?<=\bBun\.file\s*\([^()]*\)\s*)\.(?:delete|unlink)\s*\(/g, kind: 'delete', style: 'receiver' },
   { re: /(?<=\bBun\.file\s*\([^()]*\)\s*)\.write\s*\(/g, kind: 'write', style: 'receiver' },
-  { re: /\bDeno\.(?:writeTextFile|writeFile|mkdir)\s*\(/g, kind: 'write', style: 'args' },
+  { re: /\bDeno\.(?:writeTextFile|writeFile|mkdir)(?:Sync)?\s*\(/g, kind: 'write', style: 'args' },
   { re: /\bos\.(?:symlink|link)\s*\(/g, kind: 'link', style: 'args' },
   { re: new RegExp(`${FS_MOD}(?:symlink|symlinkSync|link|linkSync)\\s*\\(`, 'g'), kind: 'link', style: 'args' },
   { re: /\bCreateJunction\s*\(/g, kind: 'link', style: 'args' },
@@ -1997,17 +2927,23 @@ const SHELL_CODE_CALLS: typeof CODE_CALLS = [
   { re: /\.Delete\s*\(/g, kind: 'delete', style: 'receiver-or-args' },
   { re: /\.MoveTo\s*\(/g, kind: 'move', style: 'receiver-or-args' },
   { re: /\.CopyTo\s*\(/g, kind: 'copy', style: 'receiver-or-args' },
+  // COM's Scripting.FileSystemObject and VisualBasic's FileSystem (review 2026-11-23).
+  { re: /(?:\.|::)Delete(?:Folder|File|Directory)\s*\(/gi, kind: 'delete', style: 'args' },
+  { re: /(?:\.|::)Move(?:Folder|File|Directory)\s*\(/gi, kind: 'move', style: 'args' },
+  { re: /(?:\.|::)Copy(?:Folder|File|Directory)\s*\(/gi, kind: 'copy', style: 'args' },
+  { re: /\[(?:System\.)?Diagnostics\.Process\]::Start\s*\(/gi, kind: 'shell', style: 'args' },
+  { re: /\[(?:System\.)?IO\.Directory\]::SetCurrentDirectory\s*\(|\.SetLocation\s*\(|\[(?:System\.)?Environment\]::CurrentDirectory\s*=(?!=)/gi, kind: 'cd', style: 'args' },
 ]
 
 /** Top-level arguments of the call whose `(` is at `open`. */
-function callArgs(s: string, open: number): { args: string[]; end: number } {
+function callArgs(s: string, open: number, backslash = true): { args: string[]; end: number } {
   const args: string[] = []
   let depth = 0
   let cur = ''
   for (let k = open; k < s.length; k++) {
     const c = s[k]
     if (c === "'" || c === '"' || c === '`') {
-      const e = closingQuote(s, k)
+      const e = closingQuote(s, k, backslash)
       cur += s.slice(k, e + 1); k = e; continue
     }
     if (c === S0) { const e = s.indexOf(S1, k); const end = e < 0 ? s.length : e + 1; cur += s.slice(k, end); k = end - 1; continue }
@@ -2059,13 +2995,13 @@ function stripParens(e: string): string {
   return s
 }
 
-function splitTop(s: string, sep: string): string[] {
+function splitTop(s: string, sep: string, backslash = true): string[] {
   const parts: string[] = []
   let depth = 0
   let cur = ''
   for (let k = 0; k < s.length; k++) {
     const c = s[k]
-    if (c === "'" || c === '"' || c === '`') { const e = closingQuote(s, k); cur += s.slice(k, e + 1); k = e; continue }
+    if (c === "'" || c === '"' || c === '`') { const e = closingQuote(s, k, backslash); cur += s.slice(k, e + 1); k = e; continue }
     if (c === S0) { const e = s.indexOf(S1, k); const end = e < 0 ? s.length : e + 1; cur += s.slice(k, end); k = end - 1; continue }
     if (c === '(' || c === '[' || c === '{') depth++
     else if (c === ')' || c === ']' || c === '}') depth--
@@ -2078,7 +3014,13 @@ function splitTop(s: string, sep: string): string[] {
 
 const STRING_LIT = /^([rRbBuU]{0,2})(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`([^`$]*)`)$/s
 
-function stringValue(e: string): string | null {
+const PS_STRING_LIT = /^(?:'((?:[^']|'')*)'|"([^"`]*)")$/s
+
+function stringValue(e: string, ps = false): string | null {
+  if (ps) {
+    const pm = e.match(PS_STRING_LIT)
+    return pm ? (pm[1] !== undefined ? pm[1].replace(/''/g, "'") : pm[2]) : null
+  }
   const m = e.match(STRING_LIT)
   if (!m) return null
   const raw = /r/i.test(m[1])
@@ -2093,25 +3035,28 @@ type CodeBindings = Map<string, { value: string | null; count: number }>
 function evalExpr(run: Run, e0: string, codeBindings: CodeBindings): string | null {
   const e = stripParens(e0)
   if (e === '') return null
-  const parts = splitTop(e, '/').map(p => stripParens(p))
-  if (parts.length > 1 && !stringValue(e)) {
+  const parts = splitTop(e, '/', !run.psStrings).map(p => stripParens(p))
+  if (parts.length > 1 && !stringValue(e, run.psStrings)) {
     const head = evalAtom(run, parts[0], codeBindings)
     if (head === null) return null
     const tails: string[] = []
-    for (const p of parts.slice(1)) { const v = stringValue(p); if (v === null) return null; tails.push(v) }
+    for (const p of parts.slice(1)) { const v = stringValue(p, run.psStrings); if (v === null) return null; tails.push(v) }
     return [head.replace(/[\\/]+$/, ''), ...tails].join('/')
   }
   return evalAtom(run, e, codeBindings)
 }
 
 function evalAtom(run: Run, a: string, codeBindings: CodeBindings): string | null {
-  const s = stringValue(a)
+  const s = stringValue(a, run.psStrings)
   if (s !== null) return s
+  // A PowerShell cast of a literal (`[IO.DirectoryInfo]'D:\x'`) is the literal.
+  const cast = run.psStrings ? a.match(/^\[[\w.]+\]\s*(['"][\s\S]*)$/) : null
+  if (cast) return evalAtom(run, cast[1], codeBindings)
   if (new RegExp(`^${S0}\\d+${S1}$`).test(a)) return hasUnreadableSentinel(run, a) ? null : a
   const path = a.match(/^(?:pathlib\.)?(?:Pure)?(?:Windows|Posix)?Path\(\s*(.*?)\s*\)$/s) ?? a.match(/^Bun\.file\(\s*(.*?)\s*\)$/s)
   if (path) {
     if (path[1] === '') return '.'
-    const inner = splitTop(path[1], ',')
+    const inner = splitTop(path[1], ',', !run.psStrings)
     if (inner.length !== 1) return null
     return evalAtom(run, stripParens(inner[0]), codeBindings)
   }
@@ -2139,28 +3084,37 @@ function findCodeAssignments(run: Run, code: string): CodeBindings {
 
 function scanCodeCalls(ctx: Ctx, code: string, table: typeof CODE_CALLS, codeBindings: CodeBindings): void {
   const run = ctx.run
-  const covered = new Set<number>()
+  // Every row's matches first, then in the order of the text, so a folder change (`os.chdir`) holds for
+  // the calls after it and only for them (review 2026-11-23). At one parenthesis the earlier row wins.
+  const calls = new Map<number, { call: (typeof CODE_CALLS)[number]; at: number }>()
   for (const call of table) {
     call.re.lastIndex = 0
     for (const m of code.matchAll(call.re)) {
       const open = (m.index ?? 0) + m[0].length - 1
-      if (covered.has(open)) continue
-      covered.add(open)
-      try {
-        codeCall(ctx, code, call, m.index ?? 0, open, codeBindings)
-      } catch (e) {
-        run.out.faults.push(`a code call could not be read: ${(e as Error)?.message ?? String(e)}`)
-      }
+      if (!calls.has(open)) calls.set(open, { call, at: m.index ?? 0 })
+    }
+  }
+  const order = [...calls.entries()].sort((a, b) => a[0] - b[0])
+  for (const [n, [open, { call, at }]] of order.entries()) {
+    if ((n & 31) === 31 && overBudget(run)) return
+    try {
+      codeCall(ctx, code, call, at, open, codeBindings)
+    } catch (e) {
+      run.out.faults.push(`a code call could not be read: ${(e as Error)?.message ?? String(e)}`)
     }
   }
 }
 
 function codeCall(ctx: Ctx, code: string, call: (typeof CODE_CALLS)[number], at: number, open: number, cb: CodeBindings): void {
   const run = ctx.run
-  const { args } = callArgs(code, open)
-  const positional = args.filter(a => !/^[A-Za-z_]\w*\s*=(?!=)/.test(a) && !/^\{/.test(a))
+  // `[Environment]::CurrentDirectory = X`: an assignment, not a call; its value is the statement's rest.
+  const { args } = code[open] === '=' ? { args: [code.slice(open + 1, statementEnd(code, open + 1, false, !run.psStrings)).trim()] } : callArgs(code, open, !run.psStrings)
+  // A bare `$true` (`.Delete($true)`, `::Delete('x', $true)`) is the recursive switch, not a target.
+  const flagArg = (a: string) => /^\$(?:true|false)$/i.test(a)
+  const positional = args.filter(a => !/^[A-Za-z_]\w*\s*=(?!=)/.test(a) && !/^\{/.test(a) && !flagArg(a))
   const verb = code.slice(at, open).replace(/^\./, '').trim()
-  const recursive = call.recursive === true || args.some(a => /\brecursive\s*[:=]\s*(?:true|True)/.test(a))
+  const recursive = call.recursive === true || args.some(a => /\brecursive\s*[:=]\s*(?:true|True)/.test(a) || /^\$true$/i.test(a)
+    || /^['"]DeleteAllContents['"]$/.test(a))
   const target = (expr: string | undefined, op: PathOp): 'ok' | 'unreadable' => {
     if (expr === undefined) return 'unreadable'
     const v = evalExpr(run, expr, cb)
@@ -2222,7 +3176,7 @@ function arrayElements(run: Run, e: string, cb: CodeBindings): Array<string | nu
   if (!s.startsWith('[') || !s.endsWith(']')) return null
   const inner = s.slice(1, -1).trim()
   if (inner === '') return []
-  return splitTop(inner, ',').filter(x => x !== '').map(x => evalExpr(run, x, cb))
+  return splitTop(inner, ',', !run.psStrings).filter(x => x !== '').map(x => evalExpr(run, x, cb))
 }
 
 /** An argv as one shell text: an element that cannot be read is a word the scan cannot read. */
@@ -2246,24 +3200,52 @@ function shellCall(ctx: Ctx, args: string[], positional: string[], verb: string,
     else {
       const v = evalExpr(run, first, cb)
       if (v !== null) {
+        // The program and its argument list, or its arguments one by one (`Process::Start('cmd', '/c ...')`).
         const rest = positional[1] !== undefined ? arrayElements(run, positional[1], cb) : null
-        text = rest ? argvText([v, ...rest]) : v
+        const more = rest ?? positional.slice(1).map(a => stringValue(stripParens(a), run.psStrings)).filter((x): x is string => x !== null)
+        text = more.length ? argvText([v, ...more]) : v
       }
     }
   }
   if (text === null) { markSelfBuilding(run, `${verb} with a command that cannot be read`); return }
+  // `cwd=` / `{ cwd: ... }`: the folder the command starts in (review 2026-11-23). A literal is the base;
+  // anything else leaves the base unreadable, so a relative target is an unresolved mutation.
+  let base = ctx.base
+  let baseUnreadable = ctx.baseUnreadable
+  const cwdArg = args.map(a => a.match(/^cwd\s*=\s*([\s\S]+)$/)?.[1] ?? a.match(/^\{[\s\S]*?\bcwd\s*:\s*((?:'[^']*'|"[^"]*"|`[^`]*`|[^,}])+)/)?.[1]).find(x => x !== undefined)
+  if (cwdArg !== undefined) {
+    const v = evalExpr(run, cwdArg.trim(), cb)
+    const c = v === null ? null : toPath(run, expand(run, v, ctx.base, true).text, true, ctx.base, false)
+    if (c && c !== 'unreadable' && !c.children) { base = c.path; baseUnreadable = false } else baseUnreadable = true
+  }
   run.out.texts.push(renderOrig(run, text))
-  scanPayload(run, text, ctx.base, `${ctx.via}>${verb}`, ctx.depth + 1, 'shell')
+  scanPayload(run, text, base, `${ctx.via}>${verb}`, ctx.depth + 1, 'shell', { dialect: run.platform === 'win32' ? 'cmd' : 'posix', baseUnreadable })
 }
 
-/** Absolute and anchored paths in string literals, and every anchor, of a code payload: mentions. */
-function codeMentions(ctx: Ctx, code: string): void {
+/**
+ * The string literals and the anchors of a code payload. An anchor, or a literal a classified call already
+ * named, is a mention. Any other literal that holds a drive, share or device spelling is a program operand
+ * ('unclassified'): a call the table does not read (`x = shutil.rmtree; x('D:/x')`, `os.truncate`,
+ * `zipfile...extractall`, `ctypes`, `fs['rmSync']`) is judged on the always-denied set (review 2026-11-23).
+ */
+function codeMentions(ctx: Ctx, code: string, classified: Set<string | null>): void {
   const run = ctx.run
-  const lit = /([rRbBuU]{0,2})('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")/g
+  const lit = /([rRbBuU]{0,2})('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`)/g
   for (const m of code.matchAll(lit)) {
-    const v = stringValue(m[0])
-    if (v === null || v === '') continue
-    emitWord(ctx, null, { ...literalWord(v), raw: renderOrig(run, m[0]) }, 'mention', { relAllowed: false, verb: 'literal' })
+    const v = stringValue(m[0]) ?? m[2].slice(1, -1)
+    if (v === '') continue
+    const w = { ...literalWord(v), raw: renderOrig(run, m[0]) }
+    const x = expand(run, v, ctx.base, ctx.tilde)
+    // A literal that is not anchored is read only when it can only be a path: a drive with a separator
+    // (`D:\`, `C:\x`), a share, a device path, or on a POSIX host an absolute path with a name in it.
+    // A separator alone, `x:` and an msys `/a/b` in code on Windows are text (a join, a label, a regex),
+    // and a guess there refused honest programs (review 2026-11-23, third; corpus of past runs).
+    if (x.anchor === null && !x.pipe && !codePathLiteral(run, x.text)) continue
+    const c = x.pipe ? null : toPath(run, x.text, false, ctx.base, x.anchor !== null)
+    if (c !== null && c !== 'unreadable') {
+      const op: PathOp = x.anchor === null && !c.relative && !classified.has(c.path) ? 'unclassified' : 'mention'
+      emitWord(ctx, null, w, op, { relAllowed: false, verb: op === 'unclassified' ? 'a call the scan does not read' : 'literal' })
+    } else emitAbsolute(ctx, null, w, 'a call the scan does not read')
   }
   for (let k = 0; k < code.length; k++) {
     if (code[k] !== S0) continue
@@ -2273,60 +3255,165 @@ function codeMentions(ctx: Ctx, code: string): void {
   }
 }
 
+/** A code literal that can only be a path (see `codeMentions`). */
+function codePathLiteral(run: Run, t: string): boolean {
+  if (/^[A-Za-z]:[\\/]/.test(t) || UNC.test(t) || /^[\\/]{2}[?.][\\/]/.test(t)) return true
+  if (run.platform === 'posix' && /^\/[^/\s]/.test(t)) return true
+  // A drive or share spelled inside the literal (`'cmd /c rd D:\x'`) is still read, by `emitAbsolute`.
+  EMBEDDED_ABS.lastIndex = 0
+  const embedded = EMBEDDED_ABS.test(t)
+  EMBEDDED_ABS.lastIndex = 0
+  return embedded
+}
+
 // ─── Driving the scan ──────────────────────────────────────────────────────────────────────────
 
-function newCtx(run: Run, textSub: string, origText: string, base: string, via: string, depth: number, tilde: boolean): Ctx {
-  return { run, textSub, base, baseUnreadable: false, dirStack: [], via, depth, tilde, segPaths: new Map(), segs: [], origText }
+function newCtx(run: Run, textSub: string, origText: string, base: string, via: string, depth: number, tilde: boolean,
+  o: PayloadOpts & { codeAsShell?: boolean } = {}): Ctx {
+  return {
+    run, textSub, base, baseUnreadable: o.baseUnreadable === true, dirStack: [], via, depth, tilde, segPaths: new Map(), segs: [], origText,
+    dialect: o.dialect ?? (run.platform === 'win32' ? 'ps' : 'posix'), codeAsShell: o.codeAsShell === true,
+  }
 }
 
 /** Scans one text: as shell text, as code, or both (an inline program, findings unioned). */
-function scanPayload(run: Run, text: string, base: string, via: string, depth: number, mode: 'shell' | 'code' | 'both'): void {
+function scanPayload(run: Run, text: string, base: string, via: string, depth: number, mode: 'shell' | 'code' | 'both', o: PayloadOpts = {}): void {
   if (depth > MAX_DEPTH) { run.out.faults.push(`a payload nested deeper than ${MAX_DEPTH}`); return }
-  if (mode === 'shell' || mode === 'both') scanShell(run, text, base, via, depth)
-  if (mode === 'code' || mode === 'both') scanCode(run, text, base, via, depth)
+  if (overBudget(run)) return
+  if (mode === 'shell' || mode === 'both') scanShell(run, text, base, via, depth, { ...o, codeAsShell: mode === 'both' })
+  if (mode === 'code' || mode === 'both') scanCode(run, text, base, via, depth, o)
 }
 
-function scanShell(run: Run, text: string, base: string, via: string, depth: number): void {
+const TOO_LONG = `a command or program longer than ${MAX_SCANNED_TEXT / 1024} KiB once its here-strings and here-documents are set aside`
+
+/**
+ * cmd's caret outside double quotes escapes the next character and is removed (`D^:\x` is `D:\x`,
+ * measured; review 2026-11-23, third). Before one of cmd's own operators it is left for the tokenizer,
+ * which keeps that character as text.
+ */
+function stripCarets(text: string): string {
+  if (!text.includes('^')) return text
+  let out = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '"') quoted = !quoted
+    if (c === '^' && !quoted && i + 1 < text.length && !CARET_ESCAPABLE.has(text[i + 1])) continue
+    out += c
+  }
+  return out
+}
+
+function scanShell(run: Run, text0: string, base: string, via: string, depth: number, o: PayloadOpts & { codeAsShell: boolean }): void {
   try {
+    const text = o.dialect === 'cmd' ? stripCarets(text0) : text0
     const lifted = liftBodies(run, text)
+    // Measured on the text as written (a substituted name is a longer sentinel).
     const plain = renderOrig(run, lifted, true)
+    if (plain.length > MAX_SCANNED_TEXT) { run.out.faults.push(TOO_LONG); return }
     markSelfBuilding(run, findMarker(plain))
-    const bindings = findShellAssignments(run, lifted)
+    const dialect: Dialect = o.dialect ?? (run.platform === 'win32' ? 'ps' : 'posix')
+    const bindings = findShellAssignments(run, lifted, dialect !== 'posix')
     const sub = substitute(run, lifted, bindings)
-    const toks = tokenize(sub)
-    const ctx = newCtx(run, sub, plain, base, via, depth, true)
-    ctx.segs = segment(toks)
-    classifySegments(ctx)
-    // `$(...)` inside double quotes: scanned as a nested command.
-    for (const t of toks) if (t.kind === 'w') for (const s of t.subs) scanPayload(run, s, ctx.base, via, depth + 1, 'shell')
-    scanCodeCalls(ctx, sub, SHELL_CODE_CALLS, new Map())
+    // PowerShell and cmd read a backslash before a quote as an ordinary character, a POSIX shell as an
+    // escape; where the text has one, both readings are taken and their findings unioned (review 2026-11-23).
+    const readings = dialect === 'posix' ? [true] : /\\["$`]/.test(sub) ? [false, true] : [false]
+    let first: Tok[] = []
+    for (const posixQuotes of readings) {
+      const toks = tokenize(sub, posixQuotes, run)
+      if (first.length === 0) first = toks
+      const ctx = newCtx(run, sub, plain, base, via, depth, true, { ...o, dialect })
+      ctx.segs = segment(toks, sub)
+      classifySegments(ctx)
+      // `$(...)` inside double quotes: scanned as a nested command.
+      if (!o.codeAsShell) for (const t of toks) if (t.kind === 'w') for (const s of t.subs) scanPayload(run, s, ctx.base, via, depth + 1, 'shell', { dialect, baseUnreadable: ctx.baseUnreadable })
+    }
+    if (o.codeAsShell) return
+    const ctx = newCtx(run, sub, plain, base, via, depth, true, { ...o, dialect })
+    const was = run.psStrings
+    run.psStrings = dialect === 'ps'
+    try {
+      scanCodeCalls(ctx, sub, SHELL_CODE_CALLS, new Map())
+    } finally {
+      run.psStrings = was
+    }
+    run.sweeps.push({ ctx, toks: first })
   } catch (e) {
     run.out.faults.push(`the shell text could not be read: ${(e as Error)?.message ?? String(e)}`)
   }
 }
 
+/**
+ * Every quoted literal and every whole word of the text that names a drive, a share or a home or temp
+ * spelling, and that nothing above named: a mention (review 2026-11-23). An assignment the scan does not
+ * model (`${X} = ...`, a hashtable for splatting, a script block's argument) still leaves its literal beside
+ * the mutation it feeds, so a delete through the name is judged beside it. Run once the whole command is
+ * read, and only when it has an unresolved mutation: a mention counts for nothing else.
+ */
+function sweepLiterals(ctx: Ctx, toks: Tok[]): void {
+  const run = ctx.run
+  const named = new Set(run.out.paths.map(p => p.path))
+  for (const t of toks) {
+    if (t.kind !== 'w') continue
+    const parts = t.pieces.length === 1 ? [t.pieces[0].t] : t.pieces.filter(p => p.q !== 'n').map(p => p.t)
+    for (const v of parts) {
+      if (v === '' || !/[\\/:~]|\u0002/.test(v)) continue
+      const x = expand(run, v, ctx.base, ctx.tilde)
+      if (x.here !== null && run.bodies[x.here]?.use !== 'code') {
+        for (const line of hereLines(ctx, x.here)) {
+          const y = expand(run, line.value, ctx.base, ctx.tilde)
+          if (y.pipe || (y.anchor === null && !DRIVE_ABS.test(y.text) && !UNC.test(y.text))) continue
+          const c = toPath(run, y.text, false, ctx.base, y.anchor !== null)
+          if (c === null || c === 'unreadable' || named.has(c.path)) continue
+          named.add(c.path)
+          emit(run, { raw: line.raw, path: c.path, op: 'mention', recursive: false, children: c.children, inherited: false, anchor: y.anchor, device: c.device, verb: 'literal', via: ctx.via })
+        }
+        continue
+      }
+      if (x.pipe || x.here !== null || x.doc !== null) continue
+      if (x.anchor === null && !DRIVE_ABS.test(x.text) && !UNC.test(x.text)) continue
+      const c = toPath(run, x.text, false, ctx.base, x.anchor !== null)
+      if (c === null || c === 'unreadable' || named.has(c.path)) continue
+      named.add(c.path)
+      emit(run, { raw: renderOrig(run, v), path: c.path, op: 'mention', recursive: false, children: c.children, inherited: false, anchor: x.anchor, device: c.device, verb: 'literal', via: ctx.via })
+    }
+  }
+}
+
 const JS_MODULES: Record<string, string> = { fs: 'fs', 'fs/promises': 'fs.promises', child_process: 'child_process' }
+
 
 /**
  * The code with its import aliases spelled out, so one call table reads them all (review 2026-11-23):
  * `import shutil as sh` makes `sh.` read `shutil.`; `from shutil import rmtree` makes `rmtree(` read
- * `shutil.rmtree(`; a module bound to a name by `require(...)` or `import * as f from ...`, and the
- * names destructured from one, the same way. (This module starts no process: these are table data.)
+ * `shutil.rmtree(`; `x = shutil.rmtree` makes `x(` read `shutil.rmtree(`; `__import__('shutil').` reads
+ * `shutil.`; a module bound to a name by `require(...)` or `import * as f from ...`, and the names
+ * destructured from one, the same way. All of them are applied in one pass over the code, so the cost is
+ * linear in its length however many aliases it repeats (a rewrite per alias was quadratic). (This module
+ * starts no process: these are table data.)
  */
-function aliasCode(code: string): string {
-  const rewrites: Array<[RegExp, string]> = []
-  const bare = (local: string, full: string) => rewrites.push([new RegExp(`(?<![\\w.$])${local.replace(/\$/g, '\\$')}(?=\\s*\\()`, 'g'), full])
-  const dotted = (local: string, mod: string) => { if (local !== mod) rewrites.push([new RegExp(`(?<![\\w.$])${local.replace(/\$/g, '\\$')}\\.`, 'g'), `${mod}.`]) }
-  for (const m of code.matchAll(/\bimport\s+(os|shutil|subprocess)\s+as\s+([A-Za-z_]\w*)/g)) dotted(m[2], m[1])
+function aliasCode(code0: string): string {
+  const code = code0.replace(/\b__import__\(\s*['"](os|shutil|subprocess)['"]\s*\)\./g, '$1.')
+  const dotted = new Map<string, string>()
+  const bare = new Map<string, string>()
+  const addDotted = (local: string, mod: string) => { if (local !== mod && !dotted.has(local)) dotted.set(local, mod) }
+  const addBare = (local: string, full: string) => { if (!bare.has(local)) bare.set(local, full) }
+  for (const m of code.matchAll(/\bimport\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)/g)) {
+    for (const part of m[1].split(',')) {
+      const pm = part.trim().match(/^(os|shutil|subprocess)\s+as\s+([A-Za-z_]\w*)$/)
+      if (pm) addDotted(pm[2], pm[1])
+    }
+  }
   for (const m of code.matchAll(/\bfrom\s+(os|shutil|subprocess)\s+import\s+\(?([\w\s,]+?)\)?\s*(?=$|[;\n])/gm)) {
     for (const part of m[2].split(',')) {
       const pm = part.trim().match(/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/)
-      if (pm) bare(pm[2] ?? pm[1], `${m[1]}.${pm[1]}`)
+      if (pm) addBare(pm[2] ?? pm[1], `${m[1]}.${pm[1]}`)
     }
   }
+  for (const m of code.matchAll(/(?<![\w.$])([A-Za-z_]\w*)\s*=\s*((?:shutil|os|subprocess)\.\w+)\s*(?=$|[;\n])/gm)) addBare(m[1], m[2])
   const req = String.raw`require\(\s*['"](?:node:)?(fs\/promises|fs|child_process)['"]\s*\)`
-  for (const m of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${req}`, 'g'))) dotted(m[1], JS_MODULES[m[2]])
-  for (const m of code.matchAll(/\bimport\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+['"](?:node:)?(fs\/promises|fs|child_process)['"]/g)) dotted(m[1], JS_MODULES[m[2]])
+  for (const m of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${req}`, 'g'))) addDotted(m[1], JS_MODULES[m[2]])
+  for (const m of code.matchAll(/\bimport\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s+['"](?:node:)?(fs\/promises|fs|child_process)['"]/g)) addDotted(m[1], JS_MODULES[m[2]])
   const destructured = [
     ...code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*${req}`, 'g')),
     ...code.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s+['"](?:node:)?(fs\/promises|fs|child_process)['"]/g),
@@ -2334,29 +3421,40 @@ function aliasCode(code: string): string {
   for (const m of destructured) {
     for (const part of m[1].split(',')) {
       const pm = part.trim().match(/^([A-Za-z_$][\w$]*)(?:\s*(?::|\s+as\s+)\s*([A-Za-z_$][\w$]*))?$/)
-      if (pm) bare(pm[2] ?? pm[1], `${JS_MODULES[m[2]]}.${pm[1]}`)
+      if (!pm) continue
+      if (pm[1] === 'promises') addDotted(pm[2] ?? pm[1], 'fs.promises')
+      else addBare(pm[2] ?? pm[1], `${JS_MODULES[m[2]]}.${pm[1]}`)
     }
   }
-  let out = code
-  for (const [re, to] of rewrites) out = out.replace(re, to)
-  return out
+  if (dotted.size === 0 && bare.size === 0) return code
+  // One pass: every name followed by `.` or `(` is looked up (an alternation of the names was quadratic).
+  return code.replace(/(?<![\w.$])([A-Za-z_$][\w$]*)(?=(\.)|\s*\()/g, (m: string, name: string, dot: string | undefined) => {
+    if (dot !== undefined) { const mod = dotted.get(name); return mod !== undefined ? mod : m }
+    return bare.get(name) ?? m
+  })
 }
 
-function scanCode(run: Run, text: string, base: string, via: string, depth: number): void {
+function scanCode(run: Run, text: string, base: string, via: string, depth: number, o: PayloadOpts): void {
   try {
-    markSelfBuilding(run, findMarker(renderOrig(run, text)))
+    if (renderOrig(run, text).length > MAX_SCANNED_TEXT) { run.out.faults.push(TOO_LONG); return }
+    markSelfBuilding(run, findMarker(renderOrig(run, text)) ?? codeMarker(text))
     const sub = substitute(run, text, findShellAssignments(run, text))
-    const ctx = newCtx(run, sub, renderOrig(run, text), base, via, depth, true)
+    const ctx = newCtx(run, sub, renderOrig(run, text), base, via, depth, true, { dialect: 'posix', baseUnreadable: o.baseUnreadable })
     const code = aliasCode(sub)
     const cb = findCodeAssignments(run, code)
+    const before = run.out.paths.length
     scanCodeCalls(ctx, code, CODE_CALLS, cb)
-    codeMentions(ctx, sub)
+    codeMentions(ctx, sub, new Set(run.out.paths.slice(before).map(p => p.path)))
   } catch (e) {
     run.out.faults.push(`the inline program could not be read: ${(e as Error)?.message ?? String(e)}`)
   }
 }
 
 function finish(run: Run): ShellScan {
+  if (run.out.unresolvedMutation !== null) for (const s of run.sweeps) sweepLiterals(s.ctx, s.toks)
+  // A scan that ran past its budget anywhere, even where no step asked, refuses the call: a reading that
+  // took that long is not trusted as complete (review 2026-11-23, third).
+  overBudget(run)
   for (const b of run.bodies) {
     if (b.use !== null) continue
     b.use = 'data'
@@ -2371,7 +3469,7 @@ function platformOf(opts?: ScanOpts): Platform {
 
 /** Names the paths in shell text and in inline-interpreter text. Pure; never throws. */
 export function scanShellText(text: string, base: string, homes: HomeMap, opts?: ScanOpts): ShellScan {
-  const run: Run = { homes, platform: platformOf(opts), table: [], bodies: [], out: emptyScan() }
+  const run = newRun(homes, platformOf(opts))
   const input = typeof text === 'string' ? text : String(text ?? '')
   run.out.texts.push(input)
   try {
@@ -2390,7 +3488,7 @@ export function scanShellText(text: string, base: string, homes: HomeMap, opts?:
  * expansion of `$NAME`, `%NAME%` or `~`.
  */
 export function scanArgv(words: string[], base: string, homes: HomeMap, opts?: ScanOpts): ShellScan {
-  const run: Run = { homes, platform: platformOf(opts), table: [], bodies: [], out: emptyScan() }
+  const run = newRun(homes, platformOf(opts))
   try {
     const list = (Array.isArray(words) ? words : []).map(w => String(w ?? ''))
     if (list.length === 0) return run.out
@@ -2401,6 +3499,7 @@ export function scanArgv(words: string[], base: string, homes: HomeMap, opts?: S
     if (verbName(list[0]) === 'git') {
       const ctx = newCtx(run, segText, segText, base, 'argv', 0, false)
       classifyGit(ctx, null, list.slice(1).map(literalWord), segText)
+      overBudget(run)
       return run.out
     }
     // Any other program: the verb table on the literal words (no lexing, no expansion).
@@ -2415,9 +3514,11 @@ export function scanArgv(words: string[], base: string, homes: HomeMap, opts?: S
     const seg: Seg = { id: 0, words: toks, redirects: [], pipeline: 0, pipeIndex: 0, parentPipeline: null, parentPipeIndex: 0, subexpr: false, start: 0, end: joined.length, groups: [] }
     ctx.segs = [seg]
     classifySegment(ctx, seg)
+    overBudget(run)
     return run.out
   } catch (e) {
     run.out.faults.push(`the argv could not be read: ${(e as Error)?.message ?? String(e)}`)
     return run.out
   }
 }
+

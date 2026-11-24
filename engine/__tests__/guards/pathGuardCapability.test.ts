@@ -63,7 +63,7 @@ describe('governanceCapabilities: path-guard is measured, never claimed', () => 
 describe('containmentDispatchRefusal requires path-guard', () => {
   it('refuses an engine that says every other word, naming path-guard as absent', () => {
     for (const platform of ['win32', 'linux']) {
-      const r = containmentDispatchRefusal({ capabilities: [CAP_CONTAINED], platform })
+      const r = containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, 'tool-audit'], platform })
       expect(typeof r).toBe('string')
       expect(r).toContain('this engine is not a contained mission engine')
       expect(r).toContain(`${CAP_PATH_GUARD} is absent`)
@@ -72,8 +72,9 @@ describe('containmentDispatchRefusal requires path-guard', () => {
   })
 
   it('dispatches once path-guard is added', () => {
-    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, CAP_PATH_GUARD], platform: 'win32' })).toBeNull()
-    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, CAP_PATH_GUARD], platform: 'linux' })).toBeNull()
+    // With tool-audit (S5), which the refusal also requires.
+    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, CAP_PATH_GUARD, 'tool-audit'], platform: 'win32' })).toBeNull()
+    expect(containmentDispatchRefusal({ capabilities: [CAP_CONTAINED, CAP_PATH_GUARD, 'tool-audit'], platform: 'linux' })).toBeNull()
   })
 })
 

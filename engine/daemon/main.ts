@@ -11,6 +11,7 @@ import { NtfyChannel, ntfyOptionsFromEnv } from './ntfyChannel.js'
 import { TaskRunner } from './taskRunner.js'
 import { defaultControlPath, readControl } from './control.js'
 import { runPrecheck } from './precheck.js'
+import { auditRefusal } from '../audit/toolAudit.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome, missionsDir as resolveMissionsDir, sandboxRoot } from '../paths.js'
@@ -80,9 +81,16 @@ mkdirSync(missionsDir, { recursive: true })
 // F242: remove sandboxes older than a week and give back the label of any run whose holder is gone
 // (a daemon stopped mid-task leaves its mission folder labelled).
 sweepSandboxes({ log: (line) => console.log(`[daemon] ${line}`) })
-const refuseRun = (): string | null => existsSync(sandboxRoot())
-  ? null
-  : `containment: the sandbox root ${sandboxRoot()} is not an existing folder; create it once with scripts/cynco-containment-setup.ps1`
+/** Why an unattended run may not start now, as `<layer>: <reason>`, or null. Asked before the GPU is taken. */
+const refuseRun = (): string | null => {
+  // F242: a run whose tool calls cannot be recorded does not start. A probe record is written and
+  // fsynced each time this is asked, so "fine" is a measurement made now.
+  const audit = auditRefusal({ by: 'task-runner' })
+  if (audit) return `audit: ${audit}`
+  return existsSync(sandboxRoot())
+    ? null
+    : `containment: the sandbox root ${sandboxRoot()} is not an existing folder; create it once with scripts/cynco-containment-setup.ps1`
+}
 const runners: MissionRunner[] = []
 for (const entry of readdirSync(missionsDir)) {
   const dir = join(missionsDir, entry)
@@ -113,6 +121,7 @@ for (const entry of readdirSync(missionsDir)) {
     now: () => new Date(),
     runPrecheck,
     isPaused,
+    refuse: refuseRun,
   }))
   console.log(`[daemon] Loaded mission: ${ledger.config.id} (${ledger.config.triggers.length} triggers)`)
 }

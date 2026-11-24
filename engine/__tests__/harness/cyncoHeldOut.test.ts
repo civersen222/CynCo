@@ -170,7 +170,8 @@ describe('the marker-check path: snapshotted, restored on every exit', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../scripts/cynco-mission-driver.mjs', import.meta.url)), 'utf-8')
     expect(src).toMatch(/const MARKER = markerCheckFrom\(process\.env, checkCmd, CHECK_TIMEOUT_MS\)/)
     // F242: the check also runs inside the run's own containment.
-    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \}, contained: runContainment\(\) \}\)/)
+    // F242: contained (S2c) and recorded, hashes only (S5).
+    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \}, contained: runContainment\(\), audit: \{ handle: audit, src: 'driver-marker' \} \}\)/)
     expect(src).not.toMatch(/runCheckAsync\(checkCmd/)
     expect(src).toMatch(/await withHeldOutRestored\(heldOutSnapshots, async \(\) => \{\s*\n\s*if \(MARKER\.command && !gate\.run\)/)
   })

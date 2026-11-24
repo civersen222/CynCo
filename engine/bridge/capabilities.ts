@@ -29,6 +29,7 @@ import { isHouseConductEnabled, isS5EnforcementEnabled } from '../config.js'
 import { isUnattendedMission } from '../missionEnv.js'
 import { runContainment } from '../containment.js'
 import { pathGuardProbe } from '../tools/protectedPaths.js'
+import { toolAudit } from '../audit/toolAudit.js'
 
 /** The engine can hide a held-out gate from the mission it is grading (F37). */
 export const CAP_SEALED_GATES = 'sealed-gates'
@@ -81,6 +82,13 @@ export const CAP_CONTAINED_OVERLAY = 'contained-overlay'
  * one of which must be an allow. An engine with no run context cannot say it.
  */
 export const CAP_PATH_GUARD = 'path-guard'
+/**
+ * This process appended and fsynced a tool-call audit record just now, in the
+ * folder its run context names (F242). A word for the safe state: an engine
+ * that cannot say it is refused by the driver, and an interactive engine,
+ * which does not audit, never says it.
+ */
+export const CAP_TOOL_AUDIT = 'tool-audit'
 
 /**
  * A path that cannot collide with a real instrument, and says what it is to
@@ -104,6 +112,8 @@ type Wiring = {
   contained?: () => 'verified' | 'overlay' | null
   /** The live probe of the path check; optional so a wiring without it never claims the word. */
   pathGuard?: () => boolean
+  /** True when a probe record was written just now; optional so a wiring without it never claims the word. */
+  toolAudit?: () => boolean
 }
 
 const LIVE: Wiring = {
@@ -118,6 +128,13 @@ const LIVE: Wiring = {
   houseConduct: () => isHouseConductEnabled(),
   contained: () => { const c = runContainment(); return c && !c.test ? c.isolation : null },
   pathGuard: () => pathGuardProbe(),
+  toolAudit: () => {
+    const audit = toolAudit()
+    if (!audit) return false                       // not a contained run: nothing to claim, nothing to log
+    const why = audit.probe('capability')
+    if (why) console.log(`[capability] ${CAP_TOOL_AUDIT} not advertised: ${why}`)
+    return why === null
+  },
 }
 
 /**
@@ -174,6 +191,11 @@ export function governanceCapabilities(wiring: Wiring = LIVE): string[] {
     if (wiring.pathGuard?.() === true) caps.push(CAP_PATH_GUARD)
   } catch (e) {
     console.log(`[capability] ${CAP_PATH_GUARD} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
+  }
+  try {
+    if (wiring.toolAudit?.() === true) caps.push(CAP_TOOL_AUDIT)
+  } catch (e) {
+    console.log(`[capability] ${CAP_TOOL_AUDIT} probe threw, not advertised: ${(e as Error)?.message ?? e}`)
   }
   return caps
 }

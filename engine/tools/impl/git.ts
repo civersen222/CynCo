@@ -73,7 +73,7 @@ async function trackedModificationsRemaining(cwd: string, signal?: AbortSignal):
     const c = containedCommand({ file: 'git', args: ['status', '--porcelain'] }, { cwd, extraEnv: GIT_TOOL_ENV })
     const r = await runOwned(c, signal)
     if (r.ended !== null) return []
-    if (c.viaLauncher && launcherFaultOf(r.exitCode, r.stderr)) return []
+    if (c.viaLauncher && launcherFaultOf(r.exitCode, r.stderr, c.seal)) return []
     if (r.exitCode !== 0) return []
     return r.stdout.split('\n')
       .filter(l => l.length > 3 && l.slice(0, 2) !== '??' && l[1] !== ' ')
@@ -217,11 +217,15 @@ export const gitTool: ToolImpl = {
             ? `git ${sub} stopped: the turn was stopped, and git and what it started were ended. Output so far:\n${partial}`
             : `git ${sub} timeout after ${bashDefaultTimeoutMs()}ms: git and what it started (a hook, a filter, a credential helper) were ended. Output so far:\n${partial}`,
           isError: true,
+          // Started and ended without a status, as Bash's Stop and timeout (types.ts).
+          exitCode: null,
         }
       }
-      // 197 / 198 from the launcher with its named line: git did not run (or ended with no status).
-      const fault = c.viaLauncher ? launcherFaultOf(exitCode, stderr) : null
-      if (fault) return { output: fault.text, isError: true }
+      // The launcher's own sealed 197: git did not run, so no exit code (a refusal made before a
+      // process ran). Its sealed 198 (git ended with no status) and Bun's EPERM line came from a
+      // process that ran: they carry the status (review of slice S5).
+      const fault = c.viaLauncher ? launcherFaultOf(exitCode, stderr, c.seal) : null
+      if (fault) return fault.ran ? { output: fault.text, isError: true, exitCode: fault.exitCode } : { output: fault.text, isError: true }
       if (exitCode !== 0) {
         // Both streams, because git does not put its diagnostics where you would
         // expect. A `git commit` with nothing staged exits 1 with stderr EMPTY and
@@ -230,7 +234,7 @@ export const gitTool: ToolImpl = {
         // "exited with code 1", and it had to spend a turn running `git status` to
         // learn what any human would have read off the failure itself.
         const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
-        return { output: detail || `git ${sub} exited with code ${exitCode}`, isError: true }
+        return { output: detail || `git ${sub} exited with code ${exitCode}`, isError: true, exitCode }
       }
       // A commit is a claim that the work has been delivered, and the workspace
       // is not the delivery. Watched live: a run staged exactly the two files
@@ -251,12 +255,13 @@ export const gitTool: ToolImpl = {
               left.map(p => `  ${p}`).join('\n') +
               `\nIf the committed code depends on any of them, HEAD is broken even though the working tree works.`,
             isError: false,
+            exitCode: 0,
           }
         }
       }
-      return { output: stdout || '(no output)', isError: false }
+      return { output: stdout || '(no output)', isError: false, exitCode: 0 }
     } catch (err) {
-      return { output: `Git error: ${err instanceof Error ? err.message : String(err)}`, isError: true }
+      return { output: `Git error: ${err instanceof Error ? err.message : String(err)}`, isError: true, exitCode: null }
     }
   },
 }

@@ -22,6 +22,7 @@ import { setLoadedSkills, getSkillByName, getSkillIndex } from '../skills/store.
 import { formatSkillIndexBlock } from '../skills/prompt.js'
 import { getWorkflowForSkill } from '../skills/workflowSkill.js'
 import { ToolExecutor, setTaskImmutablePaths, type RequestApprovalFn } from '../tools/executor.js'
+import { toolAudit, setContainmentFaultSink } from '../audit/toolAudit.js'
 import { emptyTokenTotals, addTurnCost } from './tokenTotals.js'
 import { getSealedDirs, setTaskSealedPaths } from '../tools/sealedPaths.js'
 import { ToolScorer } from '../tools/toolScorer.js'
@@ -751,6 +752,12 @@ export class ConversationLoop {
     this.governance = new GovernanceLayer((alert) => {
       this.emit({ type: 'governance.alert', severity: alert.severity, message: alert.message, source: alert.source })
     })
+    // Entry 3.M5: a containment, audit or integrity refusal ends the run whatever the model
+    // then says. The executor, a sub-agent's executor and the bypass sites raise it through
+    // one function; this loop turns it into the alert the driver and the one-shot both read.
+    setContainmentFaultSink((layer, reason) => {
+      this.emit({ type: 'governance.alert', severity: 'critical', message: reason, source: layer })
+    })
     this.s5 = opts.s5
     if (this.s5) {
       this.ruleAuthority = RuleAuthority.load(ruleVerdictsPath(cyncoHome()))
@@ -1097,6 +1104,8 @@ export class ConversationLoop {
       const toolId = typeof block?.id === 'string' && block.id ? block.id : randomUUID()
       const toolName = typeof block?.name === 'string' ? block.name : 'unknown'
       const text = `Tool call "${toolName}" was not executed: ${reason}`
+      // F242 (S5): a call the loop skips is a call it refused, and has its record.
+      toolAudit()?.refused({ src: 'tool', by: 'loop', tool: toolName, input: block?.input ?? {}, cwd: this.executor['cwd'], reason: text })
       this.emit({ type: 'tool.start', toolId, toolName, input: (block?.input ?? {}) as Record<string, unknown> })
       this.emit({ type: 'tool.complete', toolId, toolName, result: text, isError: true })
       toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: [{ type: 'text', text }], is_error: true })
@@ -5060,6 +5069,7 @@ export class ConversationLoop {
       // never parsed is still what the model did next.
       this.verifyFirst?.observeCall(classifyCall(toolName, toolInput, true), this.toolCallsTotal)
       this.accountToolClass(toolName, toolInput, true)
+      toolAudit()?.refused({ src: 'tool', by: 'loop', tool: toolName, input: toolInput, cwd: this.executor['cwd'], reason: msg })
       return
     }
     // Healthy parse: reset the bounded-retry counter.
@@ -5094,6 +5104,9 @@ export class ConversationLoop {
      * describes — measured 2026-07-28, five read-loop denials ended a Gilded
      * run mid-edit. See AlgedonicIntegration.recordToolResult.
      */
+    /** The audit's record of a call the loop refused before the executor saw it (F242). */
+    const auditDenied = (reason: string) => toolAudit()?.refused({
+      src: 'tool', by: 'loop', tool: toolName, input: toolInput, cwd: this.executor['cwd'], reason })
     const recordDenial = () => this.governance.onToolResult(
       toolName, false, 0, undefined, toolInput, { governanceDenial: true })
 
@@ -5137,6 +5150,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      auditDenied(msg)
       accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5176,6 +5190,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      auditDenied(msg)
       accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5197,6 +5212,7 @@ export class ConversationLoop {
       toolResults.push({ type: 'tool_result', tool_use_id: toolId, content: [{ type: 'text', text: msg }] })
       toolsUsedThisTurn.push(toolName)
       toolsUsedInSession.push(toolName)
+      auditDenied(msg)
       return
     }
 
@@ -5215,6 +5231,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      auditDenied(commitVerdict.reason!)
       accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5260,6 +5277,7 @@ export class ConversationLoop {
           is_error: true,
         })
         toolsUsedThisTurn.push(toolName)
+        auditDenied(message)
         accountDenied()
         recordDenial()
         this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5323,6 +5341,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      auditDenied(readLoopVerdict.message)
       accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5350,6 +5369,7 @@ export class ConversationLoop {
         is_error: true,
       })
       toolsUsedThisTurn.push(toolName)
+      auditDenied(`BLOCKED: ${riskDesc}`)
       accountDenied()
       recordDenial()
       this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5454,6 +5474,7 @@ export class ConversationLoop {
               is_error: true,
             })
             toolsUsedThisTurn.push(toolName)
+            auditDenied(decision.message)
             accountDenied()
             recordDenial()
             this.recordToolOutcome(toolName, 'denied', toolResultsThisTurn)
@@ -5495,7 +5516,22 @@ export class ConversationLoop {
       let expired = false
       const prepend = (async () => {
         const { codeIndexTool } = await import('../tools/impl/codeIndex.js')
-        const ci = await codeIndexTool.execute({ query: String(toolInput.pattern), top_k: 3 }, this.executor['cwd'])
+        // F242 (S5): this call runs outside the executor (its regex fallback starts rg or PowerShell
+        // with the model's pattern), so it is recorded here as its own call; unrecorded, it runs not.
+        const ciInput = { query: String(toolInput.pattern), top_k: 3 }
+        const ciCwd: string = this.executor['cwd']
+        const ciAudit = toolAudit()
+        const ciStarted = ciAudit ? ciAudit.start({ src: 'tool', tool: 'CodeIndex', input: ciInput, cwd: ciCwd }) : null
+        if (ciStarted && !ciStarted.ok) return
+        const ciT0 = Date.now()
+        let ci: Awaited<ReturnType<typeof codeIndexTool.execute>>
+        try {
+          ci = await codeIndexTool.execute(ciInput, ciCwd)
+        } catch (e) {
+          if (ciAudit && ciStarted) ciAudit.end(ciStarted.call, { isError: true, ms: Date.now() - ciT0, output: e instanceof Error ? e.message : String(e) })
+          throw e
+        }
+        if (ciAudit && ciStarted) ciAudit.end(ciStarted.call, { isError: Boolean(ci.isError), ms: Date.now() - ciT0, output: ci.output ?? '' })
         const card = (ci.output ?? '').trim()
         // `codeIndexTool.execute` never sets isError: when the vector search
         // comes back empty it answers with its own `[regex fallback]` grep, and
@@ -5698,7 +5734,7 @@ export class ConversationLoop {
       }
     }
 
-    console.log(`[loop] Tool result: ${toolName} isError=${result.isError}`)
+    console.log(`[loop] Tool result: ${toolName} isError=${result.isError}${result.exitCode !== undefined ? ` exit=${result.exitCode}` : ''}`)
 
     // A red test suite (pytest/jest/go-test reporting failing tests) exits
     // non-zero but is expected TDD signal, not a tool fault. It must not count

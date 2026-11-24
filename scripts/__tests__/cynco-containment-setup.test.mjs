@@ -12,9 +12,9 @@ import { readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { SWITCH_IN_UNATTENDED } from '../../engine/containment.js'
-// The audit writer's marker name, pinned as a literal until the audit writer lands (S5): this test must
-// not import a module a commit of S3, S4 and S6 does not carry (spec 05 section 4.7; review 2026-11-23).
-const AUDIT_MARKER = '.cynco-audit'
+// The audit writer's own marker name (spec 05 section 4.7): the setup script writes the marker the
+// writer requires, so the two cannot drift apart with every test green.
+import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
 
 const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'cynco-containment-setup.ps1'), 'utf-8')
 const at = (needle) => { const i = src.indexOf(needle); expect(i, `not found: ${needle}`).toBeGreaterThan(-1); return i }

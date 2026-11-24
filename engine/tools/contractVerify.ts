@@ -22,8 +22,9 @@ import { isAbsolute, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from './shellInfo.js'
 import { testCaseAssertions } from '../training/gitFacts.js'
-import { toolExec, toolSpawnRefusal } from '../containment.js'
+import { refusalReasonOf, toolExec, toolSpawnRefusal } from '../containment.js'
 import { harnessGitBin, harnessGitEnv } from '../harnessGit.js'
+import { toolAudit, containmentFault } from '../audit/toolAudit.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -382,7 +383,19 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
   // through the containment with the shared tool environment. A run whose launcher cannot run
   // starts nothing: no answer, never a failed check (F35).
   const refusal = toolSpawnRefusal()
-  if (refusal) return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: refusal })
+  if (refusal) {
+    // A refused check has its record too (withheld source: the command and the reason are hashed).
+    toolAudit()?.refused({ src: 'contract', by: 'site', input: { command }, cwd, layer: 'containment', reason: refusal })
+    containmentFault('containment', refusalReasonOf(refusal))
+    return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: refusal })
+  }
+  // F242: the record of this check is on disk before it runs. Source `contract` is withheld (F34,
+  // F37): the record holds hashes, the exit code and the duration, never the command or its output.
+  const audit = toolAudit()
+  const started = audit ? audit.start({ src: 'contract', command, cwd }) : null
+  if (started && !started.ok) {
+    return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: `[tool-audit] this check was not run: ${started.reason}` })
+  }
   return new Promise(resolvePromise => {
     // toolExec throws only before anything starts (its backstop refusal, or the long-command file
     // that could not be written): that is no answer, never a rejected check.
@@ -393,8 +406,15 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
         (err, stdout, stderr) => {
           const ms = Date.now() - startedAt
           const tail = capTail((stdout ?? '') + (stderr ?? ''), 40, 4096)
-          if (!err) return resolvePromise({ outcome: 'passed', ms, tail })
-          const e = err as Error & { code?: number | string; killed?: boolean }
+          const e = err as (Error & { code?: number | string; killed?: boolean }) | null
+          if (audit && started) {
+            audit.end(started.call, {
+              isError: Boolean(err), exitCode: !err ? 0 : (typeof e!.code === 'number' ? e!.code : null),
+              ms, output: (stdout ?? '') + (stderr ?? ''),
+            })
+          }
+          if (e?.code === 'ECONTAINMENT') containmentFault('containment', refusalReasonOf(String(e.message)))
+          if (!err || !e) return resolvePromise({ outcome: 'passed', ms, tail })
           if (e.killed) return resolvePromise({ outcome: 'timeout', ms, tail })
           // A shell that ran the command reports its status as a number — including
           // 127 for "not found", which is a real failing answer. Anything else
@@ -406,6 +426,7 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
         },
       )
     } catch (e) {
+      if (audit && started) audit.end(started.call, { isError: true, exitCode: null, ms: Date.now() - startedAt, output: (e as Error).message })
       resolvePromise({ outcome: 'unrunnable', ms: Date.now() - startedAt, tail: (e as Error).message })
     }
   })

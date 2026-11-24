@@ -10,6 +10,8 @@ import type { Message } from '../../types.js'
 import type { Provider, CompletionRequest, ModelCapabilities } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
+import { AUDIT_NOT_WRITTEN, setContainmentFaultSink } from '../../audit/toolAudit.js'
+import { auditWorld, blockDayFile } from '../audit/auditWorld.js'
 
 // runOneShotTask drives a real ConversationLoop (filesystem, JSONL sessions,
 // index DBs) under the suite's temporary home; it needs no live service and
@@ -476,4 +478,88 @@ describe('runOneShotTask (governed conversation loop)', () => {
       expect(toolsSection).not.toContain('- Write:')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   }, 30000)
+})
+
+// F242, entry 3.M5: a containment, audit or integrity refusal ends a one-shot as refused, whatever the model then says.
+describe('makeHaltCapture: refused (S5)', () => {
+  it('a critical alert from the audit layer makes refused() name it; another source does not; the first one wins', () => {
+    const cap = makeHaltCapture()
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'stuck', source: 'algedonic' } as any)
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'warning', message: 'w', source: 'audit' } as any)
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'the record could not be written', source: 'audit' } as any)
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'later', source: 'containment' } as any)
+    expect(cap.refused()).toBe('REFUSED: audit: the record could not be written')
+    const two = makeHaltCapture()
+    two.emit({ type: 'governance.alert', severity: 'critical', message: 'a folder changed', source: 'integrity' } as any)
+    expect(two.refused()).toBe('REFUSED: integrity: a folder changed')
+  })
+})
+
+describe('runGovernedLoop: a refused call ends the run as refused (S5, entry 3.M5)', () => {
+  afterEach(() => { setRunContainment(null); setContainmentFaultSink(null) })
+
+  function makeConfig() {
+    return {
+      baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto' as const,
+      temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
+      contextLength: undefined, tools: undefined,
+    }
+  }
+  /** First call: one Read. Every later call: plain text with an outcome, then stop. */
+  function toolThenTextProvider(): Provider {
+    let calls = 0
+    return {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities(): Promise<ModelCapabilities> {
+        return { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true }
+      },
+      async complete() { throw new Error('not implemented') },
+      async *stream(): AsyncGenerator<StreamEvent> {
+        calls++
+        yield { type: 'message_start', message: { id: `m${calls}`, model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+        if (calls === 1) {
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: 'notes.txt' }) } } as any
+          yield { type: 'content_block_stop', index: 0 } as any
+          yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+        } else {
+          const text = 'The run stopped because the record could not be written.\n```json\n{"summary": "stopped", "recommendations": []}\n```'
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
+          yield { type: 'content_block_stop', index: 0 } as any
+          yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } as any
+        }
+        yield { type: 'message_stop' } as any
+      },
+    }
+  }
+
+  it('one refused call, then the model replies and stops: the outcome is not ok and names the audit layer', async () => {
+    const w = auditWorld()
+    try {
+      writeFileSync(join(w.mission, 'notes.txt'), 'x')
+      blockDayFile(w)
+      setRunContainment(w.ctx)
+      const errs: string[] = []
+      const err = console.error
+      console.error = (...a: unknown[]) => { errs.push(a.map(String).join(' ')) }
+      let outcome
+      try {
+        outcome = await runGovernedLoop({
+          prompt: 'Read notes.txt', context: 'Mission goal: test', allowedTools: ['Read'], timeoutMs: 30000,
+          provider: toolThenTextProvider(), config: makeConfig() as any, cwd: w.mission,
+        })
+      } finally {
+        console.error = err
+      }
+      expect(outcome.ok).toBe(false)
+      expect(outcome.error).toBe(`REFUSED: audit: ${AUDIT_NOT_WRITTEN('audit-dir-unwritable')}`)
+      expect(errs.some(l => l.startsWith('[containment] fault: audit: '))).toBe(true)
+    } finally { w.cleanup() }
+  }, 60000)
 })
