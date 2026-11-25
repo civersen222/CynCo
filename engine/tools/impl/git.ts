@@ -3,12 +3,64 @@ import { containedCommand, launcherFaultOf, toolSpawnRefusal, type ContainedSpaw
 import { ownProcessTree } from '../../processTree.js'
 import { bashDefaultTimeoutMs } from './bash.js'
 import { buildArgv, tokenizeArgs } from '../gitArgv.js'
+import { GIT_MAIN_COMMANDS } from '../shellPaths.js'
 
 const DANGEROUS_PATTERNS = [/push\s+(--force\b|-f\b)/, /reset\s+--hard/, /clean\s+-f/, /branch\s+-D/]
 
 // Argument injection: git executes the VALUES of these options as programs,
 // so they're blocked outright even though they contain no shell metacharacters.
-const FORBIDDEN_OPTIONS = [/^--upload-pack(=|$)/, /^--receive-pack(=|$)/, /^--exec(=|$)/, /^--config(=|$)/]
+// `--exec-path=<dir>` makes git run its subcommands from that folder and `--config-env=<key>=<var>` loads a
+// setting (core.sshCommand among them) from a variable; `--exec-path` alone only prints the folder.
+const FORBIDDEN_OPTIONS = [/^--upload-pack(=|$)/, /^--receive-pack(=|$)/, /^--exec(=|$)/, /^--config(=|$)/, /^--exec-path=/, /^--config-env(=|$)/]
+
+/**
+ * git's option parser takes any unique prefix of a subcommand's long option (measured on git 2.53, wave 15b: `push
+ * --e`, `fetch --upl`, `clone --co` and `ls-remote --upload-p` are each taken as the option). In a subcommand that
+ * has one of these options, a prefix of it, of any length, is refused (`--e=<program>` alone reaches `push --exec`).
+ * Elsewhere the same letters are another option's prefix (`add --u` could be `--update` or `--unified`, and git says
+ * so; `commit --e` is `--edit`; measured on git 2.53, wave 15c) and are left to git. git's own
+ * options before the subcommand (`--exec-path`, `--config-env`) take no prefix. A command word git does not know
+ * (`GIT_MAIN_COMMANDS`) is an alias, possibly from the repository's own configuration, which a run can write
+ * (`alias.x = fetch`), or a `git-<word>` program: the same rule holds for it (wave 15c).
+ */
+const ABBREVIATED_SUBCOMMANDS = new Set(['fetch', 'pull', 'clone', 'ls-remote', 'push', 'archive', 'send-pack', 'fetch-pack', 'remote', 'submodule'])
+const ABBREVIABLE_OPTIONS = ['upload-pack', 'receive-pack', 'exec', 'config']
+function abbreviatedForbidden(token: string): boolean {
+  const m = token.match(/^--([a-z][a-z-]*)(?:=|$)/)
+  return m !== null && ABBREVIABLE_OPTIONS.some(o => o.startsWith(m[1]))
+}
+/**
+ * The options of rebase and difftool that name a program git runs, in every form git takes (measured on git 2.53,
+ * wave 19, C2): rebase's `--exec` by any prefix from `--e` on (`--exe`, `--ex` are taken; `--e` is ambiguous and
+ * refused by git, and refused here as well), and `-x` alone, at the end of a cluster of their switches (`-ix`, `-yx`)
+ * or with its value glued on (`-xmake`). difftool does not abbreviate `--extcmd` ("invalid option: --extc"). `--exec`
+ * itself was already refused by `FORBIDDEN_OPTIONS`; `-x` and the prefixes reached git until wave 19.
+ */
+const RUN_OPTION: Record<string, RegExp> = {
+  rebase: /^(?:-[ifkmnqrv]*x|--e(?:x(?:e(?:c)?)?)?(?:=|$))/,
+  difftool: /^(?:-[ygd]*x|--extcmd(?:=|$))/,
+  // 19b, C19-5 (measured on git 2.53): send-email runs these by their exact names, and an SMTP server given as a path
+  // is started as a sendmail program (by its name it is a server, and passes); instaweb starts its httpd and browser,
+  // by any prefix down to `--h` and `--b`, and `-d` / `-b` alone, after its `-l` switch or with the value glued on.
+  'send-email': /^(?:--(?:to-cmd|cc-cmd|header-cmd|sendmail-cmd)(?:=|$)|--smtp-server=.*[\\/])/,
+  instaweb: /^(?:-l*[db]|--h(?:t(?:t(?:p(?:d)?)?)?)?(?:=|$)|--b(?:r(?:o(?:w(?:s(?:e(?:r)?)?)?)?)?)?(?:=|$))/,
+}
+
+/** `git bisect run <cmd>`: git runs the command through its shell (19b, C19-5). */
+const RUN_STEP: Record<string, string> = { bisect: 'run' }
+
+/** git's own options that take the next word as their value, before the command word. */
+const GIT_VALUE_OPTIONS = new Set(['-c', '-C', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--list-cmds'])
+/** The command word of git's argv as the tool builds it: the first word that is neither an option nor an option's value. */
+function commandWord(tokens: string[]): string | null {
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (GIT_VALUE_OPTIONS.has(t)) { i++; continue }
+    if (t.startsWith('-')) continue
+    return t
+  }
+  return null
+}
 
 const SHELL_METACHAR = /[;&|`$(){}]/
 
@@ -181,11 +233,24 @@ export const gitTool: ToolImpl = {
     }
 
     // Argument-injection guard: per-token check for options whose values git
-    // would execute as programs. argTokens already carries anything split off
-    // the subcommand field, so those tokens are checked too.
-    for (let i = 0; i < argTokens.length; i++) {
-      const token = argTokens[i]
-      if (FORBIDDEN_OPTIONS.some((p) => p.test(token))) {
+    // would execute as programs. The subcommand field's own first word is checked
+    // as well: buildArgv puts it first in git's argv, where git reads `-c` and its
+    // other options as its own (it was not checked until 2026-11-24, so
+    // subcommand `-c core.sshCommand=...` reached git); argTokens already carries
+    // anything else split off the subcommand field.
+    const checked = [sub, ...argTokens]
+    const word = commandWord(checked)
+    const abbreviates = checked.some(t => ABBREVIATED_SUBCOMMANDS.has(t.toLowerCase())) || (word !== null && !GIT_MAIN_COMMANDS.has(word))
+    const runOption = word !== null && Object.prototype.hasOwnProperty.call(RUN_OPTION, word.toLowerCase()) ? RUN_OPTION[word.toLowerCase()] : null
+    const afterWord = word === null ? checked.length : checked.indexOf(word) + 1
+    const step = word !== null && Object.prototype.hasOwnProperty.call(RUN_STEP, word.toLowerCase()) ? RUN_STEP[word.toLowerCase()] : null
+    if (step !== null && checked[afterWord]?.toLowerCase() === step) {
+      return { output: `Error: dangerous git command blocked: ${fullCmd}. git ${word} ${step} can execute arbitrary programs.`, isError: true }
+    }
+    for (let i = 0; i < checked.length; i++) {
+      const token = checked[i]
+      if (FORBIDDEN_OPTIONS.some((p) => p.test(token)) || (abbreviates && abbreviatedForbidden(token)) || (runOption !== null && i >= afterWord && runOption.test(token))
+        || (word?.toLowerCase() === 'send-email' && i >= afterWord && token === '--smtp-server' && /[\\/]/.test(checked[i + 1] ?? ''))) {
         return { output: `Error: dangerous git command blocked: ${fullCmd}. Option ${token.split('=')[0]} can execute arbitrary programs.`, isError: true }
       }
       // Config-style `-c name=value` injects settings like core.sshCommand.
@@ -193,8 +258,8 @@ export const gitTool: ToolImpl = {
       // Identity keys are allowlisted; the comparison is on the WHOLE key so
       // `user.namex` cannot ride in on `user.name`'s prefix, and it is
       // case-folded because git config key lookup is case-insensitive.
-      if (token === '-c' && argTokens[i + 1]?.includes('=')) {
-        const key = argTokens[i + 1].slice(0, argTokens[i + 1].indexOf('=')).toLowerCase()
+      if (token === '-c' && checked[i + 1]?.includes('=')) {
+        const key = checked[i + 1].slice(0, checked[i + 1].indexOf('=')).toLowerCase()
         if (!ALLOWED_CONFIG_KEYS.has(key)) {
           return { output: `Error: dangerous git command blocked: ${fullCmd}. Inline config (-c ${key}=...) not allowed; only ${[...ALLOWED_CONFIG_KEYS].join(', ')} may be set this way.`, isError: true }
         }

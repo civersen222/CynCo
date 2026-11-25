@@ -9,17 +9,19 @@
  * what is named. `TOOL_PATH_TABLE` has one row for every tool of `ALL_TOOLS`
  * (`engine/tools/registry.ts`); a test fails when a tool arrives without one.
  *
- * Pure apart from `real()`, which asks the injected resolver (default `realPathOf`, quiet) once per path,
+ * Pure apart from `real()`, which asks the injected resolver (default `realPathOf`, quiet; the path check passes
+ * `realPathChecked`, which throws for a link whose target cannot be resolved) once per path,
  * and never for a UNC path, a path on a drive the run has no folder on, or a path inside a lexical root:
  * a sleeping share or a disconnected drive must never block a tool call. It reads no environment
  * variable and starts no process. It must not import `registry.js`, `executor.js`, `sealedPaths.js`,
  * `secretPaths.js` or `protectedPaths.js` (the Bash tool imports the policy, which imports this file).
  */
+import { realpathSync } from 'node:fs'
 import * as os from 'node:os'
 import * as nodePath from 'node:path'
-import { realPathOf } from '../realPath.js'
+import { listEntries, realPathOf, type EntryKind } from '../realPath.js'
 import { runContainment, type RunContainment } from '../containment.js'
-import { scanArgv, scanShellText, type Anchor, type HomeMap, type PathOp, type ShellScan } from './shellPaths.js'
+import { ADMIN_SHARE_HOST, scanArgv, scanShellText, type Anchor, type HomeMap, type PathOp, type ShellScan } from './shellPaths.js'
 import { buildArgv, tokenizeArgs } from './gitArgv.js'
 
 export type NamedPath = {
@@ -102,6 +104,15 @@ export function canonPath(p: string, platform: Platform): string {
   let s = p
   if (/^[\\/]{2}\?[\\/]UNC[\\/]/i.test(s)) s = '\\\\' + s.slice(8)
   else if (/^[\\/]{2}[?.][\\/][A-Za-z]:/.test(s)) s = s.slice(4)
+  // The local administrative share is the local drive (`\\localhost\C$\x`, `\\127.0.0.1\C$\x`; wave 15b, as the
+  // shell scan reads it since wave 15): judged as a share, a write in the mission folder through it was refused
+  // and a read of the audit folder through it was allowed. Since wave 15c (N10) also the loopback spellings
+  // `ADMIN_SHARE_HOST` lists (`shellPaths.ts`): `localhost`, a decimal 127 address in two to four parts (`127.1`,
+  // `127.0.1`), each with a trailing dot, `[::1]` and `0--1.ipv6-literal.net`. Any spelling it does not list (decimal,
+  // hex or octal forms, a longer IPv6 literal name, this machine's own name) stays a share here (wave 19, C7); the
+  // path check refuses the audit and guard folders through an administrative share of any host (`judgePath`).
+  const admin = s.match(new RegExp(`^[\\\\/]{2}${ADMIN_SHARE_HOST}[\\\\/]([A-Za-z])\\$(?=[\\\\/]|$)(.*)$`, 'i'))
+  if (admin) s = `${admin[1]}:${admin[2] === '' ? '\\' : admin[2]}`
   s = s.replace(/\//g, '\\')
   const unc = s.startsWith('\\\\')
   const drive = /^[A-Za-z]:/.test(s) ? s.slice(0, 2) : ''
@@ -305,7 +316,125 @@ function resolverOf(cwd: string, homes: HomeMap, opts: NameOpts | undefined): Re
   const platform = opts?.platform ?? hostPlatform()
   const drives = opts?.drives ?? [homes.home, homes.temp, cwd].map(driveOf).filter((d): d is string => d !== null)
   const lexicalRoots = (opts?.lexicalRoots ?? []).map(r => canonPath(r, platform))
+  // The default never throws: the sealed, immutable and secret checks read `real()` in every mode. The path check
+  // passes its own resolver, `realPathChecked` (`protectedPaths.ts`).
   return { platform, real: opts?.real ?? (p => realPathOf(p, { quiet: true })), drives: drives.map(d => d.toUpperCase()), lexicalRoots }
+}
+
+/** A path that goes through a link whose real path cannot be resolved (`realPathChecked`). */
+export class UnresolvedLinkError extends Error {
+  constructor(readonly link: string, readonly why: string, private readonly text?: string) {
+    super(`${link} is a link whose target cannot be resolved (${why})`)
+  }
+  /** The refusal's reason. */
+  get reason(): string {
+    return this.text ?? `this call names a path through ${this.link}, a link whose target cannot be resolved (${this.why}); such a link leads wherever its target is made again, and an unattended run does not run what it cannot read`
+  }
+}
+
+/** One judgement's folder listings (`realPathChecked`): a folder, as named, to its entries, or null when it cannot be listed. */
+export type ListingMemo = Map<string, Array<{ name: string; kind: EntryKind }> | null>
+
+/** The most levels of a path that do not exist yet that `realPathChecked` walks up before it refuses. */
+const MAX_MISSING_LEVELS = 256
+
+/**
+ * A Windows 8.3 short name (`DANGLI~1`, `AB12F3~2.TXT`): a folder's listing holds only long names, so an entry named
+ * by its short name is not found in it. A short name keeps at least the first two characters of its long name once
+ * leading dots and spaces are dropped and the characters 8.3 does not take become `_` (letters outside ASCII were
+ * dropped, measured; the first six in the usual form, the first two before a hash after many collisions).
+ */
+const SHORT_NAME = /^([^\s.~"*/\\:<>?|]{1,6})~\d{1,6}(?:\.[^\s."*/\\:<>?|]{1,3})?$/
+
+/**
+ * Is the entry at `p` a link, by its folder's listing (`isLinkEntry`, `realPath.ts`, with the listing taken once per
+ * folder for one judgement)? `null` when that cannot be told: the folder cannot be listed, or holds no such name.
+ * On Windows a name with a short name's shape that the listing does not hold counts as a link when some link of the
+ * folder could carry it (its long name starts with the short name's first two letters): a junction named by its
+ * short name is otherwise not found (C19-1, wave 19b).
+ */
+function linkEntryOf(p: string, memo: ListingMemo): boolean | null {
+  const full = nodePath.resolve(p)
+  const parent = nodePath.dirname(full)
+  if (parent === full) return false
+  const win = process.platform === 'win32'
+  const fold = (s: string) => (win ? s.toLowerCase() : s)
+  let entries = memo.get(fold(parent))
+  if (entries === undefined) {
+    try {
+      entries = listEntries(parent)
+    } catch (e) {
+      void e
+      entries = null
+    }
+    memo.set(fold(parent), entries)
+  }
+  if (entries === null) return null
+  const name = fold(nodePath.basename(full))
+  const hit = entries.find(e => fold(e.name) === name)
+  if (hit !== undefined) return hit.kind === 'link'
+  const short = win ? SHORT_NAME.exec(nodePath.basename(full)) : null
+  if (short !== null) {
+    const head = short[1].slice(0, 2).toUpperCase()
+    // The long name as its short name begins (C19b-2, measured with `dir /x` on 2026-11-25): upper case, spaces and
+    // dots dropped, `+ , ; = [ ]` as `_`; a letter outside ASCII was dropped on this PC (`\u00e9tudes` TUDES~1) and
+    // may be `_` under another code page, so both readings count.
+    const upperLong = (s: string) => s.toUpperCase().replace(/[\s.]/g, '').replace(/[+,;=[\]]/g, '_')
+    const longForms = (s: string) => [upperLong(s).replace(/[^\x21-\x7e]/g, ''), upperLong(s).replace(/[^\x21-\x7e]/g, '_')]
+    if (entries.some(e => e.kind === 'link' && hasShortName(e.name) && longForms(e.name).some(l => l.startsWith(head)))) return true
+  }
+  return null
+}
+
+/**
+ * Whether Windows gives `name` a short name of its own: a name that is not already a valid 8.3 name (a name that
+ * starts with a dot, a letter outside ASCII, a base over eight characters, an extension over three, more than one
+ * dot, a space or a character 8.3 names do not take; `.bun` has BUN~1, measured with `dir /x`, C19b-2). So a
+ * revision such as `HEAD~1` beside a link named `helpers` is not read as that link's short name.
+ */
+function hasShortName(name: string): boolean {
+  const dot = name.lastIndexOf('.')
+  const base = dot < 0 ? name : name.slice(0, dot)
+  const ext = dot < 0 ? '' : name.slice(dot + 1)
+  return dot === 0 || /[^\x21-\x7e]/.test(name) || base.length > 8 || ext.length > 3 || base.includes('.') || /[\s+,;=[\]]/.test(name)
+}
+
+/**
+ * Where `p` really lands, after a walk of the path up to its first ancestor the OS resolves
+ * (`realpathSync.native`), the levels that do not exist yet joined back onto that ancestor's real path. An entry the
+ * folder's own listing calls a link (`linkEntryOf`) whose native real path cannot be resolved throws
+ * `UnresolvedLinkError` (wave 19, from the box core builder): a junction a low-integrity process made, whose target
+ * is gone, was judged where its own path lies (inside the mission folder) while it leads wherever its target is made
+ * again; the sandbox's establish rule refuses such a link the same way. A path with more than `MAX_MISSING_LEVELS`
+ * levels that do not exist throws too, never falls back to its lexical path (C19-2, wave 19b: `realPathOf` gave up
+ * after 64 and judged a path 65 levels below a live link to the home inside the mission folder). A path that exists
+ * costs no listing; a new file, one listing of its folder, taken once per judgement when `memo` is given (C19-3).
+ */
+export function realPathChecked(p: string, memo: ListingMemo = new Map()): string {
+  let cur = nodePath.resolve(p)
+  const tail: string[] = []
+  for (let hops = 0; hops < MAX_MISSING_LEVELS; hops++) {
+    let real: string | null = null
+    try {
+      real = realpathSync.native(cur)
+    } catch (e) {
+      if (linkEntryOf(cur, memo) === true) throw new UnresolvedLinkError(cur, (e as NodeJS.ErrnoException).code ?? (e as Error).message)
+      // An entry the system's own resolution cannot answer that is not a link (a substituted drive, say): the
+      // JS resolution, as `realPathOf` takes it.
+      try {
+        real = realpathSync(cur)
+      } catch (e2) {
+        void e2
+      }
+    }
+    if (real !== null) return tail.length ? nodePath.join(real, ...tail.reverse()) : real
+    const parent = nodePath.dirname(cur)
+    if (parent === cur) return tail.length ? nodePath.join(cur, ...tail.reverse()) : cur
+    tail.push(nodePath.basename(cur))
+    cur = parent
+  }
+  throw new UnresolvedLinkError(p, 'too deep',
+    `this call names a path with more than ${MAX_MISSING_LEVELS} levels that do not exist yet, which the check does not walk; an unattended run does not run what it cannot read`)
 }
 
 function isLexical(c: string, r: Resolver): boolean {

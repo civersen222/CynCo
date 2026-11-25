@@ -72,6 +72,11 @@ export type ShellScan = {
   unreadFolder: { verb: string } | null
   /** The shell whose text held the unread mutation, so the refusal can name the literal form in it (review 2026-11-24, seventh). */
   unreadDialect: 'ps' | 'cmd' | 'posix' | null
+  /**
+   * The first broker the command starts, where its program word stands: what it does (`brokerVerb`, wave 19c). The
+   * scan only reports it; the paths it reads are the same either way.
+   */
+  broker: string | null
 }
 /** `drives`: the drive letters the run has a folder on (win32); a literal on another drive is never text. */
 export type ScanOpts = { platform?: 'win32' | 'posix'; drives?: string[] }
@@ -112,6 +117,21 @@ const NAME = '\u0007'
 const DESC = '\u0008'
 /** The segment a NAME, a DESC or a glob stands for while a word is resolved (`toPath`). */
 const PLACEHOLDER = '\u0007cynco\u0007'
+/**
+ * Every sentinel above (`\x01` to `\x08`, `\x0e`). None may come from the input: a command or an argv holding one
+ * is unreadable (wave 19, C6: `x\x02 0\x03` in the text named entry 0 of the scan's table), and a `$'...'` string
+ * that decodes to one is read with a `?` in its place (`ansiCDecoded`). None of the 3,342 past calls holds one.
+ */
+const SENTINEL_CHARS = /[\u0001-\u0008\u000e]/
+const SENTINEL_CHARS_G = /[\u0001-\u0008\u000e]/g
+const SENTINEL_INPUT = 'a command holding a control character the check uses itself (\\x01 to \\x08 or \\x0e)'
+
+/**
+ * The `selfBuilding` marker of a POSIX program word named by an unquoted expansion the scan cannot read (wave 15c):
+ * the shell splits it, so it may be a whole command line. Honest work meets it too (wave 19, C8): an environment
+ * path such as `$VIRTUAL_ENV/bin/python` or `$JAVA_HOME/bin/java`; the path check's refusal names the rewrite.
+ */
+export const UNREAD_PROGRAM = 'a program named by an expansion the check cannot read, which the shell splits into the command line it runs'
 
 const WILDCARD = /[*?[]/
 
@@ -178,7 +198,7 @@ function emptyScan(): ShellScan {
   return {
     paths: [], texts: [], unresolvedMutation: null, parentClimb: 0, selfBuilding: null,
     gitDestructive: false, gitConfigWrite: null, truncated: null, sawWrite: false, faults: [],
-    ranProgram: false, tempRedirected: null, unreadOperand: null, unreadFolder: null, unreadDialect: null,
+    ranProgram: false, tempRedirected: null, unreadOperand: null, unreadFolder: null, unreadDialect: null, broker: null,
   }
 }
 
@@ -277,7 +297,9 @@ const ANCHOR_NAMES: Record<string, Exclude<Anchor, null>> = {
   PWD: 'cwd', CD: 'cwd',
   // Windows folders derived from the real home (review 2026-11-23): an unknown name is unreadable, and a
   // delete through one would otherwise only be escalated. On posix they are unreadable.
-  SYSTEMDRIVE: 'systemdrive',
+  // HOMEDRIVE alone is the home's drive (wave 15: it read as a name nothing set, the root of the current drive);
+  // with HOMEPATH after it, it is the home (`hd` below).
+  SYSTEMDRIVE: 'systemdrive', HOMEDRIVE: 'systemdrive',
   ONEDRIVE: 'onedrive', ONEDRIVECONSUMER: 'onedrive', ONEDRIVECOMMERCIAL: 'onedrive',
   PUBLIC: 'public',
   PROGRAMDATA: 'programdata', ALLUSERSPROFILE: 'programdata',
@@ -1902,7 +1924,7 @@ function subValue(inner: string, run?: Run): string {
  * as cmd reads it, where `'`, a backtick and `#` are ordinary characters (review 2026-11-23, fourth: two
  * apostrophes hid cmd's own `&` between them).
  */
-function tokenize(s: string, posixQuotes = true, run?: Run, cmd = false): Tok[] {
+function tokenize(s: string, posixQuotes = true, run?: Run, cmd = false, posixEscapes = false): Tok[] {
   const toks: Tok[] = []
   let tick = 0
   let pieces: Piece[] = []
@@ -1945,6 +1967,13 @@ function tokenize(s: string, posixQuotes = true, run?: Run, cmd = false): Tok[] 
     if (!cmd && c === '#' && wStart < 0) { const j = s.indexOf('\n', i); i = j < 0 ? s.length : j; continue }
     if (!cmd && c === '<' && s[i + 1] === '#') { endWord(i); const j = s.indexOf('#>', i + 2); i = j < 0 ? s.length : j + 2; continue }
     if (cmd && (c === "'" || c === '`')) { unq(c, i); i++; continue }
+    // `posixEscapes` (a POSIX shell's own text): `\"` and `\'` outside quotes are the quote character itself (wave 15:
+    // read as a backslash and an opening quote, `echo \"; rm -rf ~/.ssh; echo \"` hid its rm inside a string). Any
+    // other backslash stays as written, so a Windows path spelled in POSIX text reads as it did. `\\` is one
+    // backslash, so the quote after it opens a string where the shell opens one (wave 15b, P3-F1: read as a
+    // backslash and an escaped quote, `echo \\" x" ; rm -rf ~/.ssh` hid its rm inside a string).
+    if (posixEscapes && c === '\\' && s[i + 1] === '\\') { unq('\\', i); i += 2; continue }
+    if (posixEscapes && c === '\\' && (s[i + 1] === '"' || s[i + 1] === "'")) { unq(s[i + 1], i); i += 2; continue }
     if (c === "'") {
       let j = i + 1; let t = ''
       while (j < s.length) {
@@ -1958,7 +1987,9 @@ function tokenize(s: string, posixQuotes = true, run?: Run, cmd = false): Tok[] 
       while (j < s.length && s[j] !== '"') {
         const d = s[j]
         if (!cmd && d === '`' && j + 1 < s.length) { t += s[j + 1]; j += 2; continue }
-        if (posixQuotes && d === '\\' && (s[j + 1] === '"' || s[j + 1] === '$' || s[j + 1] === '`')) { t += s[j + 1]; j += 2; continue }
+        // Inside double quotes a POSIX shell's backslash escapes `"`, `$`, a backtick and itself (wave 15b, P3-F1:
+        // `"a\\" ; rm -rf ~/.ssh ; echo "b"` closes at its second quote there).
+        if (posixQuotes && d === '\\' && (s[j + 1] === '"' || s[j + 1] === '$' || s[j + 1] === '`' || s[j + 1] === '\\')) { t += s[j + 1]; j += 2; continue }
         if (!cmd && d === '$' && s[j + 1] === '(') {
           const k = matchParen(s, j + 1)
           const inner = s.slice(j + 2, k)
@@ -2392,6 +2423,18 @@ function expand(run: Run, value: string, base: string, tilde: boolean, depth = 0
 
 type Cand = { path: string; children: boolean; device: boolean; relative: boolean } | 'unreadable' | null
 
+/**
+ * The loopback spellings of an administrative share's host this list holds (wave 15c, N10), and no others:
+ * `localhost`, a decimal dotted 127 address in two to four parts (`127.1`, `127.0.1`, `127.0.0.1`), each of these
+ * with a trailing dot, `[::1]` and `0--1.ipv6-literal.net`. Shared with `canonPath` (`toolPaths.ts`). Any other
+ * spelling Windows also resolves to this machine stays a share here, which refuses a write (wave 19, C7: the
+ * decimal `2130706433`, hex `0x7f.1` and octal `0177.0.0.1` forms, a longer IPv6 literal name such as
+ * `0--0-0-0-0-0-0-1.ipv6-literal.net`, this machine's own name and its network addresses); the path check refuses
+ * the audit and guard folders through any host's share (`judgePath`).
+ */
+export const ADMIN_SHARE_HOST = String.raw`(?:localhost|127(?:\.\d{1,3}){1,3}|\[::1\]|0--1\.ipv6-literal\.net)\.?`
+const ADMIN_SHARE = new RegExp(String.raw`^[\\/]{2}${ADMIN_SHARE_HOST}[\\/]([A-Za-z])\$(?=[\\/]|$)(.*)$`, 'i')
+
 const DRIVE_ABS = /^[A-Za-z]:(?:[\\/]|$)/
 const DRIVE_REL = /^[A-Za-z]:(?![\\/])/
 const UNC = /^[\\/]{2}[^\\/?.]/
@@ -2413,6 +2456,11 @@ function toPath(run: Run, text0: string, relAllowed: boolean, base: string, anch
     else if (DRIVE_ABS.test(rest)) s = rest
     else { device = true }
   }
+  // The local administrative share is the local drive (wave 15: `\\localhost\C$\Users\<owner>\.cache` read as a
+  // network share): `\\localhost\X$`, `\\127.0.0.1\X$` and the `\\?\UNC\` forms of both, and since wave 15c the
+  // other loopback spellings `ADMIN_SHARE_HOST` lists (any spelling it does not list stays a share: wave 19, C7).
+  const adminShare = run.platform === 'win32' && !device ? s.match(ADMIN_SHARE) : null
+  if (adminShare) s = `${adminShare[1].toUpperCase()}:${adminShare[2] === '' ? '\\' : adminShare[2]}`
   let children = false
   let placeholders = false
   if (device) {
@@ -2497,7 +2545,8 @@ function resolveFor(platform: Platform, base: string, s: string,
   if (k.isPosixAbs && !k.isUnc) {
     // A WSL mount (`/mnt/d/DCIM`) is that drive (review 2026-11-24, sixth); so is an msys drive (`/d/DCIM`),
     // and, in a POSIX shell's reading or with a trailing separator, the drive's root itself (`/d`, `/d/`).
-    const mnt = w.match(/^\\mnt\\([A-Za-z])(?:\\(.*))?$/)
+    // Cygwin's `/cygdrive/c/...` too (wave 15: it read as a folder `cygdrive` at the root of the current drive).
+    const mnt = w.match(/^\\(?:mnt|cygdrive)\\([A-Za-z])(?:\\(.*))?$/)
     const msys = w.match(/^\\([A-Za-z])\\(.*\S.*)$/)
     if (mnt) w = `${mnt[1].toUpperCase()}:\\${mnt[2] ?? ''}`
     else if (msys && msys[2].replace(/\\/g, '') !== '') w = `${msys[1].toUpperCase()}:\\${msys[2]}`
@@ -2920,7 +2969,7 @@ interface Ctx {
 }
 
 type Dialect = 'ps' | 'cmd' | 'posix'
-type PayloadOpts = { dialect?: Dialect; baseUnreadable?: boolean }
+type PayloadOpts = { dialect?: Dialect; baseUnreadable?: boolean; fielded?: boolean; ansiC?: boolean }
 
 function wordOf(ctx: Ctx, tok: WordTok): Word {
   const value = tok.pieces.map(p => p.t).join('')
@@ -3748,6 +3797,8 @@ function passesItems(ctx: Ctx, seg: Seg): { pass: boolean; own: boolean } {
     if (seg.groups.length === 1 && seg.groups[0].opener === '{' && rest.every(w => w.tok.start > seg.groups[0].end || w.tok.end < seg.groups[0].start)) {
       const block = renderOrig(ctx.run, ctx.textSub.slice(seg.groups[0].start, seg.groups[0].end))
       if (/^\{\s*\$(?:_|PSItem)(?:\.(?:FullName|PSPath|Path|LiteralPath))?\s*\}$/i.test(block)) return { pass: true, own: false }
+      // A porcelain status line cut to its path (`% { $_.Substring(3) }`), right after `git status --porcelain` (wave 15).
+      if (/^\{\s*\$(?:_|PSItem)\.Substring\(\s*3\s*\)(?:\.Trim\(\s*\))?\s*\}$/i.test(block) && porcelainBefore(ctx, seg)) return { pass: true, own: false }
     }
     return { pass: false, own: false }
   }
@@ -3876,6 +3927,16 @@ function hasEarlier(ctx: Ctx, seg: Seg): boolean {
   return seg.pipeIndex > 0 || feedOf(ctx, seg) !== null
 }
 
+const PORCELAIN = 'git status --porcelain'
+
+/** The element before this one is `git status --porcelain` (wave 15). */
+function porcelainBefore(ctx: Ctx, seg: Seg): boolean {
+  if (seg.pipeIndex === 0) return false
+  segsIn(ctx, 'pipeline', seg.pipeline)
+  const prev = ctx.index?.at.get(`${seg.pipeline}:${seg.pipeIndex - 1}`)
+  return prev !== undefined && listingItems(ctx, prev)?.[0]?.verb === PORCELAIN
+}
+
 /**
  * An element that lists names inside a folder it reads (review 2026-11-24, sixth): `git ls-files`,
  * `git diff --name-only` and `git ls-tree --name-only` list the work tree; `grep -l`, `rg -l`, `findstr /m`
@@ -3902,6 +3963,9 @@ function listingItems(ctx: Ctx, seg: Seg): ShellPath[] | null {
     const sub = rest.find(t => !t.startsWith('-'))
     const names = rest.some(t => /^--name-(?:only|status)$/.test(t))
     if (sub === 'ls-files' || (sub === 'diff' && names) || (sub === 'ls-tree' && names)) return [item(ctx.base, `git ${sub}`)]
+    // `git status --porcelain` lists the work tree's own paths, relative to its root and never climbing, each after a
+    // two-letter status and a space; a later `% { $_.Substring(3) }` hands on the path alone (wave 15).
+    if (sub === 'status' && rest.some(t => /^--porcelain(?:=v1)?$/.test(t))) return [item(ctx.base, PORCELAIN)]
     return null
   }
   const listFlag = (verb === 'grep' || verb === 'rg') ? rest.some(t => /^-[A-Za-z]*l[A-Za-z]*$/.test(t) || t === '--files-with-matches')
@@ -3924,6 +3988,11 @@ function listingItems(ctx: Ctx, seg: Seg): ShellPath[] | null {
  */
 function mutate(ctx: Ctx, seg: Seg, targets: Word[], op: MutOp, verb: string, recursive: boolean, relAllowed = true, children = false): void {
   ctx.run.out.sawWrite = true
+  // A POSIX shell's `rm` with no operand, at the head of its pipeline, deletes nothing: it reads no standard input
+  // (wave 15b, P3-F10: Windows PowerShell 5.1 hands `bash -c 'trap "rm -rf x" EXIT; make'` on as `trap rm`, and an
+  // unread delete there refused honest work).
+  if (targets.length === 0 && ctx.dialect === 'posix' && !ctx.codeAsShell && /^(?:rm|rmdir|unlink)$/.test(verb) && !hasEarlier(ctx, seg)
+    && seg.groups.length === 0 && !seg.subexpr) return
   let emitted = false
   let unreadable = false
   let pipe = targets.length === 0
@@ -4025,6 +4094,23 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
   if (words[i]?.text === 'export') { for (const w of words.slice(i + 1)) emitMentionAssign(ctx, seg, w); return }
   words = words.slice(i)
   if (words.length === 0) { consumeDocs(ctx, seg, docWords, null); return }
+  // A POSIX shell splits an unquoted expansion in the program's place at whitespace (wave 15b: `c="rm -rf
+  // $HOME/.ssh"; $c` and `x=" "; rm${x}-rf${x}...` were one program word nobody knew). Where the expansion was
+  // read and holds whitespace, the command line it makes is read as well.
+  // Any whitespace in it splits it, before the name too (wave 15c, N3: `x=" rm"; $x -rf ../sibling` was one program
+  // word, ` rm`). Where the expansion cannot be read, the shell may split it into a whole command line, the
+  // program included, so the command builds what it runs (wave 15c, the wave-15b builder's leftover:
+  // `c=$(cat cmd.txt); $c` was read as running nothing).
+  if (ctx.dialect === 'posix' && !ctx.codeAsShell && words[0].tok.pieces.every(p => p.q === 'n') && words[0].value.includes(S0)) {
+    const head = words[0].text
+    if (head.includes(UNREAD)) markSelfBuilding(ctx.run, UNREAD_PROGRAM)
+    if (/\s/.test(head) && !head.includes(S0) && !head.includes(UNREAD)) {
+      const rest = words.length > 1 ? renderOrig(ctx.run, ctx.textSub.slice(words[1].tok.start, words[words.length - 1].tok.end)) : ''
+      const line = `${head.trim()} ${rest}`.trim()
+      ctx.run.out.texts.push(line)
+      scanPayload(ctx.run, line, ctx.base, `${ctx.via}>split`, ctx.depth + 1, 'shell', { dialect: 'posix', baseUnreadable: ctx.baseUnreadable })
+    }
+  }
   // A value written where a command would stand (`'D:\x' | Remove-Item`, `'a','b' | ...`,
   // `$env:USERPROFILE | ...`, the inside of `@('D:\x')`): what it names flows down the pipeline, so it is
   // a mention a later verb inherits (review 2026-11-23). In PowerShell such a segment is an expression
@@ -4150,6 +4236,8 @@ function classifySegment(ctx: Ctx, seg: Seg): void {
   }
   if (verb === 'for' && isCmdFor(operands)) return cmdFor(ctx, seg, operands)
   if (deviceVerb(ctx, seg, verb, operands)) return
+  // Reported only: the segment is read on as before (wave 19c).
+  brokerVerb(ctx, program, verb, operands)
   // A program-position script is run (exec); a program-position .exe or extensionless word is not a target.
   if (SCRIPT_EXT.test(program.text.replace(/[\\/]+$/, ''))) { emitWord(ctx, seg, program, 'exec', { relAllowed: true, verb: 'run' }); started(ctx, verb) }
   // A here-string piped into this segment.
@@ -4373,7 +4461,7 @@ const CP_VALUE_FLAGS = new Set(['-t', '--target-directory'])
 const NON_FILE_PROVIDER = /^(?:hkcu|hklm|hkcr|hku|hkcc|env|function|variable|alias|cert|wsman):/i
 
 /** POSIX tools (none of them a PowerShell alias) whose bare `/d` operand is msys's spelling of a drive's root (review 2026-11-24, sixth). */
-const POSIX_TOOLS = new Set(['rsync', 'ln', 'find', 'touch', 'chmod', 'chown', 'tar', 'sdelete', 'shred', 'dd', 'install'])
+const POSIX_TOOLS = new Set(['rsync', 'ln', 'find', 'touch', 'chmod', 'chown', 'tar', 'sdelete', 'shred', 'dd', 'install', 'scp', 'ditto'])
 
 /** Verbs that act on a volume, a disk or a partition as a whole, whatever their operands. */
 const DEVICE_VERBS = new Set(['format-volume', 'clear-disk', 'initialize-disk', 'remove-partition', 'set-partition', 'resize-partition',
@@ -4409,6 +4497,10 @@ function deviceVerb(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): boolean
   else if (/^(?:remove-ciminstance|rcim|remove-wmiobject|rwmi|invoke-cimmethod|invoke-wmimethod)$/.test(verb) && /Win32_ShadowCopy/i.test(ctx.origText)) what = 'deletes shadow copies through WMI'
   // `Get-WmiObject Win32_ShadowCopy | % { $_.Delete() }`, `(gwmi Win32_ShadowCopy).Delete()`: the objects' own Delete (ninth review).
   else if (/^(?:get-wmiobject|gwmi|get-ciminstance|gcim)$/.test(verb) && /Win32_ShadowCopy/i.test(text) && /\.Delete\s*\(/i.test(ctx.origText)) what = 'deletes shadow copies through WMI'
+  // `foreach ($s in Get-WmiObject Win32_ShadowCopy) { $s.Delete() }`: a loop over the listing, each object's own
+  // Delete (wave 15: it read as a delete through a target that cannot be read).
+  else if (verb === 'foreach' && /\bforeach\s*\(\s*\$\w+\s+in\s+\(?\s*(?:get-wmiobject|gwmi|get-ciminstance|gcim)\b[^)]*\bWin32_ShadowCopy\b/i.test(ctx.origText)
+    && /\.Delete\s*\(/i.test(ctx.origText)) what = 'deletes shadow copies through WMI'
   else if (/^(?:remove-ciminstance|rcim|remove-wmiobject|rwmi|invoke-cimmethod|invoke-wmimethod|set-ciminstance|set-wmiinstance)$/.test(verb) && /Win32_(?:Volume|DiskDrive|DiskPartition|LogicalDisk|MappedLogicalDisk)\b|MSFT_(?:Volume|Disk|Partition|StoragePool|VirtualDisk|PhysicalDisk)\b/i.test(ctx.origText)) what = 'acts on a volume, a disk or a partition through WMI'
   // A WSL distribution unregistered (its virtual disk is deleted with it) or moved (review 2026-11-24, seventh).
   else if (/^wsl$/.test(verb) && ops.some(t => /^--(?:unregister|import-in-place)$/.test(t) || (t === '--manage' && ops.includes('--move')))) what = 'deletes or moves a WSL distribution and its virtual disk'
@@ -4419,6 +4511,36 @@ function deviceVerb(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): boolean
     verb, via: ctx.via, deviceOp: what }
   emit(ctx.run, p)
   return true
+}
+
+/** A host operand of scp (`host:path`, `user@host:path`, `scp://...`); a one-letter name before the colon is a drive. */
+const SCP_REMOTE = /^(?:scp:\/\/|[^\s\\/:@]+@[^\s\\/:]+:|[^\s\\/:@]{2,}:)/i
+
+/**
+ * Brokers (decision sheet item 12, plan step P3 item (1), wave 19c): a program that hands its work to a service that
+ * runs it at the service's own level, outside the run's low-integrity token and its sandbox: WSL in any form (System32's
+ * `bash.exe`, the WSL launcher, included), Docker and Podman, the Task Scheduler for anything but `/query`, WMI's
+ * process creation, `runas`, and ssh, sftp and scp to a host (`Start-Process -Verb RunAs` is `startProcess`'s). It is
+ * read where the program word stands, in any dialect and through any wrapper the scan reads, so the word in a string,
+ * a comment or an operand (`docker-compose.yml`) is none. It is reported (`ShellScan.broker`, the first one), never
+ * read in place of the segment: the paths the scan reads are the same with it as without it, and an interactive
+ * engine, which judges nothing, is unchanged. The policy refuses it as rule `broker` (`protectedPaths.ts`).
+ */
+function brokerVerb(ctx: Ctx, program: Word, verb: string, operands: Word[]): void {
+  if (ctx.codeAsShell || ctx.run.out.broker !== null) return
+  const ops = operands.map(w => w.text.toLowerCase())
+  const spelled = [program.text, program.value, program.raw].map(s => s.replace(/["']+$/, ''))
+  let what: string | null = null
+  if (/^(?:wsl|wslconfig|wslg)$/.test(verb)) what = `runs ${verb}, which starts programs in a WSL distribution outside this run`
+  else if (verb === 'bash' && spelled.some(s => /(?:^|[\\/])(?:system32|sysnative)[\\/]bash(?:\.exe)?$/i.test(s))) what = 'runs System32\'s bash.exe, the WSL launcher, which starts programs in a WSL distribution outside this run'
+  else if (/^(?:docker|docker-compose|podman|podman-compose)$/.test(verb)) what = `runs ${verb}, whose service starts containers outside this run`
+  else if (verb === 'schtasks' && !/^[-/]query$/.test(ops[0] ?? '')) what = 'runs schtasks for something other than /query; the Task Scheduler runs programs outside this run'
+  else if (verb === 'wmic' && ops.includes('process') && ops.includes('call') && ops.includes('create')) what = 'creates a process through WMI (wmic process call create), which runs it outside this run'
+  else if (/^(?:invoke-cimmethod|icim|invoke-wmimethod|iwmi)$/.test(verb) && /\bWin32_Process\b/i.test(ctx.origText)) what = `creates a process through WMI (${verb} on Win32_Process), which runs it outside this run`
+  else if (verb === 'runas') what = 'runs runas, which starts a program under another account or token'
+  else if (verb === 'ssh' || verb === 'sftp') what = `runs ${verb}, which runs or copies on another host`
+  else if (verb === 'scp' && operands.some(w => !w.text.startsWith('-') && (SCP_REMOTE.test(w.text) || w.text.includes(UNREAD) || hasUnreadableSentinel(ctx.run, w.value)))) what = 'runs scp to or from a host'
+  if (what !== null) ctx.run.out.broker = what
 }
 
 /**
@@ -4750,6 +4872,15 @@ function startProcess(ctx: Ctx, seg: Seg, rest: Word[]): Word[] | 'done' | null 
     if (group) { named.set(name, unreadableWord('(...)')); groupOf.set(name, group); continue }
     if (next !== undefined) { named.set(name, next); i++ }
   }
+  // `-Verb RunAs` asks Windows for an elevated start, a broker (wave 19c, `brokerVerb`); a verb the scan cannot read
+  // may be RunAs. Reported only: the program and its arguments are read on as before.
+  const spVerb = named.get('verb')
+  if (spVerb !== undefined && ctx.run.out.broker === null) {
+    const v = spVerb.text.trim().replace(/^["']+|["']+$/g, '')
+    if (/^runas$/i.test(v) || spVerb.text.includes(UNREAD) || hasUnreadableSentinel(ctx.run, spVerb.value)) {
+      ctx.run.out.broker = 'starts a program with Start-Process -Verb RunAs, which asks Windows for an elevated start'
+    }
+  }
   const prog = named.get('filepath') ?? positional[0]
   if (prog === undefined) return null
   let args = named.get('argumentlist') ?? (named.has('filepath') ? positional[0] : positional[1])
@@ -5001,6 +5132,38 @@ function optionWrites(ctx: Ctx, seg: Seg, verb: string, operands: Word[]): boole
     if (lower.some(t => t === '--remove-source-files')) { const local = sources.filter(w => !remote(w)); if (local.length) mutate(ctx, seg, local, 'move', 'rsync', true) }
     else for (const w of sources) if (!remote(w)) emitWord(ctx, seg, w, 'read', { relAllowed: true, verb: 'rsync' })
     if (!remote(dest)) mutate(ctx, seg, [dest], lower.some(t => t.startsWith('--delete') || t === '--del') ? 'delete' : 'write', 'rsync', true)
+    return true
+  }
+  // scp copies its sources to its last operand, ditto copies them into it (wave 15: a target outside the roots was
+  // judged only as a program operand, against the always-denied set). A remote operand is no path here.
+  if (verb === 'scp' || verb === 'ditto') {
+    // scp's `-S program` and an ssh option that runs a local command (`-o ProxyCommand=...`, `-oLocalCommand=...`)
+    // start a program the scan does not read.
+    // Since wave 15b (P3-F9) also `-S`, `-D` (a local SFTP server program) or `-F` (a config file, which can hold a
+    // ProxyCommand) anywhere in a cluster of flags, glued to its value or not (`-rS ./prog`, `-Fcfg`), and
+    // `-o 'Match exec ...'`. A cluster is read letter by letter up to the first flag that takes a value.
+    const RUNS = /^(?:proxycommand|localcommand|knownhostscommand|permitlocalcommand|match\b[\s\S]*\bexec)\b/i
+    const runsProgram = (t: string, next: string): boolean => {
+      const s = t.slice(1)
+      for (let i = 0; i < s.length; i++) {
+        const ch = s[i]
+        if ('SFD'.includes(ch)) return true
+        if ('cijlPX'.includes(ch)) return false
+        if (ch === 'o') return RUNS.test(i + 1 < s.length ? s.slice(i + 1) : next)
+      }
+      return false
+    }
+    if (verb === 'scp' && texts.some((t, k) => t.startsWith('-') && !t.startsWith('--') && runsProgram(t, texts[k + 1] ?? ''))) markSelfBuilding(ctx.run, 'scp told to run a program (-S, -D, -F, or -o ProxyCommand, LocalCommand or Match exec)')
+    const vf = new Set(verb === 'scp' ? ['-P', '-i', '-o', '-F', '-c', '-l', '-S', '-J', '-D', '-X'] : ['--arch', '--bom'])
+    const pos: Word[] = []
+    for (let k = 0; k < operands.length; k++) {
+      if (texts[k].startsWith('-')) { if (vf.has(texts[k])) k++; continue }
+      pos.push(operands[k])
+    }
+    if (pos.length === 0) return true
+    const dest = pos[pos.length - 1]
+    for (const w of pos.slice(0, -1)) if (!remote(w)) emitWord(ctx, seg, w, 'read', { relAllowed: true, verb })
+    if (!remote(dest)) mutate(ctx, seg, [dest], 'write', verb, true)
     return true
   }
   if (verb === 'sdelete' || verb === 'sdelete64') {
@@ -5459,6 +5622,106 @@ function reopenQuoted(run: Run, tok: WordTok): string {
     : p.t)).join('')
 }
 
+/**
+ * The first argument a native program receives from Windows PowerShell 5.1 for one argument `v` (wave 15). 5.1
+ * wraps an argument in double quotes when it holds whitespace outside the double quotes no backslash escapes, and
+ * escapes nothing inside; the program's C runtime then splits the line (`\"` is a quote, `"` toggles quoting, a
+ * backslash before anything else is itself). So `rm -rf \"$X\"/*` arrives as `rm -rf "$X"/*`, and
+ * `echo "a b"` as `echo a` (the rest is a second argument). Null when the result is `v` itself.
+ */
+function ps51Delivered(v: string): string | null {
+  let quotes = 0
+  let wrap = false
+  let afterBackslash = false
+  for (const ch of v) {
+    if (ch === '"' && !afterBackslash) quotes++
+    else if (/\s/.test(ch) && quotes % 2 === 0) wrap = true
+    afterBackslash = ch === '\\'
+  }
+  const line = wrap ? `"${v}"` : v
+  let out = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length;) {
+    const c = line[i]
+    if (c === '\\') {
+      let n = 0
+      while (line[i + n] === '\\') n++
+      if (line[i + n] === '"') {
+        out += '\\'.repeat(Math.floor(n / 2))
+        if (n % 2 === 1) out += '"'
+        else inQuotes = !inQuotes
+        i += n + 1
+        continue
+      }
+      out += '\\'.repeat(n)
+      i += n
+      continue
+    }
+    if (c === '"') { inQuotes = !inQuotes; i++; continue }
+    if (!inQuotes && /\s/.test(c)) break
+    out += c
+    i++
+  }
+  return out === v ? null : out
+}
+
+/**
+ * A POSIX `-c` payload with its positional parameters put in as the words after it (wave 15b, P3-F2): `args[0]`
+ * is `$0`, `args[1]` is `$1`. `$N`, `${N}`, `$@`, `$*`, `${@}` and `${*}` outside single quotes are replaced, a
+ * value quoted for where it stands (single-quoted outside quotes, escaped inside double quotes); a parameter with
+ * no word is empty, as the shell has it; one whose word the scan cannot read (null) stays as written.
+ */
+const POSITIONAL_REF = /^\$(?:\d|[@*]|\{(?:\d+|[@*])\})$/
+
+/**
+ * A payload word with its positional parameters (`$1`, `$@` ...) put back as written where they stand inside
+ * single quotes, so `bindPositional` can bind them (wave 15b): the outer text's reading had made each one a name
+ * it cannot read. A double-quoted or bare one was expanded by the outer shell and stays so.
+ */
+function positionalAsWritten(run: Run, w: Word): Word {
+  const re = new RegExp(`${S0}(\\d+)${S1}`, 'g')
+  let changed = false
+  const pieces = w.tok.pieces.map(p => {
+    if (p.q !== 's' || !p.t.includes(S0)) return p
+    const t = p.t.replace(re, (m: string, n: string) => { const e = run.table[Number(n)]; return e !== undefined && 'orig' in e && POSITIONAL_REF.test(e.orig) ? e.orig : m })
+    if (t !== p.t) changed = true
+    return { ...p, t }
+  })
+  if (!changed) return w
+  return { ...w, tok: { ...w.tok, pieces }, value: pieces.map(p => p.t).join('') }
+}
+
+function bindPositional(text: string, args: Array<string | null>): string {
+  if (args.length === 0 || !/\$(?:\d|[@*]|\{(?:\d+|[@*])\})/.test(text)) return text
+  const sq = (v: string) => `'${v.replace(/'/g, "'\\''")}'`
+  const dq = (v: string) => v.replace(/[\\"$`]/g, m => `\\${m}`)
+  let out = ''
+  let quote: '' | "'" | '"' = ''
+  for (let i = 0; i < text.length;) {
+    const c = text[i]
+    if (quote === "'") { out += c; if (c === "'") quote = ''; i++; continue }
+    if (c === '\\' && i + 1 < text.length) { out += text.slice(i, i + 2); i += 2; continue }
+    if (c === "'" && quote === '') { quote = "'"; out += c; i++; continue }
+    if (c === '"') { quote = quote === '"' ? '' : '"'; out += c; i++; continue }
+    const m = c === '$' ? text.slice(i).match(/^\$(?:(\d)|([@*])|\{(\d+)\}|\{([@*])\})/) : null
+    if (!m) { out += c; i++; continue }
+    const all = m[2] ?? m[4]
+    if (all !== undefined) {
+      const rest = args.slice(1)
+      if (rest.some(v => v === null)) { out += m[0]; i += m[0].length; continue }
+      const vals = rest as string[]
+      out += quote === '"' ? vals.map(dq).join(all === '@' ? '" "' : ' ') : vals.map(sq).join(' ')
+    } else {
+      const n = Number(m[1] ?? m[3])
+      const v = n < args.length ? args[n] : ''
+      if (v === null) { out += m[0]; i += m[0].length; continue }
+      out += quote === '"' ? dq(v) : v === '' ? '' : sq(v)
+    }
+    i += m[0].length
+  }
+  return out
+}
+
 /** The text of the words from `from` to the end of the segment, one quote level removed when it is one quoted word. */
 function payloadOf(ctx: Ctx, words: Word[], from: number, native = false): { text: string | null; viaVariable: boolean } {
   const rest = words.slice(from)
@@ -5587,13 +5850,37 @@ function interpreter(ctx: Ctx, seg: Seg, verb0: string, operands: Word[]): void 
     return fromStdin(ctx, seg, verb, 'shell')
   }
   if (verb === 'bash' || verb === 'sh' || verb === 'zsh' || verb === 'wsl') {
-    // Only among the shell's own options, before its first other word (`wsl find ... -exec` is not `-c`).
-    const firstWord = lower.findIndex(t => !t.startsWith('-'))
-    const k = lower.findIndex((t, j) => /^-[a-z]*c$/.test(t) && !t.startsWith('--') && (firstWord < 0 || j < firstWord))
+    // Only among the shell's own options, before its first other word (`wsl find ... -exec` is not `-c`). For bash,
+    // sh and zsh the command string is the first word after the options, wherever `-c` stands among them, and
+    // `-o`, `+o`, `-O`, `+O` (also last in a cluster: `-euo pipefail`), `--rcfile` and `--init-file` take the next
+    // word as their value (wave 15c, N4: `bash -o pipefail -c '...'` took `pipefail` for a script, and `bash -c -e
+    // '...'` read `-e` as the payload). `ci` is the command string's index, `k` the word before it.
+    let k = -1
+    let ci = -1
+    if (verb === 'wsl') {
+      const firstWord = lower.findIndex(t => !t.startsWith('-'))
+      k = lower.findIndex((t, j) => /^-[a-z]*c$/.test(t) && !t.startsWith('--') && (firstWord < 0 || j < firstWord))
+      ci = k + 1
+    } else {
+      let hasC = false
+      let j = 0
+      for (; j < lower.length; j++) {
+        const t = lower[j]
+        if (t === '--' || t === '-') { j++; break }
+        if (!/^[-+]./.test(t)) break
+        if (t.startsWith('--')) { if (t === '--rcfile' || t === '--init-file') j++; continue }
+        const letters = texts[j].slice(1)
+        if (texts[j].startsWith('-') && letters.includes('c')) hasC = true
+        // One value for EACH o or O letter of the cluster, as bash's option parser takes them (wave 19, C4:
+        // `bash -ooc pipefail errexit '...'` took `errexit` for the command string).
+        j += (letters.match(/[oO]/g) ?? []).length
+      }
+      if (hasC) { ci = j; k = j - 1 }
+    }
     if (k >= 0) {
       // A payload written as adjacent quoted pieces (`'find ~ -name '\''x'\'' -delete'`): the POSIX reading of
       // it too, where the PowerShell reading differs (review 2026-11-24, sixth).
-      const next = operands[k + 1]
+      const next = operands[ci]
       if (next && ctx.dialect !== 'posix') {
         const raw = ctx.textSub.slice(next.tok.start, seg.end).replace(/'\\''/g, '\u0007')
         const q = raw.match(/^'([^']*)'/)
@@ -5601,7 +5888,27 @@ function interpreter(ctx: Ctx, seg: Seg, verb0: string, operands: Word[]): void 
         const posix = q && q[1].includes('\u0007') ? q[1].replace(/\u0007/g, "'") : null
         if (posix !== null && posix !== next.value) scanText(reopenQuoted(ctx.run, { kind: 'w', pieces: [{ t: posix, q: 's' }], start: 0, end: 0, subs: [] }), `shell>${verb} -c`, 'shell')
       }
-      return runPayload(k + 1, `shell>${verb} -c`, 'shell')
+      // What Windows PowerShell 5.1 hands the shell (`ps51Delivered`: `bash -c 'rm -rf \"$X\"/*'` reaches bash as
+      // `rm -rf "$X"/*`; wave 8 RR8-3, read since wave 15), beside the payload as written, which is what PowerShell
+      // 7's standard argument passing hands on; for every payload since wave 15b (P3-F10). `trap rm`, which 5.1
+      // makes of `trap "rm -rf x" EXIT`, deletes nothing (`mutate`).
+      // The shell runs the one word after `-c`; the words after it are its `$0`, `$1` ... (wave 15b, P3-F2: joined
+      // with them, `bash -c 'rm -rf ~/.ssh' _` was read as one quoted program word). That word is read with its
+      // positional parameters bound to those words, beside the joined reading the scan always made (which hands
+      // the later words to a program it cannot read).
+      const args = operands.slice(ci + 1)
+      const positional = args.map(w => (w.tok.subs.length === 0 && !w.value.includes(S0) ? w.value : null))
+      const word = next && args.length > 0 ? positionalAsWritten(ctx.run, next) : next
+      if (word && args.length > 0) {
+        const one = payloadOf(ctx, [word], 0)
+        if (one.text !== null && !one.viaVariable) scanText(bindPositional(one.text, positional), `shell>${verb} -c`, 'shell')
+      }
+      if (word && ctx.dialect === 'ps' && !ctx.codeAsShell) {
+        const written = payloadOf(ctx, [word], 0, true)
+        const delivered = written.text === null || written.viaVariable ? null : ps51Delivered(written.text)
+        if (delivered !== null) scanText(bindPositional(delivered, positional), `shell>${verb} -c`, 'shell')
+      }
+      return runPayload(ci, `shell>${verb} -c`, 'shell')
     }
     // `wsl ls ';' rm -rf ...`: with no -c, wsl hands the rest of its line to the distribution's shell
     // (review 2026-11-23, fourth). `--cd` starts it in a folder the scan does not follow.
@@ -5924,11 +6231,30 @@ function classifyGitArgs(ctx: Ctx, seg: Seg | null, args: Word[], segText: strin
     out.texts.push(renderOrig(ctx.run, text))
     scanPayload(ctx.run, text, ctx.base, `${ctx.via}>git ${sub}`, ctx.depth + 1, 'shell', { dialect: 'posix', baseUnreadable: ctx.baseUnreadable })
   }
+  // git takes any unique prefix of a long option (`fetch --upl`, `push --e`; measured on git 2.53, wave 15b, P3-F8),
+  // and push's `--exec` is its `--receive-pack`.
+  // rebase takes any prefix of `--exec` from `--ex` on (`--e` is ambiguous to git), and rebase and difftool take `-x`
+  // at the end of a cluster of their switches (`-ix`, `-yx`); difftool does not abbreviate `--extcmd` (measured on
+  // git 2.53, wave 19, C2: "option `exec' requires a value", "switch `x' requires a value", "invalid option: --extc").
   const RUN_FLAGS: Record<string, RegExp> = {
-    rebase: /^(?:-x|--exec)$/, 'filter-branch': /^--[\w-]*-filter$/, difftool: /^(?:-x|--extcmd)$/, mergetool: /^(?:-x|--extcmd)$/,
-    clone: /^(?:-u|--upload-pack)$/, fetch: /^--upload-pack$/, pull: /^--upload-pack$/, 'ls-remote': /^--upload-pack$/, push: /^--receive-pack$/,
-    archive: /^--exec$/,
+    rebase: /^(?:-[ifkmnqrv]*x|--e(?:x(?:e(?:c)?)?)?)$/, 'filter-branch': /^--[\w-]*-filter$/, difftool: /^(?:-[ygd]*x|--extcmd)$/, mergetool: /^(?:-x|--extcmd)$/,
+    clone: longPrefixes(['-u'], 'upload-pack'), fetch: longPrefixes([], 'upload-pack'), pull: longPrefixes([], 'upload-pack'),
+    'ls-remote': longPrefixes([], 'upload-pack'), push: longPrefixes([], 'receive-pack', 'exec'), archive: longPrefixes([], 'exec'),
+    'fetch-pack': longPrefixes([], 'upload-pack'), 'send-pack': longPrefixes([], 'receive-pack', 'exec'),
+    // 19b, C19-5 (measured on git 2.53): send-email runs these by their exact names (`--to-c` is "unrecognized
+    // argument"), and an SMTP server given as a path is started as a sendmail program; instaweb starts its httpd and
+    // browser, by any prefix down to `--h` and `--b`, and `-d` / `-b` after its `-l` switch.
+    'send-email': /^--(?:to-cmd|cc-cmd|header-cmd|sendmail-cmd|smtp-server)$/,
+    instaweb: /^(?:-l*[db]|--h(?:t(?:t(?:p(?:d)?)?)?)?|--b(?:r(?:o(?:w(?:s(?:e(?:r)?)?)?)?)?)?)$/,
   }
+  // A word git does not know as a command is an alias, possibly of the repository's own configuration, which a run
+  // can write (`alias.x = fetch`): its options may be any of these (wave 15c, the wave-15b builder's leftover).
+  const ALIAS_RUN_FLAGS = longPrefixes([], 'upload-pack', 'receive-pack', 'exec')
+  const subWord = args[i]?.text ?? ''
+  const subRunFlag = Object.prototype.hasOwnProperty.call(RUN_FLAGS, sub) ? RUN_FLAGS[sub] : subWord !== '' && !GIT_MAIN_COMMANDS.has(subWord) ? ALIAS_RUN_FLAGS : undefined
+  // `-x` with its value glued on (`-xmake`, `-ixmake`): git takes the rest of the word as the command (wave 19, C2).
+  const GLUED_RUN_FLAG: Record<string, RegExp> = { rebase: /^-[ifkmnqrv]*x/, difftool: /^-[ygd]*x/, instaweb: /^-l*[db]/ }
+  const gluedRunFlag = Object.prototype.hasOwnProperty.call(GLUED_RUN_FLAG, sub) ? GLUED_RUN_FLAG[sub] : undefined
 
   // Operands and options, with the values of known value-taking options taken out.
   const operands: Word[] = []
@@ -5940,10 +6266,12 @@ function classifyGitArgs(ctx: Ctx, seg: Seg | null, args: Word[], segText: strin
     const t = w.text
     if (dashed) { afterDash.push(w); continue }
     if (t === '--') { dashed = true; continue }
-    const runFlag = RUN_FLAGS[sub]
+    const runFlag = subRunFlag
     if (runFlag && runFlag.test(t) && rest[k + 1]) { runs(rest[++k].value); continue }
     const runEq = t.match(/^(--[\w-]+)=([\s\S]*)$/)
     if (runFlag && runEq && runFlag.test(runEq[1])) { runs(w.value.slice(w.value.indexOf('=') + 1)); continue }
+    const glued = gluedRunFlag?.exec(w.value)
+    if (glued && w.value.length > glued[0].length) { runs(w.value.slice(glued[0].length)); continue }
     if (sub === 'grep' && /^(?:-O.|--open-files-in-pager=)/.test(t)) { runs(t.startsWith('-O') ? w.value.slice(2) : w.value.slice(w.value.indexOf('=') + 1)); continue }
     // `apply` / `am` `--directory`, `checkout-index --prefix`: where the files are written (review 2026-11-23).
     if ((sub === 'apply' || sub === 'am') && /^--directory=/.test(t)) { gwrite(valueOf(w, 12), sub); continue }
@@ -5956,10 +6284,13 @@ function classifyGitArgs(ctx: Ctx, seg: Seg | null, args: Word[], segText: strin
     if ((t === '--separate-git-dir' || t === '--template' || t === '--output-directory' || t === '--export-marks' || t === '--import-marks' || (t === '--file' && sub !== 'commit' && sub !== 'config')) && rest[k + 1]) { gwrite(rest[++k], sub); continue }
     if (/^-o./.test(t) && sub !== 'commit' && w.tok.pieces[0]?.q === 'n') { gwrite({ ...w, value: w.value.slice(2), text: t.slice(2), raw: w.raw.slice(2), quotedFirst: null }, sub); continue }
     // `clone -c <key>=<value>` / `--config`: a setting of the new repository, which can run a program.
-    if ((sub === 'clone' || sub === 'submodule') && (t === '-c' || t === '--config' || /^--config=/.test(t))) {
-      const kv = t.startsWith('--config=') ? t.slice(9) : rest[k + 1]?.text ?? ''
+    // Any prefix of `--config` from `--co` on (`--c` is ambiguous to git; wave 15b, P3-F8).
+    const configOpt = t.match(/^(--co(?:n(?:f(?:i(?:g)?)?)?)?)(=|$)/)
+    if ((sub === 'clone' || sub === 'submodule') && (t === '-c' || configOpt !== null)) {
+      const glued = configOpt !== null && configOpt[2] === '='
+      const kv = glued ? t.slice(configOpt[1].length + 1) : rest[k + 1]?.text ?? ''
       if (GIT_RUNNING_KEY.test(kv) || /^core\.worktree=/i.test(kv) || /\bext::/.test(kv)) markSelfBuilding(ctx.run, `git ${sub} -c ${kv.replace(/=.*$/s, '')}, a setting that runs a program`)
-      if (!t.startsWith('--config=')) k++
+      if (!glued) k++
       continue
     }
     if (/^--output=/.test(t)) { gwrite(valueOf(w, 9), sub); continue }
@@ -5985,6 +6316,12 @@ function classifyGitArgs(ctx: Ctx, seg: Seg | null, args: Word[], segText: strin
   if (operands.some(w => /^ext::/i.test(w.text))) markSelfBuilding(ctx.run, `git ${sub} with an ext:: address, which runs a program`)
   if (sub === 'submodule' && operands[0]?.text.toLowerCase() === 'foreach') {
     const cmd = rest.slice(rest.indexOf(operands[0]) + 1).filter(w => !/^--(?:recursive|quiet)$/.test(w.text))
+    if (cmd.length) runs(cmd.length === 1 ? cmd[0].value : cmd.map(w => w.value).join(' '))
+    return
+  }
+  // `bisect run <cmd> [<arg>...]`: git runs the words after `run` through its shell (19b, C19-5), as `submodule foreach`.
+  if (sub === 'bisect' && operands[0]?.text.toLowerCase() === 'run') {
+    const cmd = rest.slice(rest.indexOf(operands[0]) + 1)
     if (cmd.length) runs(cmd.length === 1 ? cmd[0].value : cmd.map(w => w.value).join(' '))
     return
   }
@@ -6929,6 +7266,221 @@ function stripCarets(text: string): string {
 }
 
 /**
+ * git's own commands, as `git --list-cmds=main,nohelpers` lists them on git 2.53 (measured 2026-11-24). Any other
+ * word in the command's place is an alias (git never lets an alias shadow one of these) or a program
+ * `git-<word>` on the PATH; either may take the options that run a program (wave 15c). Shared with the Git tool.
+ */
+export const GIT_MAIN_COMMANDS: ReadonlySet<string> = new Set(('add am annotate apply archive backfill bisect blame branch bugreport bundle '
+  + 'cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick citool clean clone '
+  + 'column commit commit-graph commit-tree config count-objects credential credential-cache credential-store credential-wincred '
+  + 'daemon describe diagnose diff diff-files diff-index diff-pairs diff-tree difftool fast-export fast-import fetch fetch-pack '
+  + 'filter-branch fmt-merge-msg for-each-ref for-each-repo format-patch fsck fsck-objects gc get-tar-commit-id grep gui gui.tcl '
+  + 'hash-object help hook http-backend http-fetch http-push imap-send index-pack init init-db instaweb interpret-trailers '
+  + 'last-modified log ls-files ls-remote ls-tree mailinfo mailsplit maintenance merge merge-base merge-file merge-index '
+  + 'merge-octopus merge-one-file merge-ours merge-recursive merge-recursive-ours merge-recursive-theirs merge-resolve '
+  + 'merge-subtree merge-tree mergetool mktag mktree multi-pack-index mv name-rev notes pack-objects pack-redundant pack-refs '
+  + 'patch-id pickaxe prune prune-packed pull push quiltimport range-diff read-tree rebase receive-pack reflog refs remote '
+  + 'remote-ext remote-fd remote-ftp remote-ftps remote-http remote-https repack replace replay repo request-pull rerere reset '
+  + 'restore rev-list rev-parse revert rm send-email send-pack shortlog show show-branch show-index show-ref sparse-checkout '
+  + 'stage stash status stripspace submodule subtree survey svn switch symbolic-ref tag unpack-file unpack-objects update '
+  + 'update-index update-ref update-server-info upload-archive upload-pack var verify-commit verify-pack verify-tag version '
+  + 'whatchanged worktree write-tree').split(' '))
+
+/** `short` written exactly, or `--` and any prefix of one of `names` (git takes a unique prefix of a long option). */
+function longPrefixes(short: string[], ...names: string[]): RegExp {
+  const alts = new Set<string>(short)
+  for (const n of names) for (let k = 1; k <= n.length; k++) alts.add(`--${n.slice(0, k)}`)
+  return new RegExp(`^(?:${[...alts].join('|')})$`)
+}
+
+/**
+ * At most this many words come out of the brace lists of one word (bash makes every combination). A word whose
+ * lists make more is never cut short (wave 15c, N1: the 65th word, the one bash deleted, was dropped): the call is
+ * unreadable (`BRACE_OVERFLOW`).
+ */
+const MAX_BRACE_WORDS = 256
+const BRACE_OVERFLOW = `a brace list that makes more than ${MAX_BRACE_WORDS} words`
+/**
+ * At most this many words come out of the brace lists of one text, and at most `MAX_SCANNED_TEXT` characters (wave
+ * 19, C5): each word was capped, the text was not, and the expansion ran before the scan's budget was ever checked
+ * (measured on the wave-15c build: 120 KiB of eight-list words, each making 256, held the event loop 360 ms, and one
+ * eight-list word with a 120 KiB tail 101 ms, before the result was refused as too long). Past either cap the call is
+ * unreadable; the budget is also checked between words.
+ */
+const MAX_BRACE_TEXT_WORDS = 4096
+const BRACE_TEXT_OVERFLOW = `brace lists that make more than ${MAX_BRACE_TEXT_WORDS} words, or more than 128 KiB of text, across the command`
+
+/**
+ * A POSIX text as the shell splits it into fields where the text alone says how (wave 15b, P3-F10): `$IFS` and
+ * `${IFS}` outside single quotes are a space when the text assigns no IFS (its default splits at a space, a tab
+ * and a newline), and an unquoted brace list with a comma (`{rm,-rf,~/.ssh}`, `x{a,b}y`) is the words it expands
+ * to. Neither was read: `rm${IFS}-rf${IFS}$HOME/.ssh` and `{rm,-rf,~/.ssh}` were one program word the tables did
+ * not know, and both are what reaches bash from Windows PowerShell 5.1 when a payload's plain quotes are split.
+ * Null when the text has neither; `overflow` names the fault when a word's lists make more than `MAX_BRACE_WORDS`
+ * words, the text's lists more than `MAX_BRACE_TEXT_WORDS` words or the text more than `MAX_SCANNED_TEXT`
+ * characters (the expansion stops there), or the scan ran past its budget.
+ */
+function posixFields(run: Run, text: string): { text: string; overflow: string | null } | null {
+  const ifs = !/\bIFS\s*=/.test(text) && /\$\{?IFS\b/.test(text)
+  // Any `{` with a `,` and then a `}` after it: the words themselves are judged by `braceList`, which keeps quoted
+  // and escaped text whole (wave 15c, N2: a trigger that refused whitespace and braces between the braces missed
+  // `{"a b",~/.ssh}`, `{a\ b,...}` and `{x{y},...}`). Linear: three index lookups.
+  const open = text.indexOf('{')
+  const comma = open < 0 ? -1 : text.indexOf(',', open)
+  const braces = comma >= 0 && text.lastIndexOf('}') > comma
+  if (!ifs && !braces) return null
+  // The words of the text with their spans, by its quoting: a word ends at unquoted whitespace or an operator.
+  let out = ''
+  let word = ''
+  let quote: '' | "'" | '"' = ''
+  let overflow: string | null = null
+  let made = 0
+  const flush = () => {
+    if (!braces || overflow !== null) out += word
+    else if (overBudget(run)) { overflow = `the command took longer than ${SCAN_BUDGET_MS} ms to read`; out += word }
+    else {
+      const e = expandBraces(word, MAX_SCANNED_TEXT - out.length)
+      if (e === 'words') { overflow = BRACE_OVERFLOW; out += word }
+      else if (e === 'chars' || (e.length > 1 && (made += e.length) > MAX_BRACE_TEXT_WORDS)) { overflow = BRACE_TEXT_OVERFLOW; out += word }
+      else out += e.join(' ')
+    }
+    word = ''
+  }
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (quote === "'") { word += c; if (c === "'") quote = ''; continue }
+    if (c === '\\' && i + 1 < text.length) { word += text.slice(i, i + 2); i++; continue }
+    if (c === "'" && quote === '') { quote = "'"; word += c; continue }
+    if (c === '"') { quote = quote === '"' ? '' : '"'; word += c; continue }
+    if (ifs && c === '$') {
+      const m = text.slice(i).match(/^\$(?:\{IFS\}|IFS(?![A-Za-z0-9_]))/)
+      if (m) {
+        if (quote === '"') word += ' '
+        else { flush(); out += ' ' }
+        i += m[0].length - 1
+        continue
+      }
+    }
+    if (quote === '' && /[\s;|&()<>]/.test(c)) { flush(); out += c; continue }
+    word += c
+  }
+  flush()
+  return out === text && overflow === null ? null : { text: out, overflow }
+}
+
+/**
+ * A POSIX text with each unquoted ANSI-C string (`$'...'`) written as the single-quoted text it decodes to, as bash
+ * reads it (wave 15c, the wave-15b builder's leftover: `x=$'\x20'; rm${x}-rf${x}$HOME/.ssh` and `rm -rf
+ * $'\x2e\x2e'/.ssh` were read as text nobody knew). Escapes: `\a \b \e \E \f \n \r \t \v \\ \' \" \?`, octal
+ * `\nnn`, `\xHH`, `\uHHHH`, `\UHHHHHHHH` and `\cX`; an unknown escape is kept as written, a NUL ends the string
+ * (bash drops the rest) and the scan's own sentinel characters (`\x01` to `\x08` and `\x0e`) become `?` (wave
+ * 19, C6: `\x0e`, ITEM_DIR, came through and was read as the pipeline item's folder). An unquoted locale string
+ * (`$"..."`) is written as the double-quoted string it is when there is no message catalog (wave 19, C3: `rm -rf
+ * $"../.ssh"` was read as a name `$..` inside the folder). Null when the text holds neither.
+ */
+function ansiCDecoded(text: string): string | null {
+  if (!text.includes("$'") && !text.includes('$"')) return null
+  let out = ''
+  let quote: '' | "'" | '"' = ''
+  let found = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (quote === "'") { out += c; if (c === "'") quote = ''; continue }
+    if (c === '\\' && i + 1 < text.length) { out += text.slice(i, i + 2); i++; continue }
+    // `$"`: the `$` goes, and the double-quoted string is read as one.
+    if (quote === '' && c === '$' && text[i + 1] === '"') { found = true; continue }
+    if (c === '"') { quote = quote === '"' ? '' : '"'; out += c; continue }
+    if (quote === '' && c === "'") { quote = "'"; out += c; continue }
+    if (quote !== '' || c !== '$' || text[i + 1] !== "'") { out += c; continue }
+    // `$'`: decode up to the first quote no backslash escapes.
+    let s = ''
+    let j = i + 2
+    let ended = false
+    for (; j < text.length && text[j] !== "'"; j++) {
+      if (text[j] !== '\\' || j + 1 >= text.length) { if (!ended) s += text[j]; continue }
+      const e = text[j + 1]
+      const simple: Record<string, string> = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' }
+      let ch: string
+      let used = 2
+      const hex = (max: number) => { const m = text.slice(j + 2, j + 2 + max).match(/^[0-9A-Fa-f]+/); return m ? m[0] : '' }
+      if (e in simple) ch = simple[e]
+      else if (/[0-7]/.test(e)) { const m = text.slice(j + 1, j + 4).match(/^[0-7]{1,3}/) as RegExpMatchArray; ch = String.fromCharCode(parseInt(m[0], 8) & 0xff); used = 1 + m[0].length }
+      else if (e === 'x' && hex(2) !== '') { const h = hex(2); ch = String.fromCharCode(parseInt(h, 16)); used = 2 + h.length }
+      else if ((e === 'u' || e === 'U') && hex(e === 'u' ? 4 : 8) !== '') { const h = hex(e === 'u' ? 4 : 8); const n = parseInt(h, 16); ch = n <= 0x10ffff ? String.fromCodePoint(n) : '?'; used = 2 + h.length }
+      else if (e === 'c' && j + 2 < text.length) { ch = String.fromCharCode(text.charCodeAt(j + 2) & 0x1f); used = 3 }
+      else ch = `\\${e}`
+      if (ch === '\0') ended = true
+      if (!ended) s += ch
+      j += used - 1
+    }
+    found = true
+    out += `'${s.replace(SENTINEL_CHARS_G, '?').replace(/'/g, "'\\''")}'`
+    i = j
+  }
+  return found ? out : null
+}
+
+/**
+ * One word with its unquoted brace lists expanded (`x{a,b}y` is `xay xby`), as bash expands them, in bash's order;
+ * `'words'` when they make more than `MAX_BRACE_WORDS` words (never a list cut short: wave 15c, N1), `'chars'` when
+ * the words would hold more than `maxChars` characters with a space between each two (wave 19, C5: counted before
+ * a step's words are made, so a long word is never copied 256 times first). Each step replaces one word by two or
+ * more, so the loop ends within `MAX_BRACE_WORDS` steps; the words before the first one that still holds a list hold
+ * none, so the search goes on from there.
+ */
+function expandBraces(word: string, maxChars: number): string[] | 'words' | 'chars' {
+  const words = [word]
+  let chars = word.length
+  let from = 0
+  for (;;) {
+    let k = -1
+    let b: { open: number; close: number; alts: string[] } | null = null
+    for (let j = from; j < words.length; j++) { b = braceList(words[j]); if (b !== null) { k = j; break } }
+    if (k < 0 || b === null) return words
+    if (words.length - 1 + b.alts.length > MAX_BRACE_WORDS) return 'words'
+    const w = words[k]
+    const bl = b
+    const kept = w.length - (bl.close + 1 - bl.open)
+    chars += bl.alts.reduce((n, a) => n + kept + a.length + 1, 0) - (w.length + 1)
+    if (chars > maxChars) return 'chars'
+    words.splice(k, 1, ...bl.alts.map(a => w.slice(0, bl.open) + a + w.slice(bl.close + 1)))
+    from = k
+  }
+}
+
+/** The first unquoted `{a,b}` of a word that is not a `${...}`: where it opens and closes, and its alternatives. */
+function braceList(w: string): { open: number; close: number; alts: string[] } | null {
+  let quote: '' | "'" | '"' = ''
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i]
+    if (quote === "'") { if (c === "'") quote = ''; continue }
+    if (c === '\\') { i++; continue }
+    if (c === "'" && quote === '') { quote = "'"; continue }
+    if (c === '"') { quote = quote === '"' ? '' : '"'; continue }
+    if (quote !== '' || c !== '{' || w[i - 1] === '$') continue
+    // The matching close at depth zero, and the commas at depth one, outside quotes.
+    let depth = 0
+    let q2: '' | "'" | '"' = ''
+    const commas: number[] = []
+    for (let j = i; j < w.length; j++) {
+      const d = w[j]
+      if (q2 === "'") { if (d === "'") q2 = ''; continue }
+      if (d === '\\') { j++; continue }
+      if (d === "'" && q2 === '') { q2 = "'"; continue }
+      if (d === '"') { q2 = q2 === '"' ? '' : '"'; continue }
+      if (q2 !== '') continue
+      if (d === '{') depth++
+      else if (d === '}' && --depth === 0) {
+        if (commas.length === 0) break
+        const cuts = [i, ...commas, j]
+        return { open: i, close: j, alts: cuts.slice(0, -1).map((a, n) => w.slice(a + 1, cuts[n + 1])) }
+      } else if (d === ',' && depth === 1) commas.push(j)
+    }
+  }
+  return null
+}
+
+/**
  * PowerShell 5.1 reads more than ASCII: the Unicode space separators, VT, FF and NEL are whitespace to it, a
  * lone CR ends a statement, and the curly quotes are quotes (measured; review 2026-11-23, fourth: each made
  * the check read one harmless word where PowerShell ran a delete). Mapped to their ASCII forms before a
@@ -6970,6 +7522,21 @@ function scanShell(run: Run, text0: string, base: string, via: string, depth: nu
     // Measured on the text as written (a substituted name is a longer sentinel).
     const plain = renderOrig(run, lifted, true)
     if (plain.length > MAX_SCANNED_TEXT) { run.out.faults.push(TOO_LONG); return }
+    // The text as the shell splits it at `$IFS` and expands its brace lists, read beside the text as written
+    // (wave 15b, P3-F10); here-document bodies are set aside first, so their text is not split.
+    // The text with its `$'...'` strings decoded, read beside the text as written (wave 15c); that reading is
+    // split and expanded in its turn.
+    if (dialect === 'posix' && !o.codeAsShell && o.ansiC !== true && o.fielded !== true) {
+      const decoded = ansiCDecoded(lifted)
+      if (decoded !== null) scanShell(run, renderOrig(run, decoded), base, via, depth, { ...o, ansiC: true })
+    }
+    if (dialect === 'posix' && !o.codeAsShell && o.fielded !== true) {
+      const fielded = posixFields(run, lifted)
+      // An overflow refuses the whole call, so the text is not read on (wave 19, C5: reading the 120 KiB as written
+      // after the cap cost 100 ms more).
+      if (fielded !== null && fielded.overflow !== null) { if (!run.out.faults.includes(fielded.overflow)) run.out.faults.push(fielded.overflow); return }
+      else if (fielded !== null) scanShell(run, renderOrig(run, fielded.text), base, via, depth, { ...o, fielded: true })
+    }
     markSelfBuilding(run, findMarker(plain))
     if (dialect === 'posix' && POSIX_MARKER.test(plain)) markSelfBuilding(run, 'a shell handed a command line through a here-string or a process substitution')
     if (dialect === 'ps' && PROCESS_OBJECT.test(plain)) processObject(run, plain, base, via, depth, o)
@@ -7004,7 +7571,7 @@ function scanShell(run: Run, text0: string, base: string, via: string, depth: nu
     let first: Tok[] = []
     let firstCtx: Ctx | null = null
     for (const posixQuotes of readings) {
-      const toks = tokenize(sub, posixQuotes, run, dialect === 'cmd' && !posixQuotes)
+      const toks = tokenize(sub, posixQuotes, run, dialect === 'cmd' && !posixQuotes, dialect === 'posix')
       if (first.length === 0) first = toks
       const ctx = newCtx(run, sub, plain, base, via, depth, true, { ...o, dialect })
       ctx.segs = segment(toks, sub)
@@ -7269,6 +7836,7 @@ export function scanShellText(text: string, base: string, homes: HomeMap, opts?:
   run.out.texts.push(input)
   try {
     if (input.length > MAX_TEXT) { run.out.faults.push('a command longer than 1 MiB'); return run.out }
+    if (SENTINEL_CHARS.test(input)) { run.out.faults.push(SENTINEL_INPUT); return run.out }
     scanPayload(run, input, base, 'shell', 0, 'shell')
     return finish(run)
   } catch (e) {
@@ -7289,6 +7857,7 @@ export function scanArgv(words: string[], base: string, homes: HomeMap, opts?: S
     if (list.length === 0) return run.out
     if (list.join(' ').length > MAX_TEXT) { run.out.faults.push('a command longer than 1 MiB'); return run.out }
     if (list.join(' ').length > MAX_SCANNED_TEXT) { run.out.faults.push(TOO_LONG); return run.out }
+    if (list.some(w => SENTINEL_CHARS.test(w))) { run.out.faults.push(SENTINEL_INPUT); return run.out }
     // The segment text bashEffect reads: each word holding whitespace or a quote is wrapped in double
     // quotes, so a commit message cannot read as a subcommand.
     const segText = list.map(w => /[\s'"]/.test(w) ? `"${w.replace(/"/g, '')}"` : w).join(' ')
@@ -7315,6 +7884,60 @@ export function scanArgv(words: string[], base: string, homes: HomeMap, opts?: S
   } catch (e) {
     run.out.faults.push(`the argv could not be read: ${(e as Error)?.message ?? String(e)}`)
     return run.out
+  }
+}
+
+/**
+ * Whether a PowerShell command ends in a native program: the last element of its last top-level statement is
+ * a program PowerShell starts (`pytest`, `git`, `cmd /c ...`, `& 'C:\x\tool.exe'`), not a cmdlet, one of
+ * PowerShell's aliases, a keyword, a value or an expression. Under `powershell -Command` such a program's exit
+ * code reaches the caller only as 0 or 1 (measured 2026-11-24: `cmd /c exit 3` answers 1); the Bash tool carries
+ * the real one for these commands only (`impl/bash.ts`). Pure; false for anything it cannot read.
+ */
+export function endsInNativeProgram(text: string): boolean {
+  return nativeTail(text) !== null
+}
+
+/**
+ * Where the last top-level statement of a command that `endsInNativeProgram` starts, when that statement stands
+ * at the start of the text or after a `;` or a line break, and the text holds no here-string (whose lifting would
+ * move the offsets); null otherwise (wave 15b). The Bash tool sets `$LASTEXITCODE` to 0 there, so a last program
+ * that cannot start reads 1, never a code an earlier program of the command left. Null as well when that last
+ * statement reads `$LASTEXITCODE` or `$?` (wave 15c, N6: `python a.py; python report.py $LASTEXITCODE` would be
+ * handed 0, a different command from the one the model wrote).
+ */
+export function nativeTailStart(text: string): number | null {
+  const t = nativeTail(text)
+  if (t === null || !t.asWritten) return null
+  if (/\$(?:global:|script:)?LASTEXITCODE\b|\$\?|\$\{(?:global:)?(?:LASTEXITCODE|\?)\}/i.test(text.slice(t.start))) return null
+  const before = text.slice(0, t.start).replace(/[ \t]+$/, '')
+  return before === '' || before.endsWith(';') || before.endsWith('\n') ? t.start : null
+}
+
+/** The last statement's start in the text as it was read, and whether that text is the text as written (no here-string lifted). */
+function nativeTail(text: string): { start: number; asWritten: boolean } | null {
+  try {
+    if (typeof text !== 'string' || text.length === 0 || text.length > MAX_SCANNED_TEXT) return null
+    const run = newRun({ home: '', appData: '', localAppData: '', temp: '', scratch: null, user: '' }, 'win32')
+    const lifted = liftBodies(run, psNormalize(text), 'ps')
+    const segs = segment(tokenize(lifted, false, run, false), lifted).filter(s => s.parentPipeline === null)
+    if (segs.length === 0) return null
+    // The statement that starts last, and the last element of its pipeline.
+    const lastStart = segs.reduce((a, s) => (s.start > a.start && s.pipeIndex === 0 ? s : a), segs.find(s => s.pipeIndex === 0) ?? segs[0])
+    const elements = segs.filter(s => s.pipeline === lastStart.pipeline)
+    const last = elements.reduce((a, s) => (s.pipeIndex > a.pipeIndex ? s : a), elements[0])
+    // Nothing of the text may come after it but whitespace, a comment or a redirect target.
+    if (segs.some(s => s.start > last.start && s.pipeline !== last.pipeline)) return null
+    const head = last.words[0]
+    if (!head || last.subexpr) return null
+    if (!last.call && head.pieces.some(p => p.q !== 'n')) return null
+    const word = head.pieces.map(p => p.t).join('')
+    if (!last.call && !/^[A-Za-z0-9_.\\/:~-]/.test(word)) return null
+    if (word.includes(S0) || word.includes(UNREAD)) return null
+    const verb = verbName(word)
+    return isNativeHead(verb) && !NOT_A_PROGRAM.test(verb) && !/^\d/.test(verb) ? { start: lastStart.start, asWritten: run.bodies.length === 0 && lifted.length === text.length } : null
+  } catch {
+    return null
   }
 }
 

@@ -500,6 +500,23 @@ export const contractAssertPassTool: ToolImpl = {
           arbiterVerdict: true,
         }
       }
+      // A withheld check that could not start is not a pass (wave 19b). In a contained authoring
+      // mission the held-out gate cannot run here at all, and the old `[unverified: ...]` pass let
+      // the model's word stand for the one assertion it is least entitled to certify: the contract
+      // read complete and the learning promotion counted it. The assertion stays pending; the
+      // driver's own check at the end is what answers it.
+      if (v.status === 'unverifiable' && check.kind === 'command' && check.withheld) {
+        return {
+          output:
+            `Assertion ${index} was NOT marked passed — its check could not run here.\n\n` +
+            `  Assertion: ${text}\n` +
+            `  Check: ${v.detail}\n\n` +
+            `This says nothing about whether your work is correct. ` +
+            `The harness runs this check when your turn ends.`,
+          isError: true,
+          arbiterVerdict: true,
+        }
+      }
       if (v.status === 'unverifiable') {
         evidence = `[unverified: ${v.detail}] ${evidence ?? ''}`.trim()
       }

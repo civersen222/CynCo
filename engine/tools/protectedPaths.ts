@@ -19,9 +19,8 @@ import * as nodePath from 'node:path'
 import {
   containmentOff, engineCheckout, NO_CONTAINMENT, refusalText, runContainment, type RunContainment,
 } from '../containment.js'
-import { realPathOf } from '../realPath.js'
-import { canonPath, currentHomes, insidePath, namePaths, type NamedCall, type NamedPath } from './toolPaths.js'
-import type { HomeMap, PathOp } from './shellPaths.js'
+import { canonPath, currentHomes, insidePath, namePaths, realPathChecked, UnresolvedLinkError, type ListingMemo, type NamedCall, type NamedPath } from './toolPaths.js'
+import { UNREAD_PROGRAM, type HomeMap, type PathOp } from './shellPaths.js'
 
 type Platform = 'win32' | 'posix'
 
@@ -41,7 +40,7 @@ export type PathContext = {
   isolation: 'verified' | 'overlay'
   real: (p: string) => string
 }
-export type PathRule = 'no-access' | 'self-building' | 'unreadable' | 'device' | 'unprotected-volume' | 'home'
+export type PathRule = 'no-access' | 'broker' | 'self-building' | 'unreadable' | 'device' | 'unprotected-volume' | 'home'
   | 'home-dot' | 'state' | 'ancestor' | 'git-internals' | 'git-config' | 'link-out' | 'outside' | 'unresolved' | 'unclassified'
 export type EscalateNote = { rule: 'root-delete' | 'git-destructive' | 'inline-unread-write'
   reason: string; targets: string[]; recursive: boolean; isolation: 'verified' | 'overlay' }
@@ -101,7 +100,9 @@ export function pathContextOf(ctx: RunContainment, o?: { platform?: Platform; re
 function buildContext(ctx: RunContainment, o: { platform?: Platform; real?: (p: string) => string; checkout?: string }): ContextResult {
   const platform = o.platform ?? hostPlatform()
   const P = pathModule(platform)
-  const real0 = o.real ?? ((p: string) => realPathOf(p, { quiet: true }))
+  // A link whose real path cannot be resolved throws `UnresolvedLinkError` (wave 19): the call is refused by name
+  // (`checkProtectedPaths`), and a root of the context through one is a faulty context (`pathContextOf`).
+  const real0 = o.real ?? realPathChecked
   const volumes = ctx.unprotectedVolumes.map(v => canonPath(v, platform))
   const lexical = (c: string) => isUnc(c) || volumes.some(v => insidePath(v, c, platform))
     || (platform === 'posix' && /^[A-Za-z]:/.test(c))
@@ -188,8 +189,15 @@ export function judgePath(real: string, op: PathOp, pc: PathContext, source: 'fi
   const p = pc.platform
   const inside = (root: string) => insidePath(root, real, p)
   const no = (rule: PathRule, detail = '') => ({ allow: false as const, rule, detail })
-  // 1. The audit and guard folders: every operation.
+  // 1. The audit and guard folders: every operation. Also through the administrative share of any host
+  // (`\\<host>\C$\cynco-audit\...`): the host may be this machine by a name or an address the check cannot know
+  // (wave 15c, N10); on another machine that folder is no business of a run either.
   if (pc.noAccess.some(inside)) return no('no-access')
+  const admin = p === 'win32' ? real.match(/^[\\/]{2}[^\\/]+[\\/]([A-Za-z])\$(?:[\\/](.*))?$/) : null
+  if (admin !== null) {
+    const local = `${admin[1].toUpperCase()}:\\${admin[2] ?? ''}`
+    if (pc.noAccess.some(root => insidePath(root, local, p))) return no('no-access')
+  }
   // 2. Reads.
   if (op === 'read' || op === 'list' || op === 'cd' || op === 'mention') return { allow: true }
   // 3. The mission folder and the extra roots.
@@ -231,7 +239,9 @@ export function judgePath(real: string, op: PathOp, pc: PathContext, source: 'fi
 
 // ─── Refusal texts (rule R9) ──────────────────────────────────────────────────────────────────
 
-const PRECEDENCE: Array<PathRule | 'containment'> = ['containment', 'no-access', 'self-building', 'unreadable', 'device',
+// `broker` before `self-building` (wave 19c): the scheduler, WMI's process creation and runas are also on the
+// self-building list, whose hint (write the command out plainly) a broker's refusal must not give.
+const PRECEDENCE: Array<PathRule | 'containment'> = ['containment', 'no-access', 'broker', 'self-building', 'unreadable', 'device',
   'unprotected-volume', 'home', 'home-dot', 'state', 'ancestor', 'git-internals', 'git-config', 'link-out', 'outside',
   'unresolved', 'unclassified']
 
@@ -258,8 +268,24 @@ const HINT: Partial<Record<PathRule, string>> = {
   unreadable: 'Write long content to a file with the Write tool, and run a long program from a file in the mission folder.',
 }
 
+/**
+ * What the model is told after a POSIX program word named by an expansion the scan cannot read (`UNREAD_PROGRAM`,
+ * `shellPaths.ts`): the class of honest work it meets and the two rewrites (wave 19, C8). From Windows PowerShell 5.1
+ * the plain quotes inside a `bash -c '...'` payload are dropped on delivery, so there the program is named.
+ */
+const UNREAD_PROGRAM_HINT = 'In a POSIX shell an unquoted expansion where the program goes is split into a whole command line, '
+  + 'and that includes an environment path such as $VIRTUAL_ENV/bin/python or $JAVA_HOME/bin/java. '
+  + 'Quote it ("$VIRTUAL_ENV/bin/python" -m pytest), or name the program (python -m pytest); '
+  + 'inside a bash -c payload written in PowerShell the plain quotes are dropped, so name the program there.'
+
 /** What the model is told after a volume, disk, partition, shadow-copy or backup operation. */
 const DEVICE_HINT = 'An unattended run never formats, partitions, wipes or relabels a volume, and never deletes shadow copies or backups (a shadow copy is how lost files are restored). If the mission needs one, say in your reply what and why; the owner does it by hand.'
+
+/**
+ * What the model is told after a broker (wave 19c, decision sheet item 12): what such a program starts runs outside
+ * this run's box, so no spelling of it is allowed, and the owner runs it by hand.
+ */
+const BROKER_HINT = 'An unattended run does not start a program through a service that runs it at its own level, outside this run (WSL, Docker or Podman, the Task Scheduler other than schtasks /query, WMI process creation, runas, Start-Process -Verb RunAs, ssh, sftp or scp to a host). If the mission needs one, say in your reply what and why; the owner runs it by hand.'
 
 /** The hint for a path found inside an inline program (`python -c`, `node -e`, a here-document fed to one). */
 const INLINE_HINT = 'The check reads an inline program as text and does not know what this call does with that path. If the program only reads it, write the program to a file in the mission folder with the Write tool and run that file (python <file>, node <file>).'
@@ -335,8 +361,11 @@ export function judgeCall(toolName: string, named: NamedCall, pc: PathContext, t
   // Whole-call refusals (R2, R7).
   if (named.faults.length) add('unreadable', 0, () => `the path check could not read this call (${named.faults[0]}), and an unattended run does not run what it cannot read`)
   if (scan?.truncated && scan.sawWrite) add('unreadable', 0, () => `the path check could not read this call (${scan.truncated}), and an unattended run does not run what it cannot read`)
-  if (scan?.selfBuilding) add('self-building', 0, () => `this command builds or decodes the text it runs (${scan.selfBuilding}), so what it touches cannot be read before it runs`)
+  if (scan?.selfBuilding) add('self-building', 0, () => `this command builds or decodes the text it runs (${scan.selfBuilding}), so what it touches cannot be read before it runs`,
+    undefined, scan.selfBuilding === UNREAD_PROGRAM ? UNREAD_PROGRAM_HINT : undefined)
   if (scan?.gitConfigWrite) add('git-config', 0, () => `this command would change the git setting ${scan.gitConfigWrite}`)
+  // A broker (wave 19c): refused wherever it stands; the text says the owner runs it by hand.
+  if (scan?.broker) add('broker', 0, () => `this command ${scan.broker}`, undefined, BROKER_HINT, false)
   const protectedSpellings = [...pc.noAccess]
   const words = [...named.texts, ...named.spellings].map(normText)
   if (protectedSpellings.some(f => words.some(w => w.includes(normText(f))))) add('no-access', 0, () => NO_ACCESS_REASON)
@@ -738,11 +767,18 @@ export function checkProtectedPaths(toolName: string, input: Record<string, unkn
     const c = pathContextOf(ctx)
     if (!c.ok) return { kind: 'refuse', rule: 'containment', reason: c.fault, text: refusalText('containment', c.fault) }
     pc = c.pc
-    const named = namePaths(toolName, input, toolCwd, pc.homes,
-      { platform: pc.platform, real: pc.real, drives: pc.drives, lexicalRoots: pc.unprotectedVolumes })
+    // One judgement lists a folder once (C19-3, wave 19b): the default resolver gets a memo of its listings that
+    // lives for this call only, so a folder changed between two calls is listed again.
+    const listings: ListingMemo = new Map()
+    const callPc: PathContext = pc.real === realPathChecked ? { ...pc, real: (p: string) => realPathChecked(p, listings) } : pc
+    const named = namePaths(toolName, input, toolCwd, callPc.homes,
+      { platform: callPc.platform, real: callPc.real, drives: callPc.drives, lexicalRoots: callPc.unprotectedVolumes })
     if (named.paths.length === 0 && named.spellings.length === 0 && named.texts.length === 0 && named.faults.length === 0) return { kind: 'allow' }
-    return judgeCall(toolName, named, pc, toolCwd)
+    return judgeCall(toolName, named, callPc, toolCwd)
   } catch (e) {
+    // A path through a link whose real path cannot be resolved (wave 19): refused by name, as the sandbox's establish
+    // rule refuses such a link in a mission folder.
+    if (e instanceof UnresolvedLinkError && pc) return refusal(pc, 'unreadable', e.reason)
     console.log(`[paths] check failed: ${(e as Error)?.message ?? String(e)}`)
     const reason = 'the path check could not read this call (an internal error in the path check), and an unattended run does not run what it cannot read'
     if (pc) return refusal(pc, 'unreadable', reason)

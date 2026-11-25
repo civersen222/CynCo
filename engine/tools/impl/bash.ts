@@ -1,8 +1,9 @@
 import { ContainmentRefusal, toolExec, toolSpawnRefusal, containmentHint } from '../../containment.js'
 import type { ToolImpl } from '../types.js'
-import { ownProcessTree } from '../../processTree.js'
+import { overranBuffer, ownProcessTree } from '../../processTree.js'
 import { checkBashSafety } from '../bashSafety.js'
 import { bashJudgedAlready, checkProtectedPaths } from '../protectedPaths.js'
+import { endsInNativeProgram, nativeTailStart } from '../shellPaths.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
 import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble, stripTrailingStderrMerge } from '../shellInfo.js'
@@ -53,6 +54,60 @@ export function formatBashFailure(command: string, rawOutput: string): string {
  */
 /** How long a killed command's pipes get to close before the call returns without them. */
 const STOP_GRACE_MS = 2000
+
+/**
+ * Appended on a line of its own (so a comment at the end of the command cannot swallow it) to a PowerShell
+ * command whose last element is a native program. A success stays 0. A failure is the program's own code
+ * when it set one; otherwise 1, as before: a bare `; exit $LASTEXITCODE` answered 0 for a program that does
+ * not exist (measured 2026-11-24). A program that exits 0 while `$?` is false (Windows PowerShell 5.1 with its
+ * stderr redirected) reads 1, as before.
+ */
+export const NATIVE_EXIT_SUFFIX = '\nif ($?) { exit 0 } elseif ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 }'
+
+/**
+ * Put in front of the command's last statement when it stands after a `;` or a line break (`nativeTailStart`), so
+ * a last program that cannot start reads 1, never a code an earlier program of the same command left (wave 15b;
+ * until then `cmd /c exit 3; no-such-program` read 3). Where the start cannot be placed, that limit remains.
+ */
+export const NATIVE_EXIT_RESET = '$global:LASTEXITCODE = 0; '
+
+/**
+ * The longest text the tool hands a Windows shell on one command line. Measured 2026-11-25 with the real tool
+ * (phase3\w19\scratch\c\out\longcmd-before.out): a 32,041-character command ran whole, and from 32,741 characters on
+ * the spawn threw `ENAMETOOLONG` (the call threw instead of answering). The launcher of a contained run gets a long
+ * command by file but starts the shell with it on one command line too.
+ */
+export const MAX_WINDOWS_COMMAND_CHARS = 32_000
+
+/**
+ * The longest command that may start one of Git's POSIX shells. Measured 2026-11-25 (longcmd2/3-before.out): Git's
+ * `bin\bash.exe`, `usr\bin\bash.exe` and `usr\bin\sh.exe` ran a `-c` text of 8,150 characters whole and one of 8,200
+ * with its end cut off, exiting 0 with no error (a one-line `echo START; : ...; echo END` printed START alone); the
+ * same text run from a file ran whole, and an msys program that is not a shell got an argument of 16,001 whole.
+ */
+export const MAX_POSIX_SHELL_COMMAND_CHARS = 8_000
+
+/** A POSIX shell named as a program word: `bash`, `sh` (with `.exe`, a path, quoted), never `.sh`, `ssh`, `--shell`. */
+const POSIX_SHELL_WORD = /(?:^|[\s;|&(){}'"`\\/=])(?:bash|sh|zsh|dash|ksh)(?:\.exe)?(?=$|[\s'";|&)])/i
+
+/**
+ * Why a command must not be started because Windows would cut it or cannot carry it, or null (wave 19). `runnable`
+ * is what reaches the shell (the preamble and the exit-code lines included). Nothing is refused off Windows.
+ */
+export function longCommandRefusal(command: string, runnable: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32') return null
+  if (runnable.length > MAX_WINDOWS_COMMAND_CHARS) {
+    return `Error: the command is ${command.length} characters long, longer than one Windows command line carries ` +
+      `(about ${MAX_WINDOWS_COMMAND_CHARS.toLocaleString('en-US')} characters with the shell's own words), so nothing was started. ` +
+      'Write long content to a file with the Write tool, and run a long program from a file.'
+  }
+  if (command.length > MAX_POSIX_SHELL_COMMAND_CHARS && POSIX_SHELL_WORD.test(command)) {
+    return `Error: this command starts a POSIX shell (bash or sh) and is ${command.length} characters long. Git's bash and sh run only ` +
+      `the first 8,190 or so characters of a -c text and exit 0 without an error, so nothing was started. ` +
+      'Write the script to a file with the Write tool and run it as bash <file>.'
+  }
+  return null
+}
 
 export function failedOutput(
   stderr: string,
@@ -184,8 +239,9 @@ export const bashTool: ToolImpl = {
     // would widen the variable's scope autoTranslateEnvPrefix returns null and
     // checkShellDialect still refuses with the instructive message.
     const dialected = autoTranslateEnvPrefix(command, shellInfo) ?? command
-    // The translation can turn an inert single-quoted value into code (`X='$(...)' cmd` becomes
-    // `$env:X="$(...)"; cmd`), so a translated command is judged as the shell will run it too, whatever the
+    // The translation turned an inert single-quoted value into code (`X='$(...)' cmd` became
+    // `$env:X="$(...)"; cmd`) until 2026-11-24, when it began keeping a single-quoted value a literal
+    // (`shellInfo.ts`, `psValue`). A translated command is still judged as the shell will run it, whatever the
     // executor already said about the model's text (review 2026-11-23, fourth).
     if (dialected !== command) {
       const again = checkProtectedPaths('Bash', { command: dialected }, cwd)
@@ -207,7 +263,21 @@ export const bashTool: ToolImpl = {
 
     // The command is reported, diagnosed and hinted on as the model wrote it;
     // only what reaches the shell carries the preamble. See shellPreamble.
-    const runnable = shellPreamble(shellInfo) + merged.command
+    // N130: under `powershell -Command` a native program's failing code reached the model as 1 (pytest's 5,
+    // git's 128 and `cmd /c exit 3` alike, measured 2026-11-24). When the command ends in a native program
+    // (`endsInNativeProgram`, the scan's reading), its own code is carried; a cmdlet last is left as it was.
+    // `$LASTEXITCODE` is set to 0 where the last statement starts (`nativeTailStart`), so a last program that cannot
+    // start reads 1, not a code an earlier program of the command left (wave 15b).
+    const native = shellInfo.isPowerShell && endsInNativeProgram(merged.command)
+    const tailAt = native ? nativeTailStart(merged.command) : null
+    const body = tailAt === null ? merged.command
+      : merged.command.slice(0, tailAt) + NATIVE_EXIT_RESET + merged.command.slice(tailAt)
+    const runnable = shellPreamble(shellInfo) + body + (native ? NATIVE_EXIT_SUFFIX : '')
+
+    // Wave 19: a command Windows cannot carry on one command line threw here, and one that starts Git's bash or sh
+    // with more than about 8,190 characters ran cut short, exit 0. Neither is started; nothing ran, so no exit code.
+    const tooLong = longCommandRefusal(dialected, runnable)
+    if (tooLong) return { output: tooLong, isError: true }
 
     const refusal = toolSpawnRefusal()
     if (refusal) return { output: refusal, isError: true }
@@ -252,7 +322,11 @@ export const bashTool: ToolImpl = {
         })
       }
       const onAbort = () => killFor('stopped')
-      const child = toolExec(runnable, {
+      // A spawn that fails before any process exists throws here (`ENAMETOOLONG` past the limit above, measured):
+      // it is an answer, never a throw out of the tool. Nothing ran, so there is no exit code.
+      let child: ReturnType<typeof toolExec>
+      try {
+        child = toolExec(runnable, {
         cwd,
         encoding: 'utf-8',
         // No `timeout` here: exec's kills the shell alone. `deadline` below is the timeout.
@@ -264,8 +338,13 @@ export const bashTool: ToolImpl = {
         clearTimeout(deadline)
         answered = true
         if (grace) clearTimeout(grace)
-        // A command that ended on its own gives its handle back; one that was killed has none left.
-        tree.release()
+        // A command that ended on its own gives its handle back; one that was killed has none left. On an output
+        // overrun exec has ended the shell alone (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, `killed` unset: measured),
+        // so what the shell started is ended with it (wave 19, from the harness-children builder). Only a Job Object
+        // can: a walked tree is found from its root, which exec has already ended and reaped, so the walk finds nothing
+        // and its signal could reach a pid that was reused meanwhile; that tree is released (C19-8, wave 19b).
+        if (overranBuffer(err) && tree.kind === 'job') void tree.kill()
+        else tree.release()
         // Before the plain-failure branch: a killed child reports an error
         // too. A command that finished cleanly as the kill landed keeps its
         // real result.
@@ -312,6 +391,20 @@ export const bashTool: ToolImpl = {
         // it failed under advice it did not ask for.
         resolve({ output: withToolHint(command, succeeded) + containmentHint('success', String(stderr ?? '')), isError: false, exitCode: 0 })
       })
+      } catch (e) {
+        // The containment's own refusal before anything started (`refuseBeforeSpawn`): its own text, so the executor
+        // raises it as the fault it is, as in the callback above (C19-4).
+        if (e instanceof ContainmentRefusal) { resolve({ output: e.message, isError: true }); return }
+        const code = (e as NodeJS.ErrnoException)?.code
+        resolve({
+          output: code === 'ENAMETOOLONG' || code === 'E2BIG'
+            ? `Error: the command is ${command.length} characters long, longer than one command line carries (${code}), so nothing was started. ` +
+              'Write long content to a file with the Write tool, and run a long program from a file.'
+            : `Error: the shell could not be started (${(e as Error)?.message ?? String(e)}), so nothing was run.`,
+          isError: true,
+        })
+        return
+      }
       const tree = ownProcessTree(child.pid)
       const deadline = setTimeout(() => killFor('timeout'), timeout)
       signal?.addEventListener('abort', onAbort, { once: true })

@@ -4,7 +4,7 @@
  * so the Windows-spelled attacks are proved on Linux too. Nothing here touches a disk.
  */
 import { describe, expect, it } from 'vitest'
-import { scanArgv, scanShellText, type HomeMap, type ShellPath, type ShellScan } from '../../tools/shellPaths.js'
+import { endsInNativeProgram, nativeTailStart, scanArgv, scanShellText, type HomeMap, type ShellPath, type ShellScan } from '../../tools/shellPaths.js'
 
 const W: HomeMap = {
   home: 'C:\\Users\\u',
@@ -1006,5 +1006,432 @@ describe('the seventh review of 2026-11-24: what the scan reads', () => {
   it('an interpreter option that takes a value does not hide the program after it', () => {
     expect(pathsOf(scan("python -X utf8 -c \"import shutil; shutil.rmtree('C:/x')\""), 'delete')).toEqual(['C:\\x'])
     expect(pathsOf(scan("perl -I lib -e \"use File::Path; rmtree('C:/x')\""), 'delete')).toEqual(['C:\\x'])
+  })
+})
+
+// ─── Wave 15 (2026-11-24): the backlog's reader gaps (docs/NOW.md) ─────────────────────────────
+
+describe('wave 15: the readings the backlog named', () => {
+  // Windows PowerShell 5.1 hands `bash -c '... \"x\" ...'` to bash.exe with plain double quotes (wave 8 RR8-3):
+  // the payload is read as 5.1 hands it on, and as written (what PowerShell 7's standard passing hands on).
+  it('a bash -c payload in PowerShell single quotes with \\" is read as Windows PowerShell 5.1 hands it to bash', () => {
+    expect(pathsOf(scan("bash -c 'rm -rf \\\"$LOCALAPPDATA\\\"/*'"), 'delete')).toContain('C:\\Users\\u\\AppData\\Local')
+    expect(pathsOf(scan("bash -c 'rm -rf \\\"$HOME\\\"/.cynco'"), 'delete')).toContain('C:\\Users\\u\\.cynco')
+    expect(pathsOf(scan("& 'C:\\Program Files\\Git\\bin\\bash.exe' -c 'rm -rf \\\"C:/Users/u/proj/../.cache\\\"'"), 'delete')).toContain('C:\\Users\\u\\.cache')
+    // In the mission folder it stays in the mission folder in both readings.
+    const inside = pathsOf(scan("bash -c 'rm -rf \\\"./x\\\"'"), 'delete')
+    expect(inside).toContain('C:\\Users\\u\\proj\\x')
+    expect(inside.every(p => p.toLowerCase().startsWith('c:\\users\\u\\proj\\'))).toBe(true)
+  })
+  it('an unquoted \\" in a POSIX shell is a literal quote: what PowerShell 7 hands on is read too', () => {
+    expect(pathsOf(scan("bash -c 'echo \\\"; rm -rf ~/.ssh; echo \\\"'"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+  })
+  it('a lone HOMEDRIVE is the home\'s drive', () => {
+    expect(pathsOf(scan('Remove-Item -Recurse $env:HOMEDRIVE\\Users\\u\\.cache'), 'delete')).toEqual(['C:\\Users\\u\\.cache'])
+    expect(pathsOf(scan('cmd /c rd /s /q %HOMEDRIVE%\\Users\\u\\proj\\build'), 'delete')).toEqual(['C:\\Users\\u\\proj\\build'])
+    expect(pathsOf(scan('Remove-Item -Recurse "${env:HOMEDRIVE}\\Users"'), 'delete')).toEqual(['C:\\Users'])
+    // The pair is the home, as before.
+    expect(pathsOf(scan('Remove-Item -Recurse $env:HOMEDRIVE$env:HOMEPATH\\.x'), 'delete')).toEqual(['C:\\Users\\u\\.x'])
+  })
+  it('a Cygwin drive (/cygdrive/c) is that drive, as /mnt/c and /c are', () => {
+    expect(pathsOf(scan('rm -rf /cygdrive/c/Users/u/.cache'), 'delete')).toEqual(['C:\\Users\\u\\.cache'])
+    expect(pathsOf(scan("bash -c 'rm -rf /cygdrive/d/DCIM'"), 'delete')).toEqual(['D:\\DCIM'])
+  })
+  it('the local administrative share is the local drive (\\\\localhost\\C$, \\\\127.0.0.1\\C$, \\\\?\\UNC\\localhost\\C$)', () => {
+    for (const sp of ['\\\\localhost\\C$', '\\\\LOCALHOST\\c$', '\\\\127.0.0.1\\C$', '\\\\?\\UNC\\localhost\\C$', '//localhost/C$']) {
+      expect(lower(pathsOf(scan(`Remove-Item -Recurse ${sp}\\Users\\u\\.cache`), 'delete')), sp).toEqual(['c:\\users\\u\\.cache'])
+    }
+    // Another host's share stays a share.
+    expect(pathsOf(scan('Remove-Item -Recurse \\\\nas\\C$\\x'), 'delete')).toEqual(['\\\\nas\\C$\\x'])
+  })
+  it('scp and ditto write their last operand; a remote operand is not a path here', () => {
+    expect(pathsOf(scan('scp build/x.txt C:/other/x'), 'write')).toEqual(['C:\\other\\x'])
+    expect(pathsOf(scan('scp -r -P 22 user@host:/tmp/x ../.cache/x'), 'write')).toEqual(['C:\\Users\\u\\.cache\\x'])
+    expect(pathsOf(scan('scp x.txt user@host:/tmp/x'), 'write')).toEqual([])
+    expect(pathsOf(scan('ditto build C:\\other\\x'), 'write')).toEqual(['C:\\other\\x'])
+    expect(pathsOf(scan('ditto -c -k src out.zip'), 'write')).toEqual(['C:\\Users\\u\\proj\\out.zip'])
+    // scp told to run a local program builds a command the scan does not read.
+    for (const c of ['scp -o ProxyCommand=evil x.txt y.txt', 'scp -oLocalCommand=evil x.txt host:y', 'scp -S ./prog x.txt host:y']) {
+      expect(scan(c).selfBuilding, c).toMatch(/scp told to run a program/)
+    }
+    expect(scan('scp -P 22 -i key x.txt user@host:/tmp/').selfBuilding).toBeNull()
+  })
+  it('a porcelain status cut by Substring(3) hands on names in the working folder; any other cut is unread', () => {
+    const s = scan('git status --porcelain | % { $_.Substring(3) } | Remove-Item -Recurse -Force')
+    expect(s.unresolvedMutation).toBeNull()
+    expect(pathsOf(s, 'delete')).toEqual(['C:\\Users\\u\\proj'])
+    expect(scan('git status --porcelain | % { $_.Substring(2) } | Remove-Item').unresolvedMutation?.op).toBe('delete')
+    expect(scan('git status --porcelain | % { "..\\" + $_.Substring(3) } | Remove-Item').unresolvedMutation?.op).toBe('delete')
+    expect(scan('Get-Content list.txt | % { $_.Substring(3) } | Remove-Item').unresolvedMutation?.op).toBe('delete')
+  })
+  it('a shadow copy deleted in a foreach over the WMI listing is a device operation', () => {
+    for (const c of ['foreach ($s in Get-WmiObject Win32_ShadowCopy) { $s.Delete() }', 'foreach ($s in gwmi Win32_ShadowCopy) { $s.Delete() }']) {
+      expect(scan(c).paths.some(p => p.deviceOp !== undefined), c).toBe(true)
+    }
+    expect(scan('foreach ($s in Get-WmiObject Win32_ShadowCopy) { $s.ID }').paths.some(p => p.deviceOp !== undefined)).toBe(false)
+  })
+  it('endsInNativeProgram: the last element of the last statement is a program PowerShell starts', () => {
+    for (const c of ['cmd /c exit 3', 'python -m pytest -q', 'Write-Output a; git status', 'cmd /c exit 5 > $null', "& 'C:\\x\\tool.exe' -v", 'python x.py # a comment', 'npx vitest run']) {
+      expect(endsInNativeProgram(c), c).toBe(true)
+    }
+    for (const c of ['Get-Item x', 'cmd /c exit 3 | Out-Null', 'python x.py; Write-Output done', '$x = python x.py', 'foreach ($f in 1..2) { python x }',
+      'if ($?) { git status }', 'exit 3', "'a' | Out-File x", 'echo hi', '', '& { python x }']) {
+      expect(endsInNativeProgram(c), c).toBe(false)
+    }
+  })
+})
+
+describe('wave 15b: what the check of wave 15 found in the reader', () => {
+  // P3-F1: in a POSIX shell `\\` is one backslash, so the quote after it opens a string where bash opens one.
+  it('an escaped backslash before a quote, outside quotes, is one backslash: the quote opens a string where bash opens it', () => {
+    expect(pathsOf(scan('echo \\\\" x" ; rm -rf ~/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("bash -c 'echo \\\\\" x\" ; rm -rf ~/.ssh'"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    // Three backslashes: one backslash and a literal quote, as before.
+    expect(pathsOf(scan('echo \\\\\\" ; rm -rf ~/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+  })
+  it('an escaped backslash inside double quotes is one backslash: the quote after it closes the string', () => {
+    expect(pathsOf(scan('echo "a\\\\" ; rm -rf ~/.ssh ; echo "b"', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("bash -c 'echo \"a\\\\\" ; rm -rf ~/.ssh ; echo \"b\"'"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    // A doubled backslash in an honest string stays where it was.
+    expect(pathsOf(scan('printf "a\\\\b" > out.txt', X, XBASE), 'write')).toEqual(['/work/proj/out.txt'])
+  })
+  // P3-F2: a `-c` payload followed by `$0` and more is the one word after `-c`; the later words are its arguments.
+  it('a bash -c payload followed by its $0 and arguments is read as the one word bash runs', () => {
+    expect(pathsOf(scan("bash -c 'rm -rf ~/.ssh' _"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan("bash -c 'rm -rf ~/.ssh' _", X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("bash -c 'rm -rf \\\"/d/DCIM\\\"/*' _"), 'delete')).toContain('D:\\DCIM')
+    expect(pathsOf(scan("& 'C:\\Program Files\\Git\\bin\\bash.exe' -c 'rm -rf \\\"$LOCALAPPDATA\\\"/*' _"), 'delete')).toContain('C:\\Users\\u\\AppData\\Local')
+  })
+  it('the payload\'s positional parameters are the words after it', () => {
+    expect(pathsOf(scan("bash -c 'rm -rf \"$1\"' _ C:/Users/u/.ssh"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan("sh -c 'rm -rf \"$0\"/.ssh' C:/Users/u"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan("bash -c 'rm -rf \"$@\"' _ build C:/Users/u/.cache"), 'delete')).toContain('C:\\Users\\u\\.cache')
+    expect(pathsOf(scan("bash -c 'rm -rf ${2}' _ build ../.cache"), 'delete')).toContain('C:\\Users\\u\\.cache')
+    // In the mission folder it stays there.
+    const inside = pathsOf(scan("bash -c 'rm -rf \"$1\"' _ build"), 'delete')
+    expect(inside).toContain('C:\\Users\\u\\proj\\build')
+    expect(inside.every(p => p.toLowerCase().startsWith('c:\\users\\u\\proj'))).toBe(true)
+  })
+  // P3-F10: the fields a POSIX shell makes, and what Windows PowerShell 5.1 hands bash for plain inner quotes.
+  it('$IFS outside single quotes splits a word, as the shell splits it', () => {
+    expect(pathsOf(scan('rm${IFS}-rf${IFS}$HOME/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('rm$IFS-rf$IFS$HOME/.cache', X, XBASE), 'delete')).toContain('/home/u/.cache')
+    // In single quotes it is text; with IFS assigned in the command the reading is left as it was.
+    expect(pathsOf(scan("echo 'rm${IFS}-rf${IFS}$HOME/.ssh'", X, XBASE), 'delete')).toEqual([])
+  })
+  it('an unquoted expansion in the program\'s place that holds whitespace is the command line it makes', () => {
+    expect(pathsOf(scan('c="rm -rf $HOME/.ssh"; $c', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('x=" "; rm${x}-rf${x}$HOME/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("bash -c 'c=\"rm -rf $HOME/.cache\"; $c'"), 'delete')).toContain('C:\\Users\\u\\.cache')
+    // A one-word program name, and a quoted expansion, are read as before.
+    expect(pathsOf(scan('p=rm; $p -rf build', X, XBASE), 'delete')).toEqual(['/work/proj/build'])
+    expect(pathsOf(scan('c="rm -rf $HOME/.ssh"; echo "$c"', X, XBASE), 'delete')).toEqual([])
+  })
+  it('an unquoted brace list is the words it expands to', () => {
+    expect(pathsOf(scan('{rm,-rf,~/.ssh}', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('rm -rf ~/{.ssh,.cache}', X, XBASE), 'delete')).toEqual(expect.arrayContaining(['/home/u/.ssh', '/home/u/.cache']))
+    expect(pathsOf(scan('cp a.txt{,.bak}', X, XBASE), 'write')).toContain('/work/proj/a.txt.bak')
+    // Quoted, it is text; `${x,}` is an expansion, not a list.
+    expect(pathsOf(scan("echo '{rm,-rf,~/.ssh}'", X, XBASE), 'delete')).toEqual([])
+  })
+  it('a bash -c payload with plain inner quotes is also read as Windows PowerShell 5.1 hands it to bash', () => {
+    expect(pathsOf(scan("bash -c 'echo \"x;rm${IFS}-rf${IFS}$HOME/.ssh\"'"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan("bash -c 'echo \"x;{rm,-rf,/d/DCIM}\"'"), 'delete')).toContain('D:\\DCIM')
+  })
+  it('nativeTailStart: where the last statement of a native-last command starts, only after a ; or a line break', () => {
+    expect(nativeTailStart('cmd /c exit 3')).toBe(0)
+    expect(nativeTailStart('cmd /c exit 3; no-such-program')).toBe('cmd /c exit 3; '.length)
+    expect(nativeTailStart('cmd /c exit 3;  git status')).toBe('cmd /c exit 3;  '.length)
+    expect(nativeTailStart('Write-Output a\npython -m pytest -q')).toBe('Write-Output a\n'.length)
+    expect(nativeTailStart('Get-Item x | Out-Null; cmd /c exit 4 > $null')).toBe('Get-Item x | Out-Null; '.length)
+    // Not native-last, after a call operator, or with a here-string (whose lifting moves the offsets): null.
+    for (const c of ['Get-Item x', "& 'C:\\x\\tool.exe' -v", "$t = @'\nx\n'@\ncmd /c exit 3", 'cmd /c exit 3 | Out-Null', '']) {
+      expect(nativeTailStart(c), c).toBeNull()
+    }
+  })
+  // P3-F8: git takes a unique prefix of a long option (measured on git 2.53); the Git tool's argv reads the same table.
+  it('an abbreviated --upload-pack, --receive-pack or --exec is read as the command git runs, in the argv too', () => {
+    const argv = (words: string[]) => scanArgv(words, BASE, W, { platform: 'win32' })
+    expect(pathsOf(argv(['git', 'fetch', '--upl=rm -rf ~/.ssh', 'origin']), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(argv(['git', 'push', '--e', 'rm -rf ~/.ssh', 'origin']), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan('git ls-remote --upload-p "rm -rf ~/.ssh" x'), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(scan('git clone --conf core.sshCommand=evil x y').selfBuilding).toMatch(/a setting that runs a program/)
+    expect(scan('git push --recurse-submodules=check origin main').selfBuilding).toBeNull()
+  })
+  // P3-F9: scp starts a local program for -S, -D and the ProxyCommand of a config file named by -F.
+  it('scp told to run a program in a cluster of flags, through its config file or a Match exec', () => {
+    for (const c of ['scp -rS ./prog x host:y', 'scp -F ./cfg x host:y', 'scp -Fcfg x host:y', 'scp -qD ./sftp-server x host:y', 'scp -o "Match exec evil" x host:y', 'scp -ro ProxyCommand=evil x host:y']) {
+      expect(scan(c).selfBuilding, c).toMatch(/scp told to run a program/)
+    }
+    for (const c of ['scp -P 22 -i key x.txt user@host:/tmp/', 'scp -oStrictHostKeyChecking=no x host:y', 'scp -o StrictHostKeyChecking=no x host:y', 'scp -rp build host:y', 'scp -iSkey x host:y']) {
+      expect(scan(c).selfBuilding, c).toBeNull()
+    }
+  })
+  it('a POSIX rm with no operand at the head of its pipeline deletes nothing', () => {
+    expect(scan('trap rm', X, XBASE).unresolvedMutation).toBeNull()
+    expect(scan('rm -rf', X, XBASE).unresolvedMutation).toBeNull()
+    expect(scan("bash -c 'trap \"rm -rf x\" EXIT; make'").unresolvedMutation).toBeNull()
+    // PowerShell's rm is Remove-Item, which takes its items from the pipeline; a POSIX rm fed by a listing stays read.
+    expect(scan('Get-ChildItem x | rm').unresolvedMutation).toBeNull()
+    expect(pathsOf(scan('Get-ChildItem x | rm'), 'delete')).toEqual(['C:\\Users\\u\\proj\\x'])
+    expect(scan('rm $UNKNOWN_LIST_FROM_FILE', X, XBASE).unresolvedMutation).not.toBeNull()
+  })
+})
+
+describe('wave 15c: what the check of wave 15b found in the reader', () => {
+  const NAMES = (n: number) => Array.from({ length: n }, (_, k) => `a${k}`).join(',')
+  // N1: a brace list is never cut short. Up to 256 words it is read whole; past that the call is unreadable.
+  it('a brace list that makes more words than the reader expands is a fault, never a list cut short', () => {
+    expect(scan(`rm -rf {${NAMES(256)},~/.ssh}`, X, XBASE).faults.join()).toMatch(/a brace list that makes more than 256 words/)
+    expect(scan('rm -rf {a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,~/.ssh}', X, XBASE).faults.join()).toMatch(/a brace list that makes more than 256 words/)
+    // The last of 256 words is read; four lists of four make 256 words, all read.
+    expect(pathsOf(scan(`rm -rf {${NAMES(255)},~/.ssh}`, X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    const sixteen = scan('touch out/f{0,1,2,3}{0,1,2,3}{0,1,2,3}{0,1,2,3}.txt', X, XBASE)
+    expect(sixteen.faults).toEqual([])
+    expect(pathsOf(sixteen, 'write')).toContain('/work/proj/out/f3333.txt')
+    expect(pathsOf(scan('mkdir -p src/{a,b,c,d,e,f}/test', X, XBASE), 'write')).toContain('/work/proj/src/f/test')
+  })
+  // N2: the trigger sees a list whose words are quoted, escaped or hold a brace of their own.
+  it('a brace list with a quoted or escaped space, or a brace inside one of its words, is the words it expands to', () => {
+    expect(pathsOf(scan('rm -rf {"a b",~/.ssh}', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('rm -rf {a\\ b,~/.ssh}', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('rm -rf {x{y},~/.ssh}', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("rm -rf {'a b',$HOME/.cache}", X, XBASE), 'delete')).toContain('/home/u/.cache')
+    // Quoted braces, and braces with no list, stay text.
+    expect(pathsOf(scan("awk '{print $1, $2}' x.txt > out.txt", X, XBASE), 'write')).toEqual(['/work/proj/out.txt'])
+    expect(scan('echo "{a, b}" > out.txt', X, XBASE).faults).toEqual([])
+  })
+  // N3: whitespace before the program name held in a variable splits it the same way.
+  it('an expansion in the program\'s place with whitespace only before or only after the name is the command it makes', () => {
+    expect(pathsOf(scan('x=" rm"; $x -rf ~/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan('x="rm "; $x -rf ~/.ssh', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+  })
+  // The builder's leftover: an expansion the scan cannot read in the program's place may be a whole command line.
+  it('a POSIX program named by an expansion the scan cannot read builds the command it runs', () => {
+    expect(scan('c=$(cat cmd.txt); $c', X, XBASE).selfBuilding).toMatch(/a program named by an expansion/)
+    expect(scan('c=$(cat cmd.txt); $c ../sib', X, XBASE).selfBuilding).toMatch(/a program named by an expansion/)
+    expect(scan("bash -c 'c=$(cat cmd.txt); $c'").selfBuilding).toMatch(/a program named by an expansion/)
+    // A quoted expansion is one word; a name bound to a literal is read; PowerShell does not split a variable.
+    expect(scan('p=python; $p -m pytest', X, XBASE).selfBuilding).toBeNull()
+    expect(scan('c=$(cat cmd.txt); echo "$c"', X, XBASE).selfBuilding).toBeNull()
+    expect(scan('$c = Get-Content cmd.txt; & $c').selfBuilding ?? '').not.toMatch(/a program named by an expansion/)
+  })
+  // The builder's leftover: POSIX `$'...'` quoting decodes its escapes.
+  it('a POSIX $\'...\' string is read with its escapes decoded', () => {
+    expect(pathsOf(scan("x=$'\\x20'; rm${x}-rf${x}$HOME/.ssh", X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("rm -rf $'\\x2e\\x2e'/.ssh", X, XBASE), 'delete')).toContain('/work/.ssh')
+    expect(pathsOf(scan("rm -rf $'\\056\\056'/.ssh", X, XBASE), 'delete')).toContain('/work/.ssh')
+    expect(pathsOf(scan("rm -rf $'\\u002e.'/.ssh", X, XBASE), 'delete')).toContain('/work/.ssh')
+    // A quote inside it stays inside it; in single or double quotes `$'` is text.
+    expect(pathsOf(scan("printf $'it\\'s\\n' > out.txt", X, XBASE), 'write')).toEqual(['/work/proj/out.txt'])
+    expect(pathsOf(scan("echo '$''\\x2e\\x2e''/x' > out.txt", X, XBASE), 'delete')).toEqual([])
+  })
+  // N4: bash's own options before or after -c, and the value of -o, -O, --rcfile and --init-file.
+  it('a bash -c payload is the first word after the shell\'s options, wherever -c stands among them', () => {
+    for (const c of ["bash -o pipefail -c 'rm -rf ~/.ssh'", "bash -euo pipefail -c 'rm -rf ~/.ssh'", "bash +o pipefail -c 'rm -rf ~/.ssh'",
+      "bash -O extglob -c 'rm -rf ~/.ssh'", "bash --rcfile x -c 'rm -rf ~/.ssh'", "bash --init-file x -c 'rm -rf ~/.ssh'",
+      "bash -c -e 'rm -rf ~/.ssh'", "bash -c -- 'rm -rf ~/.ssh'", "bash -c - 'rm -rf ~/.ssh'", "bash -cx 'rm -rf ~/.ssh'",
+      "bash -xce 'rm -rf ~/.ssh'", "sh -c -e 'rm -rf ~/.ssh' _", "zsh -o extendedglob -c 'rm -rf ~/.ssh'"]) {
+      expect(pathsOf(scan(c), 'delete'), c).toContain('C:\\Users\\u\\.ssh')
+      expect(pathsOf(scan(c, X, XBASE), 'delete'), c).toContain('/home/u/.ssh')
+    }
+    // A word after the shell's first other word is not its option: a script and its arguments.
+    expect(pathsOf(scan("bash run.sh -c 'rm -rf ~/.ssh'", X, XBASE), 'delete')).toEqual([])
+    expect(pathsOf(scan("bash -o pipefail -c 'rm -rf build'", X, XBASE), 'delete')).toEqual(['/work/proj/build'])
+  })
+  // The builder's leftover: a command word git does not know is an alias (the repository's own, perhaps) and may take
+  // the options that run a program; a word that names a property of a plain object is no command either.
+  it('an alias in git\'s command place is read with the options that run a program', () => {
+    expect(pathsOf(scan('git x --upl="rm -rf ~/.ssh" origin'), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(scan('git sync --rece "rm -rf ~/.cache"'), 'delete')).toContain('C:\\Users\\u\\.cache')
+    expect(pathsOf(scanArgv(['git', 'myfetch', '--e=rm -rf ~/.ssh'], BASE, W, { platform: 'win32' }), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    // git's own commands keep their own tables: `commit --e` is `--edit`.
+    expect(pathsOf(scan('git commit --e="rm -rf ~/.ssh"'), 'delete')).toEqual([])
+    expect(scan('git constructor --x').faults).toEqual([])
+    expect(scan('git tostring --x').faults).toEqual([])
+  })
+  // N5 and N6: the reset is not placed where the last statement reads the status the reset would clear.
+  it('nativeTailStart: null when the last statement reads $LASTEXITCODE or $?', () => {
+    for (const c of ['cmd /c exit 3; cmd /c echo $LASTEXITCODE', 'python a.py; python report.py $global:LASTEXITCODE', 'git status; python x.py $?',
+      'python a.py\npython report.py "$LASTEXITCODE"']) {
+      expect(nativeTailStart(c), c).toBeNull()
+    }
+    // Read before the tail, it does not matter.
+    expect(nativeTailStart('$c = $LASTEXITCODE; python x.py')).toBe('$c = $LASTEXITCODE; '.length)
+    // A here-string moves the offsets, so its text is never given an offset (the asWritten condition): with a body of
+    // semicolons an offset taken from the lifted text would land after one.
+    expect(nativeTailStart("$t = @'\n;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;\n'@; cmd /c exit 3")).toBeNull()
+  })
+})
+
+describe('wave 19: what the check of wave 15c found in the reader', () => {
+  // C2: git takes `--exe` and `--ex` for rebase's `--exec` (measured on git 2.53: "option `exec' requires a value"),
+  // and a cluster of short flags ending in x (`-ix`, difftool's `-yx`) for `-x`; difftool does not abbreviate
+  // `--extcmd` ("invalid option: --extc").
+  it('C2: an abbreviated rebase --exec, and -x inside a cluster or with its value glued on, are the command git runs', () => {
+    for (const c of ['git rebase --exe "rm -rf ~/.ssh" HEAD~1', 'git rebase --ex="rm -rf ~/.ssh" HEAD~1', 'git rebase -ix "rm -rf ~/.ssh" HEAD~2',
+      'git rebase -x"rm -rf ~/.ssh" HEAD~1', 'git difftool -yx "rm -rf ~/.ssh"',
+      // 19b, C19-6: every letter of the cluster classes, and the glued form after a cluster.
+      ...['f', 'k', 'm', 'n', 'q', 'r', 'v'].map(l => `git rebase -${l}x "rm -rf ~/.ssh" HEAD~1`),
+      'git difftool -gx "rm -rf ~/.ssh"', 'git difftool -dx "rm -rf ~/.ssh"', 'git rebase -rx"rm -rf ~/.ssh" HEAD~1']) {
+      expect(pathsOf(scan(c), 'delete'), c).toContain('C:\\Users\\u\\.ssh')
+    }
+    const argv = (words: string[]) => scanArgv(words, BASE, W, { platform: 'win32' })
+    expect(pathsOf(argv(['git', 'rebase', '--exe', 'rm -rf ~/.ssh', 'HEAD~1']), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(pathsOf(argv(['git', 'rebase', '-xrm -rf ~/.ssh', 'HEAD~1']), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    // rebase's other options keep their meaning: --empty, --edit-todo, -X<option>, -i.
+    for (const c of ['git rebase --continue', 'git rebase -i HEAD~2', 'git rebase --empty=drop main', 'git rebase -Xours main', 'git rebase --edit-todo']) {
+      const s = scan(c)
+      expect(pathsOf(s, 'delete'), c).toEqual([])
+      expect(s.selfBuilding, c).toBeNull()
+      expect(s.faults, c).toEqual([])
+    }
+  })
+  // 19b, C19-5: the other commands git runs, measured on git 2.53 (phase3\w19\scratch\c\out-b\gitprobe-b.out):
+  // `bisect run <cmd> [<arg>...]` runs the command through the shell; send-email runs its `--to-cmd`, `--cc-cmd`,
+  // `--header-cmd` and `--sendmail-cmd` (exact names: `--to-c` is "unrecognized argument"; `--to-cmd="echo ..."` ran);
+  // instaweb starts its `--httpd` and `--browser` (`-d`, `-b`, any prefix down to `--h` and `--b`, a cluster `-ld`).
+  it('C19-5: bisect run, send-email\'s command options and instaweb\'s httpd and browser are the commands git runs (19b)', () => {
+    for (const c of ['git bisect run rm -rf ~/.ssh', 'git bisect run bash -c "rm -rf ~/.ssh"',
+      'git send-email --to-cmd="rm -rf ~/.ssh" x.patch', 'git send-email --cc-cmd "rm -rf ~/.ssh" x.patch',
+      'git send-email --header-cmd="rm -rf ~/.ssh" x.patch', 'git send-email --sendmail-cmd "rm -rf ~/.ssh" x.patch',
+      'git instaweb --httpd="rm -rf ~/.ssh" --start', 'git instaweb --h "rm -rf ~/.ssh" --start', 'git instaweb -d "rm -rf ~/.ssh"',
+      'git instaweb -ld "rm -rf ~/.ssh"', 'git instaweb --browser "rm -rf ~/.ssh"', 'git instaweb --br="rm -rf ~/.ssh"',
+      'git instaweb -b"rm -rf ~/.ssh"']) {
+      expect(pathsOf(scan(c), 'delete'), c).toContain('C:\\Users\\u\\.ssh')
+    }
+    for (const c of ['git bisect start HEAD HEAD~3', 'git bisect good', 'git bisect reset', 'git instaweb --stop', 'git instaweb -l --start',
+      'git send-email --dry-run --to=a@b.c x.patch',
+      // 19c, C19b-5: an SMTP server given by its name is read as the program word it is to the scan, and names nothing.
+      'git send-email --smtp-server smtp.example.com --dry-run x.patch', 'git send-email --smtp-server=smtp.example.com x.patch']) {
+      const s = scan(c)
+      expect(pathsOf(s, 'delete'), c).toEqual([])
+      expect(s.selfBuilding, c).toBeNull()
+      expect(s.faults, c).toEqual([])
+    }
+  })
+  // C3: bash's locale string `$"..."` is the double-quoted string when there is no message catalog.
+  it('C3: a POSIX $"..." string is read as the double-quoted string it is', () => {
+    expect(pathsOf(scan('rm -rf $"../.ssh"', X, XBASE), 'delete')).toContain('/work/.ssh')
+    expect(pathsOf(scan('rm -rf $"$HOME/.ssh"', X, XBASE), 'delete')).toContain('/home/u/.ssh')
+    expect(pathsOf(scan("bash -c 'rm -rf $\"$HOME/.ssh\"'"), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    const honest = scan('echo $"hello" > out.txt', X, XBASE)
+    expect(pathsOf(honest, 'write')).toEqual(['/work/proj/out.txt'])
+    expect(honest.faults).toEqual([])
+    // Inside single or double quotes `$"` is text.
+    expect(pathsOf(scan("echo '$\"../.ssh\"' > out.txt", X, XBASE), 'delete')).toEqual([])
+  })
+  // C4: bash takes one value for EACH o or O letter of a cluster.
+  it('C4: a cluster with two o or O letters takes two values before the -c payload', () => {
+    for (const c of ["bash -ooc pipefail errexit 'rm -rf ~/.ssh'", "bash -oOc pipefail extglob 'rm -rf ~/.ssh'", "bash +oo pipefail errexit -c 'rm -rf ~/.ssh'"]) {
+      expect(pathsOf(scan(c), 'delete'), c).toContain('C:\\Users\\u\\.ssh')
+      expect(pathsOf(scan(c, X, XBASE), 'delete'), c).toContain('/home/u/.ssh')
+    }
+    expect(pathsOf(scan("bash -o pipefail -o errexit -c 'make test'", X, XBASE), 'delete')).toEqual([])
+    expect(pathsOf(scan("bash -oo pipefail errexit -c 'rm -rf build'", X, XBASE), 'delete')).toEqual(['/work/proj/build'])
+  })
+  // C5: the words brace lists make count across the whole text, so a text made of many lists cannot keep the event
+  // loop busy before the budget is ever checked (measured before: 360 ms for 120 KiB of such words).
+  it('C5: brace lists that make more than 4096 words across the command are a fault, and so is a word that makes more than 128 KiB', () => {
+    const eight = 'w{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}'
+    const words = (n: number) => Array.from({ length: n }, () => eight).join(' ')
+    expect(scan(`touch ${words(16)}`, X, XBASE).faults).toEqual([])
+    expect(scan(`touch ${words(17)}`, X, XBASE).faults.join()).toMatch(/brace lists that make more than 4096 words, or more than 128 KiB of text, across the command/)
+    // The worst shape of the measurement: about 120 KiB of such words. Before, it was expanded whole and then refused
+    // as too long; now the expansion stops at the cap.
+    const big = scan(`touch ${words(3000)}`, X, XBASE)
+    expect(big.faults.join()).toMatch(/brace lists that make more than 4096 words/)
+    const tail = scan(`touch x{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}${'y'.repeat(120 * 1024)}`, X, XBASE)
+    expect(tail.faults.join()).toMatch(/brace lists that make more than 4096 words, or more than 128 KiB of text/)
+  })
+  // C6: the scan's own sentinel characters never come from the input: raw text holding one is unreadable, and a
+  // `$'...'` string that decodes to one (ITEM_DIR, \x0e, included) is read with a stand-in.
+  it('C6: input holding one of the scan\'s own control characters is unreadable', () => {
+    for (const ch of ['\u0001', '\u0002', '\u0003', '\u0004', '\u0005', '\u0006', '\u0007', '\u0008', '\u000e']) {
+      expect(scan(`Remove-Item x${ch}y`).faults.join(), JSON.stringify(ch)).toMatch(/a control character the check uses itself/)
+      expect(scan(`rm -rf x${ch}y`, X, XBASE).faults.join(), JSON.stringify(ch)).toMatch(/a control character the check uses itself/)
+      expect(scanArgv(['git', 'add', `x${ch}y`], BASE, W, { platform: 'win32' }).faults.join(), JSON.stringify(ch)).toMatch(/a control character the check uses itself/)
+    }
+    // A tab, a newline, a carriage return and an escape character are ordinary text.
+    expect(scan('echo "a\tb\r\n" > out.txt; echo \u001b[31m > o2.txt').faults).toEqual([])
+    // Decoded: the reading gets a stand-in, so no table entry is injected and the item's folder is not taken.
+    expect(pathsOf(scan("rm -rf $'\\x02'0$'\\x03'", X, XBASE), 'delete').every(p => p.startsWith('/work/proj'))).toBe(true)
+    // (Before wave 19 the decoded \x0e reached a path the reader named: `/work/proj/{}\x0e/x`.)
+    for (const c of ["find build -exec rm -rf {}$'\\x0e'/x \\;", "find build -exec rm -rf {}$'\\016'/x \\;"]) {
+      expect(pathsOf(scan(c, X, XBASE), 'delete').filter(p => /[\u0001-\u0008\u000e]/.test(p)), c).toEqual([])
+    }
+  })
+  // C9 (a): the round-c assertion on an echo held whatever the decoder did; this one reads a delete.
+  it('C9: a $\'...\' string inside double quotes is text, so its escapes are not decoded there', () => {
+    expect(pathsOf(scan("rm -rf \"$'\\x2e\\x2e'/.ssh\"", X, XBASE), 'delete')).not.toContain('/work/.ssh')
+  })
+  // C9 (c): the braced spelling of the status read is pinned too.
+  it('C9: nativeTailStart is null for a last statement that reads ${LASTEXITCODE}', () => {
+    expect(nativeTailStart('python a.py; python r.py ${LASTEXITCODE}')).toBeNull()
+    expect(nativeTailStart('python a.py; python r.py ${global:LASTEXITCODE}')).toBeNull()
+    expect(nativeTailStart('python a.py; python r.py ${?}')).toBeNull()
+  })
+  // C8: the class of honest work the unread-program rule refuses, named in its own words with the rewrite.
+  it('C8: an unquoted $VAR/... program is refused with the quoted rewrite named', () => {
+    for (const c of ['$VIRTUAL_ENV/bin/python -m pytest', '$JAVA_HOME/bin/java -jar x.jar']) {
+      const s = scan(c, X, XBASE)
+      expect(s.selfBuilding, c).toMatch(/a program named by an expansion the check cannot read/)
+    }
+    expect(scan('"$VIRTUAL_ENV/bin/python" -m pytest', X, XBASE).selfBuilding).toBeNull()
+    expect(scan('"$JAVA_HOME/bin/java" -jar x.jar', X, XBASE).selfBuilding).toBeNull()
+  })
+  // From the box core builder: the box points OneDrive, OneDriveConsumer and OneDriveCommercial at the sandbox's
+  // home. The reader keeps the REAL profile's OneDrive for them, as it keeps the real home for $HOME and
+  // $env:USERPROFILE, which the same box points at the sandbox (integration directive 10): the check does not stand
+  // down on the other layer's word.
+  it('the OneDrive spellings name the real profile\'s OneDrive, as the home spellings name the real home', () => {
+    for (const sp of ['$env:OneDrive', '$env:OneDriveConsumer', '$env:OneDriveCommercial', '%OneDrive%']) {
+      expect(pathsOf(scan(`Remove-Item -Recurse ${sp}\\x`), 'delete'), sp).toEqual(['C:\\Users\\u\\OneDrive\\x'])
+    }
+  })
+})
+
+// Wave 19c, the brokers rule (decision sheet item 12, plan step P3 item (1)): a program that hands its work to a
+// service which runs it at the service's own level is reported where the program word stands (`ShellScan.broker`),
+// in any dialect and through any wrapper the scan reads; the word in a string, a comment or an operand is not one.
+// The scan only reports it: the paths it reads are the same as without it.
+describe('wave 19c: brokers', () => {
+  const BROKER_FORMS = [
+    'wsl ls -la', 'wsl.exe -e true', 'wsl --list --verbose', 'C:\\Windows\\System32\\wsl.exe -d Ubuntu', 'wslconfig /list',
+    'C:\\Windows\\System32\\bash.exe -c "echo ok"', '& "$env:windir\\System32\\bash.exe" -c "ls"', 'cmd /c %windir%\\Sysnative\\bash.exe -c ls',
+    'docker ps', 'docker.exe run --rm -v C:\\:/host alpine rm -rf /host/x', 'docker compose up -d', 'docker-compose up', 'podman run alpine true',
+    'schtasks /create /tn x /tr calc.exe /sc once /st 00:00', 'schtasks /run /tn x', 'schtasks /change /tn x /disable', 'schtasks',
+    'wmic process call create "cmd /c calc"', 'WMIC /node:localhost PROCESS CALL CREATE notepad',
+    "Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='calc'}",
+    "Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'calc'", "iwmi -Class Win32_Process -Name Create -ArgumentList calc",
+    'runas /user:Administrator cmd', 'runas.exe /trustlevel:0x20000 notepad',
+    'ssh user@host "rm -rf ~"', 'ssh -i key host', 'sftp host', 'scp x.txt user@host:/tmp/x', 'scp host:/etc/passwd .\\out\\p',
+    'Start-Process notepad -Verb RunAs', 'Start-Process -Verb:runas cmd', "saps pwsh -Verb 'RunAs'", 'Start-Process cmd -V RunAs',
+    // Through the wrappers and shells the scan reads.
+    'cmd /c docker ps', 'powershell -Command "wsl ls"', 'Start-Process docker -ArgumentList ps', "bash -c 'ssh host true'",
+    'Get-ChildItem; docker ps', 'python -c "import os; os.system(\'docker ps\')"',
+  ]
+  it('reports each broker form where its program word stands (19c)', () => {
+    expect(BROKER_FORMS.filter(c => typeof scan(c).broker !== 'string')).toEqual([])
+  })
+  const NOT_BROKERS = [
+    'schtasks /query /tn CynCo', 'schtasks /QUERY /fo list', 'schtasks -query',
+    'Get-Content docker-compose.yml', 'cat docker-compose.yml', 'python tools/check.py docker-compose.yml', 'code .\\Dockerfile',
+    'git push https://github.com/x/y.git main', 'git clone https://github.com/x/y.git', 'git fetch origin',
+    'Write-Output "run wsl or docker later"', "echo 'ssh host'", '# docker ps', 'Get-ChildItem # wsl ls', 'Select-String -Pattern docker -Path .\\notes.md',
+    'Get-CimInstance Win32_Process | Select-Object Name', 'wmic process list brief', 'bash -c "make test"', 'C:\\Program Files\\Git\\bin\\bash.exe -c ls',
+    'scp build/x.txt build/y.txt', 'scp x.txt C:\\other\\x', 'Start-Process notepad -Verb Open', 'Start-Process python -ArgumentList tools/a.py',
+    'ssh-keygen -l -f key.pub', 'npm run docker:build',
+  ]
+  it('leaves the honest forms unreported (19c)', () => {
+    expect(NOT_BROKERS.filter(c => scan(c).broker !== null).map(c => `${c} -> ${scan(c).broker}`)).toEqual([])
+    // Null, not absent: every scan says whether it saw one.
+    expect(scan('git status').broker).toBeNull()
+  })
+  it('reads the same paths with the broker reading as without it (19c)', () => {
+    // A broker's own words are still read: the delete inside the WSL payload and the read of the key.
+    expect(pathsOf(scan('wsl rm -rf ~/.ssh'), 'delete')).toContain('C:\\Users\\u\\.ssh')
+    expect(scan('wsl rm -rf ~/.ssh').broker).toEqual(expect.any(String))
+    expect(scan('ssh -i ~/.ssh/id_ed25519 host').broker).toEqual(expect.any(String))
   })
 })

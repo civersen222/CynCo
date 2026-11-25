@@ -217,6 +217,44 @@ describe('a check that was killed does not tell the model its work is wrong (F35
 })
 
 /**
+ * A withheld check that could not start is not a pass (wave 19b, from the dispatch builder).
+ *
+ * Until wave 19b an `unverifiable` answer to a withheld command was recorded as PASSED with an
+ * `[unverified: ...]` note, so in a contained authoring mission (where the gate-authoring check
+ * cannot run at all) the model's word stood for the held-out gate, the contract read complete and
+ * the learning promotion counted it as a passed assertion. The command here is too long for any
+ * shell's command line (about 200,000 characters: over Windows' 32,767 and Linux's 128 KiB for one
+ * argument), so it cannot start on either host: a spawn error that is no exit status, which
+ * `runCommandDetailed` reads as `unrunnable`.
+ */
+describe('a withheld check that could not run is not marked passed (wave 19b)', () => {
+  let dir: string
+  const unstartable = 'echo x # ' + 'a'.repeat(200_000)
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'contract-unrun-'))
+    globalContract.create('wave', '', [{ text: 'The held-out gate exits 0.', command: unstartable }], 'harness')
+    globalContract.setBaseline(null)
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }))
+
+  test('the assertion stays pending, and the answer says the harness runs the check', async () => {
+    const r = await contractAssertPassTool.execute({ index: 0, evidence: 'done' }, dir)
+    expect(r.isError).toBe(true)
+    expect(r.arbiterVerdict).toBe(true)
+    expect(globalContract.snapshot().assertions[0].status).toBe('pending')
+    expect(globalContract.isComplete()).toBe(false)
+    expect(r.output).toContain('was NOT marked passed')
+    expect(r.output).toContain('could not run here')
+    expect(r.output).toContain('says nothing about whether your work is correct')
+    expect(r.output).toContain('The harness runs this check when your turn ends')
+    // Still withheld (F34): neither the command nor any part of it.
+    expect(r.output).not.toContain('aaaaaaaa')
+    expect(r.output).not.toContain('echo x')
+  }, 30_000)
+})
+
+/**
  * The cap travels with the check, wired end to end through the real tool.
  *
  * The env fallback alone cannot fix Wave 9d: the mission driver is a WebSocket

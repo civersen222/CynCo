@@ -455,6 +455,177 @@ describe('Git tool — flags folded into the subcommand field', () => {
     expect(result.output).toContain('can execute arbitrary programs')
   })
 
+  // The subcommand field's own first word was never checked against the option deny-list or the -c rule
+  // (docs/NOW.md backlog, "FORBIDDEN_OPTIONS should also read the subcommand field"): `-c core.sshCommand=...`
+  // written as the subcommand reached git ahead of the real subcommand, where git honours it. `--exec-path=`
+  // and `--config-env=` are git's own options that name a program folder or a setting to load (found with it).
+  it('blocks a forbidden option or a -c setting written as the subcommand itself', async () => {
+    const nowhere = path.join(os.tmpdir(), 'cynco-git-no-such-folder', 'evil.sh')
+    const calls: Array<[Record<string, string>, string]> = [
+      [{ subcommand: '--upload-pack=' + nowhere, args: 'fetch origin' }, 'can execute arbitrary programs'],
+      [{ subcommand: '-c core.sshCommand=' + nowhere + ' fetch' }, 'Inline config'],
+      [{ subcommand: '-c', args: 'core.sshCommand=' + nowhere + ' fetch origin' }, 'Inline config'],
+      [{ subcommand: '--exec-path=' + path.dirname(nowhere), args: 'status' }, 'can execute arbitrary programs'],
+      [{ subcommand: 'status', args: '--exec-path=' + path.dirname(nowhere) }, 'can execute arbitrary programs'],
+      [{ subcommand: '--config-env=core.sshCommand=PATH', args: 'fetch origin' }, 'can execute arbitrary programs'],
+      [{ subcommand: 'fetch', args: '--config-env=core.sshCommand=PATH origin' }, 'can execute arbitrary programs'],
+    ]
+    const notBlocked: string[] = []
+    for (const [input, says] of calls) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      if (!result.isError || !result.output.includes('dangerous git command blocked') || !result.output.includes(says)) {
+        notBlocked.push(`${JSON.stringify(input)} -> ${result.output.slice(0, 80)}`)
+      }
+    }
+    expect(notBlocked).toEqual([])
+  })
+
+  // Wave 15b (P3-F8): git's option parser takes any unique prefix of a long option (measured on git 2.53: `push --e`,
+  // `fetch --upl`, `clone --co` and `ls-remote --upload-p` are each taken as the option, which then asks for its
+  // value). In the subcommands that have one of these options, every prefix of it is refused.
+  it('blocks an abbreviated forbidden option in the subcommands that have it', async () => {
+    const nowhere = path.join(os.tmpdir(), 'cynco-git-no-such-folder', 'evil.sh')
+    const calls: Array<Record<string, string>> = [
+      { subcommand: 'fetch', args: `--upl=${nowhere} origin` },
+      { subcommand: 'ls-remote', args: `--upload-p=${nowhere} x` },
+      { subcommand: 'archive', args: `--remote=x --exe=${nowhere} HEAD` },
+      { subcommand: 'push', args: `--e=${nowhere} origin main` },
+      { subcommand: 'push', args: `--rece=${nowhere} origin main` },
+      { subcommand: 'clone', args: `--co=core.sshCommand=${nowhere} x y` },
+      { subcommand: 'pull', args: `--upl ${nowhere}` },
+      { subcommand: '-C . fetch', args: `--upl=${nowhere} origin` },
+    ]
+    const notBlocked: string[] = []
+    for (const input of calls) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      if (!result.isError || !result.output.includes('dangerous git command blocked') || !result.output.includes('can execute arbitrary programs')) {
+        notBlocked.push(`${JSON.stringify(input)} -> ${result.output.slice(0, 80)}`)
+      }
+    }
+    expect(notBlocked).toEqual([])
+    // Elsewhere a short option of the same letters is another option: `git add --u` is git's own question.
+    for (const input of [{ subcommand: 'add', args: '--u x' }, { subcommand: 'log', args: '--reverse -1' }, { subcommand: 'push', args: '--recurse-submodules=check --dry-run origin main' }]) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      expect(result.output, JSON.stringify(input)).not.toContain('blocked')
+    }
+  })
+
+  // Wave 15c: the other subcommands of the rule (the check's cheapest surviving mutant removed them unseen), and a
+  // command word git does not know, which is an alias (possibly the repository's own: `alias.x = fetch`) or a
+  // `git-<word>` program.
+  it('blocks an abbreviated forbidden option in send-pack, fetch-pack, remote and submodule, and after an alias', async () => {
+    const nowhere = path.join(os.tmpdir(), 'cynco-git-no-such-folder', 'evil.sh')
+    const calls: Array<Record<string, string>> = [
+      { subcommand: 'send-pack', args: `--rece=${nowhere} x main` },
+      { subcommand: 'fetch-pack', args: `--upl=${nowhere} x` },
+      { subcommand: 'remote', args: `--upl=${nowhere} show origin` },
+      { subcommand: 'submodule', args: `--co=core.sshCommand=${nowhere} update` },
+      { subcommand: 'x', args: `--upl=${nowhere} origin` },
+      { subcommand: '-C . myfetch', args: `--e=${nowhere} origin` },
+      { subcommand: '-c user.name=t sync', args: `--rec=${nowhere}` },
+    ]
+    const notBlocked: string[] = []
+    for (const input of calls) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      if (!result.isError || !result.output.includes('dangerous git command blocked') || !result.output.includes('can execute arbitrary programs')) {
+        notBlocked.push(`${JSON.stringify(input)} -> ${result.output.slice(0, 80)}`)
+      }
+    }
+    expect(notBlocked).toEqual([])
+    // git's own commands without these options still reach git; so does an alias given none of them.
+    for (const input of [{ subcommand: 'add', args: '--u x' }, { subcommand: 'commit', args: '--e --dry-run' }, { subcommand: 'x', args: '--verbose' }]) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      expect(result.output, JSON.stringify(input)).not.toContain('blocked')
+    }
+  })
+
+  // Wave 19, C2: rebase takes `--exe` and `--ex` for `--exec` (git 2.53: "option `exec' requires a value"), and
+  // rebase and difftool take `-x` alone, in a cluster (`-ix`, `-yx`) or with its value glued on. difftool does not
+  // abbreviate `--extcmd` ("invalid option: --extc"), so only the whole name is refused there.
+  // 19b, C19-5: the other commands git runs (measured on git 2.53, phase3\w19\scratch\c\out-b\gitprobe-b.out).
+  it('blocks bisect run, send-email\'s command options and instaweb\'s httpd and browser (19b)', async () => {
+    const nowhere = path.join(os.tmpdir(), 'cynco-git-no-such-folder', 'evil.sh')
+    const calls: Array<Record<string, string>> = [
+      { subcommand: 'bisect', args: `run ${nowhere}` },
+      { subcommand: 'bisect run', args: nowhere },
+      { subcommand: 'send-email', args: `--to-cmd=${nowhere} x.patch` },
+      { subcommand: 'send-email', args: `--cc-cmd ${nowhere} x.patch` },
+      { subcommand: 'send-email', args: `--header-cmd=${nowhere} x.patch` },
+      { subcommand: 'send-email', args: `--sendmail-cmd ${nowhere} x.patch` },
+      { subcommand: 'send-email', args: `--smtp-server=${nowhere} x.patch` },
+      { subcommand: 'send-email', args: `--smtp-server ${nowhere} x.patch` },
+      { subcommand: 'instaweb', args: `--httpd=${nowhere} --start` },
+      { subcommand: 'instaweb', args: `--h ${nowhere} --start` },
+      { subcommand: 'instaweb', args: `-d ${nowhere}` },
+      { subcommand: 'instaweb', args: `-ld ${nowhere}` },
+      { subcommand: 'instaweb', args: `--browser ${nowhere}` },
+      { subcommand: 'instaweb', args: `--b=${nowhere}` },
+      { subcommand: 'instaweb', args: `-b${nowhere}` },
+    ]
+    const notBlocked: string[] = []
+    for (const input of calls) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      if (!result.isError || !result.output.includes('dangerous git command blocked') || !result.output.includes('can execute arbitrary programs')) {
+        notBlocked.push(`${JSON.stringify(input)} -> ${result.output.slice(0, 80)}`)
+      }
+    }
+    expect(notBlocked).toEqual([])
+    // bisect's other steps, instaweb's stop and an SMTP server by its name still reach git.
+    for (const input of [{ subcommand: 'bisect', args: 'start HEAD HEAD~3' }, { subcommand: 'bisect', args: 'good' },
+      { subcommand: 'bisect', args: 'log' }, { subcommand: 'instaweb', args: '--stop' },
+      { subcommand: 'send-email', args: '--smtp-server smtp.example.com --dry-run x.patch' },
+      { subcommand: 'send-email', args: '--smtp-server=smtp.example.com --dry-run x.patch' }]) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      expect(result.output, JSON.stringify(input)).not.toContain('blocked')
+    }
+  })
+
+  it('blocks rebase --exec by any prefix and -x of rebase and difftool in any form', async () => {
+    const nowhere = path.join(os.tmpdir(), 'cynco-git-no-such-folder', 'evil.sh')
+    const calls: Array<Record<string, string>> = [
+      { subcommand: 'rebase', args: `--exe ${nowhere} HEAD~1` },
+      { subcommand: 'rebase', args: `--ex=${nowhere} HEAD~1` },
+      { subcommand: 'rebase', args: `-x ${nowhere} HEAD~1` },
+      { subcommand: 'rebase', args: `-ix ${nowhere} HEAD~2` },
+      { subcommand: 'rebase', args: `-x${nowhere} HEAD~1` },
+      { subcommand: '-C . rebase', args: `--exe=${nowhere}` },
+      { subcommand: 'difftool', args: `-x ${nowhere}` },
+      { subcommand: 'difftool', args: `-yx ${nowhere}` },
+      { subcommand: 'difftool', args: `--extcmd=${nowhere}` },
+      // 19b, C19-6: every letter of the cluster classes, so a letter dropped from either lets its form through.
+      ...['f', 'k', 'm', 'n', 'q', 'r', 'v'].map(l => ({ subcommand: 'rebase', args: `-${l}x ${nowhere} HEAD~1` })),
+      { subcommand: 'difftool', args: `-gx ${nowhere}` },
+      { subcommand: 'difftool', args: `-dx ${nowhere}` },
+    ]
+    const notBlocked: string[] = []
+    for (const input of calls) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      if (!result.isError || !result.output.includes('dangerous git command blocked') || !result.output.includes('can execute arbitrary programs')) {
+        notBlocked.push(`${JSON.stringify(input)} -> ${result.output.slice(0, 80)}`)
+      }
+    }
+    expect(notBlocked).toEqual([])
+    // rebase's and difftool's other options, and an identity setting before a command whose own option starts like a
+    // forbidden one (C9: `-c` and `-C` take a value, so the command word stays `commit`), still reach git.
+    for (const input of [{ subcommand: 'rebase', args: '--continue' }, { subcommand: 'rebase', args: '--empty=drop main' },
+      { subcommand: 'rebase', args: '-Xours main' }, { subcommand: 'difftool', args: '--extc' }, { subcommand: 'difftool', args: '-y HEAD' },
+      { subcommand: '-c user.name=t -c user.email=t@t commit', args: '--e --dry-run' }, { subcommand: '-C . commit', args: '--e --dry-run' }]) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      expect(result.output, JSON.stringify(input)).not.toContain('blocked')
+    }
+  })
+
+  it('still runs identity settings and plain options written as the subcommand', async () => {
+    for (const input of [
+      { subcommand: '-c user.name=t -c user.email=t@t commit', args: '--allow-empty -m x --dry-run' },
+      { subcommand: '--version' },
+      { subcommand: '--exec-path' },
+    ]) {
+      const result = await gitTool.execute(input, NON_REPO_CWD)
+      expect(result.output, JSON.stringify(input)).not.toContain('blocked')
+    }
+  })
+
   it('does not let quoting inside the subcommand field launder a metacharacter', async () => {
     // `args` exempts quoted regions, because array-spawn makes them inert.
     // The subcommand field gets no such exemption — if folding a string in

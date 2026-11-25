@@ -154,6 +154,13 @@ describe('canonPath and insidePath (lexical, every platform)', () => {
     expect(canonPath('C:\\Windows::$INDEX_ALLOCATION', 'win32')).toBe('C:\\Windows')
     expect(canonPath('C:/a/b', 'win32')).toBe('C:\\a\\b')
     expect(canonPath('C:\\a\\..\\b', 'win32')).toBe('C:\\b')
+    // Wave 15b: the local administrative share is the local drive, as the shell scan reads it since wave 15.
+    expect(canonPath('\\\\localhost\\C$\\Users\\x\\.ssh', 'win32')).toBe('C:\\Users\\x\\.ssh')
+    expect(canonPath('\\\\127.0.0.1\\d$\\DCIM', 'win32')).toBe('d:\\DCIM')
+    expect(canonPath('\\\\?\\UNC\\LOCALHOST\\C$\\x', 'win32')).toBe('C:\\x')
+    expect(canonPath('//localhost/C$', 'win32')).toBe('C:\\')
+    expect(canonPath('\\\\nas\\C$\\x', 'win32')).toBe('\\\\nas\\C$\\x')
+    expect(canonPath('\\\\localhost\\share\\x', 'win32')).toBe('\\\\localhost\\share\\x')
   })
   it('canonPath posix keeps a drive word as written', () => {
     expect(canonPath('/a/b/../c', 'posix')).toBe('/a/c')

@@ -63,15 +63,11 @@ function allVariants(): Array<{ shell: string; attack: Attack; v: Variant }> {
   return out
 }
 const decide = (tool: string, input: Record<string, unknown>, cwd = fake.mission, c: RunContainment = ctx) => checkProtectedPaths(tool, input, cwd, c)
-/**
- * The ninth attack's Git Bash form writes its inner quotes `\"` (RS-1 of wave 8: Windows PowerShell 5.1 hands them
- * to bash.exe as plain quotes). The path check refuses it, but reads the backslashes as part of the bash text and
- * resolves the path to a place that is not the one bash acts on (measured: "which resolves to C:\c"), so its
- * refusal quotes the text instead of naming the fake AppData. It errs toward refusing (a `\"./x\"` inside the
- * mission folder is refused too); reading 5.1's quoting is the path check's to learn (docs/NOW.md, backlog).
- * Admitted for that one form only, and only when the refusal quotes the escaped text.
- */
-const escapedGitBash = (id: string, v: Variant, reason: string) => id === 'appdata-walk' && v.variant === 'git-bash' && reason.includes('\\"$LOCALAPPDATA\\"/*')
+// The ninth attack's Git Bash form writes its inner quotes `\"` (RS-1 of wave 8: Windows PowerShell 5.1 hands them
+// to bash.exe as plain quotes). Until wave 15 the path check read the backslashes as part of the bash text and
+// resolved the path to a place bash does not act on ("which resolves to C:\c"), and cases 1 and 3b admitted a
+// refusal that quoted the text instead of naming the fake AppData for that one form. Since wave 15 the payload is
+// read as 5.1 hands it on (`shellPaths.ts`, `ps51Delivered`), and every form must name its target again.
 const approvals: string[] = []
 const executor = (cwd = fake.mission, auditSrc?: 'tool' | 'subagent') => new ToolExecutor({
   cwd, approveAll: true, requestApproval: async (tool) => { approvals.push(tool); return true }, ...(auditSrc ? { auditSrc } : {}),
@@ -101,7 +97,7 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
       if (verdict.kind !== 'refuse') continue
       // The refusal names what it refused: the place in the fake home the spelling resolves to, or,
       // for a git setting that would start a program, the setting.
-      const names = verdict.reason.toLowerCase().includes(fake.home.toLowerCase()) || /git setting core\.fsmonitor/.test(verdict.reason) || escapedGitBash(attack.id, v, verdict.reason)
+      const names = verdict.reason.toLowerCase().includes(fake.home.toLowerCase()) || /git setting core\.fsmonitor/.test(verdict.reason)
       expect(names, `${shell} ${attack.id} ${v.label} refused without naming its target: ${verdict.reason.slice(0, 300)}`).toBe(true)
     }
   })
@@ -133,7 +129,7 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
         expect(verdict.kind, `${v.label} ${v.form}: ${JSON.stringify(v.call.input)}`).toBe('refuse')
         if (verdict.kind !== 'refuse') continue
         const r = verdict.reason.toLowerCase()
-        expect(r.includes(local) || r.includes(roaming) || escapedGitBash(a.id, v, verdict.reason), `${v.label} ${v.form} refused without naming the fake AppData: ${verdict.reason.slice(0, 300)}`).toBe(true)
+        expect(r.includes(local) || r.includes(roaming), `${v.label} ${v.form} refused without naming the fake AppData: ${verdict.reason.slice(0, 300)}`).toBe(true)
       }
     }
     // The attack uses Windows' application-data variables: there is no POSIX form of it.
