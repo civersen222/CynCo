@@ -23,7 +23,8 @@ import { ATTACK_ORDER, BYPASS_SPELLINGS, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET
 import * as catalogModule from '../cynco-containment-attacks.mjs'
 import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
 import { HARNESS_DIFF_FLAGS } from '../../engine/harnessGit.js'
-import { MSYS_IN_CONTAINED_RUN, containmentHint, operatorRefusal } from '../../engine/containment.js'
+import { MSYS_IN_CONTAINED_RUN, containmentHint, operatorRefusal, testContainment } from '../../engine/containment.js'
+import { checkProtectedPaths } from '../../engine/tools/protectedPaths.js'
 import { isLinkEntry } from '../../engine/realPath.js'
 import { failedOutput, formatBashFailure } from '../../engine/tools/impl/bash.js'
 import { stripTrailingStderrMerge } from '../../engine/tools/shellInfo.js'
@@ -1615,7 +1616,9 @@ describe('T2.17f wave 10d: what a pass claims is shown, and what is quoted says 
     })
     it('leftBehind records each control line\'s end, judges each proof line by both, tells the refusal by the GIT_DIR the harness gave, and prints both ends', () => {
       const src = fnSource('async function leftBehind(')
-      expect(src).toContain('await runLines(false, (l) => { if (l.git) controlEnds.set(l.key, l.end); noteArmed(l.key) })')
+      // Changed on purpose in wave 22b (item 1 (b)): the control keeps every line's end, a harness call's answer
+      // (harnessCallEnd) beside each git line's status, so the proof's line for a harness call names both (T2.46).
+      expect(src).toContain('await runLines(false, (l) => { controlEnds.set(l.key, l.end); noteArmed(l.key) })')
       // Changed on purpose in wave 19 (package B, B3): the harness's refusal is told by the engine's one test of it.
     expect(src).toContain('harnessRefused: proof && E.H.isHarnessRefused(env)')
       expect(src).toContain("end: { status: typeof r.status === 'number' ? r.status : null, fault: r.fault ? String(r.fault.code ?? r.fault.message ?? r.fault) : null, timedOut: Boolean(r.timedOut) }")
@@ -1725,7 +1728,10 @@ describe('T2.17f wave 10d: what a pass claims is shown, and what is quoted says 
     const live = () => [E(3, 'x', 'y', 'literal', 'refused'), E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'),
       E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'), E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
       // Changed on purpose in wave 22: run 6's access-list recovery is a live-fire proof of its own (LIVE_PROOFS).
-      E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), E(6, 'grant-recovery', 'restore-acl', 'live', 'passed'), BOX()]
+      E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), E(6, 'grant-recovery', 'restore-acl', 'live', 'passed'), BOX(), SNAP()]
+    // Changed on purpose in wave 22c (item 5): run 1's own proof, the harness's refusal of the snapshot, is part of what a
+    // report whose run 1 reported must carry (runOneProofCoverage), so the synthetic report carries it.
+    const SNAP = () => E(1, 'harness-snapshot', 'a link leading out', 'harness', 'refused', 'x')
     const rep = (o = {}) => ({ stage: 'fake', platform: 'win32', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: live(), links: [], firstFailure: null, tools: null,
       realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9, 6, 7].map(run => ({ run })), ...o })
     const printed = (report) => {
@@ -1778,7 +1784,7 @@ describe('T2.17f wave 10d: what a pass claims is shown, and what is quoted says 
       expect(printed(half)).toMatch(/RESULT: INCOMPLETE \(fake home\): the real profile was not compared before and after live fire: the real profile's presence roots could not be read again/)
       // T3's shape: no live fire, so the comparison is not a claim of the PASS (it is measured there all the same).
       // Changed on purpose in wave 11: the box rehearsal's run and entry are part of T3's shape on Windows.
-      const off = rep({ liveFire: false, realProfileLoss: null, entries: [E(3, 'x', 'y', 'literal', 'refused'), BOX()], innerRuns: [1, 2, 3, 4, 5, 9].map(run => ({ run })) })
+      const off = rep({ liveFire: false, realProfileLoss: null, entries: [E(3, 'x', 'y', 'literal', 'refused'), BOX(), SNAP()], innerRuns: [1, 2, 3, 4, 5, 9].map(run => ({ run })) })
       expect(printed(off)).toMatch(/RESULT: PASS \(fake home\)/)
     })
     it('runFakeStage names each comparison it could not make', () => {
@@ -2002,6 +2008,9 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9, 6, 7].map(run => ({ run })) })
   const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'mission', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
   const box = () => ({ ...E(9, 'box', 'realBox', 'rehearsal', 'passed', 'RESULT: PASS (box rehearsal, fake home): x'), phase: 'rehearsal' })
+  // Changed on purpose in wave 22c (item 5): run 1's own proof, the harness's refusal of the snapshot, is part of what a
+  // report whose run 1 reported must carry (runOneProofCoverage): `snap()` beside every `box()` below.
+  const snap = () => E(1, 'harness-snapshot', 'a link leading out', 'harness', 'refused', 'x')
   const printed = (report) => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
     try {
@@ -2033,7 +2042,7 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     const r = base()
     // Changed on purpose in wave 19: the row admits a Git Bash twin only on the msys runtime's own line (the signature
     // with its namespace), as twinVerdict writes it since then; the bare word was enough before.
-    r.entries = [E(1, 'rm-all-dot', 'git-bash', 'dry', 'resolved'), E(6, 'rm-all-dot', 'git-bash', 'live twin', 'twin did not resolve', 'Git Bash did not start: C:\\Program Files\\Git\\usr\\bin\\bash.exe: *** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1)'), ...proofs(), box()]
+    r.entries = [E(1, 'rm-all-dot', 'git-bash', 'dry', 'resolved'), E(6, 'rm-all-dot', 'git-bash', 'live twin', 'twin did not resolve', 'Git Bash did not start: C:\\Program Files\\Git\\usr\\bin\\bash.exe: *** fatal error - NtCreateDirectoryObject(\\BaseNamedObjects\\msys-2.0S5-1)'), ...proofs(), box(), snap()]
     printed(r)
     expect(r.entries[1].outcome).toBe('twin did not resolve')
     expect(r.pass).toBe(true)
@@ -2055,6 +2064,7 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
       E(6, 'write-dot-folder', 'Edit', 'literal', 'not applicable', 'the file tools run in the engine at medium'),
       ...proofs(),
       box(),
+      snap(),
     ]
     for (const e of r.entries.filter(x => ['not proven', 'twin did not resolve', 'did not start (msys)'].includes(x.outcome))) expect(acceptedReasonOf(e), `${e.id} ${e.variant}`).not.toBeNull()
     const lines = printed(r)
@@ -2065,7 +2075,8 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     // Changed on purpose in wave 19: the two entries of the check are refusals now (5 not-proven lines, not 7).
     expect(after.filter(l => /not proven: run \d/.test(l))).toHaveLength(5)
     expect(after.some(l => /run 2 authoring the check command kernel/.test(l))).toBe(false)
-    expect(after.find(l => /by outcome word/.test(l))).toMatch(/not proven 3.*refused 3|refused 3.*not proven 3/)
+    // Changed on purpose in wave 22c (item 5): run 1's harness-snapshot entry (snap(), 'refused') is in the list: refused 4.
+    expect(after.find(l => /by outcome word/.test(l))).toMatch(/not proven 3.*refused 4|refused 4.*not proven 3/)
     expect(after.find(l => /by outcome word/.test(l))).toMatch(/not applicable 1/)
   })
   it('RH4: with live fire on, a PASS needs the run 7 entry, the release walk, canary c0-low and the sweep, once each, and a run 6 entry', () => {
@@ -2082,12 +2093,12 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
     expect(liveProofCoverage(proofs().filter(e => e.run !== 6))).toContain('run 6 has no entry')
     // finishFake: a live-fire report with no failure and the sweep entry missing is a coverage FAIL, never a PASS.
     const r = base()
-    r.entries = [E(3, 'x', 'y', 'literal', 'refused'), ...ok.filter(e => e.id !== 'sweep'), box()]
+    r.entries = [E(3, 'x', 'y', 'literal', 'refused'), ...ok.filter(e => e.id !== 'sweep'), box(), snap()]
     const lines = printed(r)
     expect(r.pass).toBe(false)
     expect(lines.find(l => l.includes('RESULT:'))).toMatch(/RESULT: FAIL \(fake home\): coverage: run 8 has no entry for sweep/)
     // Without live fire the four are not asked for.
-    const n = { ...base(), liveFire: false, entries: [E(3, 'x', 'y', 'literal', 'refused'), box()] }
+    const n = { ...base(), liveFire: false, entries: [E(3, 'x', 'y', 'literal', 'refused'), box(), snap()] }
     printed(n)
     expect(n.pass).toBe(true)
   })
@@ -2113,7 +2124,7 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
   })
   it('R14: a not-proven entry outside the accepted table makes the result INCOMPLETE, with pass false', () => {
     const r = base()
-    r.entries = [E(6, 'python-rmtree', 'powershell', 'mission', 'did not act', 'the decoys were left'), E(3, 'x', 'y', 'literal', 'refused'), ...proofs(), box()]
+    r.entries = [E(6, 'python-rmtree', 'powershell', 'mission', 'did not act', 'the decoys were left'), E(3, 'x', 'y', 'literal', 'refused'), ...proofs(), box(), snap()]
     const lines = printed(r)
     expect(r.pass).toBe(false)
     expect(lines.find(l => l.includes('RESULT:'))).toMatch(/^\[acceptance\] RESULT: INCOMPLETE \(fake home\): .*python-rmtree/)
@@ -3094,7 +3105,9 @@ describe('T2.37 wave 11: the box rehearsal, and the defects the audit of realBox
     it('finishFake: a rehearsal that FAILED fails the stage, one that is not proven keeps it INCOMPLETE, one missing is a coverage FAIL', () => {
       const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'x', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
       const rep = (boxEntry) => ({ stage: 'fake', platform: 'win32', root: null, refused: null, liveFire: false, lowIntegrity: 'low', links: [], firstFailure: null, tools: null,
-        realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9].map(run => ({ run })), entries: [E(3, 'x', 'y', 'literal', 'refused'), ...(boxEntry ? [boxEntry] : [])] })
+        realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9].map(run => ({ run })), entries: [E(3, 'x', 'y', 'literal', 'refused'), E(1, 'harness-snapshot', 'a link leading out', 'harness', 'refused', 'x'), ...(boxEntry ? [boxEntry] : [])] })
+      // Changed on purpose in wave 22c (item 5): run 1's own proof (runOneProofCoverage) is in the synthetic report, so that
+      // the rehearsal's entry stays what each case below decides on.
       const result = (r) => {
         const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
         try { finishFake(r); return spy.mock.calls.map(c => String(c[0])).find(l => l.includes('RESULT:')) } finally { spy.mockRestore() }
@@ -4893,8 +4906,10 @@ describe('T2.43 wave 19: decision sheet item 25, the Git-tools switch, and what 
         const f = full.find(v => v.id === c.id)
         expect(c.label, c.id).toBe('git-bash copy')
         // The same text, with the bare name in place of the installed Git's path: what the copy first on PATH answers.
-        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}'`, 'bash'))
-        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}'`, 'bash'))
+        // Changed on purpose in wave 22c (the reader of live-7): and, first inside the shell, what it says of itself
+        // (COPY_SHELL_SAYS: its program's Windows path and its integrity label; T2.47).
+        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
+        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
         expect(c.call.input.command.startsWith('bash -c '), c.id).toBe(true)
         expect([c.form, c.expect, c.stages, c.platforms, c.decoys], c.id).toEqual([f.form, f.expect, f.stages, f.platforms, f.decoys])
       }
@@ -4975,8 +4990,10 @@ describe('T2.43 wave 19: decision sheet item 25, the Git-tools switch, and what 
       expect(real).toContain('const fake = await runFakeStage({ liveFire: true, unprotected, level: C.ownIntegrityLevel(), msys: a.msys ?? null })')
       expect(fnSource('async function rehearseBox(')).toContain('r = await realBox(C, I, { rehearsal, msys }, null, [])')
       expect(fnSource('async function fakeMain(')).toContain('const report = await runFakeStage({ root: root ?? undefined, liveFire, unprotected, level, msys: sw.copy })')
-      expect(fnSource('async function twinFirst(')).toContain('gitBash: R.tools.gitBash })')
-      expect(fnSource('async function liveFire(')).toContain("const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })")
+      // Changed on purpose in wave 22c (the reader of live-7): twinFirst also hands twinVerdict the copy's folder for a copy's
+      // dry twin, and liveFire's mission reading is `o0`, which copyFormOutcome then reads for a copy's form (T2.47).
+      expect(fnSource('async function twinFirst(')).toContain('gitBash: R.tools.gitBash,\n')
+      expect(fnSource('async function liveFire(')).toContain("const o0 = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })")
     })
   })
 
@@ -4993,7 +5010,8 @@ describe('T2.43 wave 19: decision sheet item 25, the Git-tools switch, and what 
     it('realBox prints it after the release, from the release\'s own note', () => {
       const box = fnSource('async function realBox(')
       // Changed on purpose in wave 22: the line is also handed whether the box's own recovery put a kept grant back (T2.45).
-      expect(at(box, 'released = C.releaseContainment(ctx)')).toBeLessThan(at(box, "say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))"))
+      // Changed on purpose in wave 22b (check C22-4): `recovered` is whether the recovery put the grant back (`restored`).
+      expect(at(box, 'released = C.releaseContainment(ctx)')).toBeLessThan(at(box, 'say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.restored === true }))'))
       expect(box).not.toContain('removes the sandbox seven days after it was made; until then it stays')
     })
   })
@@ -5301,7 +5319,8 @@ describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s o
       expect(e.calls.read).toEqual([RUN_DIR, RUN_DIR])
       expect(r.asked).toEqual([MISSION])
       // The three pieces of evidence first, the engine's note last: the printed entry keeps 300 characters of its detail.
-      expect(o.detail).toBe(`the access list of ${MISSION} (its DACL in SDDL, 3 entries, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${basename(RUN_DIR)}, answered done (${DONE.note})`)
+      // Changed on purpose in wave 22c (the reader of live-6): both readings follow the note, whole (T2.47 item 1).
+      expect(o.detail).toBe(`the access list of ${MISSION} (its DACL in SDDL, 3 entries, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${basename(RUN_DIR)}, answered done (${DONE.note}); the reading before the establish: ${SDDL}; the reading after the recovery: ${SDDL}`)
     })
     it('the recovery answers not done: FAILED, with the engine\'s own words, and the list is not read', () => {
       need('grantRecovery')
@@ -5331,10 +5350,12 @@ describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s o
       need('grantRecovery')
       const e1 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
       const o1 = W.grantRecovery({ C: e1.C, runDir: RUN_DIR, folder: MISSION, before: { error: 'exit 1: Access is denied' }, readAcl: readAcl({ sddl: SDDL }).fn })
-      expect(o1).toEqual({ outcome: 'not proven', detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read before the run's establish (exit 1: Access is denied), so nothing was compared` })
+      // Changed on purpose in wave 22b (check C22-4): every answer given once the record keeps no grant carries `restored`,
+      // which the box's sandbox line reads (the grant was put back, whatever the comparison then showed).
+      expect(o1).toEqual({ outcome: 'not proven', restored: true, detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read before the run's establish (exit 1: Access is denied), so nothing was compared` })
       const e2 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
       const o2 = W.grantRecovery({ C: e2.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ error: 'the reading timed out' }).fn })
-      expect(o2).toEqual({ outcome: 'not proven', detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read after it (the reading timed out), so nothing was compared` })
+      expect(o2).toEqual({ outcome: 'not proven', restored: true, detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read after it (the reading timed out), so nothing was compared` })
       // Never read before the establish at all (null): not proven too.
       const e3 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
       expect(W.grantRecovery({ C: e3.C, runDir: RUN_DIR, folder: MISSION, before: null, readAcl: readAcl({ sddl: SDDL }).fn }).outcome).toBe('not proven')
@@ -5385,12 +5406,16 @@ describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s o
   describe('where the stage takes the step (run 6) and where the box takes it (realBox, executed by the rehearsal)', () => {
     it('run 6: the list is read before its establish, and the step runs after the release and canary c0-low, its junction removed first; one entry', () => {
       const inner = fnSource('async function runInner(')
-      const read = at3(inner, "const aclBefore = spec.mode === 'live' ? readAclOf(missionCwd) : null")
+      // Changed on purpose in wave 22c (the reader of live-6): every run reads the list of each folder it works in
+      // (aclsBefore); run 6's reading for the recovery is the mission folder's among them (T2.47 item 2).
+      const read = at3(inner, "const aclBefore = spec.mode === 'live' ? (aclsBefore[0]?.reading ?? null) : null")
       expect(read).toBeLessThan(at3(inner, 'const est = E.C.establishContainment({'))
       expect(inner).toContain('R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec, aclBefore }')
       const after = fnSource('function afterLiveRelease(')
       const c0 = at3(after, 'const why = removeOne(R.c0low.path)')
-      const step = at3(after, 'const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf })')
+      // Changed on purpose in wave 22b (item 5): the release's own answer is handed to the step, which names it beside the
+      // record's kept grant.
+      const step = at3(after, 'const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf, released: rel })')
       expect(c0).toBeLessThan(step)
       expect(at3(after, "entry(report, { id: 'canary', variant: 'c0-low', form: 'live', outcome: o.outcome, detail: o.detail })")).toBeLessThan(step)
       expect(after).toContain("entry(report, { id: 'grant-recovery', variant: 'restore-acl', form: 'live', outcome: g.outcome, detail: g.detail })")
@@ -5412,9 +5437,12 @@ describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s o
       const read = at3(box, 'const aclBefore = readAclOf(mission)')
       expect(read).toBeLessThan(at3(box, 'const est = C.establishContainment({'))
       const rel = at3(box, 'released = C.releaseContainment(ctx)')
-      const step = at3(box, 'recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf })')
+      // Changed on purpose in wave 22b (item 5): the release's own answer is handed to the step, as run 6 hands it.
+      const step = at3(box, 'recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf, released })')
       const line = at3(box, 'say(grantRecoveryLine(recovery))')
-      const left = at3(box, "say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))")
+      // Changed on purpose in wave 22b (check C22-4): the line says "put back" when the recovery put the grant back
+      // (`restored`), whatever the comparison after it showed, not only when the whole step passed.
+      const left = at3(box, 'say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.restored === true }))')
       expect(rel).toBeLessThan(step)
       expect(step).toBeLessThan(line)
       expect(line).toBeLessThan(left)
@@ -5548,13 +5576,621 @@ describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s o
           if (gone(l)) continue
           try { rmdirSync(l) } catch { try { unlinkSync(l) } catch (e) { console.log(`[test] the link ${l} could not be removed: ${e.message}`) } }
         }
-        for (const l of links) expect(gone(l), `the link ${l} is still there`).toBe(true)
+        // Wave 22b (check C22-7): the folder is reset and removed first; a link that could not be removed fails the case
+        // afterwards, instead of throwing before the reset and leaving the stripped folder behind. rmSync never follows a
+        // link it meets (it removes the entry), so a link still there is not walked through.
+        const stuck = links.filter(l => !gone(l))
         // This user's own folder: inheritance back on and its explicit entries replaced (icacls /reset), then removed.
         const reset = sh('icacls.exe', [L.mission, '/reset', '/T', '/C', '/Q'])
         if (reset.code !== 0) console.log(`[test] icacls /reset of ${L.mission}: ${reset.out}`)
-        rmSync(T, { recursive: true, force: true, maxRetries: 5 })
+        if (stuck.length === 0) rmSync(T, { recursive: true, force: true, maxRetries: 5 })
+        else console.log(`[test] ${T} is left in place: these links could not be removed: ${stuck.join(', ')}`)
+        for (const l of links) expect(gone(l), `the link ${l} is still there`).toBe(true)
       }
     }, 180_000)
+  })
+})
+
+describe('T2.46 wave 22b: what each harness call answered, what the stage leaves kept, the release\'s own answer, and the checks of wave 22', () => {
+  const W = acceptance
+  const need = (...names) => { for (const n of names) expect(typeof W[n], `${n} is not exported`).toBe('function') }
+  const at3 = (src, s) => { const i = src.indexOf(s); expect(i, s).toBeGreaterThan(-1); return i }
+  const SDDL = 'D:AI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)'
+  const MISSION = WIN ? 'C:\\r\\mission' : '/r/mission'
+  const LINKED = join(MISSION, 'vendor', 'cache', 'linked-out')
+  const REFUSED_SNAP = `harness git refused the work tree ${MISSION} (the [harness-git] line says why): no git was started, so nothing was saved`
+
+  describe('item 1 (b): a harness call that harness git refused, or that returned an error, is recorded with the word and the reason, never as ran', () => {
+    it('harnessCallEnd reads the snapshot\'s own answer, and the worktree manager\'s path', () => {
+      need('harnessCallEnd')
+      expect(W.harnessCallEnd('snapshotUncommittedWork', { written: false, patchPath: '', untracked: [], error: REFUSED_SNAP }))
+        .toEqual({ ran: false, word: 'refused', why: `harness git refused it: ${REFUSED_SNAP}`, said: null })
+      expect(W.harnessCallEnd('snapshotUncommittedWork', { written: false, patchPath: '', untracked: [], error: 'fatal: bad revision \'HEAD\'' }))
+        .toEqual({ ran: false, word: 'error', why: 'it returned an error: fatal: bad revision \'HEAD\'', said: null })
+      expect(W.harnessCallEnd('snapshotUncommittedWork', { written: true, patchPath: join(MISSION, '..', 'snap', 'acc.uncommitted.patch'), untracked: [], error: null }))
+        .toEqual({ ran: true, word: 'ran', why: null, said: `wrote ${join(MISSION, '..', 'snap', 'acc.uncommitted.patch')}` })
+      expect(W.harnessCallEnd('snapshotUncommittedWork', { written: false, patchPath: '', untracked: [], error: null }))
+        .toEqual({ ran: true, word: 'ran', why: null, said: 'found nothing to save' })
+      // Not a snapshot's answer at all: not ran.
+      expect(W.harnessCallEnd('snapshotUncommittedWork', undefined)).toMatchObject({ ran: false, word: 'error' })
+      expect(W.harnessCallEnd('WorktreeManager.create', join(MISSION, 'scratch', 'cynco-bestofn-1'))).toEqual({ ran: true, word: 'ran', why: null, said: `made ${join(MISSION, 'scratch', 'cynco-bestofn-1')}` })
+    })
+    it('harnessCallLine prints the control\'s call and the proof\'s, each with what it answered', () => {
+      need('harnessCallLine', 'harnessCallEnd')
+      const ran = W.harnessCallEnd('snapshotUncommittedWork', { written: true, patchPath: 'P1', untracked: [], error: null })
+      const refused = W.harnessCallEnd('snapshotUncommittedWork', { written: false, patchPath: '', untracked: [], error: REFUSED_SNAP })
+      expect(W.harnessCallLine({ name: 'snapshotUncommittedWork', control: ran, proof: refused }))
+        .toBe(`[acceptance] left-behind: snapshotUncommittedWork: the control's call ran (wrote P1), the proof's did not run: harness git refused it: ${REFUSED_SNAP}`)
+      expect(W.harnessCallLine({ name: 'WorktreeManager.create', control: undefined, proof: { ran: false, word: 'threw', why: 'it threw: x', said: null } }))
+        .toBe('[acceptance] left-behind: WorktreeManager.create: the control\'s call did not run, the proof\'s did not run: it threw: x')
+    })
+    it('a surface armed after a refused snapshot is not proven, naming the refusal (leftBehindOutcome reads the recorded line as it is)', () => {
+      const proof = [{ key: 'git#0', what: 'git status', group: 'harness', ran: true, why: null },
+        { key: 'snapshotUncommittedWork', what: 'snapshotUncommittedWork', group: 'harness', ran: false, why: `harness git refused it: ${REFUSED_SNAP}` },
+        { key: 'WorktreeManager.create', what: 'WorktreeManager.create', group: 'harness', ran: true, why: null }]
+      const o = acceptance.leftBehindOutcome({ armed: true, armedBy: 'WorktreeManager.create', fired: false, proof })
+      expect(o).toEqual({ outcome: 'not proven', detail: `the proof did not run what arms it: snapshotUncommittedWork (harness git refused it: ${REFUSED_SNAP})` })
+    })
+    it('runLines records each harness call by its own answer (harnessCallEnd), and the proof prints both ends of each', () => {
+      const src = fnSource('async function leftBehind(')
+      expect(src).toContain('const end = harnessCallEnd(name, await fn())')
+      expect(src).toContain("after({ key: name, what: name, group: 'harness', ran: end.ran, why: end.why, end })")
+      expect(src).not.toContain("after({ key: name, what: name, group: 'harness', ran: true, why: null })")
+      expect(src).toContain('say(harnessCallLine({ name: l.key, control: controlEnds.get(l.key), proof: l.end }))')
+      // The control keeps each call's end, git line or harness call, for the proof's line.
+      expect(src).toContain('await runLines(false, (l) => { controlEnds.set(l.key, l.end); noteArmed(l.key) })')
+    })
+  })
+
+  describe('item 1 (a): run 1\'s left-behind section runs on a mission folder with no link leading out; with the junction back, the harness refuses the snapshot by naming it', () => {
+    const line = `[harness-git] git refused in ${MISSION}: ${LINKED} leads outside ${MISSION} (to ${WIN ? 'C:\\r\\profile\\Users\\tester' : '/r/profile/Users/tester'})`
+    const refusedAnswer = { written: false, patchPath: '', untracked: [], error: REFUSED_SNAP }
+    it('refused, by the harness\'s own line naming the link: refused, quoting it', () => {
+      need('snapshotLinkOutcome')
+      const o = W.snapshotLinkOutcome({ answer: refusedAnswer, lines: ['[acceptance] something else', line], links: [LINKED] })
+      expect(o).toEqual({ outcome: 'refused', detail: `harness git refused the snapshot before any git started, by its own line: ${line}; the snapshot answered: ${REFUSED_SNAP}` })
+    })
+    it('refused, but no line names the link (printed once per reason in a process, or another reason): not proven', () => {
+      need('snapshotLinkOutcome')
+      const other = `[harness-git] git refused in ${MISSION}: ${join(MISSION, '.git')} is a link`
+      for (const lines of [[], [other]]) {
+        const o = W.snapshotLinkOutcome({ answer: refusedAnswer, lines, links: [LINKED] })
+        expect(o.outcome, JSON.stringify(lines)).toBe('not proven')
+        expect(o.detail).toMatch(/^the snapshot answered that harness git refused it \(/)
+        expect(o.detail).toContain(`no [harness-git] line during the call names ${LINKED} as leading out`)
+      }
+    })
+    it('not refused (git ran and answered, found nothing, or wrote a patch): FAILED; a snapshot that threw: not proven', () => {
+      need('snapshotLinkOutcome')
+      expect(W.snapshotLinkOutcome({ answer: { written: true, patchPath: 'P', untracked: [], error: null }, lines: [], links: [LINKED], patchThere: true }))
+        .toEqual({ outcome: 'FAILED', detail: `the snapshot wrote P although ${LINKED} in its work tree leads out of it` })
+      expect(W.snapshotLinkOutcome({ answer: { written: false, patchPath: '', untracked: [], error: null }, lines: [], links: [LINKED] }))
+        .toEqual({ outcome: 'FAILED', detail: `harness git did not refuse the snapshot of a work tree that ${LINKED} leads out of: git ran and found nothing to save` })
+      expect(W.snapshotLinkOutcome({ answer: { written: false, patchPath: '', untracked: [], error: 'fatal: x' }, lines: [], links: [LINKED] }))
+        .toEqual({ outcome: 'FAILED', detail: `harness git did not refuse the snapshot of a work tree that ${LINKED} leads out of: git ran and answered: fatal: x` })
+      expect(W.snapshotLinkOutcome({ answer: null, threw: 'boom', lines: [line], links: [LINKED] })).toEqual({ outcome: 'not proven', detail: 'the snapshot threw (boom), so its answer shows nothing' })
+    })
+    it('runInner runs the section through leftBehindWithoutLink: the junction removed as an entry first, made again after, then the snapshot asked with it there, one entry', () => {
+      const inner = fnSource('async function runInner(')
+      expect(inner).toContain('await leftBehindWithoutLink(R, linkWhy === null)')
+      expect(inner).not.toContain('await leftBehind(R)')
+      const src = fnSource('async function leftBehindWithoutLink(')
+      // Taken away whenever runInner made it and it is there as a link (T3 shows the line in a real run).
+      expect(at3(src, 'if (linkMade && isLinkEntry(fake.linked) === true) {')).toBeLessThan(at3(src, 'const why = removeMissionLink(fake)'))
+      const away = at3(src, 'const why = removeMissionLink(fake)')
+      const section = at3(src, 'await leftBehind(R)')
+      const back = at3(src, 'const why = makeMissionLink(fake)')
+      const asked = at3(src, 'snapshotLinkProof({ snap: E.snap.snapshotUncommittedWork, mission: fake.mission, link: fake.linked, outDir: join(R.root, `snap-link-${nonce}`) })')
+      const one = at3(src, "entry(report, { id: 'harness-snapshot', variant: 'a link leading out', form: 'harness', outcome: o.outcome, detail: o.detail })")
+      expect(away).toBeLessThan(section)
+      expect(section).toBeLessThan(back)
+      expect(back).toBeLessThan(asked)
+      expect(asked).toBeLessThan(one)
+      // In a finally block: the junction is put back, and the snapshot asked, whatever the section did.
+      expect(at3(src, '} finally {')).toBeLessThan(back)
+    })
+    // The protection itself, by its own words: a real repository in this file's temp folder, a junction in it leading out,
+    // the real snapshotUncommittedWork (scripts/cynco-work-snapshot.mjs); then, with the junction removed, git runs.
+    it.skipIf(!WIN)('the real case (Windows): refused by naming the junction; with the junction gone, not refused (FAILED, by design of the check)', async () => {
+      need('snapshotLinkProof')
+      const snap = await import('../cynco-work-snapshot.mjs')
+      const T = realpathSync.native(temp('cynco-acc-w22b-snap-'))
+      const repo = join(T, 'mission'), outside = join(T, 'outside'), out = join(T, 'out')
+      mkdirSync(join(repo, 'vendor', 'cache'), { recursive: true })
+      mkdirSync(outside)
+      writeFileSync(join(repo, 'README.md'), 'x\n')
+      const git = (args) => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf-8', windowsHide: true }); expect(r.status, `${args.join(' ')}: ${r.stderr}`).toBe(0) }
+      git(['init', '-q'])
+      git(['add', '-A'])
+      git(['commit', '-q', '-m', 'one'])
+      writeFileSync(join(repo, 'README.md'), 'x\ny\n')
+      const link = join(repo, 'vendor', 'cache', 'linked-out')
+      symlinkSync(outside, link, 'junction')
+      linksToRemove.push(link)
+      const o = W.snapshotLinkProof({ snap: snap.snapshotUncommittedWork, mission: repo, link, outDir: out })
+      expect(o.outcome, o.detail).toBe('refused')
+      expect(o.detail).toContain(`by its own line: [harness-git] git refused in ${repo}: ${link} leads outside ${repo} (to ${outside})`)
+      expect(existsSync(out), 'a patch folder was made').toBe(false)
+      rmdirSync(link)
+      expect(gone(link)).toBe(true)
+      const o2 = W.snapshotLinkProof({ snap: snap.snapshotUncommittedWork, mission: repo, link, outDir: out })
+      expect(o2.outcome, o2.detail).toBe('FAILED')
+      expect(o2.detail).toMatch(/^the snapshot wrote .*acc-link\.uncommitted\.patch although /)
+    })
+  })
+
+  describe('item 2: the closing line names what is kept, or says nothing is', () => {
+    const SBR = WIN ? 'C:\\r\\sandbox-root' : '/r/sandbox-root'
+    const RUN6 = join(SBR, 'acc-6-20261125T040617-b9c3')
+    const keepLine = `[containment] the sweep keeps ${RUN6}: the access list saved before this run's grant on ${MISSION} was not put back (${join(RUN6, 'acl-0.before')}); put it back with: bun scripts/cynco-sandbox.mjs restore-acl acc-6-20261125T040617-b9c3`
+    it('nothing kept: a few words, with or without the sweep', () => {
+      need('keptWords')
+      expect(W.keptWords({ kept: { grants: [] }, sweepKept: [], swept: true, sandboxRoot: SBR })).toBe('Nothing is kept: no run keeps an access-list grant, and the sweep kept no run folder.')
+      expect(W.keptWords({ kept: { grants: [] }, sweepKept: [], swept: false, sandboxRoot: SBR })).toBe('Nothing is kept: no run keeps an access-list grant (the sweep did not run).')
+    })
+    it('a grant still kept, in a run folder the sweep kept: the folder, the kept run folder and the command that puts the grant back', () => {
+      need('keptWords')
+      const w = W.keptWords({ kept: { grants: [{ runId: 'acc-6-20261125T040617-b9c3', runDir: RUN6, folders: [MISSION] }] }, sweepKept: [{ runDir: RUN6, line: keepLine }], swept: true, sandboxRoot: SBR })
+      expect(w).toBe(`Kept, to put back before the folder is removed: run acc-6-20261125T040617-b9c3 keeps its access-list grant on ${MISSION}, its saved copy in its run folder ${RUN6}, which the sweep kept; put it back with: bun scripts/cynco-sandbox.mjs restore-acl acc-6-20261125T040617-b9c3 (with LOCALCODE_SANDBOX_ROOT=${SBR}), once the links are removed.`)
+    })
+    it('a run folder the sweep kept for another reason, and a record that could not be read, are named too', () => {
+      need('keptWords')
+      const other = join(SBR, 'acc-7-x')
+      const line = `[containment] the sweep could not finish ${other}: EBUSY`
+      expect(W.keptWords({ kept: { grants: [] }, sweepKept: [{ runDir: other, line }], swept: true, sandboxRoot: SBR }))
+        .toBe(`Kept, to put back before the folder is removed: the run folder ${other}, which the sweep kept (${line}).`)
+      expect(W.keptWords({ kept: { unread: 'EACCES' }, sweepKept: [], swept: false, sandboxRoot: SBR }))
+        .toBe('Whether a run keeps an access-list grant could not be read (EACCES).')
+    })
+    it('finishFake appends the words to the closing line; the stage reads the records at its end through the engine, and step 8 keeps what its sweep kept', () => {
+      need('keptWords')
+      const root = temp('cynco-acc-w22b-close-')
+      const r = { stage: 'fake', platform: 'win32', root, refused: null, liveFire: false, lowIntegrity: 'low', entries: [], links: [], firstFailure: 'x', tools: null,
+        realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [], kept: { grants: [] }, sweepKept: [], swept: false, sandboxRoot: SBR }
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      let lines
+      try { finishFake(r); lines = spy.mock.calls.map(c => String(c[0])) } finally { spy.mockRestore() }
+      const close = lines.find(l => l.startsWith('[acceptance] the test root was left in place: '))
+      expect(close).toBe(`[acceptance] the test root was left in place: ${root}. Remove links first (none), each with rmdir; then the folder. Nothing is kept: no run keeps an access-list grant (the sweep did not run).`)
+      const stage = fnSource('export async function runFakeStage(')
+      const read = at3(stage, 'report.kept = await keptAtEnd(fake.sandboxRoot)')
+      expect(read).toBeGreaterThan(at3(stage, 'report.disarm = await disarmMission(fake, nonce)'))
+      expect(read).toBeLessThan(stage.lastIndexOf('return finishFake(report)'))
+      expect(stage).toContain('report.sandboxRoot = fake.sandboxRoot')
+      const sweep = fnSource('async function sweepProof(')
+      expect(sweep).toContain('report.swept = true')
+      expect(sweep).toContain('report.sweepKept = runDirs.filter(exists).map(d => ({ runDir: d, line: lines.find(l => fold(l).includes(fold(d))) ?? null }))')
+      const kae = fnSource('export async function keptAtEnd(')
+      expect(kae).toContain('C.containmentRecords({ sandboxRoot })')
+    })
+  })
+
+  describe('item 5: the release\'s own answer (relabelled) is judged where the stage keeps it', () => {
+    const RUN_DIR = WIN ? 'C:\\r\\sandbox-root\\acc-6-20261125T032817-e7b2' : '/r/sandbox-root/acc-6-20261125T032817-e7b2'
+    const ACL = join(RUN_DIR, 'acl-0.before')
+    const note = `run acc-3-x released; ${MISSION} could not be set back to medium integrity (Access is denied.)`
+    it('releaseNotDone: all done is nothing; not all done with no grant kept is FAILED with the release\'s note; with a grant the stage puts back, nothing here', () => {
+      need('releaseNotDone')
+      expect(W.releaseNotDone({ released: { relabelled: true, note: 'run x released' }, kept: [], recovers: false })).toBeNull()
+      expect(W.releaseNotDone({ released: null, kept: [], recovers: false })).toBeNull()
+      expect(W.releaseNotDone({ released: { relabelled: false, note }, kept: [], recovers: true }))
+        .toEqual({ outcome: 'FAILED', detail: `the release answered not all done (relabelled false) and its record keeps no access-list grant, so the reason is another; its note: ${note}` })
+      const kept = [{ folder: MISSION, aclFile: ACL, why: 'link' }]
+      expect(W.releaseNotDone({ released: { relabelled: false, note }, kept, recovers: true })).toBeNull()
+      expect(W.releaseNotDone({ released: { relabelled: false, note }, kept, recovers: false }))
+        .toEqual({ outcome: 'FAILED', detail: `the release answered not all done (relabelled false) and its record keeps an access-list grant on ${MISSION} (link), which this stage puts back only after run 6 and the box; its note: ${note}` })
+      expect(W.releaseNotDone({ released: { relabelled: false, note }, kept: null, recovers: true }))
+        .toEqual({ outcome: 'FAILED', detail: `the release answered not all done (relabelled false), and its record could not be read for a kept grant; its note: ${note}` })
+    })
+    it('grantRecovery names the release\'s answer beside the record\'s kept grant', () => {
+      need('grantRecovery')
+      const runId = basename(RUN_DIR)
+      const records = [{ schema: 1, runId, missionCwd: MISSION, grants: [{ folder: MISSION, aclFile: ACL }], grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] },
+        { schema: 1, runId, missionCwd: MISSION, grants: [{ folder: MISSION, aclFile: ACL }], grantsKept: [] }]
+      let n = 0
+      const C = { containmentFromRecord: () => ({ ok: true, containment: {}, record: records[Math.min(n++, 1)] }), restoreKeptGrants: () => ({ done: true, note: 'put back' }) }
+      const o = W.grantRecovery({ C, runDir: RUN_DIR, folder: MISSION, before: { sddl: SDDL }, readAcl: () => ({ sddl: SDDL }), released: { relabelled: false, note: 'n' } })
+      expect(o.outcome, o.detail).toBe('passed')
+      expect(o.restored).toBe(true)
+      expect(o.detail.startsWith(`the release answered not all done (relabelled false), its record keeping a grant on ${MISSION} (link); the access list of ${MISSION} (its DACL in SDDL, 3 entries`), o.detail).toBe(true)
+    })
+    it('runInner reads the kept grants at the release, before run 6\'s recovery, and makes the entry; the box stops on it', () => {
+      const inner = fnSource('async function runInner(')
+      const rel = at3(inner, 'const rel = E.C.releaseContainment(ctx)')
+      const keptAt = at3(inner, 'const keptAtRelease = rel.relabelled === false ? keptGrantsOf(E.C, ctx.sandbox.root) : []')
+      const after = at3(inner, "if (R && spec.mode === 'live') afterLiveRelease(R, rel)")
+      // Run 6 (the live run that reached afterLiveRelease) puts a kept grant back itself; its entry names the answer.
+      const judged = at3(inner, "const notDone = releaseNotDone({ released: rel, kept: keptAtRelease, recovers: R !== null && spec.mode === 'live' })")
+      const one = at3(inner, "if (notDone) entry(report, { id: 'release', variant: 'all done', form: 'answer', outcome: notDone.outcome, detail: notDone.detail })")
+      expect(rel).toBeLessThan(keptAt)
+      expect(keptAt).toBeLessThan(after)
+      expect(after).toBeLessThan(judged)
+      expect(judged).toBeLessThan(one)
+      expect(fnSource('function afterLiveRelease(')).toContain('const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf, released: rel })')
+      const box = fnSource('async function realBox(')
+      const bk = at3(box, 'boxKept = released.relabelled === false ? keptGrantsOf(C, ctx.sandbox.root) : []')
+      expect(bk).toBeLessThan(at3(box, 'recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf, released })'))
+      const stop = at3(box, "if (notDone) { say(`${TAG} FAIL (${where}): the release: ${notDone.detail}`); return { code: 1 } }")
+      expect(at3(box, '  const { fell } = ended\n')).toBeLessThan(stop)
+      expect(stop).toBeLessThan(at3(box, 'const result = realResult({'))
+      expect(box).toContain('const notDone = releaseNotDone({ released, kept: boxKept, recovers: true })')
+      const kg = fnSource('export function keptGrantsOf(')
+      expect(kg).toContain('C.containmentFromRecord(runDir)')
+    })
+  })
+
+  describe('the checks of wave 22 (C22-3 to C22-6)', () => {
+    const RUN_DIR = WIN ? 'C:\\r\\sandbox-root\\acc-6-20261125T032817-e7b2' : '/r/sandbox-root/acc-6-20261125T032817-e7b2'
+    it('C22-3: a record that says the access list was widened but holds no saved copy is FAILED, and nothing is run', () => {
+      need('grantRecovery')
+      const calls = []
+      const C = { containmentFromRecord: () => ({ ok: true, containment: {}, record: { schema: 1, runId: basename(RUN_DIR), missionCwd: MISSION, cwdGranted: true, grants: [] } }), restoreKeptGrants: (...a) => { calls.push(a); return { done: true, note: '' } } }
+      const asked = []
+      const o = W.grantRecovery({ C, runDir: RUN_DIR, folder: MISSION, before: { sddl: SDDL }, readAcl: (f) => { asked.push(f); return { sddl: SDDL } } })
+      expect(o).toEqual({ outcome: 'FAILED', detail: `the record of ${basename(RUN_DIR)} says its establish widened the access list of ${MISSION} (cwdGranted) but holds no saved copy of it (grants), so nothing can put it back` })
+      expect(calls).toEqual([])
+      expect(asked).toEqual([])
+    })
+    it('C22-4: restored is said on every answer given after the record keeps no grant, and on none before', () => {
+      need('grantRecovery')
+      const ACL = join(RUN_DIR, 'acl-0.before')
+      const kept = { schema: 1, runId: basename(RUN_DIR), missionCwd: MISSION, grants: [{ folder: MISSION, aclFile: ACL }], grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] }
+      const none = { ...kept, grantsKept: [] }
+      const C = (records, done = true) => { let n = 0; return { containmentFromRecord: () => ({ ok: true, containment: {}, record: records[Math.min(n++, records.length - 1)] }), restoreKeptGrants: () => ({ done, note: 'x' }) } }
+      const go = (c, readAcl) => W.grantRecovery({ C: c, runDir: RUN_DIR, folder: MISSION, before: { sddl: SDDL }, readAcl })
+      expect(go(C([kept, none]), () => ({ sddl: SDDL })).restored).toBe(true)
+      expect(go(C([kept, none]), () => ({ sddl: 'D:(A;;FA;;;WD)' })).restored).toBe(true)
+      expect(go(C([kept, kept]), () => ({ sddl: SDDL })).restored).toBeUndefined()
+      expect(go(C([kept], false), () => ({ sddl: SDDL })).restored).toBeUndefined()
+      expect(go(C([none]), () => ({ sddl: SDDL })).restored).toBeUndefined()
+    })
+    it('C22-5: every keep line of the sweep is read as the engine\'s own reason; a DACL followed by another section is not a reading', () => {
+      const sbx = WIN ? 'C:\\r\\sandbox-root' : '/r/sandbox-root'
+      const runDir = join(sbx, 'acc-6-20261125T032817-e7b2')
+      const repo = join(runDir, 'scratch', 'repo-6cc15225')
+      for (const l of [`[containment] the sweep leaves ${runDir} to its next pass: this pass has spent its budget for setting sandboxes back (1 folders or 1 s)`,
+        `[containment] the sweep could not finish ${runDir}: EBUSY`,
+        `[containment] ${runDir} is a link; the sweep does not touch it`,
+        `[containment] ${runDir} is not in the listing of ${sbx}, so whether it is a link is not known; the sweep does not touch it`]) {
+        const o = sweepOutcome({ missionDiff: [], homeDiff: [], left: [runDir], lines: [l], met: [{ path: repo, runDir, wasRecord: true, gone: false }] })
+        expect(o, l).toEqual({ outcome: 'FAILED', detail: `the sweep kept the run folder ${runDir} for a reason of the engine's own, as it printed it: ${l}; the junction ${repo} is in it` })
+      }
+      const x = W.aclReadingOf({ status: 0, stdout: 'cynco-acl|D:(A;;FA;;;BA)S:(ML;;NW;;;LW)\r\n', stderr: '' })
+      expect(x.sddl).toBeUndefined()
+      expect(x.error).toMatch(/not an access list in SDDL/)
+    })
+    it('C22-6: the box\'s run-id line says whether its access list was read before the establish', () => {
+      const box = fnSource('async function realBox(')
+      expect(box).toContain("; its access list before the establish: ${aclBefore.sddl !== undefined ? 'read' : `not read (${aclBefore.error})`}.")
+      expect(at3(box, 'const aclBefore = readAclOf(mission)')).toBeLessThan(at3(box, 'say(`${TAG} run id ${runId}; mission folder ${mission}'))
+    })
+  })
+
+  it('item 3: the comment before run 6\'s release says what the engine does on a kept grant, and that the recovery runs before run 7', () => {
+    const inner = fnSource('async function runInner(')
+    expect(inner).not.toContain('establish would refuse the mission folder on it')
+    expect(inner).toContain('takes no grant of its own')
+    expect(inner).toContain('before run 7')
+  })
+})
+
+describe('T2.47 wave 22c: what the readers of live-6 and live-7 asked for (the evidence kept, the child\'s own words)', () => {
+  const W = acceptance
+  const need = (...names) => { for (const n of names) expect(typeof W[n], `${n} is not exported`).toBe('function') }
+  const at3 = (src, s, from = 0) => { const i = src.indexOf(s, from); expect(i, s).toBeGreaterThan(-1); return i }
+  const SDDL = 'D:AI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)'
+  const OTHER = 'D:AI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICIID;FA;;;BA)'
+  const MISSION = WIN ? 'C:\\r\\mission' : '/r/mission'
+  const ARCHIVE = WIN ? 'C:\\r\\base-archive' : '/r/base-archive'
+  const RUN_DIR = WIN ? 'C:\\r\\sandbox-root\\acc-6-20261125T032817-e7b2' : '/r/sandbox-root/acc-6-20261125T032817-e7b2'
+  const RUN_ID = basename(RUN_DIR)
+  const ACL = join(RUN_DIR, 'acl-0.before')
+  /** A stand-in of the engine module: the records containmentFromRecord answers in turn (null: unreadable); restoreKeptGrants' answer. */
+  const engine = (records, restore = { done: true, note: `run ${RUN_ID}: ${MISSION}: the access list saved before this run's grant was put back` }) => {
+    const calls = { read: [], restore: [] }
+    let n = 0
+    return { calls, restore, C: {
+      containmentFromRecord: (dir) => { calls.read.push(dir); const r = records[Math.min(n++, records.length - 1)]; return r === null ? { ok: false, reason: `the containment record ${join(dir, 'containment.json')} could not be read (EBUSY)` } : { ok: true, containment: {}, record: r } },
+      restoreKeptGrants: (id, o) => { calls.restore.push([id, o]); return restore },
+    } }
+  }
+  const rec = (o = {}) => ({ schema: 1, runId: RUN_ID, missionCwd: MISSION, grants: [{ folder: MISSION, aclFile: ACL }], ...o })
+  const reader = (answers) => { const asked = []; return { asked, fn: (f) => { asked.push(f); return typeof answers === 'function' ? answers(f) : answers } } }
+
+  describe('item 1: the recovery\'s evidence is kept: both readings of the access list, after the engine\'s note', () => {
+    it('passed: the detail holds the reading before the establish and the reading after the recovery, whole, after the note; the printed line keeps its head', () => {
+      need('grantRecovery', 'entryLine')
+      const e = engine([rec({ grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] }), rec({ grantsKept: [] })])
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before: { sddl: SDDL }, readAcl: reader({ sddl: SDDL }).fn })
+      expect(o.outcome).toBe('passed')
+      const head = `the access list of ${MISSION} (its DACL in SDDL, 3 entries, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${RUN_ID}, answered done (${e.restore.note})`
+      expect(o.detail).toBe(`${head}; the reading before the establish: ${SDDL}; the reading after the recovery: ${SDDL}`)
+      const line = W.entryLine({ run: 6, phase: 'mission', id: 'grant-recovery', variant: 'restore-acl', form: 'live', outcome: 'passed', detail: o.detail })
+      expect(line).toBe(`[acceptance] run 6 mission: grant-recovery restore-acl live: passed (${o.detail.slice(0, 300)})`)
+      expect(line.startsWith(`[acceptance] run 6 mission: grant-recovery restore-acl live: passed (the access list of ${MISSION} (its DACL in SDDL, 3 entries,`)).toBe(true)
+    })
+  })
+
+  describe('item 2: a put-back the release made itself is shown, by reading the list again (grantPutBack)', () => {
+    const one = (reading) => [{ folder: MISSION, reading }]
+    it('a grant taken and none kept, the lists equal: passed, with both texts in the detail', () => {
+      need('grantPutBack')
+      const e = engine([rec()])
+      const r = reader({ sddl: SDDL })
+      const o = W.grantPutBack({ C: e.C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: r.fn })
+      expect(o).toEqual({ kind: 'entry', outcome: 'passed', detail: `the access list of ${MISSION} (its DACL in SDDL, 3 entries, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish: before ${SDDL}; after ${SDDL}; the release put back itself every grant its record holds (grants), and the record keeps none (grantsKept)` })
+      expect(r.asked).toEqual([MISSION])
+      expect(e.calls.restore).toEqual([])
+    })
+    it('the lists differ: FAILED, with both texts', () => {
+      need('grantPutBack')
+      const o = W.grantPutBack({ C: engine([rec({ grantsKept: [] })]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: reader({ sddl: OTHER }).fn })
+      expect(o).toEqual({ kind: 'entry', outcome: 'FAILED', detail: `the access list of ${MISSION} differs from the one read before the run's establish, although the release says it put back the grant its record holds and the record keeps none: before ${SDDL}; after ${OTHER}` })
+    })
+    it('a reading that failed, before or after, or a folder not read before: not proven, never a pass', () => {
+      need('grantPutBack')
+      expect(W.grantPutBack({ C: engine([rec()]).C, runDir: RUN_DIR, before: one({ error: 'exit 1: Access is denied' }), readAcl: reader({ sddl: SDDL }).fn }))
+        .toEqual({ kind: 'entry', outcome: 'not proven', detail: `the access list of ${MISSION} could not be read before the run's establish (exit 1: Access is denied), so nothing was compared` })
+      expect(W.grantPutBack({ C: engine([rec()]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: reader({ error: 'the reading timed out' }).fn }))
+        .toEqual({ kind: 'entry', outcome: 'not proven', detail: `the access list of ${MISSION} could not be read after the release (the reading timed out), so nothing was compared` })
+      const r = reader({ sddl: SDDL })
+      expect(W.grantPutBack({ C: engine([rec({ grants: [{ folder: ARCHIVE, aclFile: ACL }] })]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: r.fn }))
+        .toEqual({ kind: 'entry', outcome: 'not proven', detail: `the access list of ${ARCHIVE} was not read before the run's establish, so nothing was compared` })
+      expect(r.asked).toEqual([])
+    })
+    it('two folders (an authoring run): each compared; one that differs makes it FAILED, naming only that one', () => {
+      need('grantPutBack')
+      const both = rec({ grants: [{ folder: MISSION, aclFile: ACL }, { folder: ARCHIVE, aclFile: join(RUN_DIR, 'acl-1.before') }] })
+      const before = [{ folder: MISSION, reading: { sddl: SDDL } }, { folder: ARCHIVE, reading: { sddl: SDDL } }]
+      const ok = W.grantPutBack({ C: engine([both]).C, runDir: RUN_DIR, before, readAcl: reader({ sddl: SDDL }).fn })
+      expect(ok.outcome).toBe('passed')
+      expect(ok.detail).toContain(`the access list of ${MISSION} (its DACL in SDDL, 3 entries`)
+      expect(ok.detail).toContain(`the access list of ${ARCHIVE} (its DACL in SDDL, 3 entries`)
+      const bad = W.grantPutBack({ C: engine([both]).C, runDir: RUN_DIR, before, readAcl: reader((f) => ({ sddl: f === ARCHIVE ? OTHER : SDDL })).fn })
+      expect(bad).toEqual({ kind: 'entry', outcome: 'FAILED', detail: `the access list of ${ARCHIVE} differs from the one read before the run's establish, although the release says it put back the grant its record holds and the record keeps none: before ${SDDL}; after ${OTHER}` })
+    })
+    it('no grant taken: no entry, and words for the release line; a kept grant: no entry (the recovery or releaseNotDone judges it); nothing is read', () => {
+      need('grantPutBack')
+      for (const r0 of [rec({ grants: [] }), rec({ grants: undefined })]) {
+        const r = reader({ sddl: SDDL })
+        expect(W.grantPutBack({ C: engine([r0]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: r.fn }))
+          .toEqual({ kind: 'no grant', words: 'its record holds no access-list grant, so the release had none to put back' })
+        expect(r.asked).toEqual([])
+      }
+      const r = reader({ sddl: SDDL })
+      expect(W.grantPutBack({ C: engine([rec({ grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] })]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: r.fn })).toEqual({ kind: 'kept' })
+      expect(r.asked).toEqual([])
+    })
+    it('a record that cannot be read: not proven; one that says the list was widened with no saved copy: FAILED', () => {
+      need('grantPutBack')
+      expect(W.grantPutBack({ C: engine([null]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: reader({ sddl: SDDL }).fn }))
+        .toEqual({ kind: 'entry', outcome: 'not proven', detail: `the record of ${RUN_ID} could not be read through the engine's reader after the release: the containment record ${join(RUN_DIR, 'containment.json')} could not be read (EBUSY)` })
+      expect(W.grantPutBack({ C: engine([rec({ grants: [], cwdGranted: true })]).C, runDir: RUN_DIR, before: one({ sddl: SDDL }), readAcl: reader({ sddl: SDDL }).fn }))
+        .toEqual({ kind: 'entry', outcome: 'FAILED', detail: `the record of ${RUN_ID} says its establish widened the access list of ${MISSION} (cwdGranted) but holds no saved copy of it (grants), so the release could not put it back` })
+    })
+    it('grantPutBackLine: the box\'s one line for it', () => {
+      need('grantPutBackLine')
+      expect(W.grantPutBackLine({ outcome: 'passed', detail: 'x' })).toBe('[acceptance] the access-list grant put back by the release: passed (x)')
+    })
+    it('every inner run reads the list of each folder it works in before its establish, and after its release judges the put-back: one entry, or words in its release line', () => {
+      const inner = fnSource('async function runInner(')
+      const read = at3(inner, "const aclsBefore = WIN ? [missionCwd, ...(spec.phase === 'authoring' ? [fake.baseArchive] : [])].map(folder => ({ folder, reading: readAclOf(folder) })) : []")
+      expect(read).toBeLessThan(at3(inner, 'const est = E.C.establishContainment({'))
+      expect(inner).toContain("const aclBefore = spec.mode === 'live' ? (aclsBefore[0]?.reading ?? null) : null")
+      const rel = at3(inner, 'const rel = E.C.releaseContainment(ctx)')
+      const pb = at3(inner, 'const putBack = grantPutBack({ C: E.C, runDir: ctx.sandbox.root, before: aclsBefore, readAcl: readAclOf })')
+      const line = at3(inner, "say(`${TAG} inner run ${spec.run}: released: ${rel.note}${putBack.kind === 'no grant' ? ` (${putBack.words})` : ''}`)")
+      const ent = at3(inner, "if (putBack.kind === 'entry') entry(report, { id: 'grant', variant: 'put back', form: 'by the release', outcome: putBack.outcome, detail: putBack.detail })")
+      expect(rel).toBeLessThan(pb)
+      expect(pb).toBeLessThan(line)
+      expect(line).toBeLessThan(ent)
+      expect(ent).toBeLessThan(at3(inner, 'afterLiveRelease(R, rel)'))
+    })
+    it('the box does the same for its mission folder: words in its release line, the line after it, FAILED stops the box, not proven is outside both accepted lists', () => {
+      const box = fnSource('async function realBox(')
+      const rel = at3(box, 'released = C.releaseContainment(ctx)')
+      const pb = at3(box, 'putBack = grantPutBack({ C, runDir: ctx.sandbox.root, before: [{ folder: mission, reading: aclBefore }], readAcl: readAclOf })')
+      const line = at3(box, "say(`${TAG} released: ${released.note}${putBack.kind === 'no grant' ? ` (${putBack.words})` : ''}`)")
+      const said = at3(box, "if (putBack.kind === 'entry') say(grantPutBackLine(putBack))")
+      expect(rel).toBeLessThan(pb)
+      expect(pb).toBeLessThan(line)
+      expect(line).toBeLessThan(said)
+      expect(said).toBeLessThan(at3(box, 'recovery = grantRecovery({'))
+      const end = at3(box, '  const { fell } = ended\n')
+      const failed = at3(box, "if (putBack?.outcome === 'FAILED') { say(`${TAG} FAIL (${where}): the access-list grant put back by the release: ${putBack.detail}`); return { code: 1 } }")
+      const np = at3(box, "if (putBack?.outcome === 'not proven') notProven.push({ what: `the access-list grant put back by the release: ${putBack.detail}`, cls: 'grant-put-back-not-proven' })")
+      expect(end).toBeLessThan(failed)
+      expect(failed).toBeLessThan(np)
+      expect(np).toBeLessThan(at3(box, 'const result = realResult({'))
+      expect(Object.keys(REAL_ACCEPTED_NOT_PROVEN)).not.toContain('grant-put-back-not-proven')
+      expect(ACCEPTED_NOT_PROVEN.some(r => r.ids.includes('grant'))).toBe(false)
+    })
+  })
+
+  describe('item 3: a Git Bash form through the copy says in the child\'s own words what answered', () => {
+    const GB = 'C:\\Program Files\\Git\\bin\\bash.exe'
+    const COPY = 'C:\\r\\tools-copy'
+    const LOW = 'Mandatory Label\\Low Mandatory Level                          Label            S-1-16-4096'
+    const MEDIUM = 'Mandatory Label\\Medium Mandatory Level                       Label            S-1-16-8192'
+    const block = (program, label) => ['CYNCO-SHELL-BEGIN', program, '', ...(label ? [label] : []), 'CYNCO-SHELL-END'].join('\r\n')
+    const P = { home: 'C:\\r\\profile\\Users\\tester', cwd: 'C:\\r\\mission', scratch: 'C:\\r\\sb\\run\\scratch', linked: 'C:\\r\\mission\\vendor\\cache\\linked-out', nonce: 'feedc0de' }
+    const forms = (opts) => attacks({ shell: 'powershell', python: 'python', gitBash: GB, ...opts }).flatMap(a => a.variants(P).map(v => ({ id: a.id, ...v })))
+    it('the catalog: each copy form and twin prints, first and inside the shell, its program\'s Windows path and the label line of the Windows whoami /groups', () => {
+      const says = catalogModule.COPY_SHELL_SAYS
+      expect(typeof says).toBe('string')
+      expect(says).toBe('echo CYNCO-SHELL-BEGIN; cat /proc/$$/winexename; echo; C:/Windows/System32/whoami.exe //groups | grep -F S-1-16-; echo CYNCO-SHELL-END; ')
+      expect(catalogModule.SHELL_BEGIN).toBe('CYNCO-SHELL-BEGIN')
+      expect(catalogModule.SHELL_END).toBe('CYNCO-SHELL-END')
+      // No single quote: the whole text is one PowerShell single-quoted argument.
+      expect(says).not.toContain("'")
+      const on = forms({ msys: COPY })
+      for (const c of on.filter(v => v.variant === 'git-bash-copy')) {
+        const f = on.find(v => v.id === c.id && v.variant === 'git-bash')
+        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, `bash -c '${says}`))
+        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, `bash -c '${says}`))
+      }
+      // The installed Git's forms keep their text (their reading is unchanged).
+      for (const f of on.filter(v => v.variant === 'git-bash')) expect(f.call.input.command).not.toContain('CYNCO-SHELL-BEGIN')
+    })
+    it.skipIf(!WIN)('the path check reads each copy form and twin as it read them without the prefix: the twins allowed, the forms refused by the same rule', () => {
+      const T = realpathSync.native(temp('cynco-acc-w22c-paths-'))
+      const f = buildFakeProfile(T, 'c0ffee22', { missionLink: false })
+      linksToRemove.push(...f.links)
+      const sb = { root: join(f.sandboxRoot, 'run'), home: join(f.sandboxRoot, 'run', 'home'), tmp: join(f.sandboxRoot, 'run', 'tmp'), scratch: join(f.sandboxRoot, 'run', 'scratch') }
+      for (const d of [sb.home, sb.tmp, sb.scratch]) mkdirSync(d, { recursive: true })
+      const ctx = testContainment({ missionCwd: f.mission, sandbox: sb, home: f.home, folders: { state: f.state, models: f.models, guard: f.guard, audit: f.audit } })
+      const p = { home: f.home, cwd: f.mission, scratch: sb.scratch, linked: f.linked, nonce: 'c0ffee22' }
+      const says = catalogModule.COPY_SHELL_SAYS
+      const copies = attacks({ shell: 'powershell', python: 'python', gitBash: GB, msys: join(T, 'tools-copy') }).flatMap(a => a.variants(p).map(v => ({ id: a.id, ...v }))).filter(v => v.variant === 'git-bash-copy')
+      expect(copies.map(v => v.id).sort()).toEqual(['appdata-walk', 'rm-all-dot', 'rm-home-cynco'])
+      const judge = (command) => { const v = checkProtectedPaths('Bash', { command }, f.mission, ctx); return { kind: v.kind, rule: v.rule ?? null } }
+      for (const c of copies) {
+        const without = (s) => s.replace(`bash -c '${says}`, "bash -c '")
+        expect(judge(c.dry.input.command), `${c.id} twin`).toEqual({ kind: 'allow', rule: null })
+        expect(judge(c.dry.input.command), `${c.id} twin`).toEqual(judge(without(c.dry.input.command)))
+        const form = judge(c.call.input.command)
+        expect(form.kind, `${c.id} form`).toBe('refuse')
+        expect(form, `${c.id} form`).toEqual(judge(without(c.call.input.command)))
+      }
+    })
+    it('copyShellReading: the copy\'s program under the folder handed, and low integrity, by the shell\'s own lines; anything else says why', () => {
+      need('copyShellReading')
+      const ok = W.copyShellReading({ output: `${block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', LOW)}\r\nCYNCO-DRY-BEGIN\r\nx\r\nCYNCO-DRY-END\r\n`, copy: COPY })
+      expect(ok).toEqual({ ok: true, program: 'C:\\r\\tools-copy\\usr\\bin\\bash.exe', sid: 'S-1-16-4096',
+        words: 'the shell that answered: C:\\r\\tools-copy\\usr\\bin\\bash.exe, at Low Mandatory Level (S-1-16-4096), by its own whoami /groups', why: null })
+      // Case folded, and a path with .. in it is read where it lands.
+      expect(W.copyShellReading({ output: block('c:\\R\\Tools-Copy\\usr\\bin\\..\\bin\\bash.exe', LOW), copy: COPY }).ok).toBe(true)
+      const why = (output, copy = COPY) => { const r = W.copyShellReading({ output, copy }); expect(r.ok, output).toBe(false); return r.why }
+      expect(why(block('C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe', LOW))).toBe(`the program that answered, C:\\Program Files\\Git\\bin\\..\\usr\\bin\\bash.exe, is not under the copy ${COPY}`)
+      expect(why(block('C:\\r\\tools-copyx\\usr\\bin\\bash.exe', LOW))).toBe(`the program that answered, C:\\r\\tools-copyx\\usr\\bin\\bash.exe, is not under the copy ${COPY}`)
+      expect(why(block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', MEDIUM))).toBe('it ran at Medium Mandatory Level (S-1-16-8192), not at low integrity')
+      expect(why(block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', null))).toBe('its whoami /groups printed no integrity label line')
+      expect(why(block('', LOW))).toBe('it printed no program path')
+      expect(why('CYNCO-DRY-BEGIN\r\nx\r\nCYNCO-DRY-END')).toBe('it printed no CYNCO-SHELL-BEGIN ... CYNCO-SHELL-END block')
+      expect(why(block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', LOW), null)).toBe('no copy folder was handed to this run')
+    })
+    it('twinVerdict: a copy\'s dry twin is resolved only with the copy\'s shell shown at low (its words the detail); otherwise not proven with what was printed; the other twins as before', () => {
+      need('copyShellReading')
+      const out = (b) => `${b}\r\nCYNCO-DRY-BEGIN\r\nC:\\r\\sb\\home\\.cynco\r\nCYNCO-DRY-END\r\n`
+      const tv = (output, copy) => twinVerdict({ output, isError: false, refusedLayer: null, inRoot: () => true, inHome: () => true, gitBash: GB, copy })
+      const ok = tv(out(block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', LOW)), COPY)
+      expect([ok.ok, ok.outcome, ok.detail]).toEqual([true, 'resolved', 'the shell that answered: C:\\r\\tools-copy\\usr\\bin\\bash.exe, at Low Mandatory Level (S-1-16-4096), by its own whoami /groups'])
+      const medium = tv(out(block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', MEDIUM)), COPY)
+      expect([medium.ok, medium.outcome]).toEqual([false, 'not proven'])
+      expect(medium.detail).toBe(`the copy's shell was not shown: it ran at Medium Mandatory Level (S-1-16-8192), not at low integrity; it printed: CYNCO-SHELL-BEGIN | C:\\r\\tools-copy\\usr\\bin\\bash.exe | ${MEDIUM} | CYNCO-SHELL-END`)
+      const none = tv(out(''), COPY)
+      expect([none.ok, none.outcome]).toEqual([false, 'not proven'])
+      expect(none.detail).toMatch(/^the copy's shell was not shown: it printed no CYNCO-SHELL-BEGIN \.\.\. CYNCO-SHELL-END block; it printed: CYNCO-DRY-BEGIN/)
+      // Without a copy (every other twin): as before.
+      expect(tv(out(''), null)).toMatchObject({ ok: true, outcome: 'resolved', detail: null })
+      // Not proven is not in the accepted table for the copy's forms.
+      expect(acceptedReasonOf({ id: 'rm-all-dot', variant: 'git-bash copy', form: 'dry', outcome: 'not proven', detail: medium.detail })).toBeNull()
+    })
+    it('copyFormOutcome: contained only with the copy\'s shell shown at low, naming the decoys that went; rm-home-cynco also needs its .cynco decoy among them', () => {
+      need('copyFormOutcome')
+      const shown = block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', LOW)
+      const words = 'the shell that answered: C:\\r\\tools-copy\\usr\\bin\\bash.exe, at Low Mandatory Level (S-1-16-4096), by its own whoami /groups'
+      const contained = { outcome: 'contained', detail: null }
+      expect(W.copyFormOutcome({ base: contained, output: shown, copy: COPY, id: 'appdata-walk', gone: ['AppData/Local/decoy-app-1', 'AppData/Local/decoy-app-2'] }))
+        .toEqual({ outcome: 'contained', detail: `${words}; decoys gone: AppData/Local/decoy-app-1, AppData/Local/decoy-app-2` })
+      expect(W.copyFormOutcome({ base: contained, output: shown, copy: COPY, id: 'rm-home-cynco', gone: ['.cynco'] }))
+        .toEqual({ outcome: 'contained', detail: `${words}; decoys gone: .cynco` })
+      expect(W.copyFormOutcome({ base: { outcome: 'contained', detail: 'the decoys are partly; it answered an error: x' }, output: shown, copy: COPY, id: 'rm-all-dot', gone: ['.cynco', TARGET_DOT_FOLDER, '.decoy'] }))
+        .toEqual({ outcome: 'contained', detail: `${words}; decoys gone: .cynco, ${TARGET_DOT_FOLDER}, .decoy; the decoys are partly; it answered an error: x` })
+      expect(W.copyFormOutcome({ base: contained, output: shown, copy: COPY, id: 'rm-home-cynco', gone: [TARGET_DOT_FOLDER] }))
+        .toEqual({ outcome: 'not proven', detail: `${words}; decoys gone: ${TARGET_DOT_FOLDER}; but the .cynco decoy, the one this form names, is not among them` })
+      const medium = W.copyFormOutcome({ base: contained, output: block('C:\\r\\tools-copy\\usr\\bin\\bash.exe', MEDIUM), copy: COPY, id: 'appdata-walk', gone: ['AppData/Local/decoy-app-1'] })
+      expect(medium.outcome).toBe('not proven')
+      expect(medium.detail).toMatch(/^the copy's shell was not shown: it ran at Medium Mandatory Level \(S-1-16-8192\), not at low integrity; it printed: CYNCO-SHELL-BEGIN/)
+      expect(medium.detail).toContain('; decoys gone: AppData/Local/decoy-app-1')
+      // Any other word is the base's own (did not act, FAILED, ...): unchanged.
+      for (const base of [{ outcome: 'did not act', detail: 'it left every decoy' }, { outcome: 'FAILED', detail: 'x' }]) {
+        expect(W.copyFormOutcome({ base, output: '', copy: COPY, id: 'rm-all-dot', gone: [] })).toEqual(base)
+      }
+    })
+    it('where the stage reads it: run 1\'s dry twin of a copy form, run 3\'s honest twin entry (its words, not its word), and run 6\'s copy forms, whose rerun through toolExec carries its exit code and the head of its output', () => {
+      const tf = fnSource('async function twinFirst(')
+      expect(tf).toContain("copy: v.variant === 'git-bash-copy' && form === 'dry' ? (R.tools.msys ?? '') : null")
+      const fs = fnSource('async function fullStack(')
+      expect(fs).toContain("entry(report, { id: attack.id, variant: v.label, form: 'honest twin', outcome: 'allowed', targets: t.paths, ...(v.variant === 'git-bash-copy' ? { detail: copyShellReading({ output: t.output, copy: R.tools.msys ?? '' }).words ?? null } : {}) })")
+      const lf = fnSource('async function liveFire(')
+      expect(lf).toContain("via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}${v.variant === 'git-bash-copy' ? `; its output: ${oneLine(r.output).slice(0, 200) || '(no output)'}` : ''}`")
+      expect(lf).toContain("const o0 = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })")
+      expect(lf).toContain("const o = v.variant === 'git-bash-copy' ? copyFormOutcome({ base: o0, output: r.output, copy: R.tools.msys ?? '', id: attack.id, gone: decoysGone(ctx, set) }) : o0")
+    })
+  })
+
+  describe('item 4: the snapshot is handed a change in the control and in the proof, and the tree is put back by one harness git line', () => {
+    it('the catalog: one line after the two harness calls, checkout of README.md, and only that one', () => {
+      const after = LEFT_BEHIND.harnessGit.filter(g => g.afterCalls === true)
+      expect(after.map(g => g.argv)).toEqual([['checkout', '--', 'README.md']])
+      expect(LEFT_BEHIND.harnessGit[LEFT_BEHIND.harnessGit.length - 1].afterCalls).toBe(true)
+      expect(LEFT_BEHIND.harnessGit).toHaveLength(17)
+    })
+    it('runLines: the tree is made dirty again right before the two calls, and put back after them by that line, in the control and in the proof alike', () => {
+      const src = fnSource('async function leftBehind(')
+      const before = at3(src, 'for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) if (!g.afterCalls) await gitLine(i, g)')
+      const dirty = at3(src, '    change()\n    const calls = [')
+      const putBack = at3(src, 'for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) if (g.afterCalls) await gitLine(i, g)')
+      expect(before).toBeLessThan(dirty)
+      expect(dirty).toBeLessThan(putBack)
+      expect(putBack).toBeGreaterThan(at3(src, "after({ key: name, what: name, group: 'harness', ran: end.ran, why: end.why, end })"))
+    })
+    it('the accepted row for textconv and pager says what was tried', () => {
+      const row = ACCEPTED_NOT_PROVEN.find(x => x.reason === 'did-not-fire-in-control')
+      expect(row.words).toBe('the textconv and pager surfaces did not fire in the control either: plain git at medium integrity on this git ran its diff line on a work tree with a change in it, and since wave 22c the snapshot ran in the control on a work tree with a change of its own, and none of them started the planted textconv driver or pager (git starts a pager only on a terminal, and the runs have none), so the run shows nothing about them either way')
+      // A surface that fires in the control is judged in the proof (neutralised or not), never by this row.
+      expect(acceptedReasonOf({ id: 'left-behind', variant: 'textconv', outcome: 'not proven', detail: 'the proof did not run what arms it: x' })).toBeNull()
+    })
+  })
+
+  describe('item 5: run 1\'s own proof, the harness-snapshot entry, is part of what a run must carry', () => {
+    const E = (run, id, variant, form, outcome, detail = null) => ({ run, phase: 'mission', id, variant, form, outcome, detail, decoys: null, audit: null, targets: [] })
+    const snap = () => E(1, 'harness-snapshot', 'a link leading out', 'harness', 'refused', 'x')
+    it('runOneProofCoverage: exactly one entry when run 1 reported; none asked when it did not', () => {
+      need('runOneProofCoverage')
+      const rep = (entries, runs = [1, 2, 3]) => ({ innerRuns: runs.map(run => ({ run })), entries })
+      expect(W.runOneProofCoverage(rep([snap()]))).toEqual([])
+      expect(W.runOneProofCoverage(rep([]))).toEqual(['run 1 has no entry for harness-snapshot a link leading out'])
+      expect(W.runOneProofCoverage(rep([snap(), snap()]))).toEqual(['run 1 has 2 entries for harness-snapshot a link leading out'])
+      expect(W.runOneProofCoverage(rep([], [2, 3]))).toEqual([])
+    })
+    it('finishFake: a report whose run 1 has no such entry is a coverage FAIL, never a PASS', () => {
+      const r = { stage: 'fake', platform: 'win32', root: null, refused: null, liveFire: false, lowIntegrity: 'low', links: [], firstFailure: null, tools: null,
+        realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9].map(run => ({ run })),
+        entries: [E(3, 'x', 'y', 'literal', 'refused'), { ...E(9, 'box', 'realBox', 'rehearsal', 'passed', 'RESULT: PASS (box rehearsal, fake home): z'), phase: 'rehearsal' }] }
+      const spy = vi.spyOn(console, 'log').mockImplementation(() => {})
+      let lines
+      try { finishFake(r); lines = spy.mock.calls.map(c => String(c[0])) } finally { spy.mockRestore() }
+      expect(r.pass).toBe(false)
+      expect(lines.find(l => l.includes('RESULT:'))).toBe('[acceptance] RESULT: FAIL (fake home): coverage: run 1 has no entry for harness-snapshot a link leading out')
+      const ok = { ...r, firstFailure: null, entries: [...r.entries, snap()] }
+      const spy2 = vi.spyOn(console, 'log').mockImplementation(() => {})
+      try { finishFake(ok) } finally { spy2.mockRestore() }
+      expect(ok.pass).toBe(true)
+    })
+  })
+
+  describe('check F22b-3: three seam cases', () => {
+    it('grantRecovery, the release not all done and the recovery not done: FAILED, the release\'s answer first', () => {
+      need('grantRecovery')
+      const note = `run ${RUN_ID}: ${MISSION}: the access list saved before this run's grant was not put back, because ${MISSION}\\c0low-x leads outside it`
+      const e = engine([rec({ grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] })], { done: false, note })
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before: { sddl: SDDL }, readAcl: reader({ sddl: SDDL }).fn, released: { relabelled: false, note: 'n' } })
+      expect(o).toEqual({ outcome: 'FAILED', detail: `the release answered not all done (relabelled false), its record keeping a grant on ${MISSION} (link); the recovery (restoreKeptGrants, the function behind restore-acl) answered not done: ${note}` })
+    })
+    it('snapshotLinkOutcome: refused, with a harness-git line that names the link for another reason (not as leading out): not proven', () => {
+      need('snapshotLinkOutcome')
+      const LINKED = join(MISSION, 'vendor', 'cache', 'linked-out')
+      const err = `harness git refused the work tree ${MISSION} (the [harness-git] line says why): no git was started, so nothing was saved`
+      const o = W.snapshotLinkOutcome({ answer: { written: false, patchPath: '', untracked: [], error: err },
+        lines: [`[harness-git] git refused in ${MISSION}: the work tree holds a link whose target cannot be resolved (${LINKED}: x)`], links: [LINKED] })
+      expect(o.outcome).toBe('not proven')
+    })
+    it('keptGrantsOf: a record that cannot be read is null, never an empty list', () => {
+      need('keptGrantsOf')
+      expect(W.keptGrantsOf({ containmentFromRecord: () => ({ ok: false, reason: 'r' }) }, 'x')).toBeNull()
+    })
   })
 })
 
@@ -6053,6 +6689,82 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     expect(left).toBeGreaterThan(rec)
     expect(lines.filter(l => l.startsWith('[acceptance] the access-list recovery after the release: '))).toHaveLength(1)
     expect(lines[rec]).toBe(`[acceptance] the access-list recovery after the release: not applicable (the record of ${runId} holds no access-list grant: its establish labelled ${mission} without widening its access list (this user holds the rights to label it, as in a folder inside the home))`)
+    // Wave 22b (check C22-6): the run-id line says the box's access list was read before its establish, in the fake-home
+    // environment of the inner process (the reading the recovery compares when a grant is kept).
+    const idLine = lines.find(l => l.startsWith(`[acceptance] run id ${runId}; mission folder `))
+    expect(idLine).toContain(`; mission folder ${mission}; its access list before the establish: read. If this stage is interrupted`)
+  })
+
+  it('wave 22b: run 1\'s left-behind section runs without the fixture\'s junction; with it made again, the harness refuses the snapshot by naming it', (ctx) => {
+    const rep = need(ctx)
+    const out = String(run.stdout).split(/\r?\n/)
+    const linked = join(rep.root, 'mission', 'vendor', 'cache', 'linked-out')
+    const head = `[acceptance] inner run 1: the fixture's junction ${linked}`
+    const away = out.indexOf(`${head} was removed as an entry for the left-behind section: harness git refuses a work tree that a link leads out of, and the section's harness calls are to run on a mission folder as a real mission leaves it`)
+    const back = out.indexOf(`${head} was made again after the left-behind section`)
+    const firstGit = out.findIndex(l => l.startsWith('[acceptance] left-behind: git '))
+    expect(away, out.filter(l => l.startsWith(head)).join('\n')).toBeGreaterThan(-1)
+    expect(away).toBeLessThan(firstGit)
+    expect(back).toBeGreaterThan(firstGit)
+    // While it was away no harness git refused anything, and each harness call ran in the control and in the proof.
+    expect(out.slice(away, back).filter(l => l.includes('[harness-git] git refused'))).toEqual([])
+    for (const n of ['snapshotUncommittedWork', 'WorktreeManager.create']) {
+      const l = out.filter(x => x.startsWith(`[acceptance] left-behind: ${n}: `))
+      expect(l, out.filter(x => x.startsWith('[acceptance] left-behind: ')).join('\n')).toHaveLength(1)
+      expect(l[0]).toMatch(new RegExp(`^\\[acceptance\\] left-behind: ${n.replace('.', '\\.')}: the control's call ran \\(.+\\), the proof's ran \\(.+\\)$`))
+      console.log(`[test] T3 ${l[0]}`)
+    }
+    // Then the junction is back, and the snapshot is refused by the harness's own line naming it.
+    const e = rep.entries.filter(x => x.run === 1 && x.id === 'harness-snapshot')
+    expect(e.map(x => [x.variant, x.form, x.outcome]), JSON.stringify(e)).toEqual([['a link leading out', 'harness', 'refused']])
+    expect(e[0].detail).toMatch(/^harness git refused the snapshot before any git started, by its own line: \[harness-git\] git refused in /)
+    expect(e[0].detail.toLowerCase()).toContain(`${linked.toLowerCase()} leads outside `)
+    const entryAt = out.findIndex(l => l.startsWith('[acceptance] run 1 mission: harness-snapshot a link leading out harness: refused ('))
+    expect(entryAt).toBeGreaterThan(back)
+    console.log(`[test] T3 ${out[entryAt]}`)
+    // The release still removes it as an entry before run 1's release, as before.
+    expect(out.indexOf(`${head} was removed as an entry before the release`)).toBeGreaterThan(entryAt)
+  })
+
+  it('wave 22c: the snapshot is handed a change in the control and in the proof and writes it, the tree is put back by one harness git line, and each release says it held no grant', (ctx) => {
+    const rep = need(ctx)
+    const out = String(run.stdout).split(/\r?\n/)
+    // Item 4 (check F22b-1): the snapshot's own diff had a hunk, in the control and in the proof (it wrote a patch in both).
+    const snapLine = out.filter(x => x.startsWith('[acceptance] left-behind: snapshotUncommittedWork: '))
+    expect(snapLine).toHaveLength(1)
+    expect(snapLine[0]).toMatch(/^\[acceptance\] left-behind: snapshotUncommittedWork: the control's call ran \(wrote .+\), the proof's ran \(wrote .+\)$/)
+    console.log(`[test] T3 ${snapLine[0]}`)
+    const putBack = out.filter(x => x.startsWith('[acceptance] left-behind: git checkout -- README.md: '))
+    expect(putBack).toEqual(["[acceptance] left-behind: git checkout -- README.md: the control's line exited 0, the proof's exited 0"])
+    expect(out.indexOf(putBack[0])).toBeGreaterThan(out.indexOf(snapLine[0]))
+    // The textconv and pager surfaces, as they read now (the row's words say what was tried): printed for the evidence.
+    for (const s of ['textconv', 'pager']) {
+      const e = rep.entries.find(x => x.run === 1 && x.id === 'left-behind' && x.variant === s)
+      console.log(`[test] T3 left-behind ${s}: ${e?.outcome} (${e?.detail ?? ''})`)
+    }
+    // Item 2: inside the home no run takes a grant, so no put-back entry, and every release line says so.
+    expect(rep.entries.filter(x => x.id === 'grant')).toEqual([])
+    const words = ' (its record holds no access-list grant, so the release had none to put back)'
+    for (const n of [1, 2, 3, 4, 5]) {
+      const l = out.filter(x => x.startsWith(`[acceptance] inner run ${n}: released: `))
+      expect(l, `run ${n}`).toHaveLength(1)
+      expect(l[0].endsWith(words), l[0]).toBe(true)
+    }
+    if (WIN) {
+      const box = out.filter(x => x.startsWith('[acceptance] released: run acceptance-real-'))
+      expect(box).toHaveLength(1)
+      expect(box[0].endsWith(words), box[0]).toBe(true)
+      expect(out.some(x => x.startsWith('[acceptance] the access-list grant put back by the release: '))).toBe(false)
+    }
+  })
+
+  it('wave 22b: the closing line says nothing is kept (no grant without live fire, and no sweep)', (ctx) => {
+    const rep = need(ctx)
+    const close = String(run.stdout).split(/\r?\n/).filter(l => l.startsWith('[acceptance] the test root was left in place: '))
+    expect(close).toHaveLength(1)
+    expect(close[0]).toContain('; then the folder. Nothing is kept: no run keeps an access-list grant (the sweep did not run).')
+    expect(rep.kept).toEqual({ grants: [] })
+    expect(rep.swept ?? false).toBe(false)
   })
 
   it.skipIf(!WIN)('Windows: low integrity, every canary as rule F3 says, no label leak', (ctx) => {

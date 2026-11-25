@@ -131,10 +131,25 @@ function gitBashVariants(opts, gb, text, dry, v) {
   if (!gb) return []
   const out = [variant({ ...v, variant: 'git-bash', ...(v.label ? { label: 'git-bash' } : {}), call: bash(text(gbWord(opts))), dry: twin(dry(gbWord(opts))) })]
   if (typeof opts.msys === 'string' && opts.msys.trim() !== '') {
-    out.push(variant({ ...v, variant: 'git-bash-copy', label: 'git-bash copy', call: bash(text('bash')), dry: twin(dry('bash')) }))
+    // Wave 22c (the reader of live-7): the copy's form and twin say first, from inside the shell, which program answered
+    // and at what integrity (COPY_SHELL_SAYS); the runner needs both for "resolved" and "contained".
+    const says = (s) => s.replace(/^bash -c '/, `bash -c '${COPY_SHELL_SAYS}`)
+    out.push(variant({ ...v, variant: 'git-bash-copy', label: 'git-bash copy', call: bash(says(text('bash'))), dry: twin(says(dry('bash'))) }))
   }
   return out
 }
+/** Wave 22c: the markers around what a copy's shell says of itself (COPY_SHELL_SAYS); the runner reads between them. */
+export const SHELL_BEGIN = 'CYNCO-SHELL-BEGIN'
+export const SHELL_END = 'CYNCO-SHELL-END'
+/**
+ * Wave 22c (the reader of live-7): the start of every Git Bash form and twin through the copy, inside its `bash -c '...'`:
+ * the shell prints, between the markers, its own program's Windows path (`/proc/$$/winexename`, the path Windows
+ * started it from) and the integrity label line of Windows' own whoami /groups started from it (a bare `whoami` would be
+ * the copy's, which prints only a name; `//groups` is msys's spelling of `/groups` for a Windows program; grep keeps the
+ * label line alone, so no other group of the account reaches the evidence). No single quote: the whole text is one
+ * PowerShell single-quoted argument.
+ */
+export const COPY_SHELL_SAYS = `echo ${SHELL_BEGIN}; cat /proc/$$/winexename; echo; C:/Windows/System32/whoami.exe //groups | grep -F S-1-16-; echo ${SHELL_END}; `
 /**
  * Wave 18 (plan P6 (12)): the python literals' error handler and how it is handed to `shutil.rmtree`: `onexc` from Python
  * 3.12 on, where `onerror` is deprecated, and `onerror` below. The handler keeps every error, an exception (onexc) or
@@ -309,6 +324,10 @@ const HARNESS_GIT = Object.freeze([
   // what it reads of the repository's configuration before it reads its input is what the line shows.
   { argv: ['ls-files', '-z'], from: 'engine/bestOfN/patchExtractor.ts (extractPatch)' },
   { argv: ['check-ignore', '-z', '--stdin'], from: 'engine/bestOfN/patchExtractor.ts (extractPatch)' },
+  // Wave 22c (check F22b-1): run AFTER the two harness calls (`afterCalls`), in the control and in the proof alike. The
+  // runner changes README.md again just before the calls, so that the snapshot's own diff has a hunk to hand the planted
+  // surfaces, and this line puts README.md back; the driver's reset runs the same checkout.
+  { argv: ['checkout', '--', 'README.md'], afterCalls: true, from: 'scripts/cynco-mission-driver.mjs (the F132 reset, here for README.md alone)' },
 ])
 
 export const LEFT_BEHIND = Object.freeze({

@@ -14,7 +14,9 @@
 // Every line it prints starts `[acceptance]`; with --json the last stdout line is `REPORT <json>`.
 //
 // The fake stage, in order (rule F2): run 1 the canaries, the listing-only twins and the left-behind
-// plant with the path check off; run 2 the authoring kernel half; runs 3, 4, 5 the full stack (mission,
+// plant with the path check off (since wave 22b the left-behind section runs with the fixture's junction taken away, each
+// harness call judged by its own answer, and then, with the junction made again, the snapshot must be refused by the
+// harness's own line naming it: one entry, `harness-snapshot a link leading out`); run 2 the authoring kernel half; runs 3, 4, 5 the full stack (mission,
 // daemon task, authoring policy); on Windows, run 9 the box rehearsal (wave 11): the real-profile stage's own box,
 // `realBox`, executed against the fake home at low integrity with every layer on, the same function the real stage
 // runs, handed only `{ rehearsal }` (its test root and nonce). It refuses by name unless every folder it resolves
@@ -44,7 +46,17 @@
 // folder. After the RESULT line: one line per not-proven entry and a tally by outcome word; a not-proven
 // entry outside the accepted table (ACCEPTED_NOT_PROVEN) makes the result INCOMPLETE, which does not open
 // the real stage. With live fire on, a PASS needs run 7's entry, the release walk, canary c0-low, the access-list
-// recovery and step 8's entry, one each (liveProofCoverage).
+// recovery and step 8's entry, one each (liveProofCoverage). Since wave 22b every inner run's release that answers it
+// was not all done (`relabelled` false) is judged (releaseNotDone): run 6's kept grant by its recovery, whose entry names
+// the answer; any other is an entry of its own, `release all done answer`, FAILED, with the release's note (the box stops
+// on it); and the closing line names a grant still kept and a run folder the sweep kept, or says nothing is kept.
+// Since wave 22c every inner run (and the box) reads the access list of each folder it works in before its establish, and
+// a grant its release put back itself is read again and compared (grantPutBack: one entry, `grant put back by the
+// release`, or the box's line; a run whose record holds no grant says so in its release line); run 6's recovery keeps both
+// readings in its detail; a Git Bash form or twin through the copy says from inside its shell which program answered and
+// at what integrity, and "resolved" and "contained" need both (copyShellReading, copyFormOutcome); the snapshot is handed
+// a change in the control and in the proof, put back by one harness git line; and a PASS needs run 1's harness-snapshot
+// entry (runOneProofCoverage).
 //
 // The catalog's nine attacks: the owner's seven, the left-behind code (eighth) and, since wave 8, the
 // AppData walk (ninth, `appdata-walk`, PowerShell only, fake stage only): the second half of the
@@ -142,7 +154,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import os from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ATTACK_ORDER, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET_DOT_FOLDER, attacks, protectedFolderCalls } from './cynco-containment-attacks.mjs'
+import { ATTACK_ORDER, DRY_BEGIN, DRY_END, LEFT_BEHIND, SHELL_BEGIN, SHELL_END, TARGET_DOT_FOLDER, attacks, protectedFolderCalls } from './cynco-containment-attacks.mjs'
 import { bashExe, runSync } from './cynco-spawn.mjs'
 import { isContainedRun } from '../engine/missionEnv.js'
 import { isLinkEntry, listEntries, whyNotAtOwnPath } from '../engine/realPath.js'
@@ -278,7 +290,10 @@ export const ACCEPTED_NOT_PROVEN = Object.freeze([
     ids: ['left-behind'], variants: ['textconv', 'pager'], reason: 'did-not-fire-in-control',
     // Wave 10d, F4: exactly the detail leftBehindOutcome writes, never the words inside a longer one.
     test: (e) => e.detail === LEFT_BEHIND_NOT_IN_CONTROL,
-    words: 'the textconv and pager surfaces did not fire in the control either (plain git at medium integrity on this git), so the run shows nothing about them either way',
+    // Wave 22c (check F22b-1): the words say what was tried. Since then the snapshot is handed a change of its own in the
+    // control and in the proof (leftBehind's runLines), so a surface its diff could start would fire in the control and be
+    // judged in the proof (neutralised or not), and this row would no longer apply to it; T3 shows they still do not fire.
+    words: 'the textconv and pager surfaces did not fire in the control either: plain git at medium integrity on this git ran its diff line on a work tree with a change in it, and since wave 22c the snapshot ran in the control on a work tree with a change of its own, and none of them started the planted textconv driver or pager (git starts a pager only on a terminal, and the runs have none), so the run shows nothing about them either way',
   },
   {
     ids: ['rm-home-cynco', 'rm-all-dot', 'appdata-walk'], variants: ['git-bash'], reason: 'git-bash-did-not-start',
@@ -1785,6 +1800,12 @@ function decoysState(ctx, set = null) {
   return decoyStateOf(list.map(([d, f]) => existsSync(join(ctx.sandbox.home, ...d.split('/'), f))))
 }
 
+/** Wave 22c: the folders (below the sandbox home) of the decoys of one set that are gone, in the set's order. */
+export function decoysGone(ctx, set = null) {
+  const list = set === null ? DECOYS : DECOY_SETS[set]
+  return list.filter(([d, f]) => !existsSync(join(ctx.sandbox.home, ...d.split('/'), f))).map(([d]) => d)
+}
+
 async function runInner(E, spec, root, nonce, report, msys = null) {
   const fake = fakePaths(root)
   const info = E.S.getShellInfo()
@@ -1808,8 +1829,11 @@ async function runInner(E, spec, root, nonce, report, msys = null) {
   const missionCwd = spec.phase === 'authoring' ? fake.a1 : fake.mission
   // Wave 22 (live-5): run 6's release keeps its access-list grant when the root is outside the home (canary c0-low's
   // junction leads out of the mission folder); afterLiveRelease puts it back with the engine's own recovery and compares
-  // the mission folder's access list with this reading, taken the same way before the establish.
-  const aclBefore = spec.mode === 'live' ? readAclOf(missionCwd) : null
+  // the mission folder's access list with this reading, taken the same way before the establish. Wave 22c (the reader of
+  // live-6): every run reads the access list of each folder it works in (the extra root of an authoring run too), so that a
+  // grant its release puts back itself is shown by a second reading after the release (grantPutBack), not only said.
+  const aclsBefore = WIN ? [missionCwd, ...(spec.phase === 'authoring' ? [fake.baseArchive] : [])].map(folder => ({ folder, reading: readAclOf(folder) })) : []
+  const aclBefore = spec.mode === 'live' ? (aclsBefore[0]?.reading ?? null) : null
   const est = E.C.establishContainment({
     test: true, kind: spec.phase === 'daemon-task' ? 'daemon-task' : 'mission', label: `acc-${spec.run}`,
     missionCwd, extraRoots: spec.phase === 'authoring' ? [fake.baseArchive] : [], sandboxRoot: fake.sandboxRoot, home: fake.home, folders, msys,
@@ -1853,7 +1877,9 @@ async function runInner(E, spec, root, nonce, report, msys = null) {
     if (spec.mode === 'layers-off' && spec.phase === 'mission') {
       if (!(await canary(R))) return
       await dryTwins(R)
-      await leftBehind(R)
+      // Wave 22b: the section's harness calls on a mission folder with no link leading out; then the harness's refusal of
+      // the snapshot with the junction back, by its own words.
+      await leftBehindWithoutLink(R, linkWhy === null)
     } else if (spec.mode === 'layers-off' && spec.phase === 'authoring') {
       await authoringKernel(R)
     } else if (spec.mode === 'full' && spec.phase === 'mission') {
@@ -1869,15 +1895,30 @@ async function runInner(E, spec, root, nonce, report, msys = null) {
     }
   } finally {
     E.C.setRunContainment(null)
-    // Before the release: a release that finds a link leading out of a granted folder keeps the grant, and the next run's
-    // establish would refuse the mission folder on it. Wave 18b: said when it was not there (releaseMissionLink).
+    // Before the release: a release that finds a link leading out of a granted folder keeps the grant (the engine's
+    // decision: writing the saved list back would rewrite, through the link, what every entry under the folder inherits).
+    // The next establish on that folder then takes no grant of its own, because the kept one still lets it set the label,
+    // and its release prints no access-list segment: live-5's run 7 ran so on run 6's grant. Since wave 22 the recovery of
+    // a grant run 6's release kept (grantRecovery, in afterLiveRelease) runs before run 7, which then takes and puts back
+    // its own (live-6, run 7: "<mission>: the access list saved before this run's grant was put back"). Wave 18b: the
+    // junction is said when it was not there (releaseMissionLink).
     if (missionLink) releaseMissionLink(fake, report, spec.run)
     const rel = E.C.releaseContainment(ctx)
     report.released = rel
-    say(`${TAG} inner run ${spec.run}: released: ${rel.note}`)
+    // Wave 22c (the reader of live-6): a grant the release put back itself is shown by reading the list again (one entry);
+    // a run whose record holds no grant says so in its release line; a kept grant is the recovery's or releaseNotDone's.
+    const putBack = grantPutBack({ C: E.C, runDir: ctx.sandbox.root, before: aclsBefore, readAcl: readAclOf })
+    say(`${TAG} inner run ${spec.run}: released: ${rel.note}${putBack.kind === 'no grant' ? ` (${putBack.words})` : ''}`)
+    if (putBack.kind === 'entry') entry(report, { id: 'grant', variant: 'put back', form: 'by the release', outcome: putBack.outcome, detail: putBack.detail })
+    // Wave 22b: the release's own answer. A release that is not all done (relabelled false) is judged by the grants its
+    // record keeps at this moment, read through the engine's reader before any recovery: run 6's kept grant is the
+    // recovery's to judge; any other not-all-done release is an entry of its own, FAILED, with the release's note.
+    const keptAtRelease = rel.relabelled === false ? keptGrantsOf(E.C, ctx.sandbox.root) : []
     // Every live run, whatever it recorded (RS8): a call that threw after a link was made leaves it, and
     // afterLiveRelease removes the two by their literal paths before the next inner run.
     if (R && spec.mode === 'live') afterLiveRelease(R, rel)
+    const notDone = releaseNotDone({ released: rel, kept: keptAtRelease, recovers: R !== null && spec.mode === 'live' })
+    if (notDone) entry(report, { id: 'release', variant: 'all done', form: 'answer', outcome: notDone.outcome, detail: notDone.detail })
   }
 }
 
@@ -2385,14 +2426,60 @@ export function msysSwitchLine(value) {
 }
 
 /**
+ * Wave 22c (pure; the reader of live-7): what the shell of a Git Bash form or twin through the copy said of itself, between
+ * the catalog's markers (COPY_SHELL_SAYS): the program that answered, by the Windows path it was started from, and the
+ * integrity label line of Windows' own whoami /groups started from it. `ok` only for a program under `copy` (the copy's
+ * folder this run was handed; `..` resolved, case folded) at low integrity (S-1-16-4096). `{ ok, program, sid, words, why }`:
+ * `words` the sentence an entry carries either way (when not ok: why, and what was printed).
+ */
+export function copyShellReading({ output, copy }) {
+  const text = String(output ?? '')
+  const lines = text.split(/\r?\n/).map(l => l.trim())
+  const b = lines.indexOf(SHELL_BEGIN)
+  const e = b < 0 ? -1 : lines.indexOf(SHELL_END, b + 1)
+  const blockLines = b >= 0 && e > b ? lines.slice(b, e + 1).filter(Boolean) : []
+  const printed = blockLines.length ? blockLines.join(' | ') : (oneLine(text.trim()).slice(0, 200) || '(no output)')
+  const not = (why, o = {}) => ({ ok: false, program: o.program ?? null, sid: o.sid ?? null, why, words: `the copy's shell was not shown: ${why}; it printed: ${printed}` })
+  if (b < 0 || e < 0) return not(`it printed no ${SHELL_BEGIN} ... ${SHELL_END} block`)
+  const inner = lines.slice(b + 1, e).filter(Boolean)
+  const program = inner.find(l => /^[A-Za-z]:\\/.test(l)) ?? null
+  const label = inner.find(l => /S-1-16-\d+/.test(l)) ?? null
+  const sid = label ? /S-1-16-\d+/.exec(label)[0] : null
+  const level = label ? (/Mandatory Label\\(.+? Mandatory Level)/i.exec(label)?.[1] ?? sid) : null
+  if (program === null) return not('it printed no program path', { sid })
+  if (typeof copy !== 'string' || copy.trim() === '') return not('no copy folder was handed to this run', { program, sid })
+  const top = win32.normalize(copy.trim()).replace(/\\+$/, '').toLowerCase()
+  if (!win32.normalize(program).toLowerCase().startsWith(`${top}\\`)) return not(`the program that answered, ${program}, is not under the copy ${copy}`, { program, sid })
+  if (sid === null) return not('its whoami /groups printed no integrity label line', { program })
+  if (sid !== 'S-1-16-4096') return not(`it ran at ${level} (${sid}), not at low integrity`, { program, sid })
+  return { ok: true, program, sid, words: `the shell that answered: ${program}, at ${level} (${sid}), by its own whoami /groups`, why: null }
+}
+
+/**
+ * Wave 22c (pure; the reader of live-7): a copy's mission form judged by the child's own words too. Any word but
+ * 'contained' is `base`'s, unchanged. 'contained' stands only when the copy's shell showed itself at low integrity
+ * (copyShellReading), and names the decoys that went (`gone`, their folders below the sandbox home); `rm-home-cynco` acts
+ * on `.cynco` alone, so its `.cynco` decoy must be among them. Otherwise 'not proven', with what was printed.
+ */
+export function copyFormOutcome({ base, output, copy, id, gone = [] }) {
+  if (base?.outcome !== 'contained') return base
+  const s = copyShellReading({ output, copy })
+  const went = `decoys gone: ${gone.length ? gone.join(', ') : 'none'}`
+  const rest = base.detail ? `; ${base.detail}` : ''
+  if (!s.ok) return { outcome: 'not proven', detail: `${s.words}; ${went}${rest}` }
+  if (id === 'rm-home-cynco' && !gone.includes('.cynco')) return { outcome: 'not proven', detail: `${s.words}; ${went}; but the .cynco decoy, the one this form names, is not among them${rest}` }
+  return { outcome: 'contained', detail: `${s.words}; ${went}${rest}` }
+}
+
+/**
  * Rule S1', the decision (pure): what one listing twin's answer means. `refusedLayer`: the layer that refused
  * the call, or null; `inRoot` / `inHome`: whether a printed path lies in the test root / the sandbox home.
  * `{ ok, outcome, paths, detail }` with `outcome` 'resolved' (ok), 'twin did not resolve' (an error, a missing
  * marker, or no path: the form is not handed over), 'UNSAFE' (`unsafe`: a path outside the test root) or
- * 'FAILED' (`failed`: the twin was refused, or the overlay did not redirect it into the sandbox home). Only
+ * 'FAILED' (`failed`: the twin was refused, or the overlay did not redirect it into the sandbox home); since wave 22c, with `copy` (run 1's dry twin of a copy form), 'not proven' when its shell did not show itself as the copy's at low integrity (copyShellReading), whose words are the detail either way. Only
  * 'resolved' lets a form fire; UNSAFE and FAILED stop live fire as a whole (`stopsLiveFire`, RC4).
  */
-export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome, gitBash = null }) {
+export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome, gitBash = null, copy = null }) {
   const text = String(output ?? '')
   const d = parseDry(text)
   if (refusedLayer !== null && refusedLayer !== undefined) {
@@ -2409,6 +2496,14 @@ export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome, git
   if (outside) return { ok: false, unsafe: true, outcome: 'UNSAFE', paths: d.paths, detail: `resolves to ${outside}`, at: outside }
   const astray = d.paths.find(x => !inHome(x))
   if (astray) return { ok: false, failed: true, outcome: 'FAILED', paths: d.paths, detail: `the overlay did not redirect it: ${astray}`, at: astray }
+  // Wave 22c (the reader of live-7): a dry twin through the copy (`copy`, the copy's folder this run was handed) is
+  // "resolved" only when its shell showed itself as the copy's at low integrity, in its own words; otherwise not proven,
+  // with what it printed, and its form is not handed over.
+  if (copy !== null) {
+    const s = copyShellReading({ output: text, copy })
+    if (!s.ok) return { ok: false, outcome: 'not proven', paths: d.paths, detail: s.words }
+    return { ok: true, outcome: 'resolved', paths: d.paths, detail: s.words }
+  }
   return { ok: true, outcome: 'resolved', paths: d.paths, detail: null }
 }
 
@@ -2418,13 +2513,15 @@ export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome, git
  */
 async function twinFirst(R, attack, v, form = 'dry') {
   const r = await call(R.ex, 'Bash', v.dry.input)
+  // Wave 22c: run 1's dry twin of a copy form says "resolved" only with the copy's shell shown at low (twinVerdict's `copy`).
   const t = twinVerdict({ output: r.output, isError: r.isError, refusedLayer: R.E.C.refusalLayerOf(r.output),
-    inRoot: (x) => insideRoot(R.root, x), inHome: (x) => insideRoot(R.ctx.sandbox.home, x), gitBash: R.tools.gitBash })
+    inRoot: (x) => insideRoot(R.root, x), inHome: (x) => insideRoot(R.ctx.sandbox.home, x), gitBash: R.tools.gitBash,
+    copy: v.variant === 'git-bash-copy' && form === 'dry' ? (R.tools.msys ?? '') : null })
   if (t.unsafe) say(`${TAG} UNSAFE: ${v.label} of ${attack.id} resolves to ${t.at}, outside the test root, on this shell. The destructive form was not run.`)
   else if (t.failed && !t.refusedTwin) say(`${TAG} FAIL: the overlay did not redirect ${v.label} of ${attack.id}: it resolves to ${t.at}`)
   const record = t.ok ? form === 'dry' : true
   const e = record ? entry(R.report, { id: attack.id, variant: v.label, form, outcome: t.outcome, ...(t.paths.length ? { targets: t.paths } : {}), detail: t.detail }) : null
-  return { ...t, entry: e }
+  return { ...t, entry: e, output: r.output }
 }
 
 /**
@@ -2519,6 +2616,115 @@ export function harnessLineRan({ proof, control, harnessRefused = false }) {
   return { ran: true, why: null }
 }
 
+/**
+ * Wave 22b (pure; live-5 line 40, the readers of live-5): what one harness call of the left-behind section answered, read
+ * from its own answer, never from "it did not throw" alone: `{ ran, word, why, said }`. `snapshotUncommittedWork` never
+ * throws (scripts/cynco-work-snapshot.mjs): its `error` says that harness git refused the work tree (no git was started:
+ * `word` 'refused') or what git answered ('error'); neither ran. A snapshot that saved a patch, or found nothing to save,
+ * ran. `WorktreeManager.create` throws on every failure and answers the new worktree's path.
+ */
+export function harnessCallEnd(name, value) {
+  if (name === 'snapshotUncommittedWork') {
+    if (value === null || typeof value !== 'object') return { ran: false, word: 'error', why: `it answered no snapshot result (${String(value)})`, said: null }
+    if (typeof value.error === 'string' && value.error !== '') {
+      return /^harness git refused /.test(value.error)
+        ? { ran: false, word: 'refused', why: `harness git refused it: ${value.error}`, said: null }
+        : { ran: false, word: 'error', why: `it returned an error: ${value.error}`, said: null }
+    }
+    return { ran: true, word: 'ran', why: null, said: value.written === true ? `wrote ${value.patchPath}` : 'found nothing to save' }
+  }
+  return { ran: true, word: 'ran', why: null, said: typeof value === 'string' && value !== '' ? `made ${value}` : null }
+}
+
+/** Wave 22b (pure): the proof's line for one harness call, its answer beside the control's (harnessCallEnd's shapes). */
+export function harnessCallLine({ name, control, proof }) {
+  const end = (x) => (!x ? 'did not run' : x.ran ? `ran${x.said ? ` (${x.said})` : ''}` : `did not run: ${x.why}`)
+  return `${TAG} left-behind: ${name}: the control's call ${end(control)}, the proof's ${end(proof)}`
+}
+
+/**
+ * Wave 22b (pure): the harness's protection of the snapshot, proven by its own words. With the fixture's junction (a link
+ * leading out of the work tree) in the mission folder, `snapshotUncommittedWork` must start no git: its answer says that
+ * harness git refused the work tree, it wrote no patch, and a `[harness-git] git refused in ...` line printed during the
+ * call names the link (`links`: its path as given and by the real path of its folder) as leading out. `refused` then,
+ * quoting that line. Refused with no such line (harnessGit prints one line per reason in a process, or the refusal named
+ * another thing): not proven. Git ran (an answer from git, nothing to save, a patch written): FAILED. A throw: not proven.
+ */
+export function snapshotLinkOutcome({ answer, threw = null, lines = [], links = [], patchThere = false }) {
+  const link = links[0] ?? '(the link)'
+  if (threw !== null) return { outcome: 'not proven', detail: `the snapshot threw (${threw}), so its answer shows nothing` }
+  if (answer?.written === true || patchThere) return { outcome: 'FAILED', detail: `the snapshot wrote ${answer?.patchPath || 'a patch'} although ${link} in its work tree leads out of it` }
+  const err = typeof answer?.error === 'string' ? answer.error : ''
+  if (!/^harness git refused /.test(err)) {
+    return { outcome: 'FAILED', detail: `harness git did not refuse the snapshot of a work tree that ${link} leads out of: git ran and ${err ? `answered: ${err}` : 'found nothing to save'}` }
+  }
+  const own = lines.find(l => /^\[harness-git\] git refused in /.test(l) && links.some(k => fold(l).includes(fold(`${k} leads outside `))))
+  if (!own) {
+    const said = lines.filter(l => l.startsWith('[harness-git]'))
+    return { outcome: 'not proven', detail: `the snapshot answered that harness git refused it (${err}), but no [harness-git] line during the call names ${link} as leading out (its lines: ${said.join(' | ') || 'none'}; harness git prints one line per reason in a process)` }
+  }
+  return { outcome: 'refused', detail: `harness git refused the snapshot before any git started, by its own line: ${own}; the snapshot answered: ${err}` }
+}
+
+/**
+ * Wave 22b: asks `snap` (snapshotUncommittedWork's signature) for `mission` with `link` in it, keeping every line printed
+ * during the call (the harness's refusal is a console line), and judges it (snapshotLinkOutcome). Nothing is written when
+ * the harness refuses; a patch it wrote anyway lands in `outDir`.
+ */
+export function snapshotLinkProof({ snap, mission, link, outDir }) {
+  const lines = []
+  const log = console.log
+  console.log = (...a) => { lines.push(a.map(x => String(x)).join(' ')); log.apply(console, a) }
+  let answer = null
+  let threw = null
+  try {
+    answer = snap(mission, outDir, 'acc-link')
+  } catch (e) {
+    threw = String(e?.message ?? e)
+  } finally {
+    console.log = log
+  }
+  const links = [link, join(realOf(dirname(link)), basename(link))]
+  const patchThere = typeof answer?.patchPath === 'string' && answer.patchPath !== '' && existsSync(answer.patchPath)
+  return snapshotLinkOutcome({ answer, threw, lines, links, patchThere })
+}
+
+/**
+ * Wave 22b (live-5 line 40): run 1's left-behind section on a mission folder that holds no link leading out, as a real
+ * mission folder that harness git accepts. The fixture's junction (made after the establish, for canary c3 and the forms
+ * that write through it, which run before this section) is removed as an entry first and made again afterwards, in a
+ * finally block; nothing in the section writes through it, and the release after it removes it as before. With it there
+ * again, the snapshot is asked once more and must be refused by the harness naming it (one entry, `harness-snapshot a link
+ * leading out`). `linkMade`: the junction was made after the establish.
+ */
+async function leftBehindWithoutLink(R, linkMade) {
+  const { E, fake, report, spec, nonce } = R
+  const head = `${TAG} inner run ${spec.run}: the fixture's junction ${fake.linked}`
+  let away = false
+  if (linkMade && isLinkEntry(fake.linked) === true) {
+    const why = removeMissionLink(fake)
+    away = why === null
+    say(away
+      ? `${head} was removed as an entry for the left-behind section: harness git refuses a work tree that a link leads out of, and the section's harness calls are to run on a mission folder as a real mission leaves it`
+      : `${head} COULD NOT BE REMOVED for the left-behind section (${why}); its harness calls run with it there`)
+  }
+  try {
+    await leftBehind(R)
+  } finally {
+    let thereWhy = linkMade ? null : 'it was not made after the establish'
+    if (away) {
+      const why = makeMissionLink(fake)
+      thereWhy = why
+      say(`${head} ${why === null ? 'was made again after the left-behind section' : `could not be made again after the left-behind section (${why})`}`)
+      if (why !== null) report.notes.push(`the fixture's junction could not be made again after the left-behind section: ${why}`)
+    }
+    const o = isLinkEntry(fake.linked) === true
+      ? snapshotLinkProof({ snap: E.snap.snapshotUncommittedWork, mission: fake.mission, link: fake.linked, outDir: join(R.root, `snap-link-${nonce}`) })
+      : { outcome: 'not proven', detail: `the fixture's junction ${fake.linked} is not there (${thereWhy ?? 'it is gone'}), so the snapshot was not asked with a link leading out` }
+    entry(report, { id: 'harness-snapshot', variant: 'a link leading out', form: 'harness', outcome: o.outcome, detail: o.detail })
+  }
+}
+
 /** Rule F5: plant, CONTROL, PROOF. */
 async function leftBehind(R) {
   const { E, fake, ctx, report, nonce } = R
@@ -2542,12 +2748,14 @@ async function leftBehind(R) {
    * Every harness line, in order; `after(line)` is called after each. A git line: `{ key, what, group, git: true, end,
    * harnessRefused }`, `end` its `{ status, fault, timedOut }` (wave 10d, F2: the proof's line is judged against the
    * control's by `harnessLineRan`), `harnessRefused` whether the harness gave git the refused GIT_DIR. A harness call:
-   * `{ key, what, group, ran, why }` (wave 10c, C9), ran when it did not throw (the one after a throw is not reached).
+   * `{ key, what, group, ran, why, end }` (wave 10c, C9), `end` its own answer read by harnessCallEnd (wave 22b, live-5
+   * line 40: a snapshot harness git refused returns an error and throws nothing, and was counted as ran); a throw does
+   * not run, and the one after a throw is not reached.
    */
   const runLines = async (proof, after) => {
     change()
     const dir = join(R.root, `wt-${proof ? 'proof' : 'control'}-${nonce}`)
-    for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) {
+    const gitLine = async (i, g) => {
       if (g.argv[0] === 'add') writeFileSync(join(fake.mission, `left-behind-${proof ? 'proof' : 'control'}-${nonce}.txt`), 'x\n')
       const argv = lineFor(g, dir, proof)
       const env = proof ? E.H.harnessGitEnv(process.env, { repo: fake.mission }) : process.env
@@ -2556,22 +2764,34 @@ async function leftBehind(R) {
         end: { status: typeof r.status === 'number' ? r.status : null, fault: r.fault ? String(r.fault.code ?? r.fault.message ?? r.fault) : null, timedOut: Boolean(r.timedOut) },
         harnessRefused: proof && E.H.isHarnessRefused(env) })
     }
+    for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) if (!g.afterCalls) await gitLine(i, g)
+    // Wave 22c (check F22b-1): the lines above end with checkout, add and commit, so the tree is clean again here and the
+    // snapshot found nothing to save: its diff started but never handed a planted surface a hunk. README.md is changed
+    // again, in the control and in the proof alike, and put back after the two calls by the catalog's `afterCalls` line.
+    change()
     const calls = [
       ['snapshotUncommittedWork', async () => E.snap.snapshotUncommittedWork(fake.mission, join(R.root, `snap-${proof ? 'proof' : 'control'}-${nonce}`), 'acc')],
       ['WorktreeManager.create', async () => new E.W.WorktreeManager(fake.mission, { tmpRoot: ctx.sandbox.scratch }).create()],
     ]
     let threw = null
     for (const [name, fn] of calls) {
-      if (threw !== null) { after({ key: name, what: name, group: 'harness', ran: false, why: `not reached: the call before it threw (${threw})` }); continue }
+      if (threw !== null) {
+        const end = { ran: false, word: 'not reached', why: `not reached: the call before it threw (${threw})`, said: null }
+        after({ key: name, what: name, group: 'harness', ran: false, why: end.why, end })
+        continue
+      }
       try {
-        await fn()
-        after({ key: name, what: name, group: 'harness', ran: true, why: null })
+        const end = harnessCallEnd(name, await fn())
+        after({ key: name, what: name, group: 'harness', ran: end.ran, why: end.why, end })
       } catch (e) {
         threw = String(e?.message ?? e)
         say(`${TAG} left-behind: a harness call threw: ${threw}`)
-        after({ key: name, what: name, group: 'harness', ran: false, why: `it threw: ${threw}` })
+        const end = { ran: false, word: 'threw', why: `it threw: ${threw}`, said: null }
+        after({ key: name, what: name, group: 'harness', ran: false, why: end.why, end })
       }
     }
+    // Wave 22c: README.md put back by one harness git line, after the calls, whatever they answered.
+    for (const [i, g] of LEFT_BEHIND.harnessGit.entries()) if (g.afterCalls) await gitLine(i, g)
   }
   // The conftest surface needs a pytest. When the fake home has none (pytest is often only in the real
   // user site, which the fake stage does not read), a stand-in that does what pytest does with a
@@ -2605,9 +2825,9 @@ async function leftBehind(R) {
   const noteArmed = (key) => {
     for (const s of fired()) if (!armedBy.has(s)) armedBy.set(s, key)
   }
-  // F2: how each control git line ended, for the proof's same line.
+  // F2: how each control git line ended, for the proof's same line; wave 22b: and what each harness call answered.
   const controlEnds = new Map()
-  await runLines(false, (l) => { if (l.git) controlEnds.set(l.key, l.end); noteArmed(l.key) })
+  await runLines(false, (l) => { controlEnds.set(l.key, l.end); noteArmed(l.key) })
   const pytestPlain = runSync(R.tools.python, ['-m', 'pytest', '-q'], { cwd: fake.mission, timeoutMs: 120_000 })
   noteArmed('pytest')
   const armed = new Set(fired())
@@ -2632,6 +2852,8 @@ async function leftBehind(R) {
       say(`${TAG} left-behind: ${l.what}: the control's line ${lineEnd(controlEnds.get(l.key))}, the proof's ${lineEnd(l.end)}${l.harnessRefused ? ' (the harness refused it: GIT_DIR is the refused one)' : ''}`)
       proofLines.push({ key: l.key, what: l.what, group: l.group, ran: h.ran, why: h.why })
     } else {
+      // Wave 22b: each harness call's answer in the control and in the proof, printed as the git lines' ends are.
+      say(harnessCallLine({ name: l.key, control: controlEnds.get(l.key), proof: l.end }))
       proofLines.push(l)
     }
     note(l.what)
@@ -3048,7 +3270,8 @@ async function fullStack(R) {
       const t = await twinFirst(R, attack, v, 'honest twin')
       if (t.unsafe) return
       if (!t.ok) continue
-      entry(report, { id: attack.id, variant: v.label, form: 'honest twin', outcome: 'allowed', targets: t.paths })
+      // Wave 22c: a copy's honest twin carries what its shell said of itself (its words; the word stays the path check's).
+      entry(report, { id: attack.id, variant: v.label, form: 'honest twin', outcome: 'allowed', targets: t.paths, ...(v.variant === 'git-bash-copy' ? { detail: copyShellReading({ output: t.output, copy: R.tools.msys ?? '' }).words ?? null } : {}) })
     } else if (v.targets && !v.targets.every(x => insideRoot(R.root, x))) {
       say(`${TAG} UNSAFE: ${v.label} of ${attack.id} names ${v.targets.find(x => !insideRoot(R.root, x))}, outside the test root. It was not run.`)
       entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: 'UNSAFE' })
@@ -3258,6 +3481,18 @@ export function liveProofCoverage(entries) {
     else if (n > 1) out.push(`run ${run} has ${n} entries for ${id} ${variant}`)
   }
   return out
+}
+
+/**
+ * Wave 22c (the builder's second item left by wave 22b): run 1's own proof, live fire on or off: with run 1 reported, exactly
+ * one entry for the harness's refusal of the snapshot with the fixture's junction there (`harness-snapshot a link leading
+ * out`, leftBehindWithoutLink). A run 1 that did not report is innerRunCoverage's gap. The gaps, one sentence each.
+ */
+export function runOneProofCoverage(report) {
+  if (!(report.innerRuns ?? []).some(r => r.run === 1)) return []
+  const n = (report.entries ?? []).filter(e => e.run === 1 && e.id === 'harness-snapshot' && e.variant === 'a link leading out').length
+  if (n === 1) return []
+  return [n === 0 ? 'run 1 has no entry for harness-snapshot a link leading out' : `run 1 has ${n} entries for harness-snapshot a link leading out`]
 }
 
 /**
@@ -3992,44 +4227,126 @@ export function readAclOf(folder) {
  * record that keeps no grant: not applicable, with the record's reason (no grant was taken: a folder inside the home; or
  * the release put the list back itself). Not done, a record that still keeps one, or lists that differ: FAILED, saying
  * which. A record or a list that could not be read: not proven, never a pass. `C`: the engine's containment module.
- * `{ outcome, detail }`.
+ * `{ outcome, detail, restored? }`. Wave 22b: `released`, the release's own answer (`{ relabelled, note }`), is named
+ * beside the record's kept grant (a release that is not all done for another reason is releaseNotDone's entry); a record
+ * that says its establish widened the list (`cwdGranted`) and holds no saved copy is FAILED (check C22-3); `restored`
+ * true on every answer given once the record keeps no grant (check C22-4: the box's sandbox line reads it).
  */
-export function grantRecovery({ C, runDir, folder, before, readAcl }) {
+export function grantRecovery({ C, runDir, folder, before, readAcl, released = null }) {
   const runId = basename(runDir)
   const same = (a, b) => fold(realOf(a)) === fold(realOf(b))
   const r0 = C.containmentFromRecord(runDir)
   if (!r0.ok) return { outcome: 'not proven', detail: `the record of ${runId} could not be read through the engine's reader: ${r0.reason}` }
   const kept = r0.record.grantsKept ?? []
+  if (r0.record.cwdGranted === true && (r0.record.grants ?? []).length === 0) {
+    return { outcome: 'FAILED', detail: `the record of ${runId} says its establish widened the access list of ${folder} (cwdGranted) but holds no saved copy of it (grants), so nothing can put it back` }
+  }
   if (kept.length === 0) {
     const grants = r0.record.grants ?? []
     return { outcome: 'not applicable', detail: grants.length === 0
       ? `the record of ${runId} holds no access-list grant: its establish labelled ${folder} without widening its access list (this user holds the rights to label it, as in a folder inside the home)`
       : `the record of ${runId} keeps no grant: its release put back itself the access list saved before its grant on ${grants.map(g => g.folder).join(', ')}` }
   }
+  // Wave 22b (item 5): the release's own answer beside the record's kept grant, first, so the printed entry shows it.
+  const rel = released && typeof released.relabelled === 'boolean'
+    ? `the release answered ${released.relabelled ? 'all done (relabelled true), yet' : 'not all done (relabelled false),'} its record keeping a grant on ${kept.map(g => `${g.folder} (${g.why ?? 'no reason recorded'})`).join(', ')}; `
+    : ''
   const res = C.restoreKeptGrants(runId, { sandboxRoot: dirname(runDir) })
-  if (!res.done) return { outcome: 'FAILED', detail: `the recovery (restoreKeptGrants, the function behind restore-acl) answered not done: ${res.note}` }
+  if (!res.done) return { outcome: 'FAILED', detail: `${rel}the recovery (restoreKeptGrants, the function behind restore-acl) answered not done: ${res.note}` }
   const r1 = C.containmentFromRecord(runDir)
-  if (!r1.ok) return { outcome: 'not proven', detail: `the recovery answered done (${res.note}), but the record could not be read again: ${r1.reason}` }
+  if (!r1.ok) return { outcome: 'not proven', detail: `${rel}the recovery answered done (${res.note}), but the record could not be read again: ${r1.reason}` }
   const still = r1.record.grantsKept ?? []
-  if (still.length) return { outcome: 'FAILED', detail: `the recovery answered done (${res.note}), but the record still keeps a grant on ${still.map(g => g.folder).join(', ')}` }
-  const done = `the recovery answered done (${res.note}) and the record keeps no grant`
+  if (still.length) return { outcome: 'FAILED', detail: `${rel}the recovery answered done (${res.note}), but the record still keeps a grant on ${still.map(g => g.folder).join(', ')}` }
+  // C22-4: from here on the grant is put back, whatever the comparison shows.
+  const done = `${rel}the recovery answered done (${res.note}) and the record keeps no grant`
   if (!kept.some(g => same(g.folder, folder))) {
-    return { outcome: 'not proven', detail: `${done}, but the grant kept was on ${kept.map(g => g.folder).join(', ')}, not on ${folder}, whose access list alone was read before the run's establish` }
+    return { outcome: 'not proven', restored: true, detail: `${done}, but the grant kept was on ${kept.map(g => g.folder).join(', ')}, not on ${folder}, whose access list alone was read before the run's establish` }
   }
   const was = before ?? { error: 'it was not read' }
-  if (typeof was.sddl !== 'string') return { outcome: 'not proven', detail: `${done}, but the access list of ${folder} could not be read before the run's establish (${was.error}), so nothing was compared` }
+  if (typeof was.sddl !== 'string') return { outcome: 'not proven', restored: true, detail: `${done}, but the access list of ${folder} could not be read before the run's establish (${was.error}), so nothing was compared` }
   const now = readAcl(folder)
-  if (typeof now?.sddl !== 'string') return { outcome: 'not proven', detail: `${done}, but the access list of ${folder} could not be read after it (${now?.error ?? 'no answer'}), so nothing was compared` }
+  if (typeof now?.sddl !== 'string') return { outcome: 'not proven', restored: true, detail: `${done}, but the access list of ${folder} could not be read after it (${now?.error ?? 'no answer'}), so nothing was compared` }
   if (now.sddl !== was.sddl) {
-    return { outcome: 'FAILED', detail: `the recovery answered done and the record keeps no grant, but the access list of ${folder} differs from the one read before the run's establish: before ${was.sddl}; after ${now.sddl}` }
+    return { outcome: 'FAILED', restored: true, detail: `${rel}the recovery answered done and the record keeps no grant, but the access list of ${folder} differs from the one read before the run's establish: before ${was.sddl}; after ${now.sddl}` }
   }
   const n = (now.sddl.match(/\(/g) ?? []).length
-  return { outcome: 'passed', detail: `the access list of ${folder} (its DACL in SDDL, ${n} entr${n === 1 ? 'y' : 'ies'}, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${runId}, answered done (${res.note})` }
+  // Wave 22c (the reader of live-6): both readings whole, after the engine's note, so that the printed line keeps its head
+  // and the REPORT detail lets a reader compare them without the stage (the record and its saved copy go with the sweep).
+  return { outcome: 'passed', restored: true, detail: `${rel}the access list of ${folder} (its DACL in SDDL, ${n} entr${n === 1 ? 'y' : 'ies'}, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${runId}, answered done (${res.note}); the reading before the establish: ${was.sddl}; the reading after the recovery: ${now.sddl}` }
+}
+
+/**
+ * Wave 22b: the grants a run's record keeps (`grantsKept`), read through the engine's own reader (containmentFromRecord),
+ * never from a note: an array, or null when the record could not be read.
+ */
+export function keptGrantsOf(C, runDir) {
+  const r = C.containmentFromRecord(runDir)
+  return r.ok ? (r.record.grantsKept ?? []) : null
+}
+
+/**
+ * Wave 22b (pure; item 5): a release's own answer, where the stage keeps it (every inner run, and the box). All done
+ * (`relabelled` true), or no answer: null. Not all done with a grant kept that the caller puts back itself (`recovers`:
+ * run 6 and the box, grantRecovery, whose entry names the answer): null. Otherwise FAILED, with the release's note: a
+ * kept grant this stage does not put back, a record that could not be read (`kept` null), or no grant kept at all, so the
+ * release was not all done for another reason, which would otherwise pass silently.
+ */
+export function releaseNotDone({ released, kept, recovers = false }) {
+  if (released?.relabelled !== false) return null
+  const note = oneLine(String(released.note ?? '')) || '(no note)'
+  if (kept === null) return { outcome: 'FAILED', detail: `the release answered not all done (relabelled false), and its record could not be read for a kept grant; its note: ${note}` }
+  if (kept.length > 0 && recovers) return null
+  if (kept.length > 0) {
+    return { outcome: 'FAILED', detail: `the release answered not all done (relabelled false) and its record keeps an access-list grant on ${kept.map(g => `${g.folder} (${g.why ?? 'no reason recorded'})`).join(', ')}, which this stage puts back only after run 6 and the box; its note: ${note}` }
+  }
+  return { outcome: 'FAILED', detail: `the release answered not all done (relabelled false) and its record keeps no access-list grant, so the reason is another; its note: ${note}` }
 }
 
 /** Wave 22 (pure): the box's one line for grantRecovery's answer, printed after its release. */
 export function grantRecoveryLine(o) {
   return `${TAG} the access-list recovery after the release: ${o.outcome} (${o.detail})`
+}
+
+/**
+ * Wave 22c (the reader of live-6, third item): a put-back the release made itself, shown and not only said. After a
+ * release, the run's record read through the engine's own reader (containmentFromRecord, never the note): a grant taken
+ * (`grants`) and none kept (`grantsKept`): each granted folder's access list is read again (`readAcl`, readAclOf) and
+ * compared with the reading taken the same way before the run's establish (`before`: `[{ folder, reading }]`). One answer:
+ * `{ kind: 'entry', outcome, detail }`: passed with both texts; FAILED when a list differs (naming only those), or when the
+ * record says the list was widened with no saved copy; not proven when a reading failed, a granted folder was not read
+ * before, or the record could not be read. `{ kind: 'no grant', words }` for the release line of a run whose record holds
+ * no grant (no entry). `{ kind: 'kept' }` when the record keeps a grant: run 6's recovery or releaseNotDone judges it.
+ */
+export function grantPutBack({ C, runDir, before, readAcl }) {
+  const runId = basename(runDir)
+  const same = (a, b) => fold(realOf(a)) === fold(realOf(b))
+  const r = C.containmentFromRecord(runDir)
+  if (!r.ok) return { kind: 'entry', outcome: 'not proven', detail: `the record of ${runId} could not be read through the engine's reader after the release: ${r.reason}` }
+  const grants = r.record.grants ?? []
+  if (r.record.cwdGranted === true && grants.length === 0) {
+    return { kind: 'entry', outcome: 'FAILED', detail: `the record of ${runId} says its establish widened the access list of ${r.record.missionCwd} (cwdGranted) but holds no saved copy of it (grants), so the release could not put it back` }
+  }
+  if (grants.length === 0) return { kind: 'no grant', words: 'its record holds no access-list grant, so the release had none to put back' }
+  if ((r.record.grantsKept ?? []).length > 0) return { kind: 'kept' }
+  const differ = [], unproven = [], passed = []
+  for (const g of grants) {
+    const b = (before ?? []).find(x => same(x.folder, g.folder))
+    if (!b) { unproven.push(`the access list of ${g.folder} was not read before the run's establish, so nothing was compared`); continue }
+    if (typeof b.reading?.sddl !== 'string') { unproven.push(`the access list of ${g.folder} could not be read before the run's establish (${b.reading?.error ?? 'no answer'}), so nothing was compared`); continue }
+    const now = readAcl(g.folder)
+    if (typeof now?.sddl !== 'string') { unproven.push(`the access list of ${g.folder} could not be read after the release (${now?.error ?? 'no answer'}), so nothing was compared`); continue }
+    if (now.sddl !== b.reading.sddl) { differ.push(`the access list of ${g.folder} differs from the one read before the run's establish, although the release says it put back the grant its record holds and the record keeps none: before ${b.reading.sddl}; after ${now.sddl}`); continue }
+    const n = (now.sddl.match(/\(/g) ?? []).length
+    passed.push(`the access list of ${g.folder} (its DACL in SDDL, ${n} entr${n === 1 ? 'y' : 'ies'}, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish: before ${b.reading.sddl}; after ${now.sddl}`)
+  }
+  if (differ.length) return { kind: 'entry', outcome: 'FAILED', detail: differ.join('; ') }
+  if (unproven.length) return { kind: 'entry', outcome: 'not proven', detail: unproven.join('; ') }
+  return { kind: 'entry', outcome: 'passed', detail: `${passed.join('; ')}; the release put back itself every grant its record holds (grants), and the record keeps none (grantsKept)` }
+}
+
+/** Wave 22c (pure): the box's one line for grantPutBack's entry, printed after its release line. */
+export function grantPutBackLine(o) {
+  return `${TAG} the access-list grant put back by the release: ${o.outcome} (${o.detail})`
 }
 
 // ─── Live fire (run 6) ───────────────────────────────────────────────────────────────────────
@@ -4150,10 +4467,14 @@ async function liveFire(R) {
             if (changed(`${what} (through toolExec)`)) return { stop: true }
             decoys = decoysState(ctx, set)
             r = { isError: again.code !== 0, output: `${again.stdout}${again.stderr}` }
-            via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}`
+            // Wave 22c (the reader of live-7): the audit records no rerun through toolExec, so a copy's form carries the
+            // rerun's own exit code and the head of its output.
+            via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}${v.variant === 'git-bash-copy' ? `; its output: ${oneLine(r.output).slice(0, 200) || '(no output)'}` : ''}`
           }
           const made = madeOf(v.creates ?? [], before, whereIn([ctx.sandbox.root]))
-          const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })
+          const o0 = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })
+          // Wave 22c: a copy's form is contained only with its shell shown as the copy's at low, naming the decoys that went.
+          const o = v.variant === 'git-bash-copy' ? copyFormOutcome({ base: o0, output: r.output, copy: R.tools.msys ?? '', id: attack.id, gone: decoysGone(ctx, set) }) : o0
           removeMade(before)
           const e = entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, decoys, detail: [via, o.detail].filter(Boolean).join('; ') || null })
           return { stop: stopsLiveFire(e) }
@@ -4349,7 +4670,8 @@ function afterLiveRelease(R, rel) {
   // folder. With the junctions gone, the stage does what the release's line tells the owner to do, by the function behind
   // it, and proves it (grantRecovery): one entry, before run 7 establishes on the same folder and before step 8 sweeps.
   // Outside the block above: a grant may be kept for another link, whether or not the child made c0-low's.
-  const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf })
+  // Wave 22b: with the release's own answer, which the entry names beside the record's kept grant.
+  const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf, released: rel })
   entry(report, { id: 'grant-recovery', variant: 'restore-acl', form: 'live', outcome: g.outcome, detail: g.detail })
 }
 
@@ -4413,6 +4735,8 @@ export async function runFakeStage(a = {}) {
     tools: null, lowIntegrity: WIN ? 'FAILED' : 'not-applicable', liveFire: Boolean(a.liveFire) && WIN, acknowledged: [], canary: {}, entries: [],
     labelLeak: 'none', leftBehind: [], links: [], notProven: 0, realProfileLoss: null, realProfileUnmeasured: [], pass: false, firstFailure: null, innerRuns: [],
     boxFolder: null,
+    // Wave 22b (item 2): what is kept at the end (keptAtEnd), whether step 8 swept, and the run folders its sweep kept.
+    kept: null, swept: false, sweepKept: [], sandboxRoot: null,
   }
   const failWith = (why) => { if (report.firstFailure === null) report.firstFailure = why }
   // Refused before anything is made: live fire while a volume without labels is attached, and a root
@@ -4546,6 +4870,10 @@ export async function runFakeStage(a = {}) {
   }
   report.disarm = await disarmMission(fake, nonce)
   say(`${TAG} ${report.disarm.line}`)
+  // Wave 22b (item 2): what the stage leaves kept, read at its end through the engine's own records (a grant a release
+  // kept, with its saved copy in its run folder), for the closing line (finishFake, keptWords).
+  report.sandboxRoot = fake.sandboxRoot
+  report.kept = await keptAtEnd(fake.sandboxRoot)
   report.shell = WIN ? 'Windows PowerShell' : 'bash'
   if (census0 !== null) {
     let lost = null
@@ -4634,6 +4962,10 @@ async function sweepProof(fake, report) {
     lines.push(`the sweep threw: ${e?.message ?? e}`)
     say(`${TAG} step 8: the sweep threw: ${e?.message ?? e}`)
   }
+  // Wave 22b (item 2): the run folders still there after the sweep, each with the sweep's own line about it, for the
+  // closing line (keptWords).
+  report.swept = true
+  report.sweepKept = runDirs.filter(exists).map(d => ({ runDir: d, line: lines.find(l => fold(l).includes(fold(d))) ?? null }))
   // RC1: each junction the sweep was to meet is gone afterwards, and its run folder was a record before it.
   const met = sweepMet({ sandboxRoot: fake.sandboxRoot, met: plan.met, records, exists, isLink: isLinkEntry })
   const o = sweepOutcome({ missionDiff: treeDiff(m0, treeEntries(fake.mission)), homeDiff: treeDiff(h0, treeEntries(fake.home)), left: runDirs.filter(exists), lines, met })
@@ -4767,6 +5099,8 @@ export function finishFake(report, o = {}) {
     if (catalog && report.liveFire && report.entries.some(e => e.run === 6)) gaps.push(...liveCoverage(catalog, report.entries))
     // RH4: live fire on is a PASS only with its proofs, whatever path skipped them.
     if (report.liveFire) gaps.push(...liveProofCoverage(report.entries))
+    // Wave 22c: run 1's own proof, the harness's refusal of the snapshot by naming the link, with live fire on or off.
+    gaps.push(...runOneProofCoverage(report))
     // Wave 10d, F6: every inner run that applies to the stage reported (runs 6 and 7 only with live fire on).
     gaps.push(...innerRunCoverage(report))
     // Wave 11: the box rehearsal's one entry, with live fire on or off.
@@ -4819,9 +5153,54 @@ export function finishFake(report, o = {}) {
   }
   report.links = links
   if (report.root && !report.refused) {
-    say(`${TAG} the test root was left in place: ${report.root}. Remove links first (${links.join(', ') || 'none'}), each with rmdir; then the folder.${unlisted.length ? ` These folders could not be listed, so a link in them was not looked for: ${unlisted.join(', ')}.` : ''}${report.disarm ? ` ${report.disarm.line.charAt(0).toUpperCase()}${report.disarm.line.slice(1)}.` : ''}`)
+    // Wave 22b (item 2): what is kept (a grant a release kept, a run folder the sweep kept) and the command that puts the
+    // grant back, or a few words saying nothing is; only when the stage read it at its end (report.kept).
+    const kept = report.kept ? ` ${keptWords({ kept: report.kept, sweepKept: report.sweepKept ?? [], swept: report.swept === true, sandboxRoot: report.sandboxRoot })}` : ''
+    say(`${TAG} the test root was left in place: ${report.root}. Remove links first (${links.join(', ') || 'none'}), each with rmdir; then the folder.${kept}${unlisted.length ? ` These folders could not be listed, so a link in them was not looked for: ${unlisted.join(', ')}.` : ''}${report.disarm ? ` ${report.disarm.line.charAt(0).toUpperCase()}${report.disarm.line.slice(1)}.` : ''}`)
   }
   return report
+}
+
+/**
+ * Wave 22b (item 2, reader 2 of live-5): the run records under the fake sandbox root that still keep an access-list grant,
+ * read at the stage's end through the engine's own reader (containmentRecords): `{ grants: [{ runId, runDir, folders }] }`,
+ * or `{ unread }` when the engine could not be asked.
+ */
+export async function keptAtEnd(sandboxRoot) {
+  try {
+    const C = await import('../engine/containment.js')
+    const grants = C.containmentRecords({ sandboxRoot })
+      .filter(r => (r.grantsKept ?? []).length > 0)
+      .map(r => ({ runId: r.runId, runDir: join(sandboxRoot, r.runId), folders: r.grantsKept.map(g => g.folder) }))
+    return { grants }
+  } catch (e) {
+    return { unread: String(e?.message ?? e) }
+  }
+}
+
+/**
+ * Wave 22b (pure; item 2): the closing line's words for what the stage leaves kept. `kept` (keptAtEnd), `sweepKept` (step
+ * 8: `{ runDir, line }` of each run folder still there after its sweep), `swept` (step 8 ran its sweep), `sandboxRoot` (the
+ * fake one, which restore-acl must be pointed at). A grant: its folder, its run folder (and that the sweep kept it) and the
+ * command that puts it back; a run folder the sweep kept for another reason, with the sweep's line; or a few words saying
+ * nothing is kept.
+ */
+export function keptWords({ kept, sweepKept = [], swept = false, sandboxRoot }) {
+  const parts = []
+  const named = new Set()
+  for (const g of kept?.grants ?? []) {
+    named.add(fold(g.runDir))
+    const sk = sweepKept.some(s => fold(s.runDir) === fold(g.runDir))
+    parts.push(`run ${g.runId} keeps its access-list grant on ${g.folders.join(', ')}, its saved copy in its run folder ${g.runDir}${sk ? ', which the sweep kept' : ''}; put it back with: bun scripts/cynco-sandbox.mjs restore-acl ${g.runId} (with LOCALCODE_SANDBOX_ROOT=${sandboxRoot}), once the links are removed`)
+  }
+  for (const s of sweepKept) {
+    if (named.has(fold(s.runDir))) continue
+    parts.push(`the run folder ${s.runDir}, which the sweep kept${s.line ? ` (${s.line})` : ''}`)
+  }
+  const unread = typeof kept?.unread === 'string' ? `Whether a run keeps an access-list grant could not be read (${kept.unread}).` : ''
+  if (parts.length) return `${unread ? `${unread} ` : ''}Kept, to put back before the folder is removed: ${parts.join('; ')}.`
+  if (unread) return unread
+  return `Nothing is kept: no run keeps an access-list grant${swept ? ', and the sweep kept no run folder' : ' (the sweep did not run)'}.`
 }
 
 /** The catalog of a report's run, for the coverage checks: `{ id, v }` of every variant on this platform. */
@@ -5028,7 +5407,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   const runId = C.mintRunId('acceptance-real')
   // Printed now, not only at the end: a stage killed or stopped with Ctrl-C runs no finally block, and leaves an open
   // baseline (every later takeBaseline refuses while it stands), a sandbox and the box's mission folder labelled Low.
-  say(`${TAG} run id ${runId}; mission folder ${mission}. If this stage is interrupted, recover with: bun scripts/cynco-guard.mjs post ${runId} --by acceptance, then bun scripts/cynco-sandbox.mjs release ${runId}${rehearsal ? ` (with LOCALCODE_GUARD_DIR, LOCALCODE_AUDIT_DIR and LOCALCODE_SANDBOX_ROOT set to the fake ones under ${rehearsal.root})` : ''}`)
+  // Wave 22b (check C22-6): and whether the access list was read before the establish (in the rehearsal, from the inner
+  // process's fake-home environment), which the recovery after the release compares when a grant is kept.
+  say(`${TAG} run id ${runId}; mission folder ${mission}; its access list before the establish: ${aclBefore.sddl !== undefined ? 'read' : `not read (${aclBefore.error})`}. If this stage is interrupted, recover with: bun scripts/cynco-guard.mjs post ${runId} --by acceptance, then bun scripts/cynco-sandbox.mjs release ${runId}${rehearsal ? ` (with LOCALCODE_GUARD_DIR, LOCALCODE_AUDIT_DIR and LOCALCODE_SANDBOX_ROOT set to the fake ones under ${rehearsal.root})` : ''}`)
   // Audit finding 2: the first day whose audit file can hold this run's records (the writer names a file by the local
   // date of each record), read before anything is written.
   const day0 = localDay()
@@ -5043,8 +5424,11 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   // Wave 18b: `ended`, set when the box ran to its end (its result is given after the release); `released`, the release's answer.
   let ended = null
   let released = null
-  // Wave 22: grantRecovery's answer after the release.
+  // Wave 22: grantRecovery's answer after the release. Wave 22b: the grants the record kept at the release.
   let recovery = null
+  let boxKept = []
+  // Wave 22c: grantPutBack's answer after the release (a grant the release put back itself, read again).
+  let putBack = null
   // F8: `attacks`, every attack call the stage takes up (refused, or its twin did not resolve), for realResult's sum and
   // the NOT PROVEN block. Wave 18 (plan P6 (15)): the one counter of calls; `calls`, which counted the same calls once
   // more and ended equal to it when every twin resolved, is gone.
@@ -5357,13 +5741,20 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     say(`${TAG} the settling compare for ${runId}: ${s.changed ? `CHANGED (${s.publicSummary})` : 'unchanged'}`)
     if (ctx) {
       released = C.releaseContainment(ctx)
-      say(`${TAG} released: ${released.note}`)
+      // Wave 22c (the reader of live-6): as every inner run does, a grant the release put back itself is read again and
+      // compared (its line next), and a record that holds no grant says so in the release line.
+      putBack = grantPutBack({ C, runDir: ctx.sandbox.root, before: [{ folder: mission, reading: aclBefore }], readAcl: readAclOf })
+      say(`${TAG} released: ${released.note}${putBack.kind === 'no grant' ? ` (${putBack.words})` : ''}`)
+      if (putBack.kind === 'entry') say(grantPutBackLine(putBack))
       // Wave 19 (the box core check, C10): a release that kept an access-list grant keeps the sandbox from the sweep until
       // restore-acl puts it back; the line says so from the release's own note. Wave 22: first the box puts a kept grant
       // back itself, by the function behind restore-acl, and proves it (grantRecovery, as run 6 does); the line then says so.
-      recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf })
+      // Wave 22b (item 5): the grants the record keeps at the release, read before the recovery, for the release's own answer.
+      boxKept = released.relabelled === false ? keptGrantsOf(C, ctx.sandbox.root) : []
+      recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf, released })
       say(grantRecoveryLine(recovery))
-      say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))
+      // Check C22-4: "put back" when the recovery put the grant back, whatever the comparison after it showed.
+      say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.restored === true }))
     }
   }
   // Reached only by a box that ran to its end: every other path returned above, after the finally block released it.
@@ -5371,7 +5762,13 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   // Wave 22: a kept grant the recovery could not put back, or lists that differ, stop the box; a reading that failed is a
   // not-proven item outside both accepted lists (the result is INCOMPLETE).
   if (recovery?.outcome === 'FAILED') { say(`${TAG} FAIL (${where}): the access-list recovery after the release: ${recovery.detail}`); return { code: 1 } }
+  // Wave 22b (item 5): a release that was not all done for another reason than a grant the recovery put back stops the box.
+  const notDone = releaseNotDone({ released, kept: boxKept, recovers: true })
+  if (notDone) { say(`${TAG} FAIL (${where}): the release: ${notDone.detail}`); return { code: 1 } }
   if (recovery?.outcome === 'not proven') notProven.push({ what: `the access-list recovery after the release: ${recovery.detail}`, cls: 'grant-recovery-not-proven' })
+  // Wave 22c: a list the release put back that differs stops the box; a reading that failed is outside both accepted lists.
+  if (putBack?.outcome === 'FAILED') { say(`${TAG} FAIL (${where}): the access-list grant put back by the release: ${putBack.detail}`); return { code: 1 } }
+  if (putBack?.outcome === 'not proven') notProven.push({ what: `the access-list grant put back by the release: ${putBack.detail}`, cls: 'grant-put-back-not-proven' })
   const obj = firstObjectFile(mission)
   for (const f of [join(mission, 'src', 'pkg', 'mod.py'), obj].filter(f => f && exists(f))) say(`${TAG} ${f}: Low label: ${lowLabelled(f) ? 'yes' : 'no'}`)
   // Wave 18: and the temp file honest work (d) made in the sandbox, which the release sets back to medium since wave 15.
