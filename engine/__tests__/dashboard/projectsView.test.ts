@@ -360,6 +360,32 @@ describe('dashboard: the Projects view', () => {
     expect(html).toContain('kept but not indexed')
   })
 
+  // 2026-11-25: every knowledge file of a project read "kept but not indexed", and the owner could not find
+  // the button that indexes them: the only Rescan was on the History tab, while the line shows on Knowledge
+  // (and on Artifacts). Each of the three panels carries one, and the answer is written where it was pressed.
+  it('Rescan is on the Knowledge and Artifacts tabs as well as History, and answers in the panel it was pressed in', () => {
+    const panel = (id: string): string => {
+      const start = html.indexOf(`id="${id}"`)
+      expect(start, `the page has no #${id}`).toBeGreaterThan(-1)
+      const next = html.indexOf('<div class="panel proj-panel"', start)
+      return html.slice(start, next === -1 ? start + 4000 : next)
+    }
+    expect(panel('knowledgePanel')).toContain(`onclick="rescanProjectFiles('knowledgeStatus')"`)
+    expect(panel('knowledgePanel')).toContain('id="knowledgeStatus"')
+    expect(panel('artifactsPanel')).toContain(`onclick="rescanProjectFiles('artifactsStatus')"`)
+    expect(panel('artifactsPanel')).toContain('id="artifactsStatus"')
+    expect(panel('projectHistoryPanel')).toContain('onclick="rescanProjectFiles()"')
+
+    const js = scripts()
+    const at = js.indexOf('function rescanProjectFiles(statusId)')
+    expect(at, 'rescanProjectFiles takes the id of the status line to answer in').toBeGreaterThan(-1)
+    const body = js.slice(at, js.indexOf('\n}\n', at))
+    expect(body).toContain(`var where = statusId || 'historyStatus'`)
+    // Every line the function writes goes to `where`: none is pinned to History's status any more.
+    expect(body.match(/projStatus\(where, /g)?.length).toBe(3)
+    expect(body).not.toContain(`projStatus('historyStatus'`)
+  })
+
   it('is responsive: the first @media block collapses at 720px', () => {
     const first = html.indexOf('@media')
     expect(first).toBeGreaterThan(-1)
