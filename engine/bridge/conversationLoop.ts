@@ -116,7 +116,7 @@ import { extractPatch } from '../bestOfN/patchExtractor.js'
 import { runTests, selectWinner, applyPatch } from '../bestOfN/sampler.js'
 import { runContainment } from '../containment.js'
 import { harnessGitEnv } from '../harnessGit.js'
-import { appendCapped, STREAM_LOG_MAX_BYTES } from '../logCap.js'
+import { appendCapped, STREAM_LOG_MAX_BYTES, writeOwnFile } from '../logCap.js'
 import type { ProjectBinding } from '../projects/binding.js'
 import { gradeProjectCall } from '../projects/binding.js'
 import { assembleProjectPrompt, projectTools } from '../projects/profile.js'
@@ -339,6 +339,22 @@ export type PendingDecision =
   | { kind: 'approval'; requestId: string; toolName: string; description: string; risk: ApprovalRequestEvent['risk'] }
   | { kind: 'ask'; requestId: string; question: string; options?: string[] }
 
+/**
+ * What `ConversationLoop.compactOnRequest` answers. `refused` names why nothing
+ * was tried (a turn or another compaction holds the loop), null when it ran;
+ * `compacted` is false also when the conversation was too short or the summary
+ * could not be made (the engine log's `[compact]` line says which). Tokens are
+ * the loop's own estimate of the message list, before and after.
+ */
+export type CompactAnswer = {
+  refused: string | null
+  compacted: boolean
+  tokensBefore: number
+  tokensAfter: number
+  messagesBefore: number
+  messagesAfter: number
+}
+
 export class ConversationLoop {
   private messages: Message[] = []
   /**
@@ -535,6 +551,10 @@ export class ConversationLoop {
    * to signal then; the controller honours this the moment it exists.
    */
   private abortRequested = false
+  /** The Stop of a compaction a person asked for (`compactOnRequest`), while one runs; `abort()` fires it. */
+  private compactionStop: AbortController | null = null
+  /** How long `compactOnRequest` lets its side query run before it stops it (wave 15c, check B4-6). */
+  private compactRequestCapMs = 5 * 60_000
   private workflowEngine: WorkflowEngine
   private lspManager: LSPManager
   private governance: GovernanceLayer
@@ -957,6 +977,10 @@ export class ConversationLoop {
   }
 
   abort(reason = 'the turn was stopped'): void {
+    // A compaction a person asked for holds the loop without a turn controller
+    // (the one below, if set, is the last turn's, already over): Stop ends it
+    // too, and its finally frees the loop (wave 15c, check B4-6).
+    this.compactionStop?.abort()
     if (this.abortController) {
       this.abortController.abort()
       // A turn parked on an approval card or an AskUser question never reaches
@@ -1021,8 +1045,9 @@ export class ConversationLoop {
   /**
    * A click on a RenderUI surface (engine/genui/actions.ts). Idle: it is the
    * next user turn at once. Busy: queued, then drained at the running turn's
-   * natural end (runModelLoop) or re-dispatched from runTurn's finally when
-   * the turn leaves by any other path — the busy guard above never sees it.
+   * natural end (runModelLoop) or re-dispatched (redispatchQueuedClick) from
+   * runTurn's finally when the turn leaves by any other path, or from
+   * compactOnRequest's finally after a /compact — the busy guard above never sees it.
    */
   handleUiAction(cmd: UiActionCommand): void {
     // `currentTurn` as well as `processing`: abort() clears `processing` while
@@ -1589,7 +1614,9 @@ export class ConversationLoop {
       // the message as sent. The frame is an existing type, so no client needs
       // a new arm; the dashboard page keeps the text in its box.
       console.log('[loop] Already processing — refusing the message and saying so')
-      this.emit({ type: 'session.error', error: 'busy: a turn is still running — press Stop or wait for it to finish, then send again' })
+      // What holds the loop is named: a compaction a person asked for is not a turn (wave 15c, check B4-6).
+      const holder = this.compactionStop !== null ? 'a compaction is running' : 'a turn is still running'
+      this.emit({ type: 'session.error', error: `busy: ${holder} — press Stop or wait for it to finish, then send again` })
       return
     }
     // `processing` MUST clear on every exit, not just the happy one. It is set
@@ -1613,6 +1640,88 @@ export class ConversationLoop {
     }
   }
 
+  /**
+   * A click queued behind whatever held the loop (a turn, or a compaction a
+   * person asked for) is dispatched once the loop is free; the busy guard
+   * never sees a click, so nothing else would deliver it.
+   */
+  private redispatchQueuedClick(after: string): void {
+    const queuedClick = this.pendingUiActions.shift()
+    if (!queuedClick) return
+    console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after ${after}`)
+    setTimeout(() => {
+      // Another turn got in first (a second click, a typed message): hand
+      // the click to it rather than to the busy guard, which drops it.
+      if (this.processing || this.currentTurn) { this.pendingUiActions.unshift(queuedClick); return }
+      this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: !isFollowUp(queuedClick) })
+        .catch(e => console.error('[genui] ui.action re-dispatch failed: ' + (e as Error).message))
+    }, 0)
+  }
+
+  /**
+   * A compaction a person asked for (`/compact`, engine/main.ts), answered
+   * with what it freed. Refused while a turn runs: a compaction replaces the
+   * message list the turn is using. Otherwise it holds `processing`, the busy
+   * state `handleUserMessage` checks, for the whole compaction, so a typed
+   * message meets the busy guard exactly as it would behind a turn (said on
+   * the wire, never started beside the compaction and then thrown away by
+   * it), and a click queues and is dispatched when the compaction ends. The
+   * `finally` clears it on every exit, a throw included, and clears a Stop
+   * pressed meanwhile, which belonged to the compaction and not to the next
+   * turn. The side query is a model request, so it holds the model awake.
+   */
+  async compactOnRequest(label: string): Promise<CompactAnswer> {
+    const messagesBefore = this.messages.length
+    if (this.processing || this.currentTurn) {
+      return {
+        refused: 'a turn is running (or another compaction); ask again when it has ended',
+        compacted: false,
+        tokensBefore: Math.round(this.estimateMessageTokens()), tokensAfter: Math.round(this.estimateMessageTokens()),
+        messagesBefore, messagesAfter: messagesBefore,
+      }
+    }
+    this.processing = true
+    const endActivity = activity.begin('request', 'compaction')
+    // Wave 15c (check B4-6): Stop ends a compaction (abort() fires this while
+    // no turn runs), and so does its cap; the signal reaches the side query's
+    // request, which had none, so a wedged model server held the chat busy.
+    const stop = new AbortController()
+    this.compactionStop = stop
+    const cap = setTimeout(() => {
+      console.log(`[compact] ${label}: not finished within its cap of ${this.compactRequestCapMs} ms; stopped`)
+      stop.abort()
+    }, this.compactRequestCapMs)
+    // The answer is read inside, so it describes this conversation even when a
+    // session switch waiting on `currentTurn` swaps it the moment this settles.
+    const run = (async (): Promise<CompactAnswer> => {
+      const tokensBefore = Math.round(this.estimateMessageTokens())
+      const compacted = await this.compactNow(label, stop.signal)
+      return {
+        refused: null,
+        compacted,
+        tokensBefore, tokensAfter: Math.round(this.estimateMessageTokens()),
+        messagesBefore, messagesAfter: this.messages.length,
+      }
+    })()
+    // Wave 15c (check B4-1): the compaction is the loop's current turn for
+    // everything that waits for a turn to end. A project or chat switch aborts
+    // and awaits `currentTurn`; with only `processing` held it went ahead at
+    // once, and the summary of the conversation it left landed in the new one.
+    const held: Promise<void> = run.then(() => undefined, () => undefined)
+    this.currentTurn = held
+    try {
+      return await run
+    } finally {
+      clearTimeout(cap)
+      if (this.compactionStop === stop) this.compactionStop = null
+      if (this.currentTurn === held) this.currentTurn = null
+      this.processing = false
+      this.abortRequested = false
+      endActivity()
+      this.redispatchQueuedClick('the compaction')
+    }
+  }
+
   /** The body of one accepted `handleUserMessage` — split out so the turn can be awaited as a whole. */
   private async runTurn(text: string, opts?: TaskOpts): Promise<void> {
     try {
@@ -1630,17 +1739,7 @@ export class ConversationLoop {
       // not drain is dispatched once the loop is free (design A2/A8). Both
       // wrapped: nothing here may skip the clears below.
       try { this.closePendingUiSurfaces('turn end', () => 'the turn ended before this surface was finished') } catch (e) { console.error('[genui] terminal frame failed: ' + (e as Error).message) }
-      const queuedClick = this.pendingUiActions.shift()
-      if (queuedClick) {
-        console.log(`[genui] ui.action "${queuedClick.action}" re-dispatched after the turn`)
-        setTimeout(() => {
-          // Another turn got in first (a second click, a typed message): hand
-          // the click to it rather than to the busy guard, which drops it.
-          if (this.processing || this.currentTurn) { this.pendingUiActions.unshift(queuedClick); return }
-          this.handleUserMessage(this.uiActionText(queuedClick), { uiAction: !isFollowUp(queuedClick) })
-            .catch(e => console.error('[genui] ui.action re-dispatch failed: ' + (e as Error).message))
-        }, 0)
-      }
+      this.redispatchQueuedClick('the turn')
       // BEFORE `unattendedActive` is cleared: this is the last instant at which
       // the queue belongs to a mission at all, and anything still in it never
       // reached the model.
@@ -2079,7 +2178,7 @@ export class ConversationLoop {
     const compactThreshold = ctxLen * (this.config.contextManagement?.warningThreshold ?? 0.4)
     if (estimatedTokensPreTurn > compactThreshold) {
       console.log(`[compact] Pre-turn: ${Math.round(estimatedTokensPreTurn)} tokens > ${Math.round(compactThreshold)} threshold`)
-      await this.compactNow('pre-turn')
+      await this.compactNow('pre-turn', this.abortController?.signal)
     }
 
     // Projects mode: the project's own knowledge, not the code index — a
@@ -2454,7 +2553,7 @@ export class ConversationLoop {
           const estTokens = await this.estimateContextTokens()
           if (this.compressor.shouldCompress(this.messages, estTokens, ctxLen)) {
             // Single compaction path: runCompaction via compactNow (write-before-compact).
-            if (await this.compactNow('s5-decision')) {
+            if (await this.compactNow('s5-decision', this.abortController?.signal)) {
               console.log(`[s5] Context compacted by S5 decision`)
             }
           }
@@ -2582,9 +2681,13 @@ export class ConversationLoop {
           // Set when a candidate's tests could not be run in this run: no candidate is then applied,
           // because an untested candidate would win on a score that measured nothing.
           let bonRefusal: string | null = null
+          // Stop reaches a best-of-N turn (wave 19, check C4-5): the turn's signal ends a candidate's
+          // test run with its tree, no later candidate starts, and no winner is applied after it.
+          const turnSignal = this.abortController?.signal
 
           try {
             for (let i = 0; i < bonCount; i++) {
+              if (turnSignal?.aborted) break
               // Reset conversation to pre-candidate state
               this.messages = JSON.parse(JSON.stringify(savedMessages))
               this.config.temperature = bonTemp
@@ -2607,10 +2710,12 @@ export class ConversationLoop {
               } catch (e) {
                 console.log(`[bestOfN] Candidate ${i + 1} loop error: ${e}`)
               }
+              if (turnSignal?.aborted) break
 
               // Extract patch and run tests
-              const patch = extractPatch(wtPath)
-              const testResult = runTests(wtPath, testInfo)
+              const patch = extractPatch(wtPath, `candidate ${i + 1}`)
+              const testResult = await runTests(wtPath, testInfo, undefined, turnSignal)
+              if (turnSignal?.aborted) break
               if (testResult.refused) {
                 bonRefusal = testResult.refused
                 console.log('[bestOfN] tests not run: ' + bonRefusal)
@@ -2638,6 +2743,10 @@ export class ConversationLoop {
                 total: testResult.total,
                 passRate,
               } as any)
+              // The candidate is done with its worktree (its patch is text now): it goes before the
+              // next candidate starts, not only in the finally (wave 15c; round one's P4(3)). The
+              // finally still removes whatever is left after a throw or a refusal (F162).
+              wtManager.cleanup(wtPath)
             }
 
             // Restore state
@@ -2649,11 +2758,18 @@ export class ConversationLoop {
             // Select winner
             const winner = selectWinner(candidates)
 
-            if (!bonRefusal && winner && winner.patch) {
-              const applied = applyPatch(mainCwd, winner.patch)
+            if (turnSignal?.aborted) {
+              console.log('[bestOfN] stopped with the turn; no candidate is applied')
+              this.emit({ type: 'stream.token', text: '\n**Best-of-N:** stopped, so no candidate was applied.\n', messageId: '' } as any)
+            } else if (!bonRefusal && winner && winner.patch) {
+              // Why a winner was not applied is said on the page (check B4-4): every refusal used to
+              // read 'failed to apply cleanly', a link on its way included.
+              let notApplied = ''
+              const applied = applyPatch(mainCwd, winner.patch, why => { notApplied = why })
               const msg = applied
                 ? `\n**Best-of-N result:** Candidate ${winner.index + 1} selected — ${winner.testsPassed}/${winner.testsTotal} tests passing (${(winner.passRate * 100).toFixed(0)}%). Patch applied.\n`
-                : `\n**Best-of-N result:** Candidate ${winner.index + 1} won (${winner.testsPassed}/${winner.testsTotal} tests) but patch failed to apply cleanly. Running single-pass fallback.\n`
+                : `\n**Best-of-N result:** Candidate ${winner.index + 1} won (${winner.testsPassed}/${winner.testsTotal} tests) but its patch was not applied: ${notApplied || 'git did not apply it'}. Running single-pass fallback.\n`
+              if (!applied) console.log(`[bestOfN] the winner's patch was not applied: ${notApplied}`)
 
               this.emit({ type: 'stream.token', text: msg, messageId: '' } as any)
               this.emit({ type: 'bestOfN.selected' as any, winner: winner.index, passRate: winner.passRate, applied } as any)
@@ -3029,10 +3145,17 @@ export class ConversationLoop {
    * Keeps the most recent pairs so a pending tool_use message survives.
    * Returns true only if the message list was actually compacted.
    */
-  private async compactNow(label: string): Promise<boolean> {
+  // `signal`: the Stop of what asked for the compaction. A turn passes its own controller's (wave 15c:
+  // a Stop during an in-turn compaction waited for the side query, which had no signal), and
+  // `compactOnRequest` its compaction's.
+  private async compactNow(label: string, signal?: AbortSignal): Promise<boolean> {
     if (this.messages.length <= 6) return false
     try {
       const before = this.messages
+      // The journal of the conversation being compacted, taken before the
+      // side query: a session switch replaces `this.journal` (wave 15c, B4-1).
+      const journal = this.journal
+      let journalEntry: { summary: string; fileOps?: string } | null = null
       const contractText = globalContract.isActive() ? globalContract.snapshot().brief : undefined
       // Finding (x): the agent came out of a compaction not knowing what it had
       // already committed and began redoing finished work. Measured from git
@@ -3046,17 +3169,33 @@ export class ConversationLoop {
         // structured summary schema, not guessed: the longest well-formed
         // summary this prompt has ever produced was 1,218 chars (~300 tokens)
         // on a 5,670-token window, and real windows are ~10x that.
-        summarize: (prompt) => this.sideQuery(prompt, 8000),
-        journal: (summary, fileOps) => { try { this.journal.appendCompaction(summary, fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } },
+        summarize: (prompt) => this.sideQuery(prompt, 8000, undefined, signal),
+        // Held until the checks below: a summary that is not applied is not journalled.
+        journal: (summary, fileOps) => { journalEntry = { summary, fileOps } },
         contractText,
         commitLog,
       })
       if (compacted === before) return false
+      // Wave 15c (check B4-1, B4-6): nothing is written into a conversation
+      // that changed under the side query (a session switch, a resume), and a
+      // compaction that was stopped replaces nothing.
+      if (signal?.aborted) {
+        console.log(`[compact] ${label}: stopped before it finished; nothing replaced`)
+        return false
+      }
+      if (this.messages !== before) {
+        console.log(`[compact] ${label}: the conversation changed during the compaction; nothing replaced`)
+        return false
+      }
+      // Write-before-compact, into the compacted conversation's own journal.
+      const entry = journalEntry as { summary: string; fileOps?: string } | null
+      if (entry) { try { journal.appendCompaction(entry.summary, entry.fileOps) } catch (e) { console.log(`[session] compaction journal failed: ${e instanceof Error ? e.message : String(e)}`) } }
       this.messages = compacted
       console.log(`[compact] ${label}: → ${Math.round(this.estimateMessageTokens())} tokens (${this.messages.length} messages)`)
       return true
     } catch (e) {
-      console.log(`[compact] ${label} compaction failed: ${e}`)
+      if (signal?.aborted) console.log(`[compact] ${label}: stopped before it finished; nothing replaced (${e})`)
+      else console.log(`[compact] ${label} compaction failed: ${e}`)
       return false
     }
   }
@@ -3071,7 +3210,7 @@ export class ConversationLoop {
   }
 
   /** Quick side query — no tools, no thinking, returns plain text. */
-  private async sideQuery(prompt: string, maxTokens = 200, system?: string): Promise<string> {
+  private async sideQuery(prompt: string, maxTokens = 200, system?: string, signal?: AbortSignal): Promise<string> {
     // Route through the SAME backend as the main model to avoid loading
     // a second model in Ollama when using llama-cpp provider.
     // Uses OpenAI-compatible endpoint which both Ollama and llama-server support.
@@ -3090,6 +3229,7 @@ export class ConversationLoop {
           model: this.config.model!,
           system,
         })),
+        ...(signal ? { signal } : {}),
       })
       if (!resp.ok) throw new Error(`sideQuery HTTP ${resp.status}`)
       return readSideQueryContent(await resp.json())
@@ -3109,6 +3249,7 @@ export class ConversationLoop {
         think: false,
         stream: false,
       }),
+      ...(signal ? { signal } : {}),
     })
     if (!resp.ok) throw new Error(`sideQuery HTTP ${resp.status}`)
     const data: any = await resp.json()
@@ -3397,7 +3538,7 @@ export class ConversationLoop {
         this.emit({ type: 'stream.token', text: '\n[System] Compressing context to free space...\n' })
         // Single compaction path: runCompaction via compactNow (tier-0 trim,
         // write-before-compact journal, verbatim anchors, tracker reset).
-        await this.compactNow('loop-threshold')
+        await this.compactNow('loop-threshold', this.abortController?.signal)
         console.log(`[loop] Compressed to ${this.messages.length} messages (files tracked: ${this.fileTracker.getModifiedFiles().length} modified, ${this.fileTracker.getReadFiles().length} read)`)
       }
 
@@ -3848,7 +3989,13 @@ export class ConversationLoop {
               // Debug: write conversation state to file for diagnosis
               try {
                 const debugPath = require('path').join(this.debugDir(), '.cynco-debug.json')
-                require('fs').writeFileSync(debugPath, JSON.stringify({
+                // The folder may be the mission folder a contained run writes: the file is written
+                // only as a file of its own (`writeOwnFile`, engine/logCap.ts: a regular file with
+                // one name or nothing yet, a name free at the look created exclusively, on a handle
+                // that is the file the look found, never through a link), the rule of the stream log
+                // beside it (NOW.md, containment backlog). A plain writeFileSync followed a hard link
+                // or a final symbolic link to a file of the owner's.
+                writeOwnFile(debugPath, JSON.stringify({
                   iteration: i + 1,
                   messageCount: this.messages.length,
                   tokenCount,
@@ -4229,7 +4376,7 @@ export class ConversationLoop {
       // thousands of tokens, so shrink the conversation first.
       let ctxUtilization = estimatedTokens / contextLength
       if (ctxUtilization > 0.80) {
-        if (await this.compactNow(`in-loop at ${Math.round(ctxUtilization * 100)}%`)) {
+        if (await this.compactNow(`in-loop at ${Math.round(ctxUtilization * 100)}%`, this.abortController?.signal)) {
           ctxUtilization = (promptOverheadTokens + this.estimateMessageTokens()) / contextLength
         }
       }

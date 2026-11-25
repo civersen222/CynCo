@@ -16,9 +16,7 @@
  * previous file the rotation keeps) that grew past a size, so the daemon can page about them. Node
  * built-ins only.
  */
-import {
-  closeSync, constants as fsConstants, fstatSync, ftruncateSync, lstatSync, openSync, readdirSync, unlinkSync, writeSync,
-} from 'node:fs'
+import fs, { constants as fsConstants, lstatSync, readdirSync, unlinkSync } from 'node:fs'
 import type { Stats } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
@@ -127,11 +125,11 @@ export function pruneOldFiles(
   return { deleted, failed, left }
 }
 
-/** The one file `appendCapped` may write: a regular file with no other name (its lstat), or nothing yet (null). */
-function ownLogFile(path: string): Stats | null {
+/** What a look at an own file found: a regular file with no other name (its lstat), or nothing yet (null). */
+function ownFileLook(path: string): Stats | null {
   let st
   try {
-    st = lstatSync(path)
+    st = fs.lstatSync(path)
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw e
@@ -142,40 +140,71 @@ function ownLogFile(path: string): Stats | null {
 }
 
 /**
+ * Open `path` for writing only as a file of its own, the rule for a file the engine writes in a
+ * folder a run controls (the stream log and the per-iteration debug file in the mission folder):
+ * a regular file with one name (lstat; never a symbolic link, a junction or a hard link, through
+ * which a write or a truncation would reach whatever the name points at), opened without following
+ * a final link where the system can (O_NOFOLLOW), and judged again on the open handle, which must be
+ * the very file the look found (Windows has no O_NOFOLLOW). A name that was free at the look is
+ * created exclusively (O_EXCL, check C4-7 of wave 15b): whatever was made under it in between fails
+ * the open with EEXIST, as there is nothing to compare it with. The caller closes the descriptor.
+ * Throws what `fs` throws, and an Error naming the path for a file it will not write. Goes through
+ * the `fs` object, not named imports, so a test can stand between the look and the open.
+ */
+function openOwnFile(path: string): { fd: number; size: number } {
+  const named = ownFileLook(path)
+  const noFollow = (fsConstants as Record<string, number | undefined>).O_NOFOLLOW ?? 0
+  // No O_APPEND: Windows refuses to truncate a handle opened for appending, so an append is a
+  // positioned write at the size read from the same handle (one writer per file).
+  const fd = fs.openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | (named === null ? fsConstants.O_EXCL : 0) | noFollow)
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile() || st.nlink > 1) throw new Error(`${path} is not a regular file with one name; it is not written`)
+    if (named !== null && (st.dev !== named.dev || st.ino !== named.ino)) {
+      throw new Error(`${path} changed between the look and the open; it is not written`)
+    }
+    return { fd, size: st.size }
+  } catch (e) {
+    fs.closeSync(fd)
+    throw e
+  }
+}
+
+/**
+ * Replace the whole content of `path` with `text`, as a file of its own (`openOwnFile`'s rule): the
+ * loop's per-iteration `.cynco-debug.json`. Never creates a sibling file.
+ */
+export function writeOwnFile(path: string, text: string): void {
+  const { fd } = openOwnFile(path)
+  try {
+    fs.ftruncateSync(fd, 0)
+    fs.writeSync(fd, text, 0)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/**
  * Append `text` to `path`; when the append would take the file past `maxBytes`, restart the file
  * in place with one header line instead. A missing file counts as empty and is created. It never
  * creates a sibling file, so no repository's `.gitignore` is involved.
  *
- * The path may lie in a folder a run controls, so it is written only when it is a regular file with
- * one name (lstat; never a symbolic link, a junction or a hard link: restarting the file would
- * otherwise empty whatever the name points at), opened without following a final link where the
- * system can (O_NOFOLLOW), and judged again on the open handle. Throws what `fs` throws, and an
- * Error naming the path for a file it will not write.
+ * The path may lie in a folder a run controls, so it is written only as a file of its own
+ * (`openOwnFile`: restarting a file reached through a link would empty whatever the name points at).
  */
 export function appendCapped(path: string, text: string, maxBytes: number): void {
-  const named = ownLogFile(path)
-  const noFollow = (fsConstants as Record<string, number | undefined>).O_NOFOLLOW ?? 0
-  // No O_APPEND: Windows refuses to truncate a handle opened for appending, so the append is a
-  // positioned write at the size read from the same handle (one writer per log).
-  const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | noFollow)
+  const { fd, size } = openOwnFile(path)
   try {
-    const st = fstatSync(fd)
-    if (!st.isFile() || st.nlink > 1) throw new Error(`${path} is not a regular file with one name; it is not written`)
-    // Windows has no O_NOFOLLOW: a link swapped in between the look and the open is followed. The handle
-    // must be the very file the look found (same volume, same file id), or nothing is written.
-    if (named !== null && (st.dev !== named.dev || st.ino !== named.ino)) {
-      throw new Error(`${path} changed between the look and the open; it is not written`)
-    }
-    if (st.size + Buffer.byteLength(text) > maxBytes) {
+    if (size + Buffer.byteLength(text) > maxBytes) {
       // Restart in place on the handle already judged: truncate it, then write from its start.
       const header = `--- log restarted ${new Date().toISOString()}: it passed ${maxBytes} bytes ---\n`
-      ftruncateSync(fd, 0)
-      writeSync(fd, header + text, 0)
+      fs.ftruncateSync(fd, 0)
+      fs.writeSync(fd, header + text, 0)
     } else {
-      writeSync(fd, text, st.size)
+      fs.writeSync(fd, text, size)
     }
   } finally {
-    closeSync(fd)
+    fs.closeSync(fd)
   }
 }
 

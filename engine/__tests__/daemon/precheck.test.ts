@@ -142,5 +142,25 @@ describe('runPrecheck', () => {
       await runPrecheck('true', mission)
       expect(containmentRecords({ sandboxRoot: root })[0].runId.startsWith('precheck-mission-')).toBe(true)
     })
+
+    // NOW.md, 2026-11-24: exec's own timeout ended the shell alone and left what the precheck had
+    // started running. The tree is owned from the start and ended on the precheck's cap; asked by
+    // the pid of the program the shell started. Off Windows here; on Windows vitest's Node has no
+    // launcher, so the same code runs only under Bun.
+    it('a precheck cut at its cap ends what it started, and reads as a cut precheck (code 1, no status)', async () => {
+      const r = await runPrecheck('sleep 300 & echo "pid=$!"; wait', mission, 'cap', 1000)
+      expect(r.code).toBe(1)
+      const pid = Number(/pid=(\d+)/.exec(r.stdout)?.[1])
+      expect(Number.isInteger(pid) && pid > 0, r.stdout).toBe(true)
+      const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
+      const until = Date.now() + 5000
+      while (alive() && Date.now() < until) await new Promise(res => setTimeout(res, 100))
+      const survived = alive()
+      if (survived) process.kill(pid, 'SIGKILL')
+      expect(survived, `sleep ${pid}, started by the precheck, outlived its cap`).toBe(false)
+      expect(said).toContain('[daemon] precheck cut at its cap of 1000 ms; its process tree is ended')
+      expect(records().find(x => x.kind === 'end')).toMatchObject({ isError: true, exitCode: null })
+      expect(containmentRecords({ sandboxRoot: root }).every((rec) => rec.releasedAt !== null)).toBe(true)
+    }, 20_000)
   })
 })

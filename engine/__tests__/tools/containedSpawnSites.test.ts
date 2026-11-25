@@ -129,9 +129,9 @@ describe('a contained run whose launcher cannot run starts nothing (section 8.7)
     expect(readdirSync(patchTmp)).toEqual([])
   })
 
-  it('best-of-N runTests: refused, a zero score, nothing run', () => {
+  it('best-of-N runTests: refused, a zero score, nothing run', async () => {
     const text = refuseEverywhere()
-    const r = runTests(mission, { framework: 'pytest', command: writeWitness } as any)
+    const r = await runTests(mission, { framework: 'pytest', command: writeWitness } as any)
     expect(r).toEqual({ passed: 0, total: 0, output: '', refused: text })
     expect(existsSync(join(mission, WITNESS))).toBe(false)
   })
@@ -236,8 +236,8 @@ describe('the same sites with no context run as before', () => {
     expect(r.output).toMatch(/^Patch failed:/)
   })
 
-  it('best-of-N runTests runs the command and is not refused', () => {
-    const r = runTests(mission, { framework: 'pytest', command: writeWitness } as any)
+  it('best-of-N runTests runs the command and is not refused', async () => {
+    const r = await runTests(mission, { framework: 'pytest', command: writeWitness } as any)
     expect(r.refused).toBeUndefined()
     expect(existsSync(join(mission, WITNESS))).toBe(true)
   })

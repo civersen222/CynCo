@@ -126,9 +126,37 @@ export class ContextCompressor {
   }
 
   selectForCompression(messages: Message[], keepRecentPairs: number = this.keepRecent): Message[] {
-    const keepCount = keepRecentPairs * 2
-    if (messages.length <= keepCount) return []
-    return messages.slice(0, messages.length - keepCount)
+    return messages.slice(0, this.keptTailStart(messages, keepRecentPairs))
+  }
+
+  /**
+   * Where the verbatim tail starts: `keepRecentPairs` pairs from the end, moved back so the tail
+   * never holds a tool_result whose tool_use is before it. In-loop compaction runs with the
+   * model's tool calls pushed and their results not yet in, so a positional cut four messages back
+   * lands on a user message of results whose call was summarized away, an orphan a strict
+   * chat-completions endpoint rejects (NOW.md, compaction (b), 2026-11-24). The cut moves back to
+   * the call rather than forward past the result: the result is what the model just read. 0 means
+   * nothing is left to summarize. The selection and the kept tail both read it, so they never
+   * overlap and never leave a message out.
+   */
+  keptTailStart(messages: Message[], keepRecentPairs: number = this.keepRecent): number {
+    let start = Math.max(0, messages.length - keepRecentPairs * 2)
+    for (;;) {
+      const useAt = new Map<string, number>()
+      for (let i = 0; i < start; i++) {
+        for (const b of messages[i].content) if (b.type === 'tool_use' && typeof b.id === 'string') useAt.set(b.id, i)
+      }
+      let moved = start
+      for (let i = start; i < messages.length; i++) {
+        for (const b of messages[i].content) {
+          if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
+          const at = useAt.get(b.tool_use_id)
+          if (at !== undefined && at < moved) moved = at
+        }
+      }
+      if (moved === start) return start
+      start = moved
+    }
   }
 
   /**
@@ -137,16 +165,33 @@ export class ContextCompressor {
    * Keeps the head and tail of each block verbatim with a truncation marker.
    */
   tier0Trim(messages: Message[], maxBlockChars = 4000): Message[] {
+    const trim = (text: string): string => {
+      const head = text.slice(0, Math.floor(maxBlockChars / 2))
+      const tail = text.slice(-Math.floor(maxBlockChars / 2))
+      const cut = text.length - maxBlockChars
+      return `${head}\n… [trimmed ${cut} chars] …\n${tail}`
+    }
+    const tooLong = (t: unknown): t is string => typeof t === 'string' && t.length > maxBlockChars
     return messages.map(msg => ({
       ...msg,
       content: msg.content.map(block => {
-        const text = block.text
-        if (block.type === 'tool_result' && typeof text === 'string' && text.length > maxBlockChars) {
-          const head = text.slice(0, Math.floor(maxBlockChars / 2))
-          const tail = text.slice(-Math.floor(maxBlockChars / 2))
-          const cut = text.length - maxBlockChars
-          return { ...block, text: `${head}\n… [trimmed ${cut} chars] …\n${tail}` }
+        if (block.type !== 'tool_result') return block
+        // The shape the loop builds (executeOneTool): `content: [{ type: 'text', text }]`. Until
+        // 2026-11-24 only a top-level `text` was trimmed, a shape the loop never makes, so no real
+        // tool result was (NOW.md, compaction (a)). A string `content` and a top-level `text` are
+        // trimmed too; any block of another type (an image) is left as it is.
+        const inner = block.content
+        if (Array.isArray(inner)) {
+          if (!inner.some(b => b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && tooLong((b as { text?: unknown }).text))) return block
+          return {
+            ...block,
+            content: inner.map(b => (b && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && tooLong((b as { text?: unknown }).text))
+              ? { ...(b as object), text: trim((b as { text: string }).text) }
+              : b),
+          }
         }
+        if (tooLong(inner)) return { ...block, content: trim(inner) }
+        if (tooLong(block.text)) return { ...block, text: trim(block.text) }
         return block
       }),
     }))
@@ -214,8 +259,10 @@ export class ContextCompressor {
    * Verbatim anchors survive compaction: the last <=maxUserMsgs user messages
    * plus (optionally) the active DoD contract brief, rendered as pinned system
    * messages so the literal ask and the contract are never summarized away.
+   * `keptFrom` is the index where the verbatim tail starts (`keptTailStart`); a
+   * recent request from there on is not pinned again.
    */
-  selectVerbatimAnchors(messages: Message[], contractText?: string, maxUserMsgs = 6): Message[] {
+  selectVerbatimAnchors(messages: Message[], contractText?: string, maxUserMsgs = 6, keptFrom = messages.length): Message[] {
     const anchors: Message[] = []
     if (contractText && contractText.trim()) {
       anchors.push({ role: 'system', content: [{ type: 'text', text: `[Pinned Contract]\n${contractText}` }] })
@@ -233,10 +280,17 @@ export class ContextCompressor {
     // anchor is the "no user query" shape that 400s Qwen's template (below).
     const allUserMsgs = messages.filter(m => m.role === 'user')
     const first = allUserMsgs.find(m => textOf(m))
-    if (first) {
+    // A request at or after `keptFrom` is in the verbatim tail already: pinned as well, it reached
+    // the model twice (NOW.md, compaction (c), 2026-11-24). The cap still counts it, so the six
+    // most recent requests are verbatim somewhere, as before, and no more context is pinned. The
+    // original task likewise (check C4-6): kept in the tail, it is a real user turn there, which is
+    // what the template needs.
+    const inTail = new Set(messages.slice(keptFrom))
+    const firstInTail = first !== undefined && inTail.has(first)
+    if (first && !firstInTail) {
       anchors.push({ role: 'user', content: [{ type: 'text', text: `[Pinned original task]\n${textOf(first)}` }] })
     }
-    const userMsgs = allUserMsgs.slice(-maxUserMsgs).filter(m => m !== first)
+    const userMsgs = allUserMsgs.slice(-maxUserMsgs).filter(m => m !== first && !inTail.has(m))
     let recentPins = 0
     for (const u of userMsgs) {
       const text = textOf(u)
@@ -257,7 +311,7 @@ export class ContextCompressor {
     // task survived compaction and had to infer it from message counts. One
     // line in the engine log, next to the other [compact] lines, settles it.
     console.log(`[compact] anchors: contract=${contractText?.trim() ? `${contractText.length}ch` : 'none'}`
-      + ` originalTask=${first ? `${textOf(first).length}ch` : 'NONE'} recentUserPins=${recentPins}`)
+      + ` originalTask=${first ? `${textOf(first).length}ch${firstInTail ? ' (in the kept tail)' : ''}` : 'NONE'} recentUserPins=${recentPins}`)
     return anchors
   }
 
@@ -290,7 +344,8 @@ export class ContextCompressor {
     // apart from their paths in the file tracker. The summarized part is the
     // same as before: the selection has taken 2 pairs since 350359c3.
     const keepPairs = cb.keepRecentPairs ?? this.keepRecent
-    const toCompress = this.selectForCompression(trimmed, keepPairs)
+    const keptFrom = this.keptTailStart(trimmed, keepPairs)
+    const toCompress = trimmed.slice(0, keptFrom)
     if (toCompress.length === 0) return messages
     const prompt = this.buildStructuredSummaryPrompt(toCompress, fileTracker)
     const summary = await cb.summarize(prompt)
@@ -298,7 +353,7 @@ export class ContextCompressor {
     // BEFORE we drop the source messages, so a crash mid-compaction is safe.
     cb.journal(summary, fileTracker.serialize())
     const compacted = this.compressMessages(trimmed, summary, fileTracker, keepPairs)
-    const anchors = this.selectVerbatimAnchors(messages, cb.contractText)
+    const anchors = this.selectVerbatimAnchors(messages, cb.contractText, 6, keptFrom)
     // Finding (x): the summary is a paraphrase of the conversation, and the one
     // fact the agent most needs on the far side of a compaction — what it has
     // already committed — is a fact about the repository, not the conversation.
@@ -325,8 +380,7 @@ export class ContextCompressor {
   ): Message[] {
     // Must be the count selectForCompression was given, or the tail kept here
     // overlaps the part the summary already covers (runCompaction passes both).
-    const keepCount = keepRecentPairs * 2
-    const recent = messages.slice(-keepCount)
+    const recent = messages.slice(this.keptTailStart(messages, keepRecentPairs))
     const metadata = fileTracker ? `\n\n[File Operations: ${fileTracker.serialize()}]` : ''
     return [{ role: 'system', content: [{ type: 'text', text: `[Context Summary]\n${summary}${metadata}` }] }, ...recent]
   }

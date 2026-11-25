@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  appendCapped, LOG_PAGE_BYTES, MISSION_LOG_KEEP_DAYS, MISSION_LOG_RE, oversizedLogs, pruneOldFiles,
+  appendCapped, LOG_PAGE_BYTES, MISSION_LOG_KEEP_DAYS, MISSION_LOG_RE, oversizedLogs, pruneOldFiles, writeOwnFile,
   STREAM_LOG_MAX_BYTES,
 } from '../logCap.js'
 
@@ -288,6 +288,73 @@ describe('appendCapped: the handle is the file the look found (review of wave 5)
     syncBuiltinESMExports()
     expect(readFileSync(other, 'utf-8')).toBe('PRECIOUS')
     expect(readFileSync(p, 'utf-8')).toBe('mine\n')
+  })
+
+  // Wave 19 (check C4-7 of wave 15b, for the stream log): a name that was free at the look is
+  // created exclusively. Opened with O_CREAT alone, whatever was made under it in between (a
+  // symbolic link to a file of the owner's, where the run may make one) was opened and written:
+  // fstat shows a regular file with one name, and with nothing seen at the look there is nothing to
+  // compare it with. A file that appears between the look and the open stands in for that link.
+  it('a file that appeared under a name free at the look is not written', () => {
+    const dir = root()
+    const p = join(dir, '.cynco-stream.log')
+    const realLstat = fs.lstatSync
+    let raced = 0
+    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      try {
+        return (realLstat as (...a: unknown[]) => fs.Stats)(target, ...rest)
+      } catch (e) {
+        if (String(target) === p && (e as NodeJS.ErrnoException).code === 'ENOENT' && raced === 0) {
+          raced++
+          writeFileSync(p, 'the owner\'s notes\n')
+        }
+        throw e
+      }
+    }) as typeof fs.lstatSync)
+    syncBuiltinESMExports()
+    expect(() => appendCapped(p, 'iteration text\n', 1000)).toThrow(/EEXIST/)
+    vi.restoreAllMocks()
+    syncBuiltinESMExports()
+    expect(raced).toBe(1)
+    expect(readFileSync(p, 'utf-8')).toBe('the owner\'s notes\n')
+  })
+})
+
+describe('writeOwnFile (wave 19: the one own-file rule, which the loop\'s debug file uses too)', () => {
+  it('writes a new file, and replaces a longer one whole', () => {
+    const dir = root()
+    const p = join(dir, '.cynco-debug.json')
+    writeOwnFile(p, '{"a":1}')
+    expect(readFileSync(p, 'utf-8')).toBe('{"a":1}')
+    writeFileSync(p, 'x'.repeat(5000))
+    writeOwnFile(p, '{"b":2}')
+    expect(readFileSync(p, 'utf-8')).toBe('{"b":2}')
+    expect(readdirSync(dir)).toEqual(['.cynco-debug.json'])
+  })
+
+  it('never writes a hard link, a folder, or a file swapped in after the look', () => {
+    const dir = root()
+    const precious = join(dir, 'precious.db')
+    writeFileSync(precious, 'P'.repeat(64))
+    const linked = join(dir, 'linked.json')
+    linkSync(precious, linked)
+    expect(() => writeOwnFile(linked, '{}')).toThrow(/hard link/)
+    mkdirSync(join(dir, 'folder.json'))
+    expect(() => writeOwnFile(join(dir, 'folder.json'), '{}')).toThrow(/not a regular file/)
+    expect(readFileSync(precious, 'utf-8')).toBe('P'.repeat(64))
+    // The same name, a different file (one name of its own): a swap between the look and the open.
+    const mine = join(dir, 'mine.json')
+    writeFileSync(mine, 'mine')
+    const other = join(dir, 'other.db')
+    writeFileSync(other, 'O'.repeat(64))
+    const realOpen = fs.openSync
+    vi.spyOn(fs, 'openSync').mockImplementation(((path: fs.PathLike, flags: number) => realOpen(path === mine ? other : path, flags)) as typeof fs.openSync)
+    syncBuiltinESMExports()
+    expect(() => writeOwnFile(mine, '{}')).toThrow(/changed between the look and the open; it is not written/)
+    vi.restoreAllMocks()
+    syncBuiltinESMExports()
+    expect(readFileSync(other, 'utf-8')).toBe('O'.repeat(64))
+    expect(readFileSync(mine, 'utf-8')).toBe('mine')
   })
 })
 

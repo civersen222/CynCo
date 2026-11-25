@@ -13,19 +13,28 @@
  */
 import { describe, expect, it, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const bunPresent = spawnSync('bun', ['--version'], { encoding: 'utf-8', shell: process.platform === 'win32' }).status === 0
+// Bun is found through the shell once (on this PC `bun` on PATH is npm's bun.cmd shim) and asked for
+// its own executable, which the fixture is then started with directly, as hostResources.test.ts does.
+// Started through the shell, the timeout below killed cmd.exe alone and left bun.exe and what it had
+// started running (F210; NOW.md, 2026-11-24). The lookup has a timeout of its own.
+function findBunExe(): string | null {
+  const r = spawnSync('bun', ['--print', 'process.execPath'], { encoding: 'utf-8', shell: process.platform === 'win32', windowsHide: true, timeout: 15_000 })
+  const exe = r.status === 0 ? String(r.stdout).trim().split(/\r?\n/).pop() ?? '' : ''
+  return exe !== '' && existsSync(exe) ? exe : null
+}
+const bunExe = process.platform === 'win32' ? findBunExe() : null
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 }) })
 
-describe.skipIf(process.platform !== 'win32' || !bunPresent)('ownProcessTree under Bun on Windows', () => {
+describe.skipIf(process.platform !== 'win32' || bunExe === null)('ownProcessTree under Bun on Windows', () => {
   it('a tree that is still starting children when it is killed leaves no survivor', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-tree-burst-'))
     dirs.push(dir)
-    const run = spawnSync('bun', ['engine/__tests__/fixtures/ownedTreeBurst.ts', dir, 'own'], { encoding: 'utf-8', shell: true, timeout: 50_000 })
+    const run = spawnSync(bunExe!, ['engine/__tests__/fixtures/ownedTreeBurst.ts', dir, 'own'], { encoding: 'utf-8', windowsHide: true, timeout: 50_000 })
     expect(run.status, `the fixture failed:\n${run.stdout}\n${run.stderr}`).toBe(0)
     const report = JSON.parse(run.stdout.trim().split('\n').pop()!)
 

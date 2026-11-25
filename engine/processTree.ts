@@ -180,3 +180,97 @@ export function ownProcessTree(pid: number | undefined, log: Log = console.log):
     release: close,
   }
 }
+
+/**
+ * Did exec end the child itself, because its output overran `maxBuffer`? Node and Bun give that
+ * error the code `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` and leave `killed` unset (measured under both,
+ * 2026-11-24, check C4-5 of wave 15b); `killed` is kept for a runtime that sets it.
+ */
+export function overranBuffer(err: unknown): boolean {
+  const e = err as { code?: unknown; killed?: unknown } | null
+  return e?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || e?.killed === true
+}
+
+/** After a kill on the cap (or a Stop), how long an owned exec waits for exec's answer before it answers without it. */
+export const OWNED_EXEC_GRACE_MS = 2000
+
+/** How an owned exec ended. `err`, `stdout` and `stderr` are exec's, or null and '' when the grace ran out first. */
+export interface OwnedExecEnd {
+  err: Error | null
+  stdout: string
+  stderr: string
+  /** Ended on its own cap: the tree was killed on the timer. */
+  timedOut: boolean
+  /** Ended because `signal` fired: the tree was killed. */
+  stopped: boolean
+  /** exec ended the root because its output overran its buffer, and the tree was killed with it. */
+  overran: boolean
+}
+
+/**
+ * One child the harness starts for workspace code (a contract check, a best-of-N test run, LSP
+ * diagnostics, the daemon precheck), with its process tree owned from the moment the root exists
+ * (F201, F210, NOW.md 2026-11-24). `start` starts it with exec's callback and returns the child;
+ * exec is given no `timeout`, because exec's kill ends the root alone and left what it had started
+ * running. The tree is ended on the cap (`capMs`), on `signal`, and when exec ended the root for an
+ * output overrun; a child that ends on its own gives the handle back and kills nothing, so a
+ * background process it left on purpose lives on. A process the kill could not reach that still
+ * holds the pipes would hold the callback for ever: after `graceMs` the answer comes anyway, with
+ * nothing printed. `own` is `ownProcessTree`, passed by each caller so that a test's module mock
+ * of it reaches every site. Rejects only when `start` throws (nothing was started).
+ */
+export function ownedExec(
+  start: (callback: (err: Error | null, stdout: string, stderr: string) => void) => { pid?: number },
+  opts: {
+    capMs: number
+    own: (pid: number | undefined) => OwnedTree
+    graceMs?: number
+    signal?: AbortSignal
+    /** Called once when the cap ends the tree, before the kill (a site's log line). */
+    onCut?: () => void
+  },
+): Promise<OwnedExecEnd> {
+  return new Promise<OwnedExecEnd>((resolve, reject) => {
+    let tree: OwnedTree | null = null
+    let timedOut = false
+    let stopped = false
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let grace: ReturnType<typeof setTimeout> | null = null
+    const graceMs = opts.graceMs ?? OWNED_EXEC_GRACE_MS
+    const onAbort = () => end('stopped')
+    const settle = (r: OwnedExecEnd) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+      resolve(r)
+    }
+    const end = (why: 'cap' | 'stopped') => {
+      if (settled || timedOut || stopped) return
+      if (why === 'cap') { timedOut = true; opts.onCut?.() } else stopped = true
+      if (timer) clearTimeout(timer)
+      void tree?.kill()
+      grace = setTimeout(() => settle({ err: null, stdout: '', stderr: '', timedOut, stopped, overran: false }), graceMs)
+    }
+    let child: { pid?: number }
+    try {
+      child = start((err, stdout, stderr) => {
+        if (timer) clearTimeout(timer)
+        if (grace) clearTimeout(grace)
+        const overran = !timedOut && !stopped && overranBuffer(err)
+        if (overran) void tree?.kill()
+        else if (!timedOut && !stopped) tree?.release()
+        settle({ err, stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), timedOut, stopped, overran })
+      })
+    } catch (e) {
+      reject(e)
+      return
+    }
+    // exec's callback never runs before `start` returns, so the tree is taken before any answer.
+    tree = opts.own(child.pid)
+    timer = setTimeout(() => end('cap'), opts.capMs)
+    if (opts.signal?.aborted) end('stopped')
+    else opts.signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}

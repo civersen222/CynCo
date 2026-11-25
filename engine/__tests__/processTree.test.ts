@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { killProcessTree, ownProcessTree } from '../processTree.js'
+import { killProcessTree, ownedExec, overranBuffer, ownProcessTree, OWNED_EXEC_GRACE_MS } from '../processTree.js'
 
 const dirs: string[] = []
 const pids: number[] = []
@@ -137,10 +137,124 @@ describe('one helper (F210)', () => {
       ['engine/daemon/taskRunner.ts', 'ownProcessTree'],
       ['engine/brain/jlensSidecar.ts', 'ownProcessTree'],
       ['engine/brain/jlensSidecar.ts', 'killProcessTreeSync'],
+      // Wave 19: the four sites that run workspace code without the executor own their child
+      // through the one owned exec (its cap, grace and overrun kill were repeated at each).
+      ['engine/tools/contractVerify.ts', 'ownedExec'],
+      ['engine/bestOfN/sampler.ts', 'ownedExec'],
+      ['engine/lsp/manager.ts', 'ownedExec'],
+      ['engine/daemon/precheck.ts', 'ownedExec'],
     ] as const) {
       const text = readFileSync(file, 'utf-8')
       expect(text, `${file} must import ${name}`).toMatch(new RegExp(`import \\{[^}]*\\b${name}\\b[^}]*\\} from '[./]+processTree\\.js'`))
       expect(text.split(`${name}(`).length, `${file} must call ${name}`).toBeGreaterThan(1)
     }
+  })
+
+  it('the four owned-exec sites keep no cap, grace or overrun test of their own', () => {
+    for (const file of ['engine/tools/contractVerify.ts', 'engine/bestOfN/sampler.ts', 'engine/lsp/manager.ts', 'engine/daemon/precheck.ts']) {
+      const text = readFileSync(file, 'utf-8')
+      expect(text, file).not.toContain('ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
+      expect(text, file).not.toMatch(/\bsetTimeout\(/)
+      expect(text, file).not.toMatch(/\bownProcessTree\(/)
+    }
+  })
+})
+
+/**
+ * Wave 19: the owned exec the four harness sites share (a contract check, a best-of-N test run, LSP
+ * diagnostics, the daemon precheck), here with a handle that records what is asked of it and a start
+ * that answers when told, so each path is shown without a process. The sites' own cases (bypassGrace,
+ * bypassTreesJob, runTestsTree, bypassSites) show the same paths with real processes.
+ */
+describe('ownedExec', () => {
+  type Cb = (err: Error | null, stdout: string, stderr: string) => void
+  function harness() {
+    const asked: string[] = []
+    let answer: Cb | null = null
+    const own = (pid: number | undefined) => {
+      asked.push(`own ${pid}`)
+      return { kind: 'walk' as const, kill: async () => { asked.push('kill') }, release: () => { asked.push('release') } }
+    }
+    const start = (cb: Cb) => { answer = cb; asked.push('start'); return { pid: 4242 } }
+    return { asked, own, start, answer: (...a: Parameters<Cb>) => answer!(...a) }
+  }
+
+  it('a child that ends on its own gives the handle back and kills nothing', async () => {
+    const h = harness()
+    const p = ownedExec(h.start, { capMs: 5000, own: h.own })
+    h.answer(null, 'out', 'err')
+    expect(await p).toEqual({ err: null, stdout: 'out', stderr: 'err', timedOut: false, stopped: false, overran: false })
+    expect(h.asked).toEqual(['start', 'own 4242', 'release'])
+  })
+
+  it('a failing child is answered as it failed, and its handle is given back', async () => {
+    const h = harness()
+    const p = ownedExec(h.start, { capMs: 5000, own: h.own })
+    const err = Object.assign(new Error('exit 3'), { code: 3 })
+    h.answer(err, '', 'boom')
+    expect(await p).toMatchObject({ err, stderr: 'boom', timedOut: false, overran: false })
+    expect(h.asked).toEqual(['start', 'own 4242', 'release'])
+  })
+
+  it('an output overrun (code set, killed unset, as Node and Bun report it) ends the tree', async () => {
+    const h = harness()
+    const p = ownedExec(h.start, { capMs: 5000, own: h.own })
+    h.answer(Object.assign(new RangeError('stdout maxBuffer length exceeded'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }), 'x'.repeat(10), '')
+    expect(await p).toMatchObject({ overran: true, timedOut: false, stdout: 'x'.repeat(10) })
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+    expect(overranBuffer({ killed: true })).toBe(true)
+    expect(overranBuffer({ code: 1 })).toBe(false)
+    expect(overranBuffer(null)).toBe(false)
+  })
+
+  it('the cap ends the tree and the answer is what the child printed when exec answers', async () => {
+    const h = harness()
+    const cut: string[] = []
+    const p = ownedExec(h.start, { capMs: 50, own: h.own, onCut: () => cut.push('cut') })
+    await sleep(120)
+    expect(cut).toEqual(['cut'])
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+    h.answer(Object.assign(new Error('killed'), { code: 1 }), 'partial', '')
+    expect(await p).toMatchObject({ timedOut: true, stopped: false, overran: false, stdout: 'partial' })
+    // Nothing more is asked of the handle: the kill was the end of it.
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+  })
+
+  it('after the cap, an exec that never answers is answered after the grace, with nothing printed', async () => {
+    const h = harness()
+    const t0 = Date.now()
+    const r = await ownedExec(h.start, { capMs: 50, graceMs: 150, own: h.own })
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(190)
+    expect(r).toEqual({ err: null, stdout: '', stderr: '', timedOut: true, stopped: false, overran: false })
+    expect(OWNED_EXEC_GRACE_MS).toBe(2000)
+  })
+
+  it('the signal ends the tree at once, and an answer after the grace is ignored', async () => {
+    const h = harness()
+    const stop = new AbortController()
+    const p = ownedExec(h.start, { capMs: 60_000, graceMs: 100, own: h.own, signal: stop.signal })
+    stop.abort()
+    const r = await p
+    expect(r).toEqual({ err: null, stdout: '', stderr: '', timedOut: false, stopped: true, overran: false })
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+    h.answer(null, 'late', '')
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+  })
+
+  it('a signal already fired ends the child as soon as it is owned', async () => {
+    const h = harness()
+    const stop = new AbortController()
+    stop.abort()
+    const p = ownedExec(h.start, { capMs: 60_000, own: h.own, signal: stop.signal })
+    h.answer(Object.assign(new Error('killed'), { code: 1 }), '', '')
+    expect(await p).toMatchObject({ stopped: true, timedOut: false })
+    expect(h.asked).toEqual(['start', 'own 4242', 'kill'])
+  })
+
+  it('a start that throws rejects, and nothing is owned', async () => {
+    const asked: string[] = []
+    const own = () => { asked.push('own'); return { kind: 'walk' as const, kill: async () => {}, release: () => {} } }
+    await expect(ownedExec(() => { throw new Error('refused before anything started') }, { capMs: 50, own })).rejects.toThrow('refused before anything started')
+    expect(asked).toEqual([])
   })
 })

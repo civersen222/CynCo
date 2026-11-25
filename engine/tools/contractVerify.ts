@@ -22,9 +22,12 @@ import { isAbsolute, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { getShellInfo, shellPreamble, translateEnvPrefix } from './shellInfo.js'
 import { testCaseAssertions } from '../training/gitFacts.js'
-import { refusalReasonOf, toolExec, toolSpawnRefusal } from '../containment.js'
+import { refusalReasonOf, refusalText, toolExec, toolSpawnRefusal } from '../containment.js'
+import { presenceTripwireConfirmed } from '../integrity.js'
 import { harnessGitBin, harnessGitEnv } from '../harnessGit.js'
 import { toolAudit, containmentFault } from '../audit/toolAudit.js'
+import { ownedExec, ownProcessTree, type OwnedExecEnd } from '../processTree.js'
+import { longCommandRefusal } from './impl/bash.js'
 
 // Templates are shared with contractAutoCreate so the producer of an assertion
 // and the code that verifies it cannot drift apart.
@@ -359,7 +362,17 @@ function capTail(text: string, maxLines: number, maxBytes: number): string {
  * actually reads `stdout`/`stderr` out of the callback; before this they were
  * received and thrown away.
  */
-export function runCommandDetailed(cwd: string, command: string, timeoutMs?: number): Promise<CommandRunDetail> {
+export async function runCommandDetailed(cwd: string, command: string, timeoutMs?: number): Promise<CommandRunDetail> {
+  // F242 (NOW.md, the bypass sites): a check starts outside the executor, so it asks the presence
+  // tripwire itself. In a contained engine that lost a protected folder it runs nothing and is
+  // `unrunnable`, never a pass; with no tripwire running the answer is null at once.
+  const lost = await presenceTripwireConfirmed()
+  if (lost) {
+    const text = refusalText('integrity', lost)
+    toolAudit()?.refused({ src: 'contract', by: 'site', input: { command }, cwd, layer: 'integrity', reason: text })
+    containmentFault('integrity', lost)
+    return { outcome: 'unrunnable', ms: 0, tail: text }
+  }
   // The same shell the Bash tool uses. `exec` would otherwise default to
   // cmd.exe on Windows, so a check script written in the dialect the brief and
   // every other command in the session use — PowerShell here — would fail on
@@ -379,6 +392,15 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
   // the work was never done in.
   const runnable = shellPreamble(info) + translateEnvPrefix(command, info)
   const startedAt = Date.now()
+  // Wave 19b (package C's measurement, `longCommandRefusal`): a command one Windows command line cannot
+  // carry made the spawn throw, and one that starts Git's bash or sh with more than about 8,190
+  // characters ran cut short and exited 0, which would score a command that never ran whole. Neither
+  // is started: no answer, never a failed check (F35). It is not a containment refusal: no fault.
+  const tooLong = longCommandRefusal(command, runnable)
+  if (tooLong) {
+    toolAudit()?.refused({ src: 'contract', by: 'site', input: { command }, cwd, reason: tooLong })
+    return { outcome: 'unrunnable', ms: 0, tail: tooLong }
+  }
   // F242: a check command executes what the run wrote (a conftest.py, a script), so it starts
   // through the containment with the shared tool environment. A run whose launcher cannot run
   // starts nothing: no answer, never a failed check (F35).
@@ -396,40 +418,47 @@ export function runCommandDetailed(cwd: string, command: string, timeoutMs?: num
   if (started && !started.ok) {
     return Promise.resolve({ outcome: 'unrunnable', ms: 0, tail: `[tool-audit] this check was not run: ${started.reason}` })
   }
-  return new Promise(resolvePromise => {
-    // toolExec throws only before anything starts (its backstop refusal, or the long-command file
-    // that could not be written): that is no answer, never a rejected check.
-    try {
-      toolExec(
-        runnable,
-        { cwd, shell, encoding: 'utf-8', timeout: commandTimeoutMs(timeoutMs), maxBuffer: 8 * 1024 * 1024 },
-        (err, stdout, stderr) => {
-          const ms = Date.now() - startedAt
-          const tail = capTail((stdout ?? '') + (stderr ?? ''), 40, 4096)
-          const e = err as (Error & { code?: number | string; killed?: boolean }) | null
-          if (audit && started) {
-            audit.end(started.call, {
-              isError: Boolean(err), exitCode: !err ? 0 : (typeof e!.code === 'number' ? e!.code : null),
-              ms, output: (stdout ?? '') + (stderr ?? ''),
-            })
-          }
-          if (e?.code === 'ECONTAINMENT') containmentFault('containment', refusalReasonOf(String(e.message)))
-          if (!err || !e) return resolvePromise({ outcome: 'passed', ms, tail })
-          if (e.killed) return resolvePromise({ outcome: 'timeout', ms, tail })
-          // A shell that ran the command reports its status as a number — including
-          // 127 for "not found", which is a real failing answer. Anything else
-          // (the shell would not start, output overran the buffer, the launcher
-          // refused with 197 or lost its child with 198: code 'ECONTAINMENT' /
-          // 'ECHILDGONE') is no answer.
-          if (typeof e.code === 'number') return resolvePromise({ outcome: 'failed', ms, tail })
-          return resolvePromise({ outcome: 'unrunnable', ms, tail })
-        },
-      )
-    } catch (e) {
-      if (audit && started) audit.end(started.call, { isError: true, exitCode: null, ms: Date.now() - startedAt, output: (e as Error).message })
-      resolvePromise({ outcome: 'unrunnable', ms: Date.now() - startedAt, tail: (e as Error).message })
-    }
-  })
+  // The tree is owned from the moment the root exists and killed on the check's own timer
+  // (`ownedExec`, engine/processTree.ts): exec's own kill ended the shell (or the launcher) alone and
+  // left what the check had started running, a held-out gate among them (NOW.md, 2026-11-24; F201,
+  // F210, the Bash tool's rule). An output overrun ends the tree too. A check that ends on its own
+  // releases the handle and kills nothing. The outcome of a kill on the timer stays 'timeout' (F35),
+  // and after the grace, with what it printed unknown, it is still 'timeout'.
+  let r: OwnedExecEnd
+  try {
+    r = await ownedExec(
+      callback => toolExec(runnable, { cwd, shell, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 }, callback),
+      { capMs: commandTimeoutMs(timeoutMs), own: ownProcessTree },
+    )
+  } catch (e) {
+    // toolExec throws only before anything starts (its backstop refusal, the long-command file that
+    // could not be written, or a spawn that cannot carry its command line: ENAMETOOLONG): that is no
+    // answer, never a rejected check.
+    if (audit && started) audit.end(started.call, { isError: true, exitCode: null, ms: Date.now() - startedAt, output: (e as Error).message })
+    return { outcome: 'unrunnable', ms: Date.now() - startedAt, tail: (e as Error).message }
+  }
+  const { err, stdout, stderr, timedOut } = r
+  const ms = Date.now() - startedAt
+  const tail = capTail(stdout + stderr, 40, 4096)
+  const e = err as (Error & { code?: number | string; killed?: boolean }) | null
+  if (audit && started) {
+    // A tree ended on the timer has no status of its own (the job's 1 is the kill's).
+    audit.end(started.call, {
+      isError: Boolean(err) || timedOut, exitCode: timedOut ? null : !err ? 0 : (typeof e!.code === 'number' ? e!.code : null),
+      ms, output: stdout + stderr,
+    })
+  }
+  if (e?.code === 'ECONTAINMENT') containmentFault('containment', refusalReasonOf(String(e.message)))
+  if (timedOut) return { outcome: 'timeout', ms, tail }
+  if (!err || !e) return { outcome: 'passed', ms, tail }
+  if (e.killed) return { outcome: 'timeout', ms, tail }
+  // A shell that ran the command reports its status as a number — including
+  // 127 for "not found", which is a real failing answer. Anything else
+  // (the shell would not start, output overran the buffer, the launcher
+  // refused with 197 or lost its child with 198: code 'ECONTAINMENT' /
+  // 'ECHILDGONE') is no answer.
+  if (typeof e.code === 'number') return { outcome: 'failed', ms, tail }
+  return { outcome: 'unrunnable', ms, tail }
 }
 
 function runCommand(cwd: string, command: string, timeoutMs?: number): Promise<CommandOutcome> {
