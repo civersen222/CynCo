@@ -10,16 +10,22 @@
 //   bun scripts/cynco-sandbox.mjs create --run-id <id> --cwd <dir> [--also <dir>]...
 //   bun scripts/cynco-sandbox.mjs release <id>
 //   bun scripts/cynco-sandbox.mjs release-dead --kind <kind> [--except <run id>]
+//   bun scripts/cynco-sandbox.mjs restore-acl <id>
 //   bun scripts/cynco-sandbox.mjs status
 //   bun scripts/cynco-sandbox.mjs sweep
 //
 // The sandbox root is LOCALCODE_SANDBOX_ROOT (default C:/cynco-sandbox); it is never created
-// here. Lines are tagged `[sandbox]`. Exit codes: 0 done, 2 bad usage, 3 refused (or, for release and
-// release-dead, a folder left labelled low: a `[sandbox] NOT SET BACK:` line on stderr).
+// here. `release-dead` releases only a record whose holder is gone (`holderGone`, as the sweep
+// asks), and prints `[sandbox] kept <id>: ...` for each one it keeps. Lines are tagged `[sandbox]`. Exit codes: 0 done, 2 bad usage, 3 refused (or, for release and
+// release-dead, a folder left labelled low: a `[sandbox] NOT SET BACK:` line on stderr; for
+// restore-acl, a grant still kept: a `[sandbox] NOT PUT BACK:` line). `restore-acl` puts back the access
+// list a release had to leave widened (its note names this command; the sweep keeps the run folder
+// and the saved copy until then).
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'
 import {
-  containmentRecords, establishContainment, mintRunId, operatorRefusal, releaseContainment, sweepSandboxes,
+  containmentRecords, establishContainment, holderGone, mintRunId, operatorRefusal, releaseContainment, releaseInProgress, restoreKeptGrants,
+  sandboxLeftLowWords, sweepSandboxes,
 } from '../engine/containment.js'
 import { sandboxRoot } from '../engine/paths.js'
 
@@ -29,6 +35,7 @@ export const USAGE = [
   '       bun scripts/cynco-sandbox.mjs create --run-id <id> --cwd <dir> [--also <dir>]...',
   '       bun scripts/cynco-sandbox.mjs release <id>',
   `       bun scripts/cynco-sandbox.mjs release-dead --kind <${KINDS.join(' | ')}> [--except <run id>]`,
+  '       bun scripts/cynco-sandbox.mjs restore-acl <id>',
   '       bun scripts/cynco-sandbox.mjs status',
   '       bun scripts/cynco-sandbox.mjs sweep',
 ].join('\n')
@@ -66,7 +73,17 @@ export function statusLine(rec) {
   const state = rec.releasedAt
     ? `released ${rec.releasedAt} (${rec.releasedBy ?? 'release'})`
     : `ACTIVE (${rec.holder ? `holder pid ${rec.holder.pid}` : 'no holder yet'})`
-  return `[sandbox] ${rec.runId}  ${rec.kind}  ${rec.missionCwd}  created ${rec.createdAt}  ${state}`
+  // P2-B4: a grant its release could not undo is shown until restore-acl puts it back. R1 (wave 19b): while
+  // another live process is still releasing the run, its grants are being put back, not kept.
+  const grants = rec.grantsKept ?? []
+  const releaser = grants.length ? releaseInProgress(rec) : null
+  const kept = releaser !== null
+    ? `  RELEASE IN PROGRESS (process ${releaser}): the access list of ${grants.map(g => g.folder).join(', ')} is put back when it ends`
+    : grants.length ? `  GRANT KEPT on ${grants.map(g => g.folder).join(', ')} (restore-acl ${rec.runId})` : ''
+  // C9 (wave 19): a sandbox its release left low past the set-back budget, until the sweep removes it. BB-6
+  // (wave 19c): or under folders whose name ends in a dot or a space, which it did not enter; the words say which.
+  const low = rec.sandboxLeftLow ? `  SANDBOX LEFT LOW ${sandboxLeftLowWords(rec.sandboxLeftLow)} (the sweep removes it)` : ''
+  return `[sandbox] ${rec.runId}  ${rec.kind}  ${rec.missionCwd}  created ${rec.createdAt}  ${state}${kept}${low}`
 }
 
 /**
@@ -116,11 +133,32 @@ export function main(argv, io = { out: l => console.log(l), err: l => console.er
     if (due.length === 0) io.out(`[sandbox] no unreleased ${o.kind} record${o.except ? ` besides ${o.except}` : ''}`)
     let failed = false
     for (const rec of due) {
+      // As the sweep asks (F248 list): a live holder, or a holderless record the starter has had
+      // less than 15 minutes to hand to an engine, is a run that is still going; releasing it would
+      // take its mission folder's write access away under it.
+      const nowMs = Date.now()
+      if (!holderGone(rec, nowMs)) {
+        io.out(rec.holder
+          ? `[sandbox] kept ${rec.runId}: its holder ${rec.holder.pid} is alive`
+          : `[sandbox] kept ${rec.runId}: it has no holder yet and was created ${Math.max(0, Math.round((nowMs - Date.parse(rec.createdAt)) / 60_000))} min ago (a starter has 15 minutes to hand it to an engine)`)
+        continue
+      }
       const r = releaseContainment(rec.runId)
       io.out(`[sandbox] ${r.note}`)
       if (releaseFailed(r, io)) failed = true
     }
     return failed ? 3 : 0
+  }
+
+  if (verb === 'restore-acl') {
+    if (rest.length !== 1 || rest[0] === '') return usage('restore-acl takes one run id')
+    const r = restoreKeptGrants(rest[0])
+    io.out(`[sandbox] ${r.note}`)
+    if (r.done) return 0
+    io.err(r.unread
+      ? `[sandbox] NOT PUT BACK: the record of ${rest[0]} could not be read, so whether it keeps a grant is not known`
+      : `[sandbox] NOT PUT BACK: run ${rest[0]} still keeps a grant; run restore-acl again once what kept it is gone`)
+    return 3
   }
 
   if (verb === 'status') {

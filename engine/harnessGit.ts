@@ -54,7 +54,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, isAbsolute, join, resolve, win32 } from 'node:path'
-import { engineCheckout } from './containment.js'
+import { engineCheckout, linkLeadingOut } from './containment.js'
 import { realPathOf } from './realPath.js'
 
 /** Every harness `git diff` (or `show`, `log -p`) that produces a patch carries these. */
@@ -83,6 +83,12 @@ function fixedPairs(): Array<[string, string]> {
     ['gpg.ssh.allowedSignersFile', `${engineCheckout().replace(/\\/g, '/')}/.no-git-allowed-signers`],
     // git documents that an empty value resets the helper list.
     ['credential.helper', ''],
+    // C4-2 (wave 19): git's own refusal of a path Windows reads as another (`out./x.txt` is `out\x.txt`,
+    // through a junction `out`), which a repository's `core.protectNTFS=false` turns off (measured
+    // 2026-11-25: a harness `git apply` then wrote through the junction). protectHFS beside it refuses
+    // only names HFS+ reads as `.git`, which no honest repository holds.
+    ['core.protectNTFS', 'true'],
+    ['core.protectHFS', 'true'],
   ]
 }
 
@@ -100,12 +106,16 @@ function pathKeyOf(env: Env): string | undefined {
  * program the folder names. With `o.repo`, the repository is named outright (`GIT_DIR`,
  * `GIT_WORK_TREE`) once its `.git` has been checked, or the call is refused (a `GIT_DIR` git
  * cannot open: exit 128), and the filter drivers the repository itself defines are blanked (one
- * `git config` call). `o.nested` lets `repo` be a subfolder of the repository. Never throws.
+ * `git config` call). `o.nested` lets `repo` be a subfolder of the repository. `o.worktreeLinks`
+ * (for a call that writes the work tree or reads it into a commit or a patch) also walks the work
+ * tree and refuses the call when a link in it leads outside it (NOW.md:76). Never throws.
  *
  * A caller whose spawn helper lays `env` over the process's own (`scripts/cynco-spawn.mjs`
  * `runSync` / `runAsync`) passes `harnessGitEnv({}, ...)`: the keys alone.
  */
-export function harnessGitEnv(base: Env = process.env, o: { repo?: string; nested?: boolean } = {}): Env {
+export function harnessGitEnv(base: Env = process.env, o: { repo?: string; nested?: boolean; worktreeLinks?: boolean } = {}): Env {
+  // B3 (wave 19): a refusal stays a refusal when a site hands it to the helper again.
+  if (isHarnessRefused(base)) return { ...base }
   const env: Env = { ...base }
   env.GIT_PAGER = 'cat'
   env.GIT_EDITOR = 'true'
@@ -141,6 +151,16 @@ export function harnessGitEnv(base: Env = process.env, o: { repo?: string; neste
         env.GIT_CEILING_DIRECTORIES = slash(pin.ceiling)
       }
     }
+    // NOW.md:76: a harness git that writes the work tree (`checkout -- .`, `git apply`) follows a
+    // junction in it, and one that reads it into a commit or a patch copies what is behind one (git
+    // takes every junction for a folder, F6). The sites that do either pass `worktreeLinks`; the work
+    // tree is walked as rule M walks a mission folder (`linkLeadingOut`, never entering a link), and a
+    // link that leads out of it, or a tree that could not be read, refuses the call.
+    if (o.worktreeLinks === true) {
+      const top = realPathOf(env.GIT_WORK_TREE ?? o.repo, { quiet: true })
+      const hit = linkLeadingOut(top)
+      if (hit !== null) return refused(env, top, 'why' in hit ? `the work tree ${hit.why}` : `${hit.link} leads outside ${top} (to ${hit.target})`)
+    }
     for (const name of repoFilterDrivers(o.repo, env, base)) {
       add(`filter.${name}.clean`, '')
       add(`filter.${name}.smudge`, '')
@@ -166,12 +186,31 @@ export function refusedGitDir(): string {
   return slash(join(process.execPath, 'harness-git-refused'))
 }
 
+/**
+ * B3 (wave 19): what a refused call's command-scope count and parameters say. A `GIT_DIR` git cannot
+ * open stops a command that needs a repository, but `git apply`, `apply --check`, `diff --no-index`
+ * and `hash-object` run outside one and ran anyway (measured 2026-11-25). git parses its command-scope
+ * configuration before any command reads anything, and a count it cannot parse is fatal to every one
+ * of them (`error: bogus count in GIT_CONFIG_COUNT`, exit 128; `git --version` alone still answers).
+ */
+const REFUSED_CONFIG = 'harness-git-refused'
+
+/**
+ * Is `env` a refused harness environment (`harnessGitEnv` named a repository git may not touch)? The one
+ * test for a site that must not run git at all then, instead of comparing `GIT_DIR` itself.
+ */
+export function isHarnessRefused(env: Env): boolean {
+  return env.GIT_DIR === refusedGitDir() || env.GIT_CONFIG_COUNT === REFUSED_CONFIG || env.GIT_CONFIG_PARAMETERS === REFUSED_CONFIG
+}
+
 const refusalsLogged = new Set<string>()
 
 function refused(env: Env, where: string, why: string): Env {
   env.GIT_DIR = refusedGitDir()
   delete env.GIT_WORK_TREE
   delete env.GIT_CEILING_DIRECTORIES
+  env.GIT_CONFIG_COUNT = REFUSED_CONFIG
+  env.GIT_CONFIG_PARAMETERS = REFUSED_CONFIG
   const key = `${where}|${why}`
   if (!refusalsLogged.has(key)) {
     refusalsLogged.add(key)
@@ -364,7 +403,17 @@ export function harnessGitBin(env: Env = process.env, platform: NodeJS.Platform 
     const dir = entry.trim().replace(/^"(.*)"$/, '$1')
     if (dir === '' || !(isAbsolute(dir) || win32.isAbsolute(dir))) continue
     const candidate = join(dir, 'git.exe')
-    if (existsSync(candidate)) { found = candidate; break }
+    if (!existsSync(candidate)) continue
+    found = candidate
+    // Wave 19b (package D's measurement): <Git>\cmd\git.exe is a launcher that starts the real git as its
+    // child; a cap (execFileSync's timeout) ended the launcher alone and left that git running. The real
+    // one beside it, <Git>\mingw64\bin\git.exe, is started instead when it is there.
+    const parent = /^(.*)[\\/]cmd[\\/]*$/i.exec(dir)
+    if (parent) {
+      const real = join(parent[1]!, 'mingw64', 'bin', 'git.exe')
+      if (existsSync(real)) found = real
+    }
+    break
   }
   if (found === 'git' && !notFoundLogged) {
     notFoundLogged = true

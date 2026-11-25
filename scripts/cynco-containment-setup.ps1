@@ -11,19 +11,27 @@
     - create the audit folder's marker file, .cynco-audit
     - set the user variable LOCALCODE_MODELS_DIR (with -ModelsDir)
     - set the user variable LOCALCODE_UNPROTECTED_VOLUMES_OK (with -AcknowledgeVolumes)
-  It never deletes, moves or copies, never changes an access list or a label, and never looks inside a
-  models folder further than its direct sub-folders. Run it in an ordinary, non-elevated PowerShell.
-  The procedure and the meaning of every line: docs/containment-setup.md.
+    - make or refresh the copy of Git's Unix tools a contained run may start (with -MsysCopy; folder
+      -MsysDir, default C:\cynco-msys): usr\bin, etc, dev and tmp of the installed Git copied into it,
+      never a link, and a manifest beside them (the SHA-256 of msys-2.0.dll and the file count). A run
+      uses it only when its starter has LOCALCODE_CONTAINMENT_MSYS naming it.
+  It never deletes or moves, copies nothing but that runtime into that folder, never changes an access
+  list or a label, and never looks inside a models folder further than its direct sub-folders. Run it in
+  an ordinary, non-elevated PowerShell. The procedure and the meaning of every line: docs/containment-setup.md.
 
 .EXAMPLE
   scripts\cynco-containment-setup.ps1                                    # report only
   scripts\cynco-containment-setup.ps1 -Apply                             # create the missing folders
   scripts\cynco-containment-setup.ps1 -ModelsDir C:\cynco-models -Apply  # after the models were moved there
   scripts\cynco-containment-setup.ps1 -AcknowledgeVolumes X: -Apply      # a volume Windows cannot protect
+  scripts\cynco-containment-setup.ps1 -MsysCopy -Apply                   # the copy of Git's Unix tools (again after a Git update)
 #>
 param(
   [string]$ModelsDir = '',
   [string]$AcknowledgeVolumes = '',
+  [switch]$MsysCopy,
+  [string]$MsysDir = 'C:\cynco-msys',
+  [string]$GitRoot = '',
   [switch]$Apply
 )
 
@@ -63,6 +71,43 @@ function Get-LinkOnPath([string]$p) {
   }
   return ''
 }
+# The integrity label of a path, read from its security descriptor as SDDL (GetNamedSecurityInfo with
+# LABEL_SECURITY_INFORMATION, which needs no privilege), never from the words icacls prints, which Windows
+# translates (NOW.md:98). Get-Acl cannot be used: it does not read the label. Answers 'low-inheritable' (a
+# Low label that the folders under it inherit), 'low', 'not-low' (another label, or none), or $null when
+# the descriptor could not be read.
+if (-not ('CyncoSetupLabel' -as [type])) {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CyncoSetupLabel {
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode)]
+  static extern uint GetNamedSecurityInfoW(string name, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(IntPtr sd, uint revision, uint info, out IntPtr text, out uint length);
+  [DllImport("kernel32.dll")]
+  static extern IntPtr LocalFree(IntPtr mem);
+  public static string Sddl(string path) {
+    IntPtr sd;
+    // SE_FILE_OBJECT = 1, LABEL_SECURITY_INFORMATION = 0x10.
+    if (GetNamedSecurityInfoW(path, 1, 0x10, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out sd) != 0) return null;
+    try {
+      IntPtr text; uint length;
+      if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 0x10, out text, out length)) return null;
+      try { return Marshal.PtrToStringUni(text); } finally { LocalFree(text); }
+    } finally { LocalFree(sd); }
+  }
+}
+'@
+}
+function Get-LowLabel([string]$p) {
+  $sddl = [CyncoSetupLabel]::Sddl($p)
+  if ($null -eq $sddl) { return $null }
+  $low = [regex]::Matches($sddl, '\(ML;([A-Z]*);[^;)]*;;;(LW|S-1-16-4096|S-1-16-0)\)')
+  if ($low.Count -eq 0) { return 'not-low' }
+  foreach ($m in $low) { if ($m.Groups[1].Value -match 'CI') { return 'low-inheritable' } }
+  return 'low'
+}
 # Why a folder cannot hold containment state, as sentence tails; nothing when it can.
 function Get-FolderProblems([string]$p) {
   if ($p -notmatch '^[A-Za-z]:\\[^\\]') { return @('is not a full path below a drive letter') }
@@ -83,10 +128,10 @@ function Get-FolderProblems([string]$p) {
     if (-not (Test-Path -LiteralPath $full -PathType Container)) {
       $problems += 'exists and is not a folder'
     } else {
-      $acl = (& icacls $full | Out-String)
-      if ($LASTEXITCODE -ne 0) {
+      $label = Get-LowLabel $full
+      if ($null -eq $label) {
         $problems += 'has an access list that could not be read, so its integrity label is unknown'
-      } elseif ($acl -match 'Mandatory Label\\Low') {
+      } elseif ($label -ne 'not-low') {
         $problems += 'carries a Low integrity label, so a contained process could write it'
       }
     }
@@ -94,10 +139,10 @@ function Get-FolderProblems([string]$p) {
     # The folder -Apply makes inherits an inheritable label from its parent.
     $parent = Split-Path -Path $full -Parent
     if ($parent -and (Test-Path -LiteralPath $parent -PathType Container)) {
-      $pacl = (& icacls $parent | Out-String)
-      if ($LASTEXITCODE -ne 0) {
+      $plabel = Get-LowLabel $parent
+      if ($null -eq $plabel) {
         $problems += "has a parent ($parent) whose access list could not be read, so the label the new folder would inherit is unknown"
-      } elseif ($pacl -match 'Mandatory Label\\Low Mandatory Level:[^\r\n]*\(CI\)') {
+      } elseif ($plabel -eq 'low-inheritable') {
         $problems += "has a parent ($parent) with an inheritable Low integrity label, so the folder -Apply makes would be writable by a contained process"
       }
     }
@@ -114,6 +159,73 @@ function Get-ModelsProblems([string]$p) {
   }
   if ($gguf.Count -eq 0) { return @('holds no .gguf file in itself or in a direct sub-folder') }
   return @()
+}
+
+# -- The copy of Git's Unix tools (B1, wave 19) ------------------------------------------------------------
+# A low process cannot start the installed Git's msys runtime while a normal-privilege one runs; a copy in a
+# folder of its own has a shared namespace of its own (measured 2026-11-24). The engine refuses a run whose
+# copy is older than the installed Git, so this step is run again after every Git update.
+$MsysManifestName = 'cynco-msys.manifest.json'
+$MsysParts = @('usr\bin', 'etc', 'dev', 'tmp')
+# The installed Git: the root above the first git.exe on PATH (cmd, bin or mingw64\bin), else Program Files.
+function Find-GitRoot {
+  $cmd = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  $candidates = @()
+  if ($cmd) {
+    $d = Split-Path -Path $cmd.Source -Parent
+    $candidates += (Split-Path -Path $d -Parent)
+    $candidates += (Split-Path -Path (Split-Path -Path $d -Parent) -Parent)
+  }
+  if ($env:ProgramFiles) { $candidates += (Join-Path $env:ProgramFiles 'Git') }
+  foreach ($c in $candidates) { if ($c -and (Test-Path -LiteralPath (Join-Path $c 'usr\bin\msys-2.0.dll'))) { return $c } }
+  return ''
+}
+function Get-Sha256([string]$p) { return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() }
+# 'missing', 'current', 'stale' (made by this script for another Git), or 'foreign' (a folder this script did not make).
+function Get-MsysCopyState([string]$gitRoot, [string]$target) {
+  if (-not (Test-Path -LiteralPath $target)) { return 'missing' }
+  $manifest = Join-Path $target $MsysManifestName
+  if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+    if (@(Get-ChildItem -LiteralPath $target -Force).Count -eq 0) { return 'missing' }
+    return 'foreign'
+  }
+  $m = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+  $dll = Join-Path $target 'usr\bin\msys-2.0.dll'
+  if (-not (Test-Path -LiteralPath $dll)) { return 'stale' }
+  $installed = Get-Sha256 (Join-Path $gitRoot 'usr\bin\msys-2.0.dll')
+  if ($m.dllSha256 -ne $installed -or (Get-Sha256 $dll) -ne $installed) { return 'stale' }
+  return 'current'
+}
+# Copy usr\bin, etc, dev and tmp of $gitRoot into $target (never a link: robocopy /XJ; nothing deleted:
+# no /MIR or /PURGE), then check what was made and write the manifest. Answers the lines to print;
+# the first word of the last line is 'made' or 'STOP'.
+function Copy-MsysRuntime([string]$gitRoot, [string]$target) {
+  $state = Get-MsysCopyState $gitRoot $target
+  if ($state -eq 'foreign') { return @("STOP $target holds files and no $MsysManifestName, so this script did not make it; name another folder with -MsysDir") }
+  if ($state -eq 'current') { return @("made $target is current (nothing copied)") }
+  if (-not (Test-Path -LiteralPath $target)) { New-Item -ItemType Directory -Path $target | Out-Null }
+  foreach ($part in $MsysParts) {
+    $null = & robocopy (Join-Path $gitRoot $part) (Join-Path $target $part) /E /COPY:DAT /DCOPY:DAT /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP
+    if ($LASTEXITCODE -ge 8) { return @("STOP robocopy could not copy $part into $target (exit $LASTEXITCODE)") }
+  }
+  # One walk that never enters a link (Windows PowerShell 5.1's own recursion follows a junction).
+  $links = @(); $files = 0
+  $stack = New-Object System.Collections.Generic.Stack[System.IO.DirectoryInfo]
+  $stack.Push((New-Object System.IO.DirectoryInfo $target))
+  while ($stack.Count -gt 0) {
+    foreach ($e in $stack.Pop().EnumerateFileSystemInfos()) {
+      if ($e.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $links += $e.FullName; continue }
+      if ($e.Attributes -band [System.IO.FileAttributes]::Directory) { $stack.Push($e) } elseif ($e.Name -ne $MsysManifestName) { $files++ }
+    }
+  }
+  if ($links.Count -gt 0) { return @("STOP the copy $target holds a link ($($links[0])); remove the copy yourself and look at the installed Git") }
+  $label = Get-LowLabel $target
+  if ($label -ne 'not-low') { return @("STOP the copy $target carries a Low integrity label or one that could not be read ($label), so a contained run could change it") }
+  $installed = Get-Sha256 (Join-Path $gitRoot 'usr\bin\msys-2.0.dll')
+  if ((Get-Sha256 (Join-Path $target 'usr\bin\msys-2.0.dll')) -ne $installed) { return @("STOP the copy's msys-2.0.dll differs from the installed Git's after the copy") }
+  $json = (@{ dllSha256 = $installed; files = $files; source = $gitRoot; madeAt = (Get-Date).ToString('o') } | ConvertTo-Json -Compress)
+  [System.IO.File]::WriteAllText((Join-Path $target $MsysManifestName), $json)
+  return @("made $target ($files files, msys-2.0.dll $installed)")
 }
 
 # -- 0. Not elevated: the home folder and the user variables must be the owner's ------------------------
@@ -237,6 +349,25 @@ if ($modelsNow -and (Test-Path -LiteralPath $defaultModels) -and ((Get-FullOrAsI
 }
 if ($modelsNow) { $kept += @{ Label = 'the models folder'; Path = (Get-FullOrAsIs $modelsNow) } }
 
+# -- 3c. The copy of Git's Unix tools (only with -MsysCopy, or when the folder is already there) ----------
+$msysTarget = ''
+$msysGit = if ($GitRoot) { $GitRoot } else { Find-GitRoot }
+if ($MsysCopy -or (Test-Path -LiteralPath $MsysDir)) {
+  $before = $script:blocking
+  $problems = @(Get-FolderProblems $MsysDir)
+  foreach ($x in $problems) { if ($MsysCopy) { Stop-Here "the copy of Git's tools $MsysDir $x." } else { Say 'info' "the copy of Git's tools $MsysDir $x." } }
+  if (-not $msysGit -or -not (Test-Path -LiteralPath (Join-Path $msysGit 'usr\bin\msys-2.0.dll'))) {
+    if ($MsysCopy) { Stop-Here "no installed Git with usr\bin\msys-2.0.dll was found; name its folder with -GitRoot." }
+  } elseif ($problems.Count -eq 0) {
+    $state = Get-MsysCopyState $msysGit $MsysDir
+    if ($state -eq 'current') { Say 'ok' "the copy of Git's tools $MsysDir matches the installed Git ($msysGit)" }
+    elseif ($state -eq 'foreign') { Stop-Here "$MsysDir holds files and no $MsysManifestName, so this script did not make it; name another folder with -MsysDir." }
+    elseif ($MsysCopy) { $msysTarget = Get-Full $MsysDir; Say 'TODO' "the copy of Git's tools $MsysDir is $state. -Apply copies it from $msysGit." }
+    else { Say 'TODO' "the copy of Git's tools $MsysDir is $($state): a run whose starter names it in LOCALCODE_CONTAINMENT_MSYS is refused. Run again with -MsysCopy -Apply." }
+  }
+  if ($script:blocking -eq $before) { $kept += @{ Label = "the copy of Git's tools"; Path = (Get-Full $MsysDir) } }
+}
+
 # -- 3b. No two of these folders may overlap -------------------------------------------------------------
 for ($i = 0; $i -lt $kept.Count; $i++) {
   for ($j = $i + 1; $j -lt $kept.Count; $j++) {
@@ -357,6 +488,13 @@ if ($modelsTarget) {
 if ($ackTarget) {
   [Environment]::SetEnvironmentVariable('LOCALCODE_UNPROTECTED_VOLUMES_OK', $ackTarget, 'User')
   Say 'set' "LOCALCODE_UNPROTECTED_VOLUMES_OK=$ackTarget (user variable; was '$ackUser')"
+  $changed++
+}
+if ($msysTarget) {
+  $lines = @(Copy-MsysRuntime $msysGit $msysTarget)
+  foreach ($l in $lines) { $w = $l.Split(' ')[0]; Say $w $l.Substring($w.Length + 1) }
+  if ($lines[-1].StartsWith('STOP')) { exit 1 }
+  Say 'NEXT' "A run uses the copy only when the shell or service that starts it has LOCALCODE_CONTAINMENT_MSYS=$msysTarget; run this step again after every Git update."
   $changed++
 }
 if ($modelsTarget -or $ackTarget) {

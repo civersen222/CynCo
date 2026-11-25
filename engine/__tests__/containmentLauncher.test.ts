@@ -13,12 +13,12 @@
  */
 import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { LAUNCHER_UNAVAILABLE, MSYS_IN_CONTAINED_RUN } from '../containment.js'
-import { lowerOwnIntegrity, parseLauncherArgs } from '../lowIntegrityLauncher.js'
+import { childStartRefusal, COMMAND_LINE_TOO_LONG, lowerOwnIntegrity, parseLauncherArgs } from '../lowIntegrityLauncher.js'
 import { listEntries } from '../realPath.js'
 
 const PREFIX = 'cynco-launcher-'
@@ -87,20 +87,42 @@ describe('the launcher argument parser (everywhere)', () => {
     expect(reason(['--run-dir', 'R', '--cwd', 'C'])).toBe('unknown launcher mode (none given)')
   })
 
+  // Wave 19b: a command line longer than Windows takes answered "(ENAMETOOLONG)" alone; the reason now
+  // says what it means and what to do, and every other start error is worded as before.
+  it('a child that could not be started: the reason, with a command line too long said in words', () => {
+    expect(childStartRefusal({ code: 'ENAMETOOLONG', message: 'spawnSync powershell.exe ENAMETOOLONG' })).toBe(COMMAND_LINE_TOO_LONG)
+    expect(COMMAND_LINE_TOO_LONG.startsWith('the command could not be started (ENAMETOOLONG: ')).toBe(true)
+    expect(childStartRefusal({ code: 'ENOENT', message: 'x' })).toBe('the command could not be started (ENOENT)')
+    expect(childStartRefusal({ message: 'no code here' })).toBe('the command could not be started (no code here)')
+  })
+
   it('without bun:ffi the token is not lowered, and says so', () => {
     const why = lowerOwnIntegrity()
     expect(why?.startsWith(LAUNCHER_UNAVAILABLE('bun:ffi did not load: ').slice(0, -1)), String(why)).toBe(true)
   })
 
-  it('the config file holds one comment line and no setting', () => {
-    const text = readFileSync(fileURLToPath(new URL('../lowIntegrityLauncher.bunfig.toml', import.meta.url)), 'utf-8')
-    expect(text).toBe('# The low-integrity launcher starts with this file so that no bunfig.toml of a mission folder is read.\n')
+  // Changed on purpose (B4, wave 19): the file holds one setting now, `[install] auto = "disable"`, so the
+  // launcher's Bun never fetches a package by itself (lowIntegrityLauncherNoInstall.test.ts); nothing else.
+  it('the config file holds comment lines and one setting: no package is fetched by itself', () => {
+    const text = readFileSync(fileURLToPath(new URL('../lowIntegrityLauncher.bunfig.toml', import.meta.url)), 'utf-8').replace(/\r\n/g, '\n')
+    expect(text.split('\n')[0]).toBe('# The low-integrity launcher starts with this file so that no bunfig.toml of a mission folder is read.')
+    expect(text.split('\n').filter(l => l.trim() !== '' && !l.trim().startsWith('#'))).toEqual(['[install]', 'auto = "disable"'])
   })
 })
 
 const onWindows = process.platform === 'win32'
-const bunPresent = onWindows && spawnSync('bun', ['--version'], { encoding: 'utf-8', shell: true }).status === 0
-if (onWindows && !bunPresent) console.log('[containmentLauncher] SKIPPED: bun is not on PATH, so the Windows layer was not exercised')
+// Bun is found through the shell once (on this PC `bun` on PATH is npm's bun.cmd shim) and asked for
+// its own executable, which the fixture is then started with directly, as hostResources.test.ts does.
+// Started through the shell, the timeout below killed cmd.exe alone and left bun.exe and what it had
+// started running (F210; NOW.md, 2026-11-24). The lookup has a timeout of its own.
+function findBunExe(): string | null {
+  const r = spawnSync('bun', ['--print', 'process.execPath'], { encoding: 'utf-8', shell: true, windowsHide: true, timeout: 15_000 })
+  const exe = r.status === 0 ? String(r.stdout).trim().split(/\r?\n/).pop() ?? '' : ''
+  return exe !== '' && existsSync(exe) ? exe : null
+}
+const bunExe = onWindows ? findBunExe() : null
+const bunPresent = bunExe !== null
+if (onWindows && !bunPresent) console.log('[containmentLauncher] SKIPPED: bun is not on PATH (or did not name its executable within 15 s), so the Windows layer was not exercised')
 
 const made: string[] = []
 afterAll(() => {
@@ -119,7 +141,7 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     made.push(dir)
     const env = { ...process.env }
     delete env.LOCALCODE_CONTAINMENT_OFF
-    const run = spawnSync('bun', ['engine/__tests__/fixtures/containedShell.ts', `"${dir}"`], { encoding: 'utf-8', shell: true, timeout: 240_000, env })
+    const run = spawnSync(bunExe!, ['engine/__tests__/fixtures/containedShell.ts', dir], { encoding: 'utf-8', windowsHide: true, timeout: 240_000, env })
     const last = String(run.stdout ?? '').trim().split('\n').pop() ?? ''
     try {
       report = JSON.parse(last) as Report
@@ -183,6 +205,16 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.err).toBeNull()
     expect(v.printed).toBe(20_000)
     expect(v.commandFilesLeft).toEqual([])
+    // Wave 19b: 40,000 characters through --command-file is more than a command line holds; the launcher
+    // says so in its own 197 line, with its seal, and nothing was run (measured before the change: the
+    // same 197 with only "(ENAMETOOLONG)", scratch b6-long-before.txt).
+    expect(v.tooLong.viaFile).toBe(true)
+    expect(v.tooLong.status).toBe(197)
+    expect(v.tooLong.stdout).toBe('')
+    expect(v.tooLong.stderr.split(/\r?\n/).filter((l: string) => l !== '')).toEqual([
+      `[containment] refused: ${COMMAND_LINE_TOO_LONG}`,
+      `[containment] sealed ${v.tooLong.seal} 197`,
+    ])
   })
 
   it('no-shell form: toolExec with no shell option runs through --shell \'\' and sees the sandbox home', () => {
@@ -211,6 +243,15 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.printed).toBe('PLANTED=[]')
     expect(v.witnesses).toEqual([])
   })
+
+  // BB-5 (check B, wave 19b): the live no-install case hands toolEnv's value to a Bun it starts itself; this is
+  // the end-to-end proof that a child the real launcher starts carries it, after what the starter's held.
+  it('BB-5: a child the launcher starts has BUN_OPTIONS with --no-install after the starter\'s own value; an uncontained one has the starter\'s alone', () => {
+    const v = ok('bunOptions')
+    expect(v.err).toBeNull()
+    expect(v.contained).toBe('--smol --no-install')
+    expect(v.plain).toBe('--smol')
+  }, 300_000)
 
   it('planted config in the launcher\'s own working folder: not read with the two flags, read without either', () => {
     const v = ok('plantedConfigInLauncherCwd')
@@ -510,5 +551,37 @@ describe.skipIf(!onWindows || !bunPresent)('the low-integrity launcher under Bun
     expect(v.lowAfterRelease).toBe(true)
     expect(v.nextEstablish).toMatch(/^the mission folder .*mission2 is already labelled low integrity and no live run holds it/)
     expect(v.cleanedUp).toBe(true)
+  })
+
+  // B1 (wave 19): the starter holds the installed Git's namespace at normal integrity for as long as it
+  // may start contained children; a low start of the installed Git then fails always.
+  it('B1: the installed Git\'s namespace is held by one sh.exe of this process while a run is held, and a low start of the installed Git fails', () => {
+    const v = ok('gitNamespaceHeld')
+    if (v.skip) return
+    expect(v.holder, JSON.stringify(v)).not.toBeNull()
+    expect(String(v.image).toLowerCase()).toBe('sh.exe')
+    expect(v.lowInstalledBash).toMatch(/NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-[^)]*\): 0xC0000022/)
+    expect(v.lowInstalledBash).not.toContain('started')
+  })
+
+  it('B1: with the switch on, the copy\'s bash runs grep and a shell hook\'s commit at low (PLAN step 5)', () => {
+    const v = ok('msysCopySwitch')
+    if (v.skip) return
+    expect(v.establish3, 'the establish with the switch').toBeUndefined()
+    expect(v.copyFailed, 'the copy').toBeUndefined()
+    expect(v.msysRuntime).toMatch(/msys-copy$/)
+    expect(v.grep, v.grepErr).toBe('1')
+    expect(v.commit, v.commitErr).toBe('exit=0')
+    expect(v.hook).toBe('hook ran: Msys')
+    // The copy's usr/bin first on the child's PATH (the copy is the msys root, so /usr/bin), and the child at low integrity.
+    expect(v.level[0]).toBe('/usr/bin')
+    expect(v.level[1]).toMatch(/msys-copy\\usr\\bin$/)
+    expect(v.level[2]).toBe('1')
+    expect(v.released, v.releaseNote).toBe(true)
+  })
+
+  it('B1: a released run is no longer held by the holder (the last release ends it: containment.test.ts)', () => {
+    const v = ok('gitNamespaceAfterReleases')
+    for (const id of v.released.filter(Boolean)) expect(v.holder?.runs ?? [], id).not.toContain(id)
   })
 })

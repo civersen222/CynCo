@@ -27,6 +27,14 @@ const FOUR = [
   "[Environment]::SetEnvironmentVariable('LOCALCODE_MODELS_DIR', $modelsTarget, 'User')",
   "[Environment]::SetEnvironmentVariable('LOCALCODE_UNPROTECTED_VOLUMES_OK', $ackTarget, 'User')",
 ]
+// B1 (wave 19), added on purpose: the copy of Git's Unix tools (-MsysCopy). Its folder, the copy itself
+// (robocopy, which never deletes: no /MIR, /PURGE or /MOV; never a link: /XJ) and its manifest, all inside
+// `Copy-MsysRuntime`, which the main flow calls only after -Apply and the blocking-STOP gate.
+const MSYS = [
+  'if (-not (Test-Path -LiteralPath $target)) { New-Item -ItemType Directory -Path $target | Out-Null }',
+  '[System.IO.File]::WriteAllText((Join-Path $target $MsysManifestName), $json)',
+]
+const ROBOCOPY = '$null = & robocopy (Join-Path $gitRoot $part) (Join-Path $target $part) /E /COPY:DAT /DCOPY:DAT /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP'
 
 describe('scripts/cynco-containment-setup.ps1', () => {
   it('checks the engine\'s own switch name (entry 5.M2)', () => {
@@ -37,9 +45,15 @@ describe('scripts/cynco-containment-setup.ps1', () => {
     expect(SWITCH_IN_UNATTENDED.startsWith(`${name} `)).toBe(true)
   })
 
-  it('changes things with exactly four commands', () => {
+  it('changes things with exactly four commands, and the copy of Git\'s tools with its own two and robocopy', () => {
     const changing = src.split(/\r?\n/).filter(l => CHANGING.test(l)).map(l => l.trim())
-    expect(changing).toEqual(FOUR)
+    expect(changing).toEqual([...MSYS, ...FOUR])
+    const fn = at('function Copy-MsysRuntime([string]$gitRoot, [string]$target) {')
+    const fnEnd = src.indexOf('\n}', fn)
+    for (const line of [...MSYS, ROBOCOPY]) {
+      expect(at(line), line).toBeGreaterThan(fn)
+      expect(at(line), line).toBeLessThan(fnEnd)
+    }
   })
 
   it('changes nothing without -Apply, and nothing past a blocking STOP', () => {
@@ -47,13 +61,22 @@ describe('scripts/cynco-containment-setup.ps1', () => {
     const blocked = at("if ($script:blocking -gt 0) { Say 'STOP' 'nothing was changed: clear the STOP lines above first.'; exit 1 }")
     expect(noApply).toBeLessThan(blocked)
     for (const line of FOUR) expect(blocked, line).toBeLessThan(at(line))
+    // The copy step's function is called once, after both gates, and only for a target section 3c set.
+    const calls = src.split(/\r?\n/).filter(l => /Copy-MsysRuntime \$/.test(l))
+    expect(calls).toEqual(['  $lines = @(Copy-MsysRuntime $msysGit $msysTarget)'])
+    expect(blocked).toBeLessThan(at('  $lines = @(Copy-MsysRuntime $msysGit $msysTarget)'))
+    expect(src.match(/\$msysTarget = Get-Full \$MsysDir/g)).toHaveLength(1)
+    expect(src.slice(at('$msysTarget = Get-Full $MsysDir') - 200, at('$msysTarget = Get-Full $MsysDir'))).toContain('elseif ($MsysCopy)')
     const between = src.slice(noApply, blocked)
     expect(between).toContain('exit 0')
     expect(between).toContain('exit 1')
   })
 
-  it('has no command that deletes, copies, recurses, changes an access list or evaluates text', () => {
-    expect(src).not.toMatch(/^\s*&?\s*(del|erase|rd|rmdir|robocopy|xcopy|takeown|setx|reg|mklink)\b/mi)
+  it('has no command that deletes, copies (but Git\'s runtime into its copy), recurses, changes an access list or evaluates text', () => {
+    expect(src).not.toMatch(/^\s*&?\s*(del|erase|rd|rmdir|xcopy|takeown|setx|reg|mklink)\b/mi)
+    // B1 (wave 19), changed on purpose: one robocopy, which never deletes or follows a link.
+    expect(src.split(/\r?\n/).filter(l => /\brobocopy\b/i.test(l) && !/^\s*#/.test(l) && !/STOP robocopy/.test(l)).map(l => l.trim())).toEqual([ROBOCOPY])
+    expect(src.split(/\r?\n/).filter(l => !/^\s*#/.test(l)).join('\n')).not.toMatch(/\/(MIR|PURGE|MOV|MOVE)\b/i)
     expect(src).not.toMatch(/-Recurse\b/i)
     expect(src).not.toMatch(/\bicacls\b[^\n]*\s\/[A-Za-z]/)
     expect(src).not.toMatch(/Invoke-Expression|\biex\b/i)
@@ -61,7 +84,8 @@ describe('scripts/cynco-containment-setup.ps1', () => {
 
   it('names no drive but C:, and on C: only the containment folders', () => {
     expect(src).not.toMatch(/\b[ABD-Zabd-z]:\\/)
-    const allowed = ['C:\\cynco-sandbox', 'C:\\cynco-guard', 'C:\\cynco-audit', 'C:\\cynco-models']
+    // B1 (wave 19): the copy of Git's tools, C:\cynco-msys, added on purpose.
+    const allowed = ['C:\\cynco-sandbox', 'C:\\cynco-guard', 'C:\\cynco-audit', 'C:\\cynco-models', 'C:\\cynco-msys']
     for (const m of src.match(/C:\\[\w-]+/g) ?? []) expect(allowed, m).toContain(m)
     // The models folder is named only in the help text's example.
     const models = src.split(/\r?\n/).filter(l => l.includes('C:\\cynco-models'))
@@ -91,8 +115,11 @@ describe('scripts/cynco-containment-setup.ps1', () => {
     expect(src.slice(elevated, elevated + 200)).toContain('Stop-Here')
     expect(elevated).toBeLessThan(at('# -- 1. The switch'))
     // an access list that cannot be read is a problem, and a missing leaf is judged by its parent's inheritable label
-    expect(src.match(/\$LASTEXITCODE -ne 0/g)?.length).toBe(2)
-    at("Mandatory Label\\\\Low Mandatory Level:[^\\r\\n]*\\(CI\\)")
+    // Changed on purpose (round one of P2, NOW.md:98, handed to the lead then; this file is package B's now): both
+    // access-list reads are Get-LowLabel (SDDL through GetNamedSecurityInfoW), which answers $null when it cannot
+    // read, not icacls and $LASTEXITCODE; and the parent's inheritable Low label is read from SDDL, not icacls' words.
+    expect(src.match(/if \(\$null -eq \$p?label\) \{/g)?.length).toBe(2)
+    at("} elseif ($plabel -eq 'low-inheritable') {")
     // the folders may not overlap
     at('overlap: each must be a folder of its own')
     // CYNCO_HOME, CYNCO_MISSIONS_DIR and the models folder as the logon tasks see them, not this terminal

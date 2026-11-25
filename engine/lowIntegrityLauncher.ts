@@ -16,7 +16,8 @@
  * `--env` pairs) and starts the child in `--cwd`. Everything the child starts is low as well.
  *
  * Modes:
- *   --shell <shell-or-empty> <command>                  the command through a shell (`exec`'s shape)
+ *   --shell <shell-or-empty> <command>                  the command through a shell (`exec`'s shape;
+ *                                                       PowerShell with -NoProfile -NonInteractive: `shellStart`)
  *   --shell <shell-or-empty> --command-file <path>      the same, the command read from a UTF-8 file
  *   --exec <file> [args...]                             a program and its arguments, no shell
  *   --probe <mustFail> <mustSucceed>...                 in THIS process: one create that must be
@@ -272,6 +273,38 @@ export function parseLauncherArgs(argv: readonly string[]): { ok: true; args: La
   return { ok: true, args: { mode: 'shell', runDir, cwd, env, shell, command: after[0] } }
 }
 
+/**
+ * How the shell form starts its command. Pure. Windows PowerShell and pwsh are started with an
+ * explicit argument list, `-NoProfile -NonInteractive -Command <command>` (NOW.md:261): through
+ * `shell:` they were given `-c <command>` alone, so a PowerShell profile under the owner's real
+ * Documents (which the environment overlay does not move) would have run before every contained
+ * command and put its output into the answer, and a prompt would have waited for a person. The
+ * command reaches PowerShell as the same one argument either way (`shell:` with a shell that is not
+ * cmd hands it on as `-c` and the command, quoted the same way). Every other shell (cmd, the empty
+ * slot) is started as before.
+ */
+export function shellStart(shell: string, command: string): { file: string; args: string[]; shell?: string | true } {
+  const file = shell.replace(/^"(.*)"$/, '$1')
+  const name = file.split(/[\\/]/).pop() ?? ''
+  if (/^(powershell|pwsh)(\.exe)?$/i.test(name)) return { file, args: ['-NoProfile', '-NonInteractive', '-Command', command] }
+  return { file: command, args: [], shell: shell || true }
+}
+
+/**
+ * Wave 19b (from package C): a command handed by `--command-file` is put on the child's command line
+ * (PowerShell's `-Command`, cmd's `/c`), and Windows takes at most 32,767 characters there. Measured
+ * 2026-11-25 through this launcher: 32,000 characters ran; 32,767 and 40,000 gave this process's own
+ * 197 with "the command could not be started (ENAMETOOLONG)" (never a crash), now said in words.
+ * (cmd.exe's own limit, 8,191, is cmd's answer: "The command line is too long.", exit 1.)
+ */
+export const COMMAND_LINE_TOO_LONG = 'the command could not be started (ENAMETOOLONG: its command line would be longer than the 32,767 characters Windows allows; a longer script goes into a file in the working folder, and that file is run)'
+
+/** The launcher's reason when its child could not be started at all. Pure. */
+export function childStartRefusal(e: { code?: string; message: string }): string {
+  if (e.code === 'ENAMETOOLONG') return COMMAND_LINE_TOO_LONG
+  return `the command could not be started (${e.code ?? e.message})`
+}
+
 function say(fd: 1 | 2, line: string): void {
   // Written synchronously: the process exits right after, and a pipe must not lose the line.
   writeSync(fd, `${line}\n`)
@@ -352,10 +385,13 @@ function main(argv: readonly string[]): never {
         refuse(`the command file ${a.commandFile} could not be read (${e instanceof Error ? e.message : String(e)})`)
       }
     }
-    r = spawnSync(command, { shell: a.shell || true, cwd: a.cwd, env, stdio: 'inherit', windowsHide: true })
+    const how = shellStart(a.shell, command)
+    r = how.shell === undefined
+      ? spawnSync(how.file, how.args, { cwd: a.cwd, env, stdio: 'inherit', windowsHide: true })
+      : spawnSync(how.file, { shell: how.shell, cwd: a.cwd, env, stdio: 'inherit', windowsHide: true })
   }
   // 6. The child's exit code, or a named reason why there is none.
-  if (r.error) refuse(`the command could not be started (${(r.error as NodeJS.ErrnoException).code ?? r.error.message})`)
+  if (r.error) refuse(childStartRefusal(r.error as NodeJS.ErrnoException))
   if (r.status === null) {
     exitOwn(LAUNCHER_CHILD_GONE_EXIT, `[containment] child ended: ${r.signal ?? 'no status'}`)
   }

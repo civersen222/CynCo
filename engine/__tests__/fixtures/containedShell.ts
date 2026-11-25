@@ -29,7 +29,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import {
-  containedCommand, containmentHint, ContainmentRefusal, establishContainment, listUnprotectedVolumes,
+  containedCommand, containmentHint, ContainmentRefusal, establishContainment, gitNamespaceHolder, installedGitRoot, listUnprotectedVolumes,
   releaseContainment, setRunContainment, toolExec, toolExecSync, type RunContainment,
 } from '../../containment.js'
 import { ownProcessTree } from '../../processTree.js'
@@ -126,7 +126,7 @@ const planted = (tag: string) => [
 ].join('\n') + '\n'
 writeFileSync(join(mission, 'plant.ts'), planted('mission-bunfig'))
 writeFileSync(join(mission, 'bunfig.toml'), `preload = ["./plant.ts"]\n`)
-writeFileSync(join(mission, '.env'), 'PLANTED_KEY=1\n')
+writeFileSync(join(mission, '.env'), 'PLANTED_VALUE=1\n')
 writeFileSync(join(outside, 'plant-home.ts'), planted('home-bunfig'))
 // The same planted in a folder used as the launcher's own working folder: the launcher normally
 // starts in the checkout, so the case above would pass even without --no-env-file and --config=.
@@ -135,12 +135,14 @@ writeFileSync(join(cfg, 'plant.ts'), [
   `try { writeFileSync(${JSON.stringify(join(cfg, 'witness-cfg.txt'))}, 'ran') } catch (e) { void e }`,
 ].join('\n') + '\n')
 writeFileSync(join(cfg, 'bunfig.toml'), `preload = ["./plant.ts"]\n`)
-writeFileSync(join(cfg, '.env'), 'PLANTED_KEY=cfg\n')
+writeFileSync(join(cfg, '.env'), 'PLANTED_VALUE=cfg\n')
 
-// The label leak case: a junction three levels down, which rule M8 (top two levels) does not see.
+// The label leak case: a junction three levels down. Rule M walks the whole folder since 2026-11-24
+// (NOW.md:84) and refuses a mission folder holding a link that leads out, so the junction is made
+// right after the establish, and the mission folder's label is then set again as the establish set
+// it: what is measured is whether that label reaches through the junction (labelLeakAfterEstablish).
 mkdirSync(join(mission, 'a', 'b'), { recursive: true })
 const linkedOut = join(mission, 'a', 'b', 'linked-out')
-execFileSync('cmd.exe', ['/d', '/c', 'mklink', '/J', linkedOut, outside], { windowsHide: true, stdio: 'ignore' })
 writeFileSync(join(outside, 'before.txt'), 'medium\n')
 
 const cases: Record<string, unknown> = {}
@@ -166,12 +168,18 @@ const est = establishContainment({
 })
 if (!est.ok) {
   report({ ok: false, error: `establish refused: ${est.reason}`, engineJob: engineJob.installed })
-  rmdirSync(linkedOut)
   process.exit(0)
 }
 const ctx = est.containment
 setRunContainment(ctx)
 const runDir = ctx.sandbox.root
+execFileSync('cmd.exe', ['/d', '/c', 'mklink', '/J', linkedOut, outside], { windowsHide: true, stdio: 'ignore' })
+const relabel = spawnSync(ICACLS, [mission, '/setintegritylevel', '(OI)(CI)L'], { encoding: 'utf-8', windowsHide: true })
+if (relabel.status !== 0) {
+  report({ ok: false, error: `the mission folder could not be labelled again over the junction: ${`${relabel.stdout ?? ''}${relabel.stderr ?? ''}`.trim()}`, engineJob: engineJob.installed })
+  rmdirSync(linkedOut)
+  process.exit(0)
+}
 
 async function step(name: string, fn: () => Promise<unknown> | unknown): Promise<void> {
   try {
@@ -235,8 +243,15 @@ await step('longCommand', async () => {
     unlinkSync(spawn.commandFile)
   }
   const r = await run(cmd, { cwd: mission, shell: PS, ctx })
+  // Wave 19b (from package C): a command handed by file that is longer than a command line can hold
+  // (32,767 characters on Windows) is the launcher's own named refusal, never a crash.
+  const long = `Write-Output '${'y'.repeat(40_000)}'`
+  const head = containedCommand({ file: long, args: [], shell: PS }, { ctx, cwd: mission })
+  const tl = spawnSync(head.file, head.args, { cwd: head.cwd, env: head.env, encoding: 'utf-8', windowsHide: true, timeout: 60_000 })
+  if (head.commandFile) unlinkSync(head.commandFile)
+  const tooLong = { viaFile: head.args.includes('--command-file'), status: tl.status, stdout: tl.stdout, stderr: tl.stderr, seal: head.seal ?? null }
   const left = readdirSync(runDir).filter(n => /^cmd-.*\.txt$/.test(n))
-  return { length: cmd.length, viaFile, printed: r.stdout.trim().length, err: r.err?.message ?? null, commandFilesLeft: left }
+  return { length: cmd.length, viaFile, printed: r.stdout.trim().length, err: r.err?.message ?? null, commandFilesLeft: left, tooLong }
 })
 
 await step('noShellForm', async () => {
@@ -269,15 +284,30 @@ await step('didNotRun', async () => {
 
 await step('plantedConfig', async () => {
   writeFileSync(join(ctx.sandbox.home, '.bunfig.toml'), `preload = [${JSON.stringify(join(outside, 'plant-home.ts').replace(/\\/g, '/'))}]\n`)
-  const r = await run(`Write-Output "PLANTED=[$env:PLANTED_KEY]"`, { cwd: mission, shell: PS, ctx })
+  const r = await run(`Write-Output "PLANTED=[$env:PLANTED_VALUE]"`, { cwd: mission, shell: PS, ctx })
   const witnesses = walk(dir).filter(p => /witness-/.test(p))
   return { printed: r.stdout.trim(), err: r.err?.message ?? null, witnesses }
+})
+
+// BB-5 (check B, wave 19b): a child the real launcher starts carries BUN_OPTIONS with --no-install after the
+// starter's own value (toolEnv in the starter and again in the launcher); an uncontained child, the starter's alone.
+await step('bunOptions', async () => {
+  const before = process.env.BUN_OPTIONS
+  process.env.BUN_OPTIONS = '--smol'
+  try {
+    const c = await run('Write-Output $env:BUN_OPTIONS', { cwd: mission, shell: PS, ctx })
+    const p = await run('Write-Output $env:BUN_OPTIONS', { cwd: mission, shell: PS, ctx: null })
+    return { contained: c.stdout.trim(), plain: p.stdout.trim(), err: c.err?.message ?? null }
+  } finally {
+    if (before === undefined) delete process.env.BUN_OPTIONS
+    else process.env.BUN_OPTIONS = before
+  }
 })
 
 await step('plantedConfigInLauncherCwd', async () => {
   // The launcher's exact start form, started in a folder holding a bunfig.toml preload and a .env;
   // then the same with each flag dropped, which shows the case can see what the flags prevent.
-  const c = containedCommand({ file: 'Write-Output "PLANTED=[$env:PLANTED_KEY]"', args: [], shell: PS }, { ctx, cwd: mission })
+  const c = containedCommand({ file: 'Write-Output "PLANTED=[$env:PLANTED_VALUE]"', args: [], shell: PS }, { ctx, cwd: mission })
   const witness = join(cfg, 'witness-cfg.txt')
   const go = (args: string[]) => {
     if (existsSync(witness)) unlinkSync(witness)
@@ -430,7 +460,7 @@ await step('throughTheSites', async () => {
     '+++ b/added-by-patch.txt', '@@ -0,0 +1 @@', '+added', '',
   ].join('\n')
   const applied = await applyPatchTool.execute({ patch }, mission)
-  const tests = runTests(mission, { framework: 'pytest', command: `"${WHOAMI}" /groups /fo csv /nh` } as never)
+  const tests = await runTests(mission, { framework: 'pytest', command: `"${WHOAMI}" /groups /fo csv /nh` } as never)
   return {
     contract: { outcome: contract.outcome, home: (/home=(\S*)/.exec(contract.tail) ?? [null, null])[1], level: levelOf(contract.tail), tail: contract.tail.slice(0, 400) },
     git: { isError: git.isError, output: git.output.trim().slice(0, 400) },
@@ -902,6 +932,46 @@ await step('labelLeakAfterEstablish', async () => {
   return { lowUnderOutside: low, throughJunction: r.stdout.trim(), throughExists: existsSync(join(outside, 'through.txt')), missionLabel: labelsOf(mission), extraLabel: labelsOf(extra) }
 })
 
+// B1 (wave 19): the installed Git's namespace is held at normal integrity from the first contained child
+// of this process on, so a low start of the installed Git fails always, whatever else runs on the machine.
+await step('gitNamespaceHeld', async () => {
+  const gitRoot = installedGitRoot()
+  if (gitRoot === null) return { skip: 'no installed Git with an msys runtime' }
+  const h = gitNamespaceHolder()
+  const image = h ? (String(spawnSync(join(process.env.SystemRoot || 'C:/Windows', 'System32', 'tasklist.exe'), ['/FI', `PID eq ${h.pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf-8', windowsHide: true }).stdout ?? '').split(',')[0] ?? '').replace(/"/g, '') : null
+  const r = await run(`& '${join(gitRoot, 'usr', 'bin', 'bash.exe')}' -c 'echo started'`, { cwd: mission, shell: PS, ctx })
+  return { holder: h, image, runs: h?.runs ?? [], lowInstalledBash: `${r.stdout}${r.stderr}`.trim().slice(0, 300) }
+})
+
+// B1 (wave 19), the investigation's PLAN step 5: with the switch on, the copy's bash runs grep and a
+// shell hook's commit at low, while Git Bash processes of the installed Git run (the holder is one).
+const mission3 = join(dir, 'mission3')
+await step('msysCopySwitch', async () => {
+  const gitRoot = installedGitRoot()
+  if (gitRoot === null) return { skip: 'no installed Git with an msys runtime' }
+  const copy = join(dir, 'msys-copy')
+  for (const part of ['usr\\bin', 'etc', 'dev', 'tmp']) {
+    const c = spawnSync('robocopy.exe', [join(gitRoot, part), join(copy, part), '/E', '/COPY:DAT', '/DCOPY:DAT', '/XJ', '/R:0', '/W:0', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], { encoding: 'utf-8', windowsHide: true })
+    if (c.status === null || c.status >= 8) return { copyFailed: `${part}: ${c.status} ${String(c.stdout ?? '').trim().slice(0, 200)}` }
+  }
+  mkdirSync(mission3)
+  execFileSync('git', ['init', '-q'], { cwd: mission3, windowsHide: true })
+  writeFileSync(join(mission3, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\necho "hook ran: $(uname -o)" > hook-ran.txt\nexit 0\n')
+  const est3 = establishContainment({ test: true, kind: 'mission', label: 'launcher-fixture-msys', missionCwd: mission3, sandboxRoot: root, home, folders, msys: copy })
+  if (!est3.ok) return { establish3: est3.reason }
+  const ctx3 = est3.containment
+  const grep = await run(`bash -c 'printf "a\\nhello\\nb\\n" | grep -c hello'`, { cwd: mission3, shell: PS, ctx: ctx3 })
+  const commit = await run('git -c user.name=fixture -c user.email=fixture@localhost commit -q --allow-empty -m probe; Write-Output "exit=$LASTEXITCODE"', { cwd: mission3, shell: PS, ctx: ctx3 })
+  const level = await run(`bash -c 'echo $PATH | cut -d: -f1; cygpath -w /usr/bin'; & '${WHOAMI}' /groups /fo csv /nh | Select-String 'S-1-16-4096' | Measure-Object | ForEach-Object Count`, { cwd: mission3, shell: PS, ctx: ctx3 })
+  const hook = existsSync(join(mission3, 'hook-ran.txt')) ? readFileSync(join(mission3, 'hook-ran.txt'), 'utf-8').trim() : null
+  const rel3 = releaseContainment(ctx3)
+  return {
+    msysRuntime: ctx3.msysRuntime, grep: grep.stdout.trim(), grepErr: `${grep.stderr}`.trim().slice(0, 300),
+    commit: commit.stdout.trim(), commitErr: commit.stderr.trim().slice(0, 300), hook, level: level.stdout.trim().split(/\r?\n/).map(l => l.trim()),
+    released: rel3.relabelled, releaseNote: rel3.note, runId: ctx3.runId,
+  }
+})
+
 const rel = releaseContainment(ctx)
 cases.release = { relabelled: rel.relabelled, note: rel.note }
 
@@ -946,6 +1016,14 @@ await step('releaseBlocked', async () => {
     nextEstablish: again.ok ? 'established' : again.reason,
     cleanedUp: undo.status === 0 && back.status === 0 && !isLow(labelsOf(mission2)),
   }
+})
+
+// B1: a released run is no longer held; a context this fixture never released (a test context of a
+// case) still is, until the process ends (its end of the holder's stdin then closes).
+await step('gitNamespaceAfterReleases', async () => {
+  await sleep(300)
+  // (The fixture's main context is used again after its release, by afterRelease, so it is held again.)
+  return { holder: gitNamespaceHolder(), released: [(cases.msysCopySwitch as { runId?: string } | undefined)?.runId ?? null] }
 })
 
 setRunContainment(null)

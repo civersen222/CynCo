@@ -6,7 +6,7 @@
 // with no label (cwdLabel 'none'), so `release` runs no icacls. The pure parts run in process.
 import { afterAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isVolumeRefusal, main, statusLine } from '../cynco-sandbox.mjs'
@@ -64,9 +64,119 @@ describe('cynco-sandbox.mjs in process', () => {
     expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'sweep' })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (sweep)')
     expect(statusLine({ ...base, releasedAt: null, holder: { pid: 7 } })).toMatch(/ACTIVE \(holder pid 7\)$/)
     expect(statusLine({ ...base, releasedAt: null, holder: null })).toMatch(/ACTIVE \(no holder yet\)$/)
+    // P2-B4 (wave 15c): a grant a release kept is shown, with the command that puts it back.
+    expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'release', grantsKept: [{ folder: 'C:/m', aclFile: 'a' }] })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  GRANT KEPT on C:/m (restore-acl r-20261123T010203-abcd)')
+    // C9 (wave 19): a sandbox its release left low past the set-back budget is shown until the sweep removes it.
+    expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'release', sandboxLeftLow: { folders: 200, at: 'X' } })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  SANDBOX LEFT LOW past 200 folders (the sweep removes it)')
+    expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'release', sandboxLeftLow: { folders: 3, at: 'X' }, grantsKept: [{ folder: 'C:/m', aclFile: 'a' }] })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  GRANT KEPT on C:/m (restore-acl r-20261123T010203-abcd)  SANDBOX LEFT LOW past 3 folders (the sweep removes it)')
+    // BB-6 (wave 19c): a sandbox left low for a folder whose name ends in a dot or a space (R2) says that, not a
+    // budget stop that did not happen; both are said when both happened.
+    expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'release', sandboxLeftLow: { folders: 12, at: 'X', notEntered: 1, budgetStopped: false } })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  SANDBOX LEFT LOW under 1 folder whose name ends in a dot or a space (the sweep removes it)')
+    expect(statusLine({ ...base, releasedAt: 'X', releasedBy: 'release', sandboxLeftLow: { folders: 200, at: 'X', notEntered: 2, budgetStopped: true } })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  SANDBOX LEFT LOW past 200 folders and under 2 folders whose name ends in a dot or a space (the sweep removes it)')
+    // R1 (check B, wave 19; wave 19b): a release still running in another live process is not a kept grant
+    // yet: the line says so, and names that process; once it is gone, GRANT KEPT as before.
+    const unfinished = { ...base, releasedAt: 'X', releasedBy: 'release', grantsKept: [{ folder: 'C:/m', aclFile: 'a', why: 'unfinished' }] }
+    expect(statusLine({ ...unfinished, releasing: { pid: process.ppid, startedAt: 'S' } })).toBe(`[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  RELEASE IN PROGRESS (process ${process.ppid}): the access list of C:/m is put back when it ends`)
+    const dead = spawnSync(process.execPath, ['-e', '']).pid
+    expect(statusLine({ ...unfinished, releasing: { pid: dead, startedAt: 'S' } })).toBe('[sandbox] r-20261123T010203-abcd  mission  C:/m  created T  released X (release)  GRANT KEPT on C:/m (restore-acl r-20261123T010203-abcd)')
     expect(isVolumeRefusal('D:\\ (exFAT) cannot be protected by integrity labels and is not acknowledged')).toBe(true)
     expect(isVolumeRefusal('the attached volumes could not be listed (boom), so it is not known whether one of them is unprotected')).toBe(true)
     expect(isVolumeRefusal('the mission folder C:/x does not exist or is not a folder')).toBe(false)
+  })
+
+  // F248 list, w12 checker R1: release-dead released every unreleased record of its kind, a live
+  // run's too (that run then lost write access to its mission folder). It now asks what the sweep
+  // asks (holderGone): a live holder, or a holderless record younger than 15 minutes, is kept.
+  it('release-dead keeps a record whose holder is alive and a fresh holderless one; a dead holder is released', () => {
+    const root = join(tempDir(), 'root')
+    const live = 'live-20261123T010203-aaaa', dead = 'dead-20261123T010203-bbbb', fresh = 'fresh-20261123T010203-cccc', stale = 'stale-20261123T010203-dddd'
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid
+    plantRecord(root, live, { holder: { pid: process.pid, startedAt: new Date().toISOString() } })
+    plantRecord(root, dead, { holder: { pid: deadPid, startedAt: new Date().toISOString() } })
+    plantRecord(root, fresh)
+    plantRecord(root, stale, { createdAt: new Date(Date.now() - 16 * 60_000).toISOString() })
+    const saved = process.env.LOCALCODE_SANDBOX_ROOT
+    process.env.LOCALCODE_SANDBOX_ROOT = root
+    const io = capture()
+    let code
+    try {
+      code = main(['release-dead', '--kind', 'mission'], io)
+    } finally {
+      // Wave 15c: assigning undefined set the variable to the text 'undefined' for the rest of the file.
+      if (saved === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
+      else process.env.LOCALCODE_SANDBOX_ROOT = saved
+    }
+    expect(code, [...io.lines, ...io.errs].join('\n')).toBe(0)
+    expect(recordOf(root, live).releasedAt).toBeNull()
+    expect(recordOf(root, fresh).releasedAt).toBeNull()
+    expect(recordOf(root, dead).releasedAt).not.toBeNull()
+    expect(recordOf(root, stale).releasedAt).not.toBeNull()
+    expect(io.lines).toContain(`[sandbox] kept ${live}: its holder ${process.pid} is alive`)
+    expect(io.lines.some(l => l.startsWith(`[sandbox] kept ${fresh}: it has no holder yet and was created `))).toBe(true)
+    expect(io.lines.some(l => l.startsWith(`[sandbox] run ${dead} released`))).toBe(true)
+    expect(io.lines.some(l => l.startsWith(`[sandbox] run ${stale} released`))).toBe(true)
+  })
+
+  // P2-B4 (wave 15c): a grant a release kept is put back by `restore-acl <run id>` (engine:
+  // restoreKeptGrants), which asks what the release asked; it exits 3 while one is still kept.
+  const inRoot = (root, argv) => {
+    const saved = process.env.LOCALCODE_SANDBOX_ROOT
+    process.env.LOCALCODE_SANDBOX_ROOT = root
+    const io = capture()
+    try {
+      return { code: main(argv, io), io }
+    } finally {
+      if (saved === undefined) delete process.env.LOCALCODE_SANDBOX_ROOT
+      else process.env.LOCALCODE_SANDBOX_ROOT = saved
+    }
+  }
+
+  it('restore-acl: usage, a run id with no record, and a record that keeps no grant', () => {
+    const root = join(tempDir(), 'root')
+    mkdirSync(root)
+    const io = capture()
+    expect(main(['restore-acl'], io)).toBe(2)
+    expect(io.errs.join('\n')).toContain('bun scripts/cynco-sandbox.mjs restore-acl <id>')
+    const none = inRoot(root, ['restore-acl', 'none-20261124T010203-abcd'])
+    expect(none.code).toBe(0)
+    expect(none.io.lines).toEqual(['[sandbox] no containment record for none-20261124T010203-abcd'])
+    const id = 'clean-20261124T010203-aaaa'
+    plantRecord(root, id, { releasedAt: new Date().toISOString(), releasedBy: 'release' })
+    const clean = inRoot(root, ['restore-acl', id])
+    expect(clean.code).toBe(0)
+    expect(clean.io.lines).toEqual([`[sandbox] run ${id} keeps no grant to put back`])
+    // C6 (c), wave 19: a record that is there and cannot be read is not "no record": exit 3, and said.
+    const broken = 'broken-20261124T010203-cccc'
+    const brokenDir = plantRecord(root, broken, { releasedAt: new Date().toISOString(), releasedBy: 'release' })
+    writeFileSync(join(brokenDir, 'containment.json'), '{ not json')
+    const b = inRoot(root, ['restore-acl', broken])
+    expect(b.code, [...b.io.lines, ...b.io.errs].join('\n')).toBe(3)
+    expect(b.io.lines[0]).toMatch(new RegExp(`^\\[sandbox\\] the record of ${broken} could not be read \\(`))
+    expect(b.io.errs).toEqual([`[sandbox] NOT PUT BACK: the record of ${broken} could not be read, so whether it keeps a grant is not known`])
+  })
+
+  it.skipIf(!isWin)('restore-acl: a grant whose folder still holds a link that leads out stays kept, said, exit 3, nothing written', () => {
+    const d = tempDir()
+    const root = join(d, 'root'), folder = join(d, 'granted'), outside = join(d, 'outside')
+    for (const p of [root, folder, outside]) mkdirSync(p)
+    const id = 'kept-20261124T010203-bbbb'
+    const runDir = plantRecord(root, id, { releasedAt: new Date().toISOString(), releasedBy: 'release' })
+    const aclFile = join(runDir, 'acl-0.before')
+    writeFileSync(aclFile, Buffer.from('granted\r\nD:AI(A;;FA;;;WD)\r\n', 'utf16le'))
+    const rec = recordOf(root, id)
+    writeFileSync(join(runDir, 'containment.json'), JSON.stringify({ ...rec, grantsKept: [{ folder, aclFile }] }, null, 2) + '\n')
+    const link = join(folder, 'out')
+    symlinkSync(outside, link, 'junction')
+    try {
+      const r = inRoot(root, ['restore-acl', id])
+      expect(r.code, [...r.io.lines, ...r.io.errs].join('\n')).toBe(3)
+      expect(r.io.lines).toEqual([`[sandbox] run ${id}: ${folder}: the access list saved before this run's grant was not put back, because ${link} leads outside it (to ${outside}); writing it rewrites what every entry under the folder inherited; its saved access list is ${aclFile}`])
+      expect(r.io.errs).toEqual([`[sandbox] NOT PUT BACK: run ${id} still keeps a grant; run restore-acl again once what kept it is gone`])
+      // Wave 19 (C6 b), on purpose: a grant still kept now says why (here rule M: a link leads out).
+      expect(recordOf(root, id).grantsKept).toEqual([{ folder, aclFile, why: 'link' }])
+    } finally {
+      rmdirSync(link)
+    }
   })
 })
 
@@ -123,7 +233,10 @@ describe.skipIf(!bunPresent)('cynco-sandbox.mjs under bun', () => {
     const root = join(tempDir(), 'root')
     const keep = 'keep-20261123T010203-aaaa', dead = 'dead-20261123T010203-bbbb', task = 'task-20261123T010203-cccc'
     plantRecord(root, keep)
-    plantRecord(root, dead)
+    // Changed on purpose (F248 list): release-dead now releases only a record whose holder is gone,
+    // as the sweep does, so the record that must be released names a holder that has exited (a
+    // fresh holderless record, which this case used to plant, is now kept).
+    plantRecord(root, dead, { holder: { pid: spawnSync(process.execPath, ['-e', '']).pid, startedAt: new Date().toISOString() } })
     plantRecord(root, task, { kind: 'daemon-task' })
     const r = cli(['release-dead', '--kind', 'mission', '--except', keep], root)
     expect(r.status, r.stdout + r.stderr).toBe(0)

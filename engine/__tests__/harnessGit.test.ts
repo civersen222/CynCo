@@ -23,7 +23,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
-import { harnessGitBin, harnessGitEnv, HARNESS_DIFF_FLAGS, refusedGitDir } from '../harnessGit.js'
+import { harnessGitBin, harnessGitEnv, HARNESS_DIFF_FLAGS, isHarnessRefused, refusedGitDir } from '../harnessGit.js'
 import { engineCheckout } from '../containment.js'
 import { gitProbe } from '../tools/contractVerify.js'
 
@@ -36,6 +36,8 @@ const FIXED_KEYS = [
   'core.hooksPath', 'core.fsmonitor', 'core.pager', 'core.editor', 'sequence.editor',
   'commit.gpgsign', 'tag.gpgsign', 'gpg.program', 'log.showSignature', 'gpg.ssh.program', 'gpg.x509.program',
   'gpg.ssh.allowedSignersFile', 'credential.helper',
+  // Wave 19 (C4-2), added on purpose: git's own check of names Windows reads as another (and HFS's).
+  'core.protectNTFS', 'core.protectHFS',
 ]
 
 let dir: string
@@ -261,6 +263,7 @@ describe('harnessGitEnv: the shape', () => {
     expect(FIXED_KEYS.map((_, i) => env[`GIT_CONFIG_VALUE_${i}`])).toEqual([
       `${posix(engineCheckout())}/.no-git-hooks`, 'false', 'cat', 'true', 'true', 'false', 'false', 'gpg',
       'false', 'ssh-keygen', 'gpgsm', `${posix(engineCheckout())}/.no-git-allowed-signers`, '',
+      'true', 'true',
     ])
     expect(existsSync(join(engineCheckout(), '.no-git-hooks'))).toBe(false)
     expect(existsSync(join(engineCheckout(), '.no-git-allowed-signers'))).toBe(false)
@@ -348,6 +351,28 @@ describe('harnessGitBin', () => {
     const rel = relative(process.cwd(), one!)
     expect(rel === one || rel === '').toBe(false)
     expect(harnessGitBin({ PATH: ['', rel, two].join(';') }, 'win32')).toBe(join(two!, 'git.exe'))
+  })
+
+  // Package D's measurement (wave 19, scratch d gitcapprobe.txt): Git\cmd\git.exe is a launcher; a cap
+  // (execFileSync's timeout) ended it alone and left the real git.exe running 3 s later; through
+  // mingw64\bin\git.exe nothing was left. The paths are the host's here, so the case holds on Linux too.
+  it('wave 19b: when the first git.exe on PATH is the launcher in <Git>\\cmd, the git.exe of <Git>\\mingw64\\bin is started', () => {
+    const root = join(dir, `bin-${Math.random().toString(36).slice(2)}`, 'Git')
+    const cmd = join(root, 'cmd')
+    const real = join(root, 'mingw64', 'bin')
+    const other = join(root, '..', 'other')
+    for (const d of [cmd, real, other]) mkdirSync(d, { recursive: true })
+    writeFileSync(join(cmd, 'git.exe'), '')
+    writeFileSync(join(other, 'git.exe'), '')
+    // No mingw64 git beside it: the launcher is what there is.
+    expect(harnessGitBin({ PATH: [cmd, other].join(';') }, 'win32')).toBe(join(cmd, 'git.exe'))
+    writeFileSync(join(real, 'git.exe'), '')
+    // (A PATH value already answered is cached for the process, so each row below is a value of its own.)
+    expect(harnessGitBin({ Path: [cmd, other, ''].join(';') }, 'win32')).toBe(join(real, 'git.exe'))
+    expect(harnessGitBin({ PATH: [`"${cmd}"`, other].join(';') }, 'win32')).toBe(join(real, 'git.exe'))
+    // A folder that is not Git's cmd is taken as it is.
+    expect(harnessGitBin({ PATH: [other, cmd].join(';') }, 'win32')).toBe(join(other, 'git.exe'))
+    expect(harnessGitBin({ PATH: cmd }, 'linux')).toBe('git')
   })
 
   it("returns 'git' off Windows and when nothing is found", () => {
@@ -733,4 +758,145 @@ describe.skipIf(!HAS_GIT || !WIN)('a git planted in the folder (Windows)', () =>
     expect(bin.toLowerCase().endsWith('git.exe')).toBe(true)
     expect(spawnSync(bin, ['--version'], { encoding: 'utf-8' }).status).toBe(0)
   })
+})
+
+/**
+ * NOW.md:76 (F6): git takes a junction in the work tree for a folder, so a harness `checkout -- .`
+ * writes through one and an `add` copies what is behind one. With `worktreeLinks` the work tree is
+ * walked first and a link leading out of it refuses the call; the armed control shows the write is real.
+ */
+describe.skipIf(!HAS_GIT || !WIN)('worktreeLinks: harness git refuses a work tree holding a link that leads out (Windows junctions)', () => {
+  const junction = (link: string, target: string): void => {
+    const r = spawnSync('cmd', ['/c', 'mklink', '/J', link, target], { encoding: 'utf-8' })
+    expect(r.status, r.stdout + r.stderr).toBe(0)
+  }
+  /** A repository whose committed `vendor/x.txt` the run replaced with a junction to `outside`. */
+  const setUp = (name: string): { repo: string; outside: string } => {
+    const root = join(dir, name)
+    const repo = join(root, 'repo')
+    const outside = join(root, 'outside')
+    makeRepo(repo)
+    mkdirSync(join(repo, 'vendor'))
+    writeFileSync(join(repo, 'vendor', 'x.txt'), 'committed\n')
+    ok(repo, ['add', '-A'], { helper: false })
+    ok(repo, ['commit', '-q', '-m', 'vendor'], { helper: false })
+    mkdirSync(outside, { recursive: true })
+    writeFileSync(join(outside, 'x.txt'), 'the owner\'s file\n')
+    rmSync(join(repo, 'vendor'), { recursive: true })
+    junction(join(repo, 'vendor'), outside)
+    return { repo, outside }
+  }
+
+  it('armed: without the option, a harness checkout -- . writes through the junction into the folder it points at', () => {
+    const { repo, outside } = setUp('wtlinks-armed')
+    const env = harnessGitEnv(base, { repo })
+    expect(env.GIT_DIR).toBe(`${posix(repo)}/.git`)
+    const r = spawnSync(harnessGitBin(env), ['checkout', '--', '.'], { cwd: repo, env, encoding: 'utf-8' })
+    expect(r.status, r.stderr).toBe(0)
+    expect(readFileSync(join(outside, 'x.txt'), 'utf-8')).toBe('committed\n')
+  }, 60_000)
+
+  it('with worktreeLinks the call is refused (exit 128), said once, and the folder behind the junction is unchanged', () => {
+    const { repo, outside } = setUp('wtlinks-refused')
+    const lines: string[] = []
+    const log = console.log
+    console.log = (...a: unknown[]) => { lines.push(a.map(String).join(' ')) }
+    let env: Env
+    try {
+      env = harnessGitEnv(base, { repo, worktreeLinks: true })
+    } finally {
+      console.log = log
+    }
+    expect(env.GIT_DIR).toBe(refusedGitDir())
+    expect(env.GIT_WORK_TREE).toBeUndefined()
+    const real = realpathSync.native(repo)
+    expect(lines).toEqual([`[harness-git] git refused in ${real}: ${join(real, 'vendor')} leads outside ${real} (to ${realpathSync.native(outside)})`])
+    const r = spawnSync(harnessGitBin(env), ['checkout', '--', '.'], { cwd: repo, env, encoding: 'utf-8' })
+    expect(r.status).toBe(128)
+    expect(readFileSync(join(outside, 'x.txt'), 'utf-8')).toBe('the owner\'s file\n')
+  }, 60_000)
+
+  it('a junction that stays inside the work tree is allowed, and a work tree with no link answers as without the option', () => {
+    const root = join(dir, 'wtlinks-inside')
+    const repo = join(root, 'repo')
+    makeRepo(repo)
+    expect(harnessGitEnv(base, { repo, worktreeLinks: true }).GIT_DIR).toBe(`${posix(repo)}/.git`)
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true })
+    junction(join(repo, 'linked-a'), join(repo, 'packages', 'a'))
+    const env = harnessGitEnv(base, { repo, worktreeLinks: true })
+    expect(env.GIT_DIR).toBe(`${posix(repo)}/.git`)
+    expect(env.GIT_WORK_TREE).toBe(posix(repo))
+  }, 60_000)
+})
+
+// B3 (wave 19): harness git refuses by naming a GIT_DIR git cannot open, and a git command that also runs
+// outside a repository does not need one: `git apply` applied a patch under it (measured by the
+// harness-children builder; again 2026-11-25, w19 scratch b out/b3-measure.txt: apply, apply --check,
+// diff --no-index and hash-object all ran). A command-scope count git cannot parse stops every one of
+// them before it reads anything (exit 128, `bogus count in GIT_CONFIG_COUNT`).
+describe.skipIf(!HAS_GIT)('B3: the refusal is one every git command obeys', () => {
+  /** A folder whose `.git` is a file that names no repository: harness git refuses it. */
+  const refusedFolder = (name: string): string => {
+    const m = join(dir, name)
+    mkdirSync(m, { recursive: true })
+    writeFileSync(join(m, '.git'), 'not a gitdir line\n')
+    writeFileSync(join(m, 'a.txt'), 'one\n')
+    writeFileSync(join(m, 'b.txt'), 'two\n')
+    return m
+  }
+  const PATCH = 'diff --git a/created.txt b/created.txt\nnew file mode 100644\n--- /dev/null\n+++ b/created.txt\n@@ -0,0 +1 @@\n+made by apply\n'
+
+  it('isHarnessRefused tells a refused environment from an ordinary one, and a refusal survives a second pass of the helper', () => {
+    const m = refusedFolder('b3-shape')
+    const refused = harnessGitEnv(base, { repo: m })
+    expect(isHarnessRefused(refused)).toBe(true)
+    expect(isHarnessRefused(harnessGitEnv(base))).toBe(false)
+    expect(isHarnessRefused(base)).toBe(false)
+    // A site that hands a refused environment to the helper again (or lays its keys over another) stays refused.
+    expect(isHarnessRefused(harnessGitEnv(refused))).toBe(true)
+    // ...unchanged: the helper adds no pairs to a refusal (they would number the count git cannot parse).
+    expect(harnessGitEnv(refused)).toEqual(refused)
+    expect(isHarnessRefused({ ...base, ...harnessGitEnv({}, { repo: m }) })).toBe(true)
+  })
+
+  it('git apply, apply --check, diff --no-index and hash-object under a refused environment run nothing and write nothing', () => {
+    const m = refusedFolder('b3-run')
+    const env = harnessGitEnv(base, { repo: m })
+    for (const args of [['apply', '--check', '-'], ['apply', '-'], ['diff', '--no-index', ...HARNESS_DIFF_FLAGS, 'a.txt', 'b.txt'], ['hash-object', 'a.txt']]) {
+      const r = spawnSync(harnessGitBin(env), args, { cwd: m, env, input: PATCH, encoding: 'utf-8', timeout: 60_000, windowsHide: true })
+      expect(r.status, `git ${args.join(' ')}: ${r.stdout}${r.stderr}`).toBe(128)
+      expect(r.stdout, args.join(' ')).toBe('')
+      expect(existsSync(join(m, 'created.txt')), args.join(' ')).toBe(false)
+    }
+  }, 60_000)
+})
+
+// C4-2 (wave 19, from the harness-children check): the fixed pairs pin core.protectNTFS, so a mission
+// repository's own `core.protectNTFS=false` cannot turn git's Windows name check off for a harness call.
+// Measured 2026-11-25 (out/b3-measure.txt): with the repository's false, `git apply` of `out./x.txt`
+// wrote x.txt through the junction `out` (Win32 reads `out.` as `out`); with the pin it answered
+// `invalid path 'out./x.txt'`, exit 128. core.protectHFS is pinned beside it: it refuses only names that
+// HFS+ reads as `.git`, which no honest repository holds, and costs nothing here.
+describe.skipIf(!HAS_GIT || !WIN)('C4-2: core.protectNTFS is pinned for every harness call', () => {
+  it('a harness git apply of out./x.txt beside a junction out writes nothing through it, whatever the repository says', () => {
+    const root = join(dir, 'c4-2')
+    const repo = join(root, 'repo')
+    const outside = join(root, 'outside')
+    makeRepo(repo)
+    mkdirSync(outside, { recursive: true })
+    ok(repo, ['config', 'core.protectNTFS', 'false'], { helper: false })
+    const r0 = spawnSync('cmd', ['/c', 'mklink', '/J', join(repo, 'out'), outside], { encoding: 'utf-8' })
+    expect(r0.status, r0.stdout + r0.stderr).toBe(0)
+    try {
+      const patch = 'diff --git a/out./x.txt b/out./x.txt\nnew file mode 100644\n--- /dev/null\n+++ b/out./x.txt\n@@ -0,0 +1 @@\n+through the junction\n'
+      const env = harnessGitEnv(base, { repo })
+      expect(env.GIT_DIR).toBe(`${posix(repo)}/.git`)
+      const r = spawnSync(harnessGitBin(env), ['apply', '-'], { cwd: repo, env, input: patch, encoding: 'utf-8', timeout: 60_000, windowsHide: true })
+      expect(r.status, `${r.stdout}${r.stderr}`).not.toBe(0)
+      expect(r.stderr).toContain("invalid path 'out./x.txt'")
+      expect(readdirSync(outside)).toEqual([])
+    } finally {
+      spawnSync('cmd', ['/c', 'rmdir', join(repo, 'out')], { encoding: 'utf-8' })
+    }
+  }, 60_000)
 })
