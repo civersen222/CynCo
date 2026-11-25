@@ -18,7 +18,8 @@
 // '-c', <preamble + command>])`. The engine starts its shell as `powershell.exe -c <command>` (Node's and Bun's
 // spawn with `shell`), which prints its error records as plain wrapped text; here PowerShell is the direct child,
 // so nothing (no cmd, no -EncodedCommand, no CLIXML decoding) stands between what it printed and what the
-// assertions read, and a timeout kills it. Tried by hand on 2026-11-24 before this file was written: it starts,
+// assertions read, and a timeout kills it. One case does nest on purpose (wave 18, (13)): a `powershell
+// -EncodedCommand` started by the low PowerShell, whose CLIXML error stream the runner's reader decodes. Tried by hand on 2026-11-24 before this file was written: it starts,
 // Windows' own whoami run through it shows S-1-16-4096, a denied Remove-Item prints plain wrapped text, a
 // spawnSync timeout ends it (the pid is gone). -NoProfile keeps a profile's output out of every answer.
 //
@@ -82,15 +83,20 @@ const sentEnd = (k) => SENT.slice(0, k + 1).reduce((n, w) => n + 1 + w.length, 0
 // start of its own line when it cannot follow "Remove-Item : Cannot remove item " (33 characters).
 const rangeOf = (k) => ({ lo: WRAP - sentEnd(k + 1) - (k + 1 === SENT.length - 1 ? 0 : 1) + 1, hi: WRAP - sentEnd(k) - 1 })
 const breakAt = (k) => { const { lo, hi } = rangeOf(k); return Math.floor((lo + hi) / 2) }
-/** Why T8 cannot run here, or null: a padded file `<pad>\<name>` needs a name of one character at least for every break. */
-const T8_SKIP = (() => {
-  if (!WIN) return NOT_WIN
-  if (/\s/.test(TMP_REAL)) return `the temp folder's path holds white space, where PowerShell may break the line: ${TMP_REAL}`
-  const pad = tempLength('cynco-real-p-')
+/**
+ * Why T8 cannot run under the temp folder `tmpReal`, or null: a padded file `<pad>\<name>` needs a name of one character
+ * at least for every break. Wave 18 (plan P6 (14)): the skip names the temp folder itself, not only its length. A short
+ * root of T8's own is not built: a test makes folders only inside the temp folder, so none can be shorter than it.
+ */
+function t8SkipFor(tmpReal, win = WIN) {
+  if (!win) return NOT_WIN
+  if (/\s/.test(tmpReal)) return `the temp folder's path holds white space, where PowerShell may break the line: ${tmpReal}`
+  const pad = tmpReal.length + 1 + 'cynco-real-p-'.length + 6
   const room = Math.min(...SENT.slice(0, -1).map((_, k) => breakAt(k))) - 3 // s - 1 - (pad + 1) >= 1
-  if (pad > room) return `the temp folder's path (${TMP_REAL.length} characters) is too long for the padded paths: its padded folder would be ${pad} characters, at most ${room} leaves a file name for every break point`
+  if (pad > room) return `the temp folder's path ${tmpReal} (${tmpReal.length} characters) is too long for the padded paths: its padded folder would be ${pad} characters, at most ${room} leaves a file name for every break point`
   return null
-})()
+}
+const T8_SKIP = t8SkipFor(TMP_REAL)
 if (WIN && T8_SKIP !== null) console.log(`${TAG} T8 is skipped: ${T8_SKIP}`)
 
 /** A python found by its full path (never the store's alias), or null with the reason. A lookup, not the fixture. */
@@ -172,6 +178,8 @@ function cleanUp(state, ops) {
   const dropLink = (l) => {
     const r = step(`the link ${l} could not be removed`, () => ops.removeLink(l, failures))
     if (!r.ok || r.value === false) kept.push(l)
+    // Wave 18 (plan P6 (14)): a link gone on its second try no longer keeps its root in place.
+    else for (let i = kept.length - 1; i >= 0; i--) if (kept[i].toLowerCase() === l.toLowerCase()) kept.splice(i, 1)
   }
   const within = (p, d) => p.toLowerCase().startsWith(d.toLowerCase() + '\\') || p.toLowerCase().startsWith(d.toLowerCase() + '/')
   for (const l of state.links) dropLink(l)
@@ -182,7 +190,12 @@ function cleanUp(state, ops) {
     const found = step(`${d} could not be listed for links`, () => ops.linksIn(d, failures))
     if (!found.ok || failures.length > before) unlisted.add(d)
     for (const l of found.ok ? found.value : []) {
-      failures.push(`a link nobody registered was under ${d}: ${l} (removed as an entry)`)
+      // Wave 18 (plan P6 (14)): a registered link whose first removal failed is found here again; it is tried a second
+      // time, and said so, never called a link nobody registered. What the second try did is recorded by dropLink.
+      const registered = state.links.some(x => x.toLowerCase() === l.toLowerCase())
+      failures.push(registered
+        ? `the registered link ${l} was still under ${d} after its first removal; it is tried again as an entry`
+        : `a link nobody registered was under ${d}: ${l} (removed as an entry)`)
       dropLink(l)
     }
   }
@@ -350,10 +363,11 @@ function assertSafe(command, allowed) {
   // G1 (wave 10d): a drive letter with its colon and no separator after it (`C:Users\...`) is relative to that
   // drive's current folder, which nothing here controls; and a '..' segment anywhere climbs, inside a drive-letter
   // path or not (`Set-Location ..`, `'..\Users'`). A segment ends at a separator, a quote, white space, a
-  // statement or argument character, or the end of the text; three dots are not two. A colon followed by white
-  // space is not read as a drive: the catalog's python literals hold `lambda f, x, i: ...` (measured: the first
-  // version of this rule refused all six python forms on it); `C:` followed by a quote or the end is refused.
-  const driveRelative = /(?<![A-Za-z0-9])[A-Za-z]:(?![\\/\s])/.exec(text)
+  // statement or argument character, or the end of the text; three dots are not two. Wave 18 (plan P6 (14)): a bare
+  // drive followed by white space (`Remove-Item C: -Recurse`) is refused too. Until then a colon followed by white space
+  // was let through for the catalog's python literals, which held `lambda f, x, i: ...`; their handler's parameters
+  // now have names longer than one letter, so no single letter and colon stands in any form.
+  const driveRelative = /(?<![A-Za-z0-9])[A-Za-z]:(?![\\/])/.exec(text)
   expect(driveRelative, `the command holds a drive letter with no separator after its colon: ${driveRelative?.[0]} in ${text}`).toBeNull()
   const climb = /(?<=^|[\\/\s'"=;,(){}[\]:|&<>])\.\.(?=$|[\\/\s'"=;,(){}[\]|&<>])/.exec(text)
   expect(climb, `the command holds a '..' segment: ${text}`).toBeNull()
@@ -578,6 +592,41 @@ describe('the reader against real low-integrity denials (Windows PowerShell 5.1,
     }, 60_000)
   })
 
+  // Wave 18 (plan P6 (13)): a nested `powershell -EncodedCommand` writes its error records as CLIXML (`#< CLIXML`, one
+  // `<S S="Error">` element per line, its line breaks escaped as `_x000D__x000A_`). The low PowerShell hands the
+  // catalog's Remove-Item literal of the long root to such a nested PowerShell (itself low: its parent is), and the
+  // reader must read the kernel's denial from that stream, both as the Bash tool hands it back and as the two streams.
+  it.skipIf(!WIN)(`(13) a nested powershell -EncodedCommand answers in CLIXML, and the denial is read from it${WIN ? '' : ` (skipped: ${NOT_WIN})`}`, () => {
+    const f = need().fixtures.find(t => t.tag === 'long')
+    const x = f.forms.find(y => y.id === 'rm-home-cynco')
+    expect(x.command).toMatch(/^Remove-Item -Recurse -Force '/)
+    assertSafe(x.command, [f.root])
+    const command = `powershell -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(x.command, 'utf16le').toString('base64')}`
+    const digestBefore = treeDigest(f.root)
+    const present = x.targets.filter(t => existsSync(t))
+    expect(present.length).toBeGreaterThan(0)
+    const r = startLowOk(command)
+    // Wave 18b (check 3 R6): what the decoder adds. `undecoded` is the reader on the stream as it came, its marker taken
+    // away so that nothing decodes it (the old reading dropped the tags and the escaped breaks, a decode in itself).
+    // `split`: no one Error element holds the sentence, so PowerShell's wrap fell inside it; then only the decoder reads it.
+    const decoded = denialWords(r.stderr)
+    const undecoded = denialWords(r.stderr.replace(/#< CLIXML/g, ''))
+    const elements = [...r.stderr.matchAll(/<S S="Error">([\s\S]*?)<\/S>/g)].map(m => m[1].replace(/_x000D__x000A_/g, ' '))
+    const split = !elements.some(t => denialWords(t) !== null)
+    console.log(`${TAG} (13) | exit ${r.code} | ${r.ms} ms | CLIXML ${r.stderr.includes('#< CLIXML')} | ${elements.length} Error element(s), the sentence ${split ? 'split across two of them' : 'whole in one'} | decoded: ${JSON.stringify(decoded)} | undecoded: ${JSON.stringify(undecoded)} | words: ${JSON.stringify(denialWords(streamsShape(r)))} | stderr starts ${JSON.stringify(r.stderr.slice(0, 160))}`)
+    expect(treeDigest(f.root), 'the fake root changed').toBe(digestBefore)
+    expect(present.filter(t => !existsSync(t)), 'targets gone').toEqual([])
+    expect(r.code).not.toBe(0)
+    expect(r.stderr.includes('#< CLIXML'), 'the nested PowerShell did not answer in CLIXML').toBe(true)
+    expect(decoded, 'the decoded stream names no denial').not.toBeNull()
+    // Without the decoder: nothing when the sentence was split, the same words when it was whole in one element.
+    expect(undecoded).toBe(split ? null : decoded)
+    for (const output of [toolShape(command, r), streamsShape(r)]) {
+      const o = liveOutcome({ kind: 'literal', tool: 'Bash', isError: true, output, lost: [], madeInHome: [] })
+      expect(o.outcome, o.detail).toBe('denied')
+    }
+  }, 60_000)
+
   // T8: Remove-Item's sentence "Access to the path is denied." is cut where the line reaches 119 columns, and where
   // falls with the length of the path before it. Each break point is produced on purpose by padding a file name.
   // G2 (wave 10d): a temp folder too long for the padded paths, or holding white space, makes this a named skip
@@ -660,8 +709,10 @@ describe('assertSafe refuses what it must (T4)', () => {
     // cmd's flags open a token with a slash and are not paths; a quoted fixture path with forward slashes is one.
     expect(() => assertSafe(`cmd /c rd /s /q "C:\\fixture-root\\home\\.cynco"`, [root, ctl])).not.toThrow()
     expect(() => assertSafe(`cmd /c 'for /d %d in ("C:\\fixture-root\\home\\*") do rd /s /q "%d"'`, [root, ctl])).not.toThrow()
-    // G1: the shape of the catalog's python literals (a lambda's colon, three dots in a text) is not refused.
-    expect(() => assertSafe(`python -c "import shutil; shutil.rmtree(r'C:\\fixture-root\\x', onerror=lambda f, x, i: print('...'))"`, [root, ctl])).not.toThrow()
+    // G1: the shape of the catalog's python literals (a lambda's colon, three dots in a text) is not refused. Changed on
+    // purpose in wave 18 (plan P6 (12), (14)): the literal's shape since then, onexc or onerror and parameters of more
+    // than one letter.
+    expect(() => assertSafe(`python -c "import shutil, sys; h = lambda fn, path, info: print('...'); kw = dict(onexc=h) if sys.version_info >= (3, 12) else dict(onerror=h); shutil.rmtree(r'C:\\fixture-root\\x', **kw)"`, [root, ctl])).not.toThrow()
     const bad = [
       `Remove-Item -Force 'C:\\Users\\someone\\.cynco'`,
       `cmd /c mklink /J "C:\\low-ctl\\s\\out" "C:\\Users\\someone"`,
@@ -693,6 +744,11 @@ describe('assertSafe refuses what it must (T4)', () => {
       `Remove-Item -Force 'C:\\fixture-root\\x' '\\Users\\someone\\.cynco'`,
       `Remove-Item -Force 'C:\\fixture-root\\x' '/Users/someone/.cynco'`,
       `Remove-Item -Force 'C:\\fixture-root\\x'; Set-Location \\; Remove-Item -Recurse Users\\someone\\.cynco`,
+      // Wave 18 (plan P6 (14)): a bare drive followed by white space, and the old literal's one-letter lambda.
+      `Remove-Item -Force 'C:\\fixture-root\\x'; Remove-Item C: -Recurse -Force`,
+      `Remove-Item -Recurse -Force C: 'C:\\fixture-root\\x'`,
+      `Get-ChildItem 'C:\\fixture-root\\x' | Remove-Item -Recurse; Set-Location C: ; Remove-Item -Recurse .cynco`,
+      `python -c "import shutil; shutil.rmtree(r'C:\\fixture-root\\x', onerror=lambda f, x, i: print('...'))"`,
     ]
     // Every row is tried, and the ones that got through are named together (was one expect per row, which stopped at
     // the first; the assertion is the same: no row may pass).
@@ -734,5 +790,42 @@ describe('the cleanup runs every step whatever throws (G4)', () => {
     expect(present.has('R1'), 'a root holding a link that may still be there was deleted recursively').toBe(true)
     expect(present.has('R2'), 'a root that could not be listed for links was deleted recursively').toBe(true)
     expect(present.has('R4')).toBe(false)
+  })
+
+  // Wave 18 (plan P6 (14)): a registered link whose first removal failed and which the listing then finds again is the
+  // same link, tried a second time; the words say so. A link that was never registered keeps its own words.
+  it('a registered link found again after its first removal failed is named as registered and tried again; an unregistered one keeps its words', () => {
+    let tries = 0
+    const present = new Set(['R1'])
+    const ops = {
+      exists: (p) => present.has(p),
+      removeLink: (l, failures) => {
+        if (l === 'R1\\L1' && tries++ === 0) { failures.push(`the link ${l} could not be removed: busy`); return false }
+        return true
+      },
+      linksIn: (d) => (d === 'R1' ? ['R1\\L1', 'R1\\U'] : []),
+      reset: () => {},
+      removeRoot: (d) => { present.delete(d) },
+    }
+    const failures = cleanUp({ links: ['R1\\L1'], roots: ['R1'], denied: [] }, ops)
+    expect(failures).toContain('the registered link R1\\L1 was still under R1 after its first removal; it is tried again as an entry')
+    expect(failures.some(x => /nobody registered.*R1\\L1/.test(x)), JSON.stringify(failures)).toBe(false)
+    expect(failures).toContain('a link nobody registered was under R1: R1\\U (removed as an entry)')
+    expect(tries).toBe(2)
+    // Gone on its second try: the root is removed, not left in place for a link that is no longer there.
+    expect(failures.some(x => /R1 is left in place/.test(x)), JSON.stringify(failures)).toBe(false)
+    expect(present.has('R1')).toBe(false)
+  })
+})
+
+// Wave 18 (plan P6 (14)): T8's named skip names the temp folder (pure; no process is started).
+describe('T8\'s skip names the temp folder it was decided on', () => {
+  it('a temp folder too long for the padded paths: the skip line holds its path and its length', () => {
+    const long = `C:\\${'t'.repeat(90)}`
+    const why = t8SkipFor(long, true)
+    expect(why).toContain(`the temp folder's path ${long} (${long.length} characters) is too long`)
+    expect(t8SkipFor('C:\\T', true)).toBeNull()
+    expect(t8SkipFor('C:\\a b', true)).toMatch(/holds white space/)
+    expect(t8SkipFor('C:\\T', false)).toBe(NOT_WIN)
   })
 })

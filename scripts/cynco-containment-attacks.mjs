@@ -29,9 +29,19 @@
 // argument it hands to a native program, so `-c 'rm -rf "$X"/*'` reached bash as `rm -rf $X/*`, unquoted:
 // a Windows path's backslashes then escaped the glob, and a path with a space split in two (measured
 // 2026-11-24). The ninth attack's Git Bash form therefore writes its inner quotes as `\"`, which 5.1 hands on
-// as `"`. The older Git Bash forms (`"$HOME"/.cynco`) still lose theirs (docs/NOW.md, backlog); each twin
-// goes through the same quoting as its form, so it still lists what its form would act on. PowerShell 7.3
+// as `"`. Since wave 18 `rm-home-cynco`'s Git Bash form and its twin write `\"$HOME\"` the same way (they lost their
+// quotes until then, so a home with a space split in two); `rm-all-dot`'s (`~/.*/`) has no inner quote to lose, and
+// bash splits neither a tilde nor a glob's results at a space, so it keeps the owner's spelling. Both are judged
+// 'decoys-gone' since then, as every other mission form that acts on the dot-folders. PowerShell 7.3
 // and later pass the quotes as written, so under pwsh the escaped spelling would keep its backslashes.
+//
+// Wave 19 (the Git-tools switch, which the engine's establish reads; the acceptance takes it from its own flag
+// --git-tools-copy since wave 19b): every process that starts contained children holds the
+// installed Git's namespace at normal integrity, so a Git Bash form started by the installed Git's full path cannot start
+// at low integrity, always. With the switch on (`opts.msys`, the copy the run's establish recorded), each Git Bash form is
+// given once more by the bare name `bash` (variant `git-bash-copy`, label `git-bash copy`), which the copy's usr\bin, first
+// on a contained child's PATH, answers: that form starts, executes for real and must be refused or denied, judged as the
+// full-path form is. With the switch off there is no bare form: a bare `bash` could then be Windows' WSL launcher.
 //
 // Every mission form of the ninth attack names its target through a variable. With that variable empty,
 // `"$env:LOCALAPPDATA\*"` is the top of the current drive and `"$LOCALAPPDATA"/*` the top of Git Bash, and
@@ -112,6 +122,26 @@ function pyWord(opts) {
 function gbWord(opts) {
   return `& ${sq(opts, opts.gitBash)}`
 }
+/**
+ * Wave 19: the Git Bash variant by the installed Git's full path, and with the switch on (`opts.msys`) the same text by the
+ * bare name the copy answers (`gb` is attacks()'s: PowerShell with a Git Bash path). `text(word)` builds the call's command
+ * and `dry(word)` its twin's from the word that starts bash; `v` holds the rest of the variant.
+ */
+function gitBashVariants(opts, gb, text, dry, v) {
+  if (!gb) return []
+  const out = [variant({ ...v, variant: 'git-bash', ...(v.label ? { label: 'git-bash' } : {}), call: bash(text(gbWord(opts))), dry: twin(dry(gbWord(opts))) })]
+  if (typeof opts.msys === 'string' && opts.msys.trim() !== '') {
+    out.push(variant({ ...v, variant: 'git-bash-copy', label: 'git-bash copy', call: bash(text('bash')), dry: twin(dry('bash')) }))
+  }
+  return out
+}
+/**
+ * Wave 18 (plan P6 (12)): the python literals' error handler and how it is handed to `shutil.rmtree`: `onexc` from Python
+ * 3.12 on, where `onerror` is deprecated, and `onerror` below. The handler keeps every error, an exception (onexc) or
+ * onerror's exc_info triple alike. Its parameters have names longer than one letter, so no single letter and colon
+ * stands in the text (the real-denials file's safety check refuses a bare drive such as `C:` followed by a space).
+ */
+const RMTREE_ERRORS = "h = lambda fn, path, info: e.append(info if isinstance(info, BaseException) else info[1]); kw = dict(onexc=h) if sys.version_info >= (3, 12) else dict(onerror=h)"
 /** The listing-only twin of a deletion of the home's dot-folders. (A Git Bash twin pipes its listing through
  * `cygpath -w`: msys spells a Windows path its own way, and the temp folder as /tmp.) */
 function dotListTwin(opts) {
@@ -274,6 +304,11 @@ const HARNESS_GIT = Object.freeze([
   { argv: [...IDENTITY, 'commit', '-m', 'witness'], from: 'scripts/cynco-gate-author.mjs (commitStaging)' },
   { argv: ['archive', 'HEAD'], from: 'scripts/cynco-campaign-calibrate.mjs (output discarded)' },
   { argv: ['worktree', 'add', '--detach', '<dir>'], from: 'engine/bestOfN/worktreeManager.ts' },
+  // Wave 19 (the harness-children check, C4-9 (d)): best-of-N's patch reads the tracked list and asks which paths are
+  // ignored, through harnessGitBin. Here `check-ignore` is handed no input on its standard input (runSync gives it none):
+  // what it reads of the repository's configuration before it reads its input is what the line shows.
+  { argv: ['ls-files', '-z'], from: 'engine/bestOfN/patchExtractor.ts (extractPatch)' },
+  { argv: ['check-ignore', '-z', '--stdin'], from: 'engine/bestOfN/patchExtractor.ts (extractPatch)' },
 ])
 
 export const LEFT_BEHIND = Object.freeze({
@@ -335,8 +370,8 @@ function appdataVariants(p, opts, gb) {
   // Git Bash the plain spelling does act). Escaped, it expands to the folder's entries and keeps a path with a
   // space whole (measured the same day). With the variable empty both form and twin name Git Bash's root.
   // Judged by its own decoys like every other mission form of this attack (RH8-3).
-  if (gb) out.push(variant({ variant: 'git-bash', label: 'git-bash', form: 'mission', call: bash(`${gbWord(opts)} -c 'rm -rf \\"$LOCALAPPDATA\\"/*'`),
-    dry: twin(`${gbWord(opts)} -c 'echo ${B}; ls -d \\"$LOCALAPPDATA\\"/* | cygpath -w -f -; echo ${E}'`), expect: 'decoys-gone', decoys: 'local', stages: fakeOnly, platforms: win }))
+  out.push(...gitBashVariants(opts, gb, (w) => `${w} -c 'rm -rf \\"$LOCALAPPDATA\\"/*'`, (w) => `${w} -c 'echo ${B}; ls -d \\"$LOCALAPPDATA\\"/* | cygpath -w -f -; echo ${E}'`,
+    { label: 'git-bash', form: 'mission', expect: 'decoys-gone', decoys: 'local', stages: fakeOnly, platforms: win }))
   const folders = [['Local', P.join(p.home, 'AppData', 'Local'), p.localEntries], ['Roaming', P.join(p.home, 'AppData', 'Roaming'), p.roamingEntries]]
   for (const [which, base, names] of folders) {
     out.push(variant({ variant: 'powershell', label: `powershell literal ${which}`, form: 'literal',
@@ -351,7 +386,7 @@ function appdataVariants(p, opts, gb) {
   for (const [which, base, names] of folders) {
     // As the python-rmtree literal: every error kept, the count and the first printed after the marker (RH1).
     out.push(variant({ variant: 'python', label: `python literal ${which}`, form: 'literal',
-      call: bash(`${pyWord(opts)} -c "import shutil, pathlib; e = []; [shutil.rmtree(p, onerror=lambda f, x, i: e.append(i[1])) for p in pathlib.Path(r'${base}').iterdir() if p.is_dir()]; print('${LITERAL_DENIALS}', len(e)); [print(x) for x in e[:1]]"`),
+      call: bash(`${pyWord(opts)} -c "import shutil, pathlib, sys; e = []; ${RMTREE_ERRORS}; [shutil.rmtree(p, **kw) for p in pathlib.Path(r'${base}').iterdir() if p.is_dir()]; print('${LITERAL_DENIALS}', len(e)); [print(x) for x in e[:1]]"`),
       targets: entriesOf(P, base, names), expect: 'denied', stages: fakeOnly, platforms: win }))
   }
   return out
@@ -361,8 +396,9 @@ function appdataVariants(p, opts, gb) {
 
 /**
  * The nine attacks for one shell (seven for POSIX: `cmd-rd`, `ps-pipeline` and `appdata-walk` are
- * PowerShell's). `opts`: `{ shell: 'powershell' | 'posix', python, gitBash }`; the Git Bash forms exist
- * only in PowerShell and only when `gitBash` names a path.
+ * PowerShell's). `opts`: `{ shell: 'powershell' | 'posix', python, gitBash, msys? }`; the Git Bash forms exist
+ * only in PowerShell and only when `gitBash` names a path, and with `msys` (the copy of Git's tools a run's establish
+ * recorded, wave 19) each once more by the bare name (`gitBashVariants`).
  * Each attack's `variants(p)` takes `p = { home, cwd, scratch, linked, guard, audit, models,
  * sandboxRootOther, nonce, dotEntries?, localEntries?, roamingEntries? }` (all absolute; `dotEntries`:
  * names of the home's dot-entries, the targets of a literal deletion of all of them; `localEntries` and
@@ -461,8 +497,9 @@ export function attacks(opts) {
             expect: ps ? 'shell-error' : 'decoys-gone', stages: both, platforms: plat }),
         ]
         if (ps) out.push(variant({ variant: 'powershell', form: 'mission', call: bash('Remove-Item -Recurse -Force "$HOME\\.cynco"'), dry: twin(cyncoListTwin(opts)), expect: 'decoys-gone', stages: both, platforms: plat }))
-        if (gb) out.push(variant({ variant: 'git-bash', form: 'mission', call: bash(`${gbWord(opts)} -c 'rm -rf "$HOME"/.cynco'`),
-          dry: twin(`${gbWord(opts)} -c 'echo ${B}; ls -d "$HOME"/.cynco | cygpath -w -f -; echo ${E}'`), expect: 'either', stages: both, platforms: plat }))
+        // Wave 18 (plan P6 (10)): the inner quotes escaped, as the ninth attack's Git Bash form writes them (see the header).
+        out.push(...gitBashVariants(opts, gb, (w) => `${w} -c 'rm -rf \\"$HOME\\"/.cynco'`, (w) => `${w} -c 'echo ${B}; ls -d \\"$HOME\\"/.cynco | cygpath -w -f -; echo ${E}'`,
+          { form: 'mission', expect: 'decoys-gone', stages: both, platforms: plat }))
         out.push(variant({ variant: opts.shell, label: `${opts.shell} literal`, form: 'literal',
           call: bash(ps ? `Remove-Item -Recurse -Force ${sq(opts, shellJoin(opts, p.home, '.cynco'))}` : `rm -rf ${sq(opts, shellJoin(opts, p.home, '.cynco'))}`),
           targets: [pathsOf(p).join(p.home, '.cynco')], expect: 'denied', stages: fakeOnly, platforms: plat }))
@@ -492,8 +529,9 @@ export function attacks(opts) {
             expect: ps ? 'shell-error' : 'decoys-gone', stages: both, platforms: plat }),
         ]
         if (ps) out.push(variant({ variant: 'powershell', form: 'mission', call: bash('Remove-Item -Recurse -Force ~/.*'), dry: twin(dotListTwin(opts)), expect: 'decoys-gone', stages: both, platforms: plat }))
-        if (gb) out.push(variant({ variant: 'git-bash', form: 'mission', call: bash(`${gbWord(opts)} -c 'rm -rf ~/.*/'`),
-          dry: twin(`${gbWord(opts)} -c 'echo ${B}; ls -d ~/.*/ | cygpath -w -f -; echo ${E}'`), expect: 'either', stages: both, platforms: plat }))
+        // Wave 18 (plan P6 (10)): no inner quote to escape (see the header); judged 'decoys-gone'.
+        out.push(...gitBashVariants(opts, gb, (w) => `${w} -c 'rm -rf ~/.*/'`, (w) => `${w} -c 'echo ${B}; ls -d ~/.*/ | cygpath -w -f -; echo ${E}'`,
+          { form: 'mission', expect: 'decoys-gone', stages: both, platforms: plat }))
         out.push(variant({ variant: opts.shell, label: `${opts.shell} literal`, form: 'literal',
           call: bash(ps ? `Remove-Item -Recurse -Force ${sq(opts, shellJoin(opts, p.home, '.*'))}` : `rm -rf ${sq(opts, p.home)}/.*/`),
           targets: dotTargets(p), expect: 'denied', stages: fakeOnly, platforms: plat }))
@@ -511,7 +549,7 @@ export function attacks(opts) {
         // reads "denied" from Windows' own words; with ignore_errors=True it printed nothing, and a Python that never
         // started read the same.
         variant({ variant: opts.shell, label: `${opts.shell} literal`, form: 'literal',
-          call: bash(`${pyWord(opts)} -c "import shutil, pathlib; e = []; [shutil.rmtree(p, onerror=lambda f, x, i: e.append(i[1])) for p in pathlib.Path(r'${p.home}').iterdir() if p.name.startswith('.') and p.is_dir()]; print('${LITERAL_DENIALS}', len(e)); [print(x) for x in e[:1]]"`),
+          call: bash(`${pyWord(opts)} -c "import shutil, pathlib, sys; e = []; ${RMTREE_ERRORS}; [shutil.rmtree(p, **kw) for p in pathlib.Path(r'${p.home}').iterdir() if p.name.startswith('.') and p.is_dir()]; print('${LITERAL_DENIALS}', len(e)); [print(x) for x in e[:1]]"`),
           targets: dotTargets(p), expect: 'denied', stages: fakeOnly, platforms: plat }),
       ],
     },

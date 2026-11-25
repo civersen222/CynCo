@@ -4,10 +4,10 @@
 // the real profile; the integrity check stops a campaign; the full suite passes. This script is the
 // first two. Its output is the evidence.
 //
-//   bun scripts/cynco-containment-acceptance.mjs --stage fake [--root <dir>] [--no-live-fire] [--json] [--evidence <file>]
-//   bun scripts/cynco-containment-acceptance.mjs --stage real --real-profile --evidence <file> [--nas <unc path>]
+//   bun --no-install scripts/cynco-containment-acceptance.mjs --stage fake [--root <dir>] [--no-live-fire] [--json] [--evidence <file>] [--git-tools-copy <folder>]
+//   bun --no-install scripts/cynco-containment-acceptance.mjs --stage real --real-profile --evidence <file> [--nas <unc path>] [--git-tools-copy <folder>]
 //       (by hand only, with the real-profile variable set to 1; the names are REAL_PROFILE_FLAG and REAL_PROFILE_VAR below)
-//   bun scripts/cynco-containment-acceptance.mjs --inner <layers-off|full|live|unseen|box> --phase <mission|daemon-task|authoring|rehearsal> --root <dir> --nonce <hex>
+//   bun --no-install scripts/cynco-containment-acceptance.mjs --inner <layers-off|full|live|unseen|box> --phase <mission|daemon-task|authoring|rehearsal> --root <dir> --nonce <hex> [--git-tools-copy <folder>]
 //       (internal: the orchestrator starts itself this way, with a fake-home environment)
 //
 // Exit codes: 0 PASS; 1 FAIL, INCOMPLETE, ABORT or STOPPED; 2 REFUSED (nothing was run); 3 an inner run's self-check refused.
@@ -61,6 +61,15 @@
 // such a change in the real profile during it (a top-level folder of the home deleted or emptied, three
 // application folders of one root gone); it is loud, not silent, and a second run tells the two apart.
 //
+// Since wave 19 (decision sheet item 25, the owner, 2026-11-24: the driver runs the gate-authoring check outside the
+// box), runs 2 and 5 read the model's own run of the check as 'refused' only when Bun's own line names this checkout's
+// script (modelCheckOutcome), and run 2 then shows the driver's own run of it at this process's integrity through the
+// gate-author module (authorCheckPlan, runAuthorCheck) and the plan's refusal of any other command (driverCheck). The
+// stage takes the Git-tools switch from its own flag --git-tools-copy <folder> only (wave 19b: never from an environment,
+// so that the engine's establish stays the one reader of the switch), says which (msysSwitchLine), and hands it to every
+// inner run on its command line and to every establish as `msys`; with it on, each Git Bash form also runs by the bare
+// name. Every inner run is started by Bun with --no-install (wave 19b): Bun never fetches a package by itself.
+//
 // SAFETY (rules S0, S1, S1' of the specification). This file holds destructive command text through
 // the catalog it imports. Such text is started in exactly one place: an inner process, on Windows,
 // under Bun, in a live-fire run, after that process has shown by its canaries that a contained
@@ -89,6 +98,14 @@
 // targets are checked in process. Every link the fake stage
 // makes (run 3's and run 6's junctions, and the fixture's two links) names folders inside the test root
 // and nothing else; the suite's run 3 has a contained child make one junction and removes it at once.
+// The fixture's junction inside the mission folder (`mission/vendor/cache/linked-out`, to the fake home) lives only
+// inside an inner run (wave 18): the engine refuses a mission folder holding a link that leads outside it anywhere in
+// its tree (rule M, since wave 15), so each inner run that works in the mission folder makes it right after its
+// establish and removes it as an entry before its release (`makeMissionLink`, `releaseMissionLink`); the orchestrator
+// removes one an inner run left before the next run starts (`leftoverMissionLink`), and each says what it found (wave 18b).
+// Run 1 makes it once more before its establish, for canary c0-deep (wave 18b): the create-time check must refuse the
+// mission folder naming that junction three levels down, and it is removed as an entry before the run's own establish.
+// The fixture's other link, at the top of mission-linked, stays for the whole stage: canary c0 is refused on it, by name.
 // The one other place is the real-profile stage, by hand only, where an attack the full stack fails to
 // refuse runs once. That stage never switches a layer off and never hands over a literal Bash form; it stops
 // at the first attack that is not refused, which has then run (runRealStage says where). Nothing here
@@ -98,10 +115,14 @@
 // delete the stage starts is the engine's own sweep in step 8, on the fake sandbox root only, and only
 // when that root is an ordinary folder inside the test root and EVERY link anywhere under the test root
 // lands inside the test root (a link to outside it is UNSAFE: no sweep). The whole root is checked, not
-// the sandbox root alone, because a sweep that wrongly followed links would go on from the mission folder
-// through the links inside it (the fixture's linked-out leads to the fake home): what it could reach is
-// then the mission folder and the fake home, both inside the test root. The test root is left for the
-// caller. No test starts the real-profile stage, none starts --inner by hand, and the suite runs neither
+// the sandbox root alone, because a sweep that wrongly followed links would go on through every link it met.
+// At step 8 the mission folder holds no link (the fixture's junction in it was removed before run 7's release, and
+// run 6's own two were removed after its release); what a sweep that followed run 6's junction could reach is the
+// mission folder, and through any other link under the root (mission-linked's link leads to the fake home) only folders
+// inside the test root. Since wave 15 the engine's release sets a released sandbox back to medium, and the sweep sets
+// it back again before it deletes; neither changes what step 8 shows: the sweep at medium integrity met run 6's
+// junction in a run folder it removed, and the mission folder and the fake home are compared before and after it.
+// The test root is left for the caller. No test starts the real-profile stage, none starts --inner by hand, and the suite runs neither
 // live fire nor step 8.
 // An inner process is given its own Bun caches inside the test root (R12). The two keys stay in its
 // environment, because the launcher Bun starts from it at medium and writes its own cache there; so a
@@ -112,7 +133,7 @@ import {
 } from 'node:fs'
 import { createHash, randomBytes } from 'node:crypto'
 import os from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ATTACK_ORDER, DRY_BEGIN, DRY_END, LEFT_BEHIND, TARGET_DOT_FOLDER, attacks, protectedFolderCalls } from './cynco-containment-attacks.mjs'
 import { bashExe, runSync } from './cynco-spawn.mjs'
@@ -237,16 +258,9 @@ const LEFT_BEHIND_NOT_IN_CONTROL = 'it did not fire in the control either'
  * entries once read as the same nine (live-1), and a proof the runner itself lost read as accepted.
  */
 export const ACCEPTED_NOT_PROVEN = Object.freeze([
-  {
-    ids: ['authoring'], variants: ['the check command', 'the check command as a Bash call'], reason: 'owner-decision-25',
-    // Wave 10d, F4: only the runner's own sentence, at the start of the detail as runs 2 and 5 write it; a child that
-    // prints the words inside a longer answer is not this row.
-    test: (e) => {
-      const d = String(e.detail ?? '')
-      return d.startsWith(OWNER_DECISION) || d.startsWith(`allowed by the path check; ${OWNER_DECISION}`)
-    },
-    words: 'how the gate-authoring check runs under containment is the owner\'s open decision (decision sheet item 25): Bun at low integrity cannot load a module from a folder not labelled low',
-  },
+  // Wave 19: no row for the gate-authoring check. Decision sheet item 25 was answered (the owner, 2026-11-24: the driver
+  // runs it outside the box), and the model's own run of it in the box reads 'refused' by the name of the script Bun could
+  // not load (modelCheckOutcome); the row that admitted the runner's sentence about the open decision is gone.
   {
     ids: ['honest'], variants: ['c7 pytest'], reason: 'pytest-not-in-fake-site',
     // Only the cause pytestCause names for a child that answered "No module named pytest" (RH3).
@@ -261,8 +275,11 @@ export const ACCEPTED_NOT_PROVEN = Object.freeze([
   },
   {
     ids: ['rm-home-cynco', 'rm-all-dot', 'appdata-walk'], variants: ['git-bash'], reason: 'git-bash-did-not-start',
-    test: (e) => e.outcome === 'did not start (msys)' || String(e.detail ?? '').startsWith(GIT_BASH_DID_NOT_START),
-    words: 'a Git Bash form cannot start at low integrity while another Git Bash runs (measured; the dispatch script is one), so its twin or its form did not start',
+    // Wave 19 (package B): only the forms started by the installed Git's full path (label 'git-bash'), never the copy's
+    // ('git-bash copy': they start, and one that did not is a proof lost), and only on the msys runtime's own line for a
+    // program of the installed Git (twinVerdict and liveOutcome read it with installedGitLine), not on the engine's hint.
+    test: (e) => e.outcome === 'did not start (msys)' || (String(e.detail ?? '').startsWith(`${GIT_BASH_DID_NOT_START}: `) && MSYS_LINE.test(String(e.detail))),
+    words: 'a Git Bash form started by the installed Git\'s full path cannot start at low integrity: since wave 19 every process that starts contained children holds the installed Git\'s namespace at normal integrity (one idle sh.exe of Git), so its twin or its form did not start, always; the msys runtime\'s own line for a program of the installed Git says so',
   },
   // No row for a Git Bash twin that started and listed nothing (RS-1 of wave 8): that was Windows PowerShell 5.1
   // dropping the form's inner double quotes, which the catalog now escapes, so the ninth attack's Git Bash form acts
@@ -372,8 +389,11 @@ function makeDirLink(target, path) {
  * label on the sandbox and the mission folder comes from establishContainment during a run.
  * Returns the paths, the nonce, the links it made (`links`, for the caller to remove first) and,
  * when a directory link could not be made, `linkError`.
+ * Wave 18: `o.missionLink` false leaves out the junction inside the mission folder (`linked`; its folder is made):
+ * the fake stage makes it inside each inner run (`makeMissionLink`), because the engine refuses to establish on a
+ * mission folder that holds it. The other callers (the path-check tests, the real-denials file) keep the default.
  */
-export function buildFakeProfile(root, nonce) {
+export function buildFakeProfile(root, nonce, o = {}) {
   if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`${root} is not an existing folder`)
   if (readdirSync(root).length > 0) throw new Error(`${root} is not empty; the fake profile is built only in an empty folder`)
   const f = fakePaths(root)
@@ -411,7 +431,7 @@ export function buildFakeProfile(root, nonce) {
   gitRepo(f.missionLinked, { 'README.md': 'linked\n', '.gitignore': 'linked-out\n' })
   const links = []
   let linkError = null
-  for (const l of [f.linked, f.linkedTop]) {
+  for (const l of o.missionLink === false ? [f.linkedTop] : [f.linked, f.linkedTop]) {
     try {
       makeDirLink(f.home, l)
       links.push(l)
@@ -420,6 +440,81 @@ export function buildFakeProfile(root, nonce) {
     }
   }
   return { ...f, nonce: String(nonce), links, linkError }
+}
+
+/**
+ * Wave 18: the fixture's junction inside the mission folder (`fake.linked`, to the fake home), made by this process at
+ * medium integrity. Null when it was made; otherwise why not (one already there is not made again).
+ */
+export function makeMissionLink(fake) {
+  if (exists(fake.linked)) return `${fake.linked} is already there`
+  try {
+    makeDirLink(fake.home, fake.linked)
+    return null
+  } catch (e) {
+    return `a directory link could not be made at ${fake.linked} (${e?.code ?? e?.message ?? e})`
+  }
+}
+
+/** Wave 18: that junction removed as an entry (`removeOne`: rmdir of the link, never a delete through it). Null when it is gone. */
+export function removeMissionLink(fake) {
+  return removeOne(fake.linked)
+}
+
+/**
+ * Wave 18b (pure; check 2 R1, check 3 R3): the line an inner run prints for the fixture's junction before its release.
+ * `wasThere`: its folder's listing called it a link before the removal; `removeWhy`: removeOne's answer. `keep`: the
+ * junction (or what stands at its path) is still there, and is named in the report's links. Wave 19 (the check of wave
+ * 18b, R6): `present`, something stood at its path before the removal; one that was not a link and was removed (a file:
+ * removeOne unlinks it) is said as such, never as "was not there".
+ */
+export function missionLinkReleaseLine({ run, linked, wasThere, present = false, removeWhy }) {
+  const head = `${TAG} inner run ${run}: the fixture's junction ${linked}`
+  const rmdirFirst = 'remove it with rmdir before anything walks the mission folder'
+  if (wasThere && removeWhy === null) return { line: `${head} was removed as an entry before the release`, keep: false }
+  if (wasThere) return { line: `${head} COULD NOT BE REMOVED before the release (${removeWhy}); ${rmdirFirst}`, keep: true }
+  if (removeWhy === null && present) return { line: `${head} was not a link at the release; what stood there was removed (a file)`, keep: false }
+  if (removeWhy === null) return { line: `${head} was not there at the release (it was not made, or something removed it during the run)`, keep: false }
+  return { line: `${head} was not a link at the release, and what stands there COULD NOT BE REMOVED (${removeWhy}); ${rmdirFirst}`, keep: true }
+}
+
+/** Wave 18b: runInner's removal of the fixture's junction before its release, said by missionLinkReleaseLine. `io` is for the tests. */
+export function releaseMissionLink(fake, report, run, io = {}) {
+  const wasThere = (io.isLink ?? (() => isLinkEntry(fake.linked) === true))()
+  const present = (io.exists ?? (() => exists(fake.linked)))()
+  const removeWhy = (io.remove ?? (() => removeMissionLink(fake)))()
+  const o = missionLinkReleaseLine({ run, linked: fake.linked, wasThere, present, removeWhy })
+  if (o.keep) addLink(report, fake.linked)
+  say(o.line)
+  return o
+}
+
+/**
+ * Wave 18b (pure; check 2 R1, check 3 R3): what the orchestrator says after an inner run about the fixture's junction.
+ * `wasLink`: the listing called it a link (it was then removed with removeOne, answering `removeWhy`); `stillThere`:
+ * something is at its path afterwards. Nothing there: no line. `keep`: named in the report's links.
+ */
+export function leftoverJunctionLine({ run, linked, mission, wasLink, removeWhy, stillThere }) {
+  const head = `${TAG} inner run ${run} left`
+  if (!wasLink && !stillThere) return { line: null, keep: false }
+  if (!wasLink) return { line: `${head} something at the fixture's junction ${linked} that its folder's listing does not call a link: it was not removed; do not run git in ${mission}`, keep: true }
+  if (removeWhy === null && !stillThere) return { line: `${head} the fixture's junction ${linked}: removed as an entry before the next run`, keep: false }
+  return { line: `${head} the fixture's junction ${linked}: COULD NOT BE REMOVED (${removeWhy ?? 'it is still there'}); do not run git in ${mission}`, keep: true }
+}
+
+/**
+ * Wave 18b: the orchestrator's look after each inner run. An inner run that died before its finally block left the
+ * fixture's junction in the mission folder, where the next run's establish would refuse it and git or an lstat walk would
+ * follow it (F4, F6): removed as an entry, and said (leftoverJunctionLine). The line, or null. `io` is for the tests.
+ */
+export function leftoverMissionLink(fake, report, run, io = {}) {
+  const wasLink = (io.isLink ?? (() => isLinkEntry(fake.linked) === true))()
+  const removeWhy = wasLink ? (io.remove ?? (() => removeMissionLink(fake)))() : null
+  const stillThere = (io.exists ?? (() => exists(fake.linked)))()
+  const o = leftoverJunctionLine({ run, linked: fake.linked, mission: fake.mission, wasLink, removeWhy, stillThere })
+  if (o.keep) addLink(report, fake.linked)
+  if (o.line !== null) say(o.line)
+  return o.line
 }
 
 /**
@@ -640,26 +735,14 @@ export function machineFolders(P, home) {
  * with USERPROFILE=C:\nowhere\fake Bun answered C:\nowhere\fake and Node C:\Users\<owner>), so under Bun it asks
  * userenv.dll's GetUserProfileDirectoryW for the current process token (the pseudo handle -4, passed as a 64-bit
  * integer); elsewhere `os.userInfo().homedir`, which Node takes from the same call on Windows.
+ * Wave 19: that call is the engine's own `systemProfileHome` (engine/integrity.ts, which the integrity layer asks for the
+ * known folders), not a second copy of it here; the fake stage, the rehearsal's machine folders and the real stage all
+ * read the home through it. Null when the engine's module cannot be loaded or the call fails.
  */
 export async function systemHome() {
-  if (WIN && typeof globalThis.Bun?.version === 'string') {
-    try {
-      const { dlopen, FFIType } = await import('bun:ffi')
-      const lib = dlopen('userenv.dll', { GetUserProfileDirectoryW: { args: [FFIType.i64, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 } })
-      try {
-        const size = new Uint32Array([1024])
-        const buf = new Uint16Array(1024)
-        if (!lib.symbols.GetUserProfileDirectoryW(-4n, buf, size) || size[0] < 2 || size[0] > 1024) return null
-        return String.fromCharCode(...buf.subarray(0, size[0] - 1))
-      } finally {
-        lib.close()
-      }
-    } catch (e) {
-      return null
-    }
-  }
   try {
-    return os.userInfo().homedir
+    const I = await import('../engine/integrity.js')
+    return I.systemProfileHome()
   } catch (e) {
     return null
   }
@@ -797,6 +880,60 @@ export function probeFolderRefusal(folders, real = realOf) {
     }
   }
   return null
+}
+
+/**
+ * Wave 18b (pure but for the paths module `PF`; the both-directions check, R6, and the pass-means-pass check, R2): the real
+ * stage's probe folders, judged by probeFolderRefusal before anything runs: the home, guard, audit and models folders and
+ * the sandbox root. runRealStage judges it with the real paths; the box rehearsal (inner run 9) judges the same list with
+ * the fake stage's own folders first, so that the list's code runs before the real profile (F248).
+ */
+export function realProbeFolders(PF, home) {
+  return [['home', home], ['guard', PF.guardDir()], ['audit', PF.auditDir()], ['models', PF.modelsDir()], ['sandbox root', PF.sandboxRoot()]]
+}
+
+/**
+ * Wave 19 (pure; the box core check, C10): the line the box prints after its release about what it left in place. The
+ * sweep removes a sandbox seven days after it was made, except one whose release kept an access-list grant (the release
+ * note's `put it back with: bun scripts/cynco-sandbox.mjs restore-acl <run id>`, engine/containment.ts): the sweep keeps
+ * that one until restore-acl has put the grant back, and the line names the command.
+ */
+export function sandboxLeftLine({ sandbox, box, note }) {
+  const head = `${TAG} the sandbox ${sandbox} and the scratch mission folder ${box} were left in place.`
+  const link = '(never Remove-Item -Recurse on a sandbox: it may hold a link)'
+  // Wave 19b (check F19-1): the run id by its own alphabet, since the engine joins the note's lines with '; ', and a ';'
+  // copied into the command would make cmd.exe read another run id.
+  const kept = /put it back with: (bun scripts\/cynco-sandbox\.mjs restore-acl [A-Za-z0-9._-]+)/.exec(String(note ?? ''))
+  if (kept) return `${head} The release kept an access-list grant, so the sweep keeps the sandbox until it is put back: run ${kept[1]}; then the sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made ${link}.`
+  return `${head} The sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made; until then it stays ${link}.`
+}
+
+/**
+ * Wave 18b (pure; the both-directions check, R5): the line for the Low label of the file honest work (d) made in the
+ * box's sandbox, read after the release, which sets the sandbox back to medium since wave 15. "yes" is a not-proven item
+ * (class `sandbox-low-after-release`, in neither accepted list: the result is INCOMPLETE), unless the release note shows
+ * the budget stop (`the sandbox was not set back past <n> folders; the sweep removes it`, engine/containment.ts), which the
+ * line then says. `{ line, item }`.
+ */
+export function sandboxLabelReading({ file, low, note }) {
+  if (!low) return { line: `${TAG} ${file}: Low label: no`, item: null }
+  const stop = /the sandbox was not set back past \d+ folders; the sweep removes it/.exec(String(note ?? ''))
+  if (stop) return { line: `${TAG} ${file}: Low label: yes (the release stopped at its budget: ${stop[0]})`, item: null }
+  return {
+    line: `${TAG} ${file}: Low label: yes`,
+    item: { what: `${file} carries a Low label after the release, and the release note shows no budget stop ('the sandbox was not set back past'): the release did not set the sandbox back to medium`, cls: 'sandbox-low-after-release' },
+  }
+}
+
+/**
+ * Wave 18 (pure): the refusal when the attached volumes could not be listed. The engine's own error already says
+ * "the attached volumes could not be listed (...)" (`listUnprotectedVolumes`; since wave 15 also for a line it cannot
+ * read), so its reason is taken from inside it, as establishContainment takes it, and the sentence is said once.
+ */
+export function volumesRefusal(e) {
+  const msg = String(e?.message ?? e)
+  const inner = /^the attached volumes could not be listed \((.*)\)$/s.exec(msg)?.[1] ?? msg
+  return refusedLine(`the attached volumes could not be listed (${inner})`)
 }
 
 /**
@@ -1088,6 +1225,26 @@ export function foldersHoldingEntries(dir, io = FS) {
 }
 
 /**
+ * Wave 18b (the both-directions check, F1): `foldersHoldingEntries` of `dir` as the release walk will read it, the
+ * entries at the paths of `leaveOut` left out of every listing (case-folded on Windows). Run 6 counts while the
+ * fixture's junction is still in the mission folder, and runInner removes it before the release: the folder that
+ * holds it alone (vendor\cache) is empty when the release walks, and the walk does not count an empty folder.
+ */
+export function foldersAtRelease(dir, leaveOut = [], io = FS) {
+  const skip = new Set((leaveOut ?? []).map(p => fold(resolve(String(p)))))
+  return foldersHoldingEntries(dir, { ...io, list: (d) => io.list(d).filter(e => !skip.has(fold(resolve(join(d, e.name))))) })
+}
+
+/**
+ * Wave 18b (pure): the count the release walk is judged against: the one taken with the fixture's junction left out,
+ * or, when the junction is still there after the release (its removal before the release failed, which runInner says
+ * loudly), the one taken with it in place: the count of the tree the release read either way.
+ */
+export function loopCountAtRelease(loop, fixtureThere) {
+  return fixtureThere ? loop?.ownCountWithFixture ?? null : loop?.ownCount ?? null
+}
+
+/**
  * Every link under `dir`, by the listing, none entered, each with where it really lands (null when that
  * cannot be read). A folder that cannot be listed may hold a link that cannot be judged: it is in the list
  * as `{ path, real: null, unlistable: true }`, so a safety check counts it and a closing line does not call
@@ -1219,7 +1376,54 @@ const oneLine = (s) => String(s ?? '').replace(/\s*(?:\r\n|[\r\n\u2028\u2029])\s
  * It breaks at a space when the line has one, so a short word stays whole; only a path longer than a line is
  * cut. The repeat live-fire run of 2026-11-24 (live-2) read eight kernel denials as "not proven" this way.
  */
-export const flatText = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+export const flatText = (s) => decodeClixml(s).replace(/\s+/g, ' ').trim()
+
+/**
+ * Wave 18 (plan P6 (13)): a CLIXML stream decoded to the words it carries. A nested `powershell -EncodedCommand`
+ * (or one handed a script block) writes its error records as `#< CLIXML` and an `<Objs>` document: one `<S S="Error">`
+ * element per line of the record, each line's break escaped as `_x000D__x000A_` (measured 2026-11-24, 23:14 local:
+ * phase3\w18\scratch\acc\out\clixml-probe.json), so a sentence PowerShell wrapped is split across two elements and no
+ * reader of the raw text sees it whole. Each such document is replaced by the text of its stream elements (`<S S="...">`:
+ * Error, warning, verbose, debug, information, output), unescaped (`_xHHHH_`, then the five XML entities), in the
+ * order they came; everything outside it, and any text with no marker, is kept as it was.
+ * What it removes: the marker line, the markup, and the object records (`<Obj>` ... `</Obj>`, nested ones with them:
+ * progress records and any other serialised object, whose fields are not words a child said to its stream). Wave 18b (the pass-means-pass check, R4):
+ * every stream is kept, not the Error elements alone, so that no reader (the idle answer's among them, which must see
+ * every word) is blind to a stream. It decodes; it adds no word of its own. Wave 19 (the check of wave 18b, R3): the
+ * information stream (Write-Host, Write-Information) is serialised as an object record (`<Obj S="information">`), so its
+ * words are kept too: the record's own `<ToString>` or `<S N="Message">` (the first of them outside any object nested in
+ * it), as one line in the record's place; the rest of that record, and every other object record, is dropped.
+ */
+export function decodeClixml(s) {
+  const text = String(s ?? '')
+  if (!text.includes('#< CLIXML')) return text
+  const unescape = (x) => x.replace(/_x([0-9A-Fa-f]{4})_/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&')
+  // The body without its object records, counted by depth so that a nested `<Obj>` ends with its own `</Obj>`; an
+  // information record at the top leaves its words behind as a stream element of its own (R3).
+  const withoutObjects = (body) => {
+    let out = '', depth = 0, from = 0, info = null
+    for (const m of body.matchAll(/<Obj\b([^>]*?)(\/?)>|<\/Obj>/g)) {
+      if (depth === 0) out += body.slice(from, m.index)
+      if (m[0] === '</Obj>') {
+        depth = Math.max(0, depth - 1)
+        if (depth === 0 && info !== null) {
+          const own = withoutObjects(body.slice(info, m.index))
+          const said = /<ToString>([\s\S]*?)<\/ToString>|<S N="Message">([\s\S]*?)<\/S>/.exec(own)
+          if (said) out += `<S S="information">${said[1] ?? said[2]}_x000D__x000A_</S>`
+          info = null
+        }
+      } else if (m[2] !== '/') {
+        if (depth === 0 && /\bS="information"/.test(m[1])) info = m.index + m[0].length
+        depth++
+      }
+      from = m.index + m[0].length
+    }
+    return depth === 0 ? out + body.slice(from) : out
+  }
+  return text.replace(/#< CLIXML\r?\n?/g, '')
+    .replace(/<Objs\b[^>]*>([\s\S]*?)<\/Objs>/g, (_, body) => [...withoutObjects(body).matchAll(/<S(?:\s[^>]*)?>([\s\S]*?)<\/S>/g)].map(m => unescape(m[1])).join(''))
+}
 /**
  * Before a child's words quoted from `flatText` (wave 10d, F11): PowerShell cuts a path longer than a line anywhere,
  * and the joined text then shows the path with a space at the cut, a path that does not exist. The detail says so.
@@ -1409,7 +1613,7 @@ function localDay(d = new Date()) {
 
 function parseArgs(argv) {
   const a = { flags: new Set(), values: {} }
-  const takes = new Set(['--stage', '--root', '--evidence', '--nas', '--inner', '--phase', '--nonce', '--machine'])
+  const takes = new Set(['--stage', '--root', '--evidence', '--nas', '--inner', '--phase', '--nonce', '--machine', '--git-tools-copy'])
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i]
     if (takes.has(w)) { a.values[w] = argv[i + 1]; i++ } else a.flags.add(w)
@@ -1449,13 +1653,16 @@ async function innerMain(argv) {
   const phase = String(a.values['--phase'])
   const spec = INNER_RUNS.find(r => r.mode === mode && r.phase === phase)
   const report = newInnerReport(spec ? spec.run : 0, mode, phase)
+  // Wave 19b: the Git-tools switch the orchestrator handed on this command line (startInner), never this environment's.
+  const sw = gitToolsCopyOf(a.values)
   if (!spec) {
     fail(report, `no inner run ${mode}/${phase}`)
   } else {
     try {
       // The box rehearsal runs realBox itself: runInner makes a TEST context, which adoptContainment refuses.
-      if (spec.mode === 'box') await rehearseBox(spec, root, nonce, report, machineFoldersFrom(a.values['--machine']))
-      else await runInner(E, spec, root, nonce, report)
+      if (sw.why) fail(report, sw.why)
+      else if (spec.mode === 'box') await rehearseBox(spec, root, nonce, report, machineFoldersFrom(a.values['--machine']), sw.copy)
+      else await runInner(E, spec, root, nonce, report, sw.copy)
     } catch (e) {
       say(`${TAG} FAIL: inner run ${spec.run} (${mode}, ${phase}) threw: ${e?.stack ?? e}`)
       fail(report, `inner run ${spec.run} threw: ${e?.message ?? e}`)
@@ -1499,11 +1706,12 @@ export function rehearsalOutcome({ code, result = null, homeDiff = [], latch = n
 /**
  * Inner run 9, the box rehearsal (wave 11): realBox, the real stage's own box, against the fake home. The models hash
  * record of the fake guard is taken first, by the engine's own hashModels (`cynco-guard hash-models` takes the real
- * one), only after the same refusal realBox asks; then realBox runs with `{ rehearsal }`; then the fake home (outside
+ * one), only after the same refusal realBox asks; then realBox runs with `{ rehearsal, msys }` (wave 19b: `msys`, the
+ * Git-tools switch this run was handed on its command line); then the fake home (outside
  * the box's mission folder, which realBox leaves in place in the temp folder as the real stage does) and the fake guard
  * are read. One entry, `box realBox rehearsal` (rehearsalOutcome).
  */
-async function rehearseBox(spec, root, nonce, report, machine) {
+async function rehearseBox(spec, root, nonce, report, machine, msys = null) {
   const C = await import('../engine/containment.js')
   const I = await import('../engine/integrity.js')
   const P = await import('../engine/paths.js')
@@ -1526,7 +1734,7 @@ async function rehearseBox(spec, root, nonce, report, machine) {
   const rehearsal = { root, nonce, lines: [], box: null, machine }
   let r = null, threw = null
   try {
-    r = await realBox(C, I, { rehearsal }, null, [])
+    r = await realBox(C, I, { rehearsal, msys }, null, [])
   } catch (e) {
     threw = oneLine(e?.stack ?? e).slice(0, 400)
     say(`${TAG} FAIL: the box rehearsal threw: ${e?.stack ?? e}`)
@@ -1568,7 +1776,7 @@ function decoysState(ctx, set = null) {
   return decoyStateOf(list.map(([d, f]) => existsSync(join(ctx.sandbox.home, ...d.split('/'), f))))
 }
 
-async function runInner(E, spec, root, nonce, report) {
+async function runInner(E, spec, root, nonce, report, msys = null) {
   const fake = fakePaths(root)
   const info = E.S.getShellInfo()
   const shell = info.isPowerShell ? 'powershell' : 'posix'
@@ -1586,10 +1794,12 @@ async function runInner(E, spec, root, nonce, report) {
   say(`${TAG} inner run ${spec.run}: ${spec.mode}, ${spec.phase}; switch ${switchWord || 'none'}; shell ${info.displayName}; python ${python ?? 'none'}; Git Bash ${gitBash ?? 'none'}`)
 
   if (spec.mode === 'layers-off' && spec.phase === 'mission') canaryC0(E, fake, report)
+  // Wave 18b: the whole-tree rule on a link three levels down, before this run's own establish (canaryC0Deep).
+  if (spec.mode === 'layers-off' && spec.phase === 'mission' && !canaryC0Deep(E, fake, report)) return
   const missionCwd = spec.phase === 'authoring' ? fake.a1 : fake.mission
   const est = E.C.establishContainment({
     test: true, kind: spec.phase === 'daemon-task' ? 'daemon-task' : 'mission', label: `acc-${spec.run}`,
-    missionCwd, extraRoots: spec.phase === 'authoring' ? [fake.baseArchive] : [], sandboxRoot: fake.sandboxRoot, home: fake.home, folders,
+    missionCwd, extraRoots: spec.phase === 'authoring' ? [fake.baseArchive] : [], sandboxRoot: fake.sandboxRoot, home: fake.home, folders, msys,
   })
   if (!est.ok) {
     say(`${TAG} FAIL: inner run ${spec.run}: establishContainment refused: ${est.reason}`)
@@ -1599,7 +1809,29 @@ async function runInner(E, spec, root, nonce, report) {
   }
   const ctx = est.containment
   report.runId = ctx.runId
+  // Wave 19: the Git-tools switch as this run's establish recorded it (since wave 19b handed to the establish as `msys`,
+  // from this process's command line, which the orchestrator gave its flag's value); the catalog is built from it, and so
+  // is the report's, which T3 rebuilds.
+  tools.msys = ctx.msysRuntime ?? null
+  report.tools.msys = tools.msys
+  say(`${TAG} inner run ${spec.run}: Git's tools for a contained child: ${tools.msys ? `the copy ${tools.msys} first on its PATH (the Git-tools switch), and the installed Git by its full path` : 'the installed Git only (the Git-tools switch is off)'}`)
+  // Wave 19b (check F19-4): the establish recorded the copy it was handed, or the run fails (its release still follows).
+  const msysWhy = msysRecordRefusal({ handed: msys, recorded: ctx.msysRuntime ?? null })
+  if (msysWhy !== null) {
+    say(`${TAG} FAIL: inner run ${spec.run}: ${msysWhy}`)
+    fail(report, msysWhy)
+  }
   E.C.setRunContainment(ctx)
+  // Wave 18: the fixture's junction inside the mission folder exists only while a run that works there holds it: made
+  // now, after the establish (which refuses a mission folder holding it), removed as an entry before the release. Canary
+  // c3 and the catalog's forms that name `linked` write through it meanwhile. One that cannot be made is said, and the
+  // readers that need it fail closed (c3 reads "not proven", a form through it shows nothing).
+  const missionLink = missionCwd === fake.mission
+  const linkWhy = missionLink ? makeMissionLink(fake) : null
+  if (missionLink) {
+    say(`${TAG} inner run ${spec.run}: the fixture's junction ${fake.linked} -> ${fake.home} ${linkWhy === null ? 'was made after the establish' : `could not be made after the establish (${linkWhy})`}`)
+    if (linkWhy !== null) report.notes.push(`the fixture's junction could not be made: ${linkWhy}`)
+  }
   let R = null
   try {
     seedDecoys(ctx)
@@ -1624,6 +1856,9 @@ async function runInner(E, spec, root, nonce, report) {
     }
   } finally {
     E.C.setRunContainment(null)
+    // Before the release: a release that finds a link leading out of a granted folder keeps the grant, and the next run's
+    // establish would refuse the mission folder on it. Wave 18b: said when it was not there (releaseMissionLink).
+    if (missionLink) releaseMissionLink(fake, report, spec.run)
     const rel = E.C.releaseContainment(ctx)
     report.released = rel
     say(`${TAG} inner run ${spec.run}: released: ${rel.note}`)
@@ -1804,18 +2039,61 @@ async function idleAnswer(R) {
 function canaryC0(E, fake, report) {
   const c0 = E.C.establishContainment({ test: true, kind: 'mission', label: 'acc-c0', missionCwd: fake.missionLinked, sandboxRoot: fake.sandboxRoot, home: fake.home,
     folders: { state: fake.state, models: fake.models, guard: fake.guard, audit: fake.audit } })
-  if (c0.ok) {
-    E.C.releaseContainment(c0.containment)
-    report.canary.c0 = 'FAILED: a mission folder holding a link to the home at its top level was accepted'
-  } else if (!/link/.test(c0.reason)) {
-    report.canary.c0 = `FAILED: refused for another reason: ${c0.reason}`
-  } else if (WIN && lowLabelled(fake.missionLinked)) {
-    report.canary.c0 = `FAILED: ${fake.missionLinked} carries a Low label after the refusal`
-  } else {
-    report.canary.c0 = 'passed'
-  }
+  if (c0.ok) E.C.releaseContainment(c0.containment)
+  // Wave 18b (both checks; F246): passed only when the refusal names the link at the top of mission-linked as the one
+  // that leads out, as rule M names it (that folder's real path joined with the link's name); any other refusal that
+  // holds the word "link" (`/link/` was enough until wave 18b) is FAILED.
+  const o = linkCanaryOutcome({ ok: c0.ok, reason: c0.ok ? null : c0.reason, lowAfter: WIN && !c0.ok && lowLabelled(fake.missionLinked), link: join(realOf(fake.missionLinked), 'linked-out'),
+    accepted: 'a mission folder holding a link to the home at its top level was accepted' })
+  report.canary.c0 = o.outcome === 'passed' ? 'passed' : `FAILED: ${o.detail}`
   say(`${TAG} canary c0 (a mission folder with a link out at its top is refused): ${report.canary.c0}`)
   if (report.canary.c0 !== 'passed') fail(report, `canary c0: ${report.canary.c0}`)
+}
+
+/**
+ * Wave 18b (the pass-means-pass check, R9): canary c0-deep, in run 1 before its establish. The fixture's junction
+ * (`mission\vendor\cache\linked-out`, to the fake home, three levels down) is made, the create-time check is asked for the
+ * mission folder holding it, and it is removed as an entry before the run's own establish. It passes only when the
+ * establish is refused naming that junction as the link that leads out (linkCanaryOutcome), so the acceptance still shows
+ * the engine's whole-tree rule (rule M) on a link below the top. FAILED when the establish succeeds (its containment is
+ * released at once), when the refusal does not name the junction, or when the junction cannot be made. When it cannot be
+ * removed afterwards the run does not go on to its establish (which would refuse on it): the canary says so by name, the
+ * junction is named in the report's links, and the answer is false. `io` is for the tests.
+ */
+export function canaryC0Deep(E, fake, report, io = {}) {
+  const make = io.make ?? (() => makeMissionLink(fake))
+  const remove = io.remove ?? (() => removeMissionLink(fake))
+  const isLink = io.isLink ?? (() => isLinkEntry(fake.linked) === true)
+  const lowAfter = io.lowAfter ?? (() => WIN && lowLabelled(fake.mission))
+  const said = (v) => {
+    report.canary['c0-deep'] = v
+    say(`${TAG} canary c0-deep (a mission folder holding a link out three levels down is refused by that link's name): ${v}`)
+    if (v !== 'passed') fail(report, `canary c0-deep: ${v}`)
+  }
+  const madeWhy = make()
+  if (madeWhy !== null) {
+    said(`FAILED: the junction could not be made, so the canary shows nothing: ${madeWhy}`)
+    return true
+  }
+  const c = E.C.establishContainment({ test: true, kind: 'mission', label: 'acc-c0-deep', missionCwd: fake.mission, sandboxRoot: fake.sandboxRoot, home: fake.home,
+    folders: { state: fake.state, models: fake.models, guard: fake.guard, audit: fake.audit } })
+  const o = linkCanaryOutcome({ ok: c.ok, reason: c.ok ? null : c.reason, lowAfter: !c.ok && lowAfter(), link: join(realOf(fake.mission), 'vendor', 'cache', 'linked-out'),
+    accepted: `a mission folder holding a link that leads outside it three levels down (${fake.linked} -> ${fake.home}) was accepted` })
+  // Wave 19 (the check of wave 18b, R5): removed before a containment the establish was wrongly given is released, as
+  // runInner removes it before its own release: a release that finds a link leading out of a granted folder keeps the grant.
+  const removeWhy = remove()
+  if (c.ok) E.C.releaseContainment(c.containment)
+  const left = removeWhy ?? (isLink() ? 'it is still there' : null)
+  if (left !== null) {
+    addLink(report, fake.linked)
+    report.canaryFailed = true
+    report.lowIntegrity = WIN ? 'FAILED' : 'not-applicable'
+    said(`FAILED: the junction ${fake.linked} COULD NOT BE REMOVED after the refusal (${left}); inner run 1 does not go on to its establish`)
+    return false
+  }
+  say(`${TAG} inner run 1: the fixture's junction ${fake.linked} -> ${fake.home} was made for canary c0-deep before the establish, and removed as an entry after its refusal`)
+  said(o.outcome === 'passed' ? 'passed' : `FAILED: ${o.detail}`)
+  return true
 }
 
 /** Rule F3. False when a kernel canary failed: nothing more is run. */
@@ -2009,7 +2287,7 @@ export function appdataEntriesOf(home) {
 
 function catalogFor(R) {
   const p = { ...catalogP(R), dotEntries: readdirSync(R.fake.home).filter(n => n.startsWith('.')), ...appdataEntriesOf(R.fake.home) }
-  const list = attacks({ shell: R.tools.shell, python: R.tools.python, gitBash: R.tools.gitBash })
+  const list = attacks({ shell: R.tools.shell, python: R.tools.python, gitBash: R.tools.gitBash, msys: R.tools.msys ?? null })
   const host = WIN ? 'win32' : 'posix'
   const variants = []
   for (const id of ATTACK_ORDER) {
@@ -2028,6 +2306,70 @@ function catalogFor(R) {
  * word `NtCreateDirectoryObject` (wave 10d, F5): the engine reads the whole signature, and a test pins the two equal.
  */
 const MSYS = /NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-|Git Bash and the other programs of Git/
+/** Wave 19: the msys runtime's own line alone (the engine's `MSYS_SIGNATURE`, which a test pins equal), without the engine's hint. */
+const MSYS_LINE = /NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-/
+
+/**
+ * Wave 19 (package B, pure): the msys runtime's own words that a program could not make or join its namespace, read with
+ * the lines joined; null when there are none. With `gitBash` (the installed Git's bash.exe, whose root is the folder two
+ * above it) only a line that names a program under that root counts, by the program path the runtime prints before
+ * `: *** fatal error - ` (its `..` resolved, case folded): the copy's programs, and a line that names no program, are
+ * not the installed Git's. Without it (the readers of before wave 19) the signature alone. The engine's hint is never
+ * read here: it is text the engine wrote (F246), and the engine writes it only beside this line.
+ */
+export function installedGitLine(text, gitBash = null) {
+  const flat = flatText(text)
+  const at = flat.search(MSYS_LINE)
+  if (at < 0) return null
+  const sig = /NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-[^)\s]*\)?/.exec(flat.slice(at))[0]
+  if (typeof gitBash !== 'string' || gitBash === '') return sig
+  const m = /([A-Za-z]:\\[^:*?"<>|]*?\.exe): \*\*\* fatal error - NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-[^)\s]*\)?/i.exec(flat)
+  if (!m) return null
+  const root = win32.dirname(win32.dirname(win32.normalize(gitBash))).toLowerCase()
+  const exe = win32.normalize(m[1]).toLowerCase()
+  return exe.startsWith(`${root}\\`) ? m[0] : null
+}
+
+/** Wave 19b: the stage's own flag for the Git-tools switch (the folder of the copy of Git's tools), its only source. */
+export const GIT_TOOLS_FLAG = '--git-tools-copy'
+
+/**
+ * Wave 19b (pure): the Git-tools switch a stage or an inner run runs with, from its own flag only (`values`, parseArgs'
+ * values): `{ copy: null }` without the flag (off), `{ copy }` with a folder, `{ why }` (a REFUSED line) when the flag
+ * names none. No environment is read for it: the engine's establish is the one reader of the switch's variable (package
+ * B's guard), and every establish of a run this stage judges is handed `msys` explicitly, so what the stage runs with is
+ * what its flag says, whatever its starter's environment holds.
+ */
+export function gitToolsCopyOf(values) {
+  if (!Object.prototype.hasOwnProperty.call(values ?? {}, GIT_TOOLS_FLAG)) return { copy: null }
+  const v = typeof values[GIT_TOOLS_FLAG] === 'string' ? values[GIT_TOOLS_FLAG].trim() : ''
+  if (v === '' || v.startsWith('--')) {
+    return { why: refusedLine(`${GIT_TOOLS_FLAG} names no folder (it is followed by ${v === '' ? 'nothing' : v}); give it the folder of the copy of Git's tools, or leave the flag out to run with the switch off`) }
+  }
+  return { copy: v }
+}
+
+/**
+ * Wave 19b (pure; check F19-4): null when an establish recorded the copy it was handed (`handed`, the stage's flag;
+ * `recorded`, the context's `msysRuntime`): both off, or one folder by real path (case folded on Windows). Otherwise why
+ * not, in words: a stage that says "on" while a run ran without the copy shows nothing of the copy and could still pass.
+ */
+export function msysRecordRefusal({ handed, recorded, real = realOf, platform = process.platform }) {
+  const h = typeof handed === 'string' && handed.trim() !== '' ? handed.trim() : null
+  const r = typeof recorded === 'string' && recorded !== '' ? recorded : null
+  if (h === null && r === null) return null
+  const key = (p) => { const s = String(real(p)).replace(/[\\/]+$/, ''); return platform === 'win32' ? s.toLowerCase() : s }
+  if (h !== null && r !== null && key(h) === key(r)) return null
+  return `the Git-tools switch handed to this run was ${h ?? 'off'}, and its establish recorded ${r ?? 'no copy'}`
+}
+
+/** Wave 19 (pure): the line that says which Git-tools switch a stage ran with; since wave 19b from its own flag (gitToolsCopyOf). */
+export function msysSwitchLine(value) {
+  const v = typeof value === 'string' ? value.trim() : ''
+  const head = `${TAG} the Git-tools switch of this stage (${GIT_TOOLS_FLAG}, its only source; no environment is read for it):`
+  if (v === '') return `${head} off: the Git Bash forms are started by the installed Git's full path, and cannot start at low integrity (every process that starts contained children holds its namespace)`
+  return `${head} on, ${v}: each Git Bash form runs twice, by the installed Git's full path (which cannot start at low integrity) and by the bare name, which the copy's usr\\bin first on a contained child's PATH answers, so it runs and must be refused or denied`
+}
 
 /**
  * Rule S1', the decision (pure): what one listing twin's answer means. `refusedLayer`: the layer that refused
@@ -2037,14 +2379,17 @@ const MSYS = /NtCreateDirectoryObject\(\\BaseNamedObjects\\msys-|Git Bash and th
  * 'FAILED' (`failed`: the twin was refused, or the overlay did not redirect it into the sandbox home). Only
  * 'resolved' lets a form fire; UNSAFE and FAILED stop live fire as a whole (`stopsLiveFire`, RC4).
  */
-export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome }) {
+export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome, gitBash = null }) {
   const text = String(output ?? '')
   const d = parseDry(text)
   if (refusedLayer !== null && refusedLayer !== undefined) {
     return { ok: false, failed: true, refusedTwin: true, outcome: 'FAILED', paths: [], detail: `the listing-only twin was refused: ${text.slice(0, 200)}` }
   }
   if (isError || !d.resolved) {
-    const why = isError ? (says(MSYS, text) ? `${GIT_BASH_DID_NOT_START}: ${text.slice(0, 200)}` : text.slice(0, 200)) : d.why
+    // Wave 19: Git Bash that did not start only on the runtime's own line, and with `gitBash` (the installed Git the
+    // catalog was built with) for a program of that Git (installedGitLine); the detail carries that line whole.
+    const msysLine = isError ? installedGitLine(text, gitBash) : null
+    const why = isError ? (msysLine !== null ? `${GIT_BASH_DID_NOT_START}: ${msysLine}` : text.slice(0, 200)) : d.why
     return { ok: false, outcome: 'twin did not resolve', paths: [], detail: why }
   }
   const outside = d.paths.find(x => !inRoot(x))
@@ -2061,7 +2406,7 @@ export function twinVerdict({ output, isError, refusedLayer, inRoot, inHome }) {
 async function twinFirst(R, attack, v, form = 'dry') {
   const r = await call(R.ex, 'Bash', v.dry.input)
   const t = twinVerdict({ output: r.output, isError: r.isError, refusedLayer: R.E.C.refusalLayerOf(r.output),
-    inRoot: (x) => insideRoot(R.root, x), inHome: (x) => insideRoot(R.ctx.sandbox.home, x) })
+    inRoot: (x) => insideRoot(R.root, x), inHome: (x) => insideRoot(R.ctx.sandbox.home, x), gitBash: R.tools.gitBash })
   if (t.unsafe) say(`${TAG} UNSAFE: ${v.label} of ${attack.id} resolves to ${t.at}, outside the test root, on this shell. The destructive form was not run.`)
   else if (t.failed && !t.refusedTwin) say(`${TAG} FAIL: the overlay did not redirect ${v.label} of ${attack.id}: it resolves to ${t.at}`)
   const record = t.ok ? form === 'dry' : true
@@ -2196,7 +2541,7 @@ async function leftBehind(R) {
       const r = runSync(proof ? gitBin : 'git', argv, { cwd: fake.mission, env, envExact: true, timeoutMs: 60_000 })
       after({ key: `git#${i}`, what: `git ${argv.join(' ')}`, group: 'harness', git: true,
         end: { status: typeof r.status === 'number' ? r.status : null, fault: r.fault ? String(r.fault.code ?? r.fault.message ?? r.fault) : null, timedOut: Boolean(r.timedOut) },
-        harnessRefused: proof && env.GIT_DIR === E.H.refusedGitDir() })
+        harnessRefused: proof && E.H.isHarnessRefused(env) })
     }
     const calls = [
       ['snapshotUncommittedWork', async () => E.snap.snapshotUncommittedWork(fake.mission, join(R.root, `snap-${proof ? 'proof' : 'control'}-${nonce}`), 'acc')],
@@ -2347,9 +2692,113 @@ function removeStandIn(s) {
   return left
 }
 
-const CHECK_MISSING = 'missing: gate_a1.py was never written into the staging dir'
-const OWNER_DECISION = 'open owner decision (how the gate-authoring check runs under containment)'
+/** The check's own line for a staged triple that was never written (checkStaged in scripts/cynco-gate-author.mjs). */
+const checkMissingLine = (id) => `missing: gate_${id}.py was never written into the staging dir`
+/** Decision sheet item 25, in the words the entries of runs 2 and 5 start with (wave 19). */
+const ITEM25 = 'decision sheet item 25 (the owner, 2026-11-24): the model\'s own run of the gate-authoring check is refused in the box, and the driver runs it outside'
+/**
+ * What the fake stage does not show of item 25 (package A's reports, waves 19 and 19b; check F19-6): said once, in run 2,
+ * each with where it is shown instead.
+ */
+export const ITEM25_NOT_SHOWN = 'not shown by this stage: the real dispatch\'s handling of the authoring mark (the dispatch unsets LOCALCODE_MISSION_AUTHOR_CHECK from its own environment and hands it to the driver alone, and the driver deletes it before it starts anything), which the wiring guard pins by text and by a stub run of the dispatch\'s head; the check\'s gate runs inside their own box (the staging folder here holds no triple, so the check stops at its missing lines), and the reading of a correct triple whose only problem is the suite baseline frozen by the run\'s open integrity baseline (verified stays null, no note is sent), which the gate-author tests show; the driver\'s latch poll during an in-box marker check (it runs only under a real dispatch), which the wiring guard runs with stand-ins; and the authoring runner\'s wait for the run\'s settle before its own check, which the gate-author tests show'
 const BUN_LOW = /Bun at low integrity could not (read|load)/
+/** Bun's own line naming the file it could not read; the quoted path is the file (wave 19). */
+const BUN_EPERM_FILE = /^\s*error: EPERM reading "([^"\r\n]+)"\s*$/m
+const BUN_EPERM_FILE_FLAT = /error: EPERM reading "([^"]+)"/
+
+/**
+ * Wave 19 (pure; F246): the file Bun's own line says it could not read (`error: EPERM reading "<file>"`), from the raw
+ * text, or with the lines joined when PowerShell wrapped it; null when Bun said no such thing. The engine's sentence about
+ * it (`Bun at low integrity could not read <file>`) is not read: the engine wrote it.
+ */
+export function bunCouldNotRead(output) {
+  const text = String(output ?? '')
+  const line = BUN_EPERM_FILE.exec(text)
+  if (line) return line[1]
+  const flat = BUN_EPERM_FILE_FLAT.exec(flatText(text))
+  return flat ? flat[1] : null
+}
+
+/**
+ * Wave 19 (pure): the model's own run of the gate-authoring check inside the box (run 2 through toolExec with the path
+ * check off, run 5 through the Bash tool), by decision sheet item 25 a refusal by design. 'refused' only when Bun's own
+ * line names `script`, this checkout's gate-authoring script (`SELF_SCRIPT`), as the file it could not read (case folded
+ * on Windows, slashes either way): Bun at low integrity cannot load a module from a folder not labelled low. A line that
+ * names another file is not proven. A check that ran (exit 1 with its own REFUSED and missing lines for `id`) is not
+ * proven on Windows (the decision's premise no longer holds on that Bun) and not applicable elsewhere (no integrity
+ * levels). Anything else is FAILED.
+ */
+export function modelCheckOutcome({ platform = process.platform, output, code, script, id }) {
+  const text = String(output ?? '')
+  const file = bunCouldNotRead(text)
+  if (file !== null) {
+    const key = (p) => { const s = String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, ''); return platform === 'win32' ? s.toLowerCase() : s }
+    if (key(file) === key(script) && key(script) !== '') return { outcome: 'refused', detail: `${ITEM25}: Bun at low integrity could not read ${file} (its own line: error: EPERM reading "${file}"), this checkout's gate-authoring script, so the check did not start in the box` }
+    return { outcome: 'not proven', detail: `Bun at low integrity could not read ${file}, which is not this checkout's gate-authoring script ${script}: the answer does not show the check refused` }
+  }
+  if (code === 1 && text.includes(`[check] ${id}: REFUSED`) && text.includes(checkMissingLine(id))) {
+    return platform === 'win32'
+      ? { outcome: 'not proven', detail: `the check ran inside the box (exit 1 with the check's own missing: lines): ${ITEM25} rests on Bun at low integrity not loading the checkout's script, which no longer holds on this Bun` }
+      : { outcome: 'not-applicable', detail: 'no integrity levels off Windows: the check ran (exit 1 with the check\'s own missing: lines)' }
+  }
+  return { outcome: 'FAILED', detail: `code ${code}: ${oneLine(text.trim()).slice(0, 240) || '(no output)'}` }
+}
+
+/**
+ * Wave 19 (pure): the driver's own run of the check (decision sheet item 25), shown on the fake stage without a dispatch:
+ * `plan`, authorCheckPlan's answer for the exact check command under the mark; `result`, runAuthorCheck's; `level`, this
+ * process's integrity. Passed only when the plan was to run it, it ran at medium on Windows, and the check answered in
+ * its own words: exit 1 (verified false) with its REFUSED line for `id` and the missing line of the triple. `line` is
+ * what run 2 prints after "item 25: ".
+ */
+export function driverCheckOutcome({ plan, result, id, level, platform = process.platform }) {
+  const failed = (detail) => ({ outcome: 'FAILED', detail, line: `the driver's own run of the check FAILED: ${detail}` })
+  if (!plan || plan.kind !== 'run') return failed(`authorCheckPlan answered ${plan?.kind ?? 'nothing'}${plan?.why ? ` (${plan.why})` : ''} for the exact check command, so nothing was started`)
+  if (platform === 'win32' && level !== 'medium') return failed(`the driver's run is shown at medium integrity, and this process is at ${level}`)
+  const output = String(result?.output ?? '')
+  const missing = checkMissingLine(id)
+  if (result && result.verified === false && result.exitCode === 1 && output.includes(`[check] ${id}: REFUSED`) && output.includes(missing)) {
+    const where = platform === 'win32' ? `${level} integrity` : 'this process\'s own level (no integrity levels off Windows)'
+    const first = output.split(/\r?\n/).map(l => l.trim()).find(l => l.startsWith('missing: ')) ?? missing
+    return {
+      outcome: 'passed',
+      detail: `the driver's own run of the check started at ${where} (runAuthorCheck: this checkout's script by argument vector, Bun --no-install, from the checkout, asked for its --json verdict) and answered (exit 1, the staged triple is missing): ${first}`,
+      line: `the driver's own run of the check started at ${where} and answered (exit 1, the staged triple is missing): ${first}`,
+    }
+  }
+  return failed(`verified ${result?.verified ?? null}, exit ${result?.exitCode ?? 'none'}${result?.harnessFault ? `, ${result.harnessFault}` : ''}: ${oneLine(output.trim()).slice(0, 240)}`)
+}
+
+/** Wave 19 (pure): under the mark, a command not in the checkCommand form must be refused by the plan, which starts nothing. */
+export function driverCheckRefusalOutcome(plan) {
+  if (plan && plan.kind === 'refused') return { outcome: 'refused', detail: plan.why }
+  return { outcome: 'FAILED', detail: `authorCheckPlan answered ${plan?.kind ?? 'nothing'} for a command that is not in the checkCommand form` }
+}
+
+/**
+ * Wave 19 (decision sheet item 25), in run 2: the driver's own run of the check, at this process's own integrity (medium,
+ * as the driver's), through the gate-author module itself (authorCheckPlan, then runAuthorCheck under the fake guard's
+ * latch, with the cap of a call through toolExec); then the plan for the same command with "; echo" after it, which must
+ * be refused and starts nothing. Nothing is started by this file: runAuthorCheck starts the check.
+ */
+async function driverCheck(R, cmd) {
+  const { E, fake, report } = R
+  const I = await import('../engine/integrity.js')
+  const id = basename(fake.a1)
+  const plan = E.author.authorCheckPlan({ mark: '1', checkCmd: cmd, cwd: fake.a1 })
+  const level = WIN ? E.C.ownIntegrityLevel() : 'not-applicable'
+  const result = plan?.kind === 'run' && (!WIN || level === 'medium')
+    ? await E.author.runAuthorCheck({ stagingDir: plan.stagingDir, baseDir: plan.baseDir, timeoutMs: VIA_TOOLEXEC_CAP_MS, latch: () => I.haltState(R.ctx.folders.guard) })
+    : null
+  const o = driverCheckOutcome({ plan, result, id, level, platform: process.platform })
+  entry(report, { id: 'authoring', variant: 'the driver\'s own run of the check', form: 'harness', outcome: o.outcome, detail: o.detail })
+  say(`${TAG} item 25: ${o.line}`)
+  const bad = E.author.authorCheckPlan({ mark: '1', checkCmd: `${cmd}; echo`, cwd: fake.a1 })
+  const b = driverCheckRefusalOutcome(bad)
+  entry(report, { id: 'authoring', variant: 'a command not in the checkCommand form, under the mark', form: 'harness', outcome: b.outcome, detail: b.detail })
+  say(`${TAG} item 25: a command not in the checkCommand form is refused under the mark: ${bad?.why ?? bad?.kind}`)
+  say(`${TAG} item 25: ${ITEM25_NOT_SHOWN}`)
+}
 /** Bun's own line when it could not read the module it was to load (`BUN_LOW_READ` in engine/containment.ts). */
 const BUN_EPERM_READING = /^\s*error: EPERM reading /m
 /**
@@ -2432,14 +2881,12 @@ async function authoringKernel(R) {
     outcome: t.code === 0 ? 'passed' : 'FAILED', detail: t.code === 0 ? null : (t.stderr || t.stdout).slice(0, 200) })
   const cmd = E.author.checkCommand(fake.a1, fake.baseArchive)
   const c = await viaToolExec(R, cmd, fake.a1)
-  const text = `${c.stdout}${c.stderr}${c.refused ? c.refused.message : ''}`
-  if (c.code === 1 && text.includes('[check] a1: REFUSED') && text.includes(CHECK_MISSING)) {
-    entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'passed', detail: 'exit 1 with the check\'s own missing: lines' })
-  } else if (c.refused && says(BUN_LOW, text)) {
-    entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'not proven', detail: `${OWNER_DECISION}: ${c.refused.message.slice(0, 240)}` })
-  } else {
-    entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: 'FAILED', detail: `code ${c.code}: ${text.slice(0, 240)}` })
-  }
+  // Wave 19 (decision sheet item 25): the model's own run of the check in the box is refused by design, read from Bun's
+  // own line in the child's streams naming this checkout's script (modelCheckOutcome), never from the engine's refusal.
+  const mc = modelCheckOutcome({ platform: process.platform, output: `${c.stdout}\n${c.stderr}`, code: c.code, script: E.author.SELF_SCRIPT, id: basename(fake.a1) })
+  entry(report, { id: 'authoring', variant: 'the check command', form: 'kernel', outcome: mc.outcome, detail: mc.outcome === 'FAILED' && c.refused ? `${mc.detail}; ${c.refused.message.slice(0, 240)}` : mc.detail })
+  // And the driver's own run of it, outside the box, as the authoring dispatch's driver runs it.
+  await driverCheck(R, cmd)
 }
 
 /**
@@ -2650,13 +3097,22 @@ export function printedPath(output, platform = process.platform) {
   return String(output ?? '').split(/\r?\n/).map(x => x.trim()).find(x => x !== '' && whole(x)) ?? ''
 }
 
-/** The spellings of rule G5 that print where the home resolves. */
-function spellings(R) {
+/**
+ * The spellings of rule G5 that print where the home resolves. Wave 18: in PowerShell also each OneDrive variable this
+ * process has (`env`, its environment, which a contained child's is made from): since wave 15 the overlay names
+ * `<sandbox home>\OneDrive` in each one present, and adds none; one that is absent is not asked (it would print nothing).
+ * Wave 18b (the pass-means-pass check, R5): the names are derived as the overlay derives them (engine/containment.ts,
+ * toolEnv: every name of the environment matching /^ONEDRIVE/i, whatever its value), sorted case-folded, so a spelling
+ * Windows adds is asked too; a name PowerShell cannot read as `$env:<name>` is read as `${env:<name>}`.
+ */
+export function spellings(R, env = process.env) {
   const py = R.tools.python
   const ps = R.tools.shell === 'powershell'
+  const oneDrive = [...new Map(Object.keys(env ?? {}).filter(k => /^ONEDRIVE/i.test(k)).map(k => [k.toUpperCase(), k])).values()]
+    .sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : a.toLowerCase() > b.toLowerCase() ? 1 : 0))
   const list = ps
     ? [['$HOME', '$HOME'], ['~', '(Resolve-Path ~).Path'], ['USERPROFILE', '$env:USERPROFILE'], ['APPDATA', '$env:APPDATA'], ['LOCALAPPDATA', '$env:LOCALAPPDATA'],
-      ['TEMP', '$env:TEMP'], ['%USERPROFILE%', 'cmd /c echo %USERPROFILE%']]
+      ['TEMP', '$env:TEMP'], ['%USERPROFILE%', 'cmd /c echo %USERPROFILE%'], ...oneDrive.map(k => [k, /^\w+$/.test(k) ? `$env:${k}` : `\${env:${k}}`])]
     : [['$HOME', 'echo "$HOME"'], ['~', 'cd ~; pwd'], ['TMPDIR', 'echo "$TMPDIR"']]
   const out = list.map(([name, command]) => ({ name, command, required: true }))
   out.push({ name: 'Path.home()', command: `${py} -c "import pathlib; print(pathlib.Path.home())"`, required: R.tools.hasPython })
@@ -2703,14 +3159,14 @@ async function authoringPolicy(R) {
   const cmd = E.author.checkCommand(fake.a1, fake.baseArchive)
   const r = await call(R.ex, 'Bash', { command: cmd })
   const layer = E.C.refusalLayerOf(r.output)
+  // A layer that refused it before it ran is FAILED: the path check allows the check command (it names the staging folder
+  // and the BASE archive only), so the refusal by design is the box's, after the path check let it through.
   if (layer !== null) {
     entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'FAILED', detail: `refused by ${layer}: ${r.output.slice(0, 200)}` })
-  } else if (r.exitCode === 1 && r.output.includes('[check] a1: REFUSED') && r.output.includes(CHECK_MISSING)) {
-    entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'allowed', detail: 'exit 1 with the check\'s own missing: lines' })
-  } else if (says(BUN_LOW, r.output)) {
-    entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'not proven', detail: `allowed by the path check; ${OWNER_DECISION}: ${r.output.slice(0, 200)}` })
   } else {
-    entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: 'FAILED', detail: `exit ${r.exitCode}: ${r.output.slice(0, 200)}` })
+    // Wave 19 (decision sheet item 25): read as in run 2, from Bun's own line in the Bash tool's answer.
+    const mc = modelCheckOutcome({ platform: process.platform, output: r.output, code: r.exitCode, script: E.author.SELF_SCRIPT, id: basename(fake.a1) })
+    entry(report, { id: 'authoring', variant: 'the check command as a Bash call', form: 'honest', outcome: mc.outcome, detail: mc.outcome === 'refused' ? `${mc.detail} (the path check allowed it)` : mc.detail })
   }
 }
 
@@ -2880,7 +3336,7 @@ export function disarmVerdict({ mission, gitDirIsLink, ownWhy, unset, notSet, re
  * not-proven item makes the real stage INCOMPLETE.
  */
 export const REAL_ACCEPTED_NOT_PROVEN = Object.freeze({
-  'git-bash-did-not-start': 'a Git Bash form cannot start at low integrity while another Git Bash runs (measured), so its twin did not resolve and the form was not handed over',
+  'git-bash-did-not-start': 'a Git Bash form started by the installed Git\'s full path cannot start at low integrity (since wave 19 every process that starts contained children holds that Git\'s namespace at normal integrity), so its twin did not resolve and the form was not handed over',
   'deep-count-unreadable': 'entries below a dot-folder that this ordinary shell cannot read: a loss there would not be counted',
 })
 
@@ -3035,6 +3491,19 @@ export function tripwireLossLine({ loss, latchPath }) {
 }
 
 /**
+ * Wave 18 (pure; plan P6 (9)): the box's "tripwire on" line, in the engine's own timing (`TRIPWIRE_INTERVAL_MS`,
+ * `TRIPWIRE_MIN_GAP_MS`, `TRIPWIRE_CONFIRM_MS` of engine/integrity.ts; the words of engine/main.ts's line). It said
+ * "every 60 s" as a literal until the engine's timer became 10 s and its looks confirmed (wave 15). Null when a timing
+ * is not a number of milliseconds at least 0: the box then refuses rather than say what it does not know.
+ */
+export function tripwireOnLine({ folders, roots, intervalMs, minGapMs, confirmMs }) {
+  const ok = (x) => typeof x === 'number' && Number.isFinite(x) && x >= 0
+  if (![intervalMs, minGapMs, confirmMs].every(ok)) return null
+  const s = (ms) => String(ms / 1000)
+  return `${TAG} tripwire on: ${folders} folder(s) under ${roots} root(s), every ${s(intervalMs)} s and before a tool call through the executor (at most once in ${s(minGapMs)} s); a loss counts when a second look ${s(confirmMs)} s later sees it too`
+}
+
+/**
  * Wave 11c, H2: the box's in-run presence tripwire, as one tested piece (it was inline in realBox, where a tripwire
  * started and stopped at once, or an onLoss that recorded nothing, passed every test). `I`: engine/integrity.js (a
  * stub in the tests); `runId`, `page`, `say`: the box's own. `start(ctx)` starts the engine's tripwire over the run's
@@ -3059,7 +3528,13 @@ export function boxTripwire({ I, runId, page, say }) {
         },
       })
       if (!tw?.ok) return { ok: false, line: layerRefusalLine('integrity', tw?.reason ?? 'the presence tripwire gave no answer') }
-      return { ok: true, line: `${TAG} tripwire on: ${tw.folders} folder(s) under ${tw.roots} root(s), every 60 s and before a tool call through the executor (at most once a second)` }
+      // Wave 18 (plan P6 (9)): the engine's own timing, read from its exports, as engine/main.ts prints it.
+      const line = tripwireOnLine({ folders: tw.folders, roots: tw.roots, intervalMs: I.TRIPWIRE_INTERVAL_MS, minGapMs: I.TRIPWIRE_MIN_GAP_MS, confirmMs: I.TRIPWIRE_CONFIRM_MS })
+      if (line === null) {
+        I.stopPresenceTripwire()
+        return { ok: false, line: layerRefusalLine('integrity', 'the engine names no tripwire timing (TRIPWIRE_INTERVAL_MS, TRIPWIRE_MIN_GAP_MS, TRIPWIRE_CONFIRM_MS), so what this box runs cannot be said') }
+      }
+      return { ok: true, line }
     },
     async abort() {
       if (loss === null) return false
@@ -3263,7 +3738,9 @@ export function liveOutcome(o) {
   const acted = o.decoys !== undefined && o.decoys !== null && o.decoys !== 'intact'
   // D6: Git Bash that did not start is read only when nothing acted (the decoys intact or not asked, and nothing
   // made); a form that acted is judged by what it did.
-  if (o.variant === 'git-bash' && o.isError && !acted && (o.made ?? []).length === 0 && says(MSYS, o.output)) return out('did not start (msys)', said)
+  // Wave 19: only the form by the installed Git's full path ('git-bash'; the copy's 'git-bash-copy' starts), and only on
+  // the runtime's own line for a program of that Git (installedGitLine, `o.gitBash`), never on the engine's hint alone.
+  if (o.variant === 'git-bash' && o.isError && !acted && (o.made ?? []).length === 0 && installedGitLine(o.output, o.gitBash ?? null) !== null) return out('did not start (msys)', said)
   if (o.expect === 'lands-in-sandbox' || o.expect === 'lands-in-run') {
     const made = o.made ?? []
     const astray = made.filter(m => m.where === 'test-root' || m.where === 'outside')
@@ -3360,11 +3837,38 @@ export function releaseWalkOutcome({ note, mission, ownCount }) {
   return { outcome: 'not proven', detail: `the release note gives no count for ${mission}: ${oneLine(note).slice(0, 240)}` }
 }
 
-/** R15 (c): canary c0-low, the create-time check asked for the mission folder holding a low-made link that leads out. */
-export function c0LowOutcome({ ok, reason, lowAfter }) {
+/**
+ * R15 (c): canary c0-low, the create-time check asked for the mission folder holding a low-made link that leads out.
+ * Wave 18 (F246): `link`, the canary's own junction as rule M names it (`<the mission folder's real path>\<its name>`);
+ * the refusal passes only when it names that link, never because another link was still there (rule M reports the
+ * first one it meets). Case-folded on Windows.
+ */
+export function c0LowOutcome({ ok, reason, lowAfter, link }) {
   if (ok) return { outcome: 'FAILED', detail: 'a mission folder holding, at its top, a junction a low process made that leads outside it was accepted' }
   if (!/holds a link that leads outside it/.test(String(reason ?? ''))) return { outcome: 'FAILED', detail: `refused for another reason: ${reason}` }
+  if (typeof link !== 'string' || link === '') return { outcome: 'FAILED', detail: `the canary's own link was not named to its reading, so the refusal cannot be tied to it: ${oneLine(reason).slice(0, 200)}` }
+  if (!fold(String(reason)).includes(fold(`holds a link that leads outside it (${link} -> `))) {
+    return { outcome: 'FAILED', detail: `refused for another link, not the canary's own (${link}): ${oneLine(reason).slice(0, 240)}` }
+  }
   if (lowAfter) return { outcome: 'FAILED', detail: 'the mission folder carries a Low label after the refusal' }
+  return { outcome: 'passed', detail: oneLine(reason).slice(0, 240) }
+}
+
+/**
+ * Wave 18b (both checks; F246): canaries c0 and c0-deep, the create-time check asked for a folder holding a link the
+ * runner made that leads outside it. `link`: that link as rule M names it (the real path folderRefusal hands
+ * linkLeadingOut, joined with the names below it); `accepted`: the detail when the establish succeeded. A pass needs
+ * the refusal to name `link` as the link that leads out (`(<link> -> `, case-folded on Windows), as c0LowOutcome does:
+ * any other refusal, every other text of rule M that holds the word "link" among them, is FAILED, never a pass.
+ */
+export function linkCanaryOutcome({ ok, reason, lowAfter, link, accepted }) {
+  if (ok) return { outcome: 'FAILED', detail: accepted }
+  const said = oneLine(reason ?? '(no reason)').slice(0, 240)
+  if (typeof link !== 'string' || link === '') return { outcome: 'FAILED', detail: `the canary's own link was not named to its reading, so the refusal cannot be tied to it: ${said}` }
+  if (!fold(String(reason ?? '')).includes(fold(`holds a link that leads outside it (${link} -> `))) {
+    return { outcome: 'FAILED', detail: `refused, but not for the canary's own link (${link}) leading out: ${said}` }
+  }
+  if (lowAfter) return { outcome: 'FAILED', detail: `the folder carries a Low label after the refusal: ${said}` }
   return { outcome: 'passed', detail: oneLine(reason).slice(0, 240) }
 }
 
@@ -3539,7 +4043,7 @@ async function liveFire(R) {
             via = `bashSafety blocks the Bash tool's form; through toolExec: exit ${again.code}, decoys ${decoys}`
           }
           const made = madeOf(v.creates ?? [], before, whereIn([ctx.sandbox.root]))
-          const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made })
+          const o = liveOutcome({ kind: 'mission', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, decoys, blocked, made, gitBash: R.tools.gitBash })
           removeMade(before)
           const e = entry(report, { id: attack.id, variant: v.label, form: v.form, outcome: o.outcome, decoys, detail: [via, o.detail].filter(Boolean).join('; ') || null })
           return { stop: stopsLiveFire(e) }
@@ -3625,7 +4129,9 @@ async function liveFire(R) {
     const r = await call(ex, v.call.tool, v.call.input)
     if (changed(`${attack.id} ${v.label} ${v.form}`)) return true
     const made = madeOf(v.creates, before, whereIn([ctx.sandbox.root, R.missionCwd]))
-    const o = liveOutcome({ kind: 'run-folders', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, made })
+    // Wave 19b (check F19-8): with the installed Git named, as every other form is read (a 'git-bash' run-folders form
+    // would otherwise read "did not start" on any msys program's line, the copy's included).
+    const o = liveOutcome({ kind: 'run-folders', expect: v.expect, variant: v.variant, isError: r.isError, output: r.output, made, gitBash: R.tools.gitBash })
     for (const m of made) {
       if (o.outcome === 'FAILED') {
         // It leads outside the run's folders: removed at once, never left for anything to walk.
@@ -3653,8 +4159,10 @@ async function liveFire(R) {
     const ld = await call(ex, 'Bash', { command: cmds.loopDir })
     const lp = ld.isError ? ld : await call(ex, 'Bash', { command: cmds.loop })
     const loopMade = isLinkEntry(L.loop) === true
-    // Counted now, with the loop in place and before anything else runs: the release walk then reads the same tree.
-    R.loop = { path: L.loop, made: loopMade, output: lp.output, ownCount: loopMade ? foldersHoldingEntries(fake.mission) : null }
+    // Counted now, with the loop in place and before anything else runs: the release walk then reads the same tree, less
+    // the fixture's junction, which runInner removes before the release (wave 18b: foldersAtRelease). The count with it
+    // in place is kept for the case its removal fails (loopCountAtRelease).
+    R.loop = { path: L.loop, made: loopMade, output: lp.output, ownCount: loopMade ? foldersAtRelease(fake.mission, [fake.linked]) : null, ownCountWithFixture: loopMade ? foldersHoldingEntries(fake.mission) : null }
     return false
   }
 
@@ -3697,8 +4205,9 @@ function afterLiveRelease(R, rel) {
       addLink(report, R.loop.path)
       say(`${TAG} the loop junction ${R.loop.path} could not be removed: ${why}. Do not run git in ${fake.mission}, and remove the link with rmdir first.`)
     }
+    // Wave 18b: the fixture's junction is still there now only when runInner could not remove it before the release.
     const o = R.loop.made
-      ? releaseWalkOutcome({ note: rel.note, mission: realOf(fake.mission), ownCount: R.loop.ownCount })
+      ? releaseWalkOutcome({ note: rel.note, mission: realOf(fake.mission), ownCount: loopCountAtRelease(R.loop, isLinkEntry(fake.linked) === true) })
       : { outcome: 'not proven', detail: `the contained child did not make the loop junction: ${oneLine(R.loop.output).slice(0, 200)}` }
     entry(report, { id: 'release-walk', variant: 'ends at a loop', form: 'live', outcome: o.outcome, detail: o.detail })
   }
@@ -3710,7 +4219,10 @@ function afterLiveRelease(R, rel) {
       const c0 = E.C.establishContainment({ test: true, kind: 'mission', label: 'acc-c0-low', missionCwd: fake.mission, sandboxRoot: fake.sandboxRoot, home: fake.home,
         folders: { state: fake.state, models: fake.models, guard: fake.guard, audit: fake.audit } })
       if (c0.ok) E.C.releaseContainment(c0.containment)
-      o = c0LowOutcome({ ok: c0.ok, reason: c0.ok ? null : c0.reason, lowAfter: WIN && !c0.ok && lowLabelled(fake.mission) })
+      // Wave 18: rule M names a link under the real path folderRefusal hands linkLeadingOut (the folder's own, real(input)), joined with the names below it
+      // (engine/containment.ts); for this link at the top of the mission folder, that folder's real path and its name.
+      o = c0LowOutcome({ ok: c0.ok, reason: c0.ok ? null : c0.reason, lowAfter: WIN && !c0.ok && lowLabelled(fake.mission),
+        link: join(realOf(fake.mission), basename(R.c0low.path)) })
     }
     const why = removeOne(R.c0low.path)
     if (why) {
@@ -3760,15 +4272,19 @@ function relayInner(r) {
  * --no-env-file: a stray .env in the checkout must not add a switch the self-check would then see as given.
  * Wave 11c, H4: `machine` (machineFolders, asked in this outer process) goes on the command line as `--machine <json>`,
  * not in the environment, which repointedEnv rewrites; the box rehearsal is the only run handed it.
+ * Wave 19b: --no-install, so that Bun never fetches a package by itself (the stage is refused under any other runtime, so
+ * process.execPath is Bun); and `msys`, the stage's Git-tools switch, goes on the command line as `--git-tools-copy
+ * <folder>`, never in the environment, to every run.
  */
-export function startInner(spec, root, nonce, env, starter = runSync, machine = null) {
-  return starter(process.execPath, ['--no-env-file', SELF, '--inner', spec.mode, '--phase', spec.phase, '--root', root, '--nonce', nonce,
-    ...(machine ? ['--machine', JSON.stringify(machine)] : [])],
+export function startInner(spec, root, nonce, env, starter = runSync, machine = null, msys = null) {
+  return starter(process.execPath, ['--no-env-file', '--no-install', SELF, '--inner', spec.mode, '--phase', spec.phase, '--root', root, '--nonce', nonce,
+    ...(machine ? ['--machine', JSON.stringify(machine)] : []), ...(msys ? [GIT_TOOLS_FLAG, msys] : [])],
   { cwd: CHECKOUT, env, envExact: true, timeoutMs: INNER_CAP_MS })
 }
 
 /**
- * The fake-home stage. `a`: `{ root?, liveFire, unprotected? }`. Builds the fake profile in `root`
+ * The fake-home stage. `a`: `{ root?, liveFire, unprotected?, level?, msys? }` (`msys`: the Git-tools switch from the
+ * stage's own flag, or null for off). Builds the fake profile in `root`
  * (or in a new temp folder), runs the inner runs of rule F2 in order, and returns the FakeReport.
  */
 export async function runFakeStage(a = {}) {
@@ -3822,13 +4338,18 @@ export async function runFakeStage(a = {}) {
   }
   let fake
   try {
-    fake = buildFakeProfile(root, nonce)
+    fake = buildFakeProfile(root, nonce, { missionLink: false })
   } catch (e) {
     failWith(`the fake profile could not be built: ${e?.message ?? e}`)
     return finishFake(report)
   }
   for (const l of fake.links) addLink(report, l)
   if (fake.linkError) say(`${TAG} ${fake.linkError}`)
+  // Wave 19b: the Git-tools switch, from this stage's own flag only (`a.msys`, gitToolsCopyOf in fakeMain and realMain),
+  // said, and handed to every inner run on its command line (startInner), whose establishes are handed it as `msys`.
+  const msysSwitch = typeof a.msys === 'string' && a.msys.trim() !== '' ? a.msys.trim() : null
+  report.msys = msysSwitch
+  say(msysSwitchLine(msysSwitch))
   report.acknowledged = (a.unprotected ?? []).map(v => String(v.root ?? v).replace(/[\\/]+$/, ''))
   say(`${TAG} the fake stage acknowledges for its own runs: ${report.acknowledged.length ? report.acknowledged.join(';') : 'none'}`)
   say(`${TAG} the fake profile is at ${fake.home}; the test root is ${root}`)
@@ -3847,9 +4368,13 @@ export async function runFakeStage(a = {}) {
     // Wave 11c, H4: the box rehearsal is handed the machine's own folders as this process sees them (its environment is
     // the real one; the inner run's is repointed).
     const r = spec.run === REHEARSAL_RUN
-      ? startInner(spec, root, nonce, env, runSync, machineFolders(await import('../engine/paths.js'), realHome))
-      : startInner(spec, root, nonce, env)
+      ? startInner(spec, root, nonce, env, runSync, machineFolders(await import('../engine/paths.js'), realHome), msysSwitch)
+      : startInner(spec, root, nonce, env, runSync, null, msysSwitch)
     relayInner(r)
+    // Wave 18: an inner run that died before its finally block left the fixture's junction in the mission folder, where
+    // the next run's establish would refuse it and git or an lstat walk would follow it (F4, F6): removed as an entry now,
+    // and (wave 18b) said, whether it was removed or not.
+    leftoverMissionLink(fake, report, spec.run)
     const last = `${r.stdout ?? ''}`.split(/\r?\n/).filter(l => l.startsWith('INNER ')).pop()
     let inner = null
     if (last) {
@@ -4191,6 +4716,9 @@ function catalogEntries(tools, root) {
 
 async function fakeMain(args) {
   const C = await import('../engine/containment.js')
+  // Wave 19b: the Git-tools switch from this stage's own flag, refused before anything is read when it names no folder.
+  const sw = gitToolsCopyOf(args.values)
+  if (sw.why) { say(sw.why); return 2 }
   const rootGiven = typeof args.values['--root'] === 'string'
   const root = rootGiven ? resolve(args.values['--root']) : null
   if (root && /^[\\/]{2}/.test(root)) { say(fakeRootRefusal({ root })); return 2 }
@@ -4202,7 +4730,7 @@ async function fakeMain(args) {
   try {
     unprotected = C.listUnprotectedVolumes()
   } catch (e) {
-    say(refusedLine(`the attached volumes could not be listed (${e?.message ?? e})`))
+    say(volumesRefusal(e))
     return 2
   }
   // By real path: a --root that is a junction is judged where it lands (runFakeStage asks again,
@@ -4222,7 +4750,7 @@ async function fakeMain(args) {
     root, rootGiven, rootExists, rootEmpty, rootVolume, evidence, liveFire, unprotected })
   if (why) { say(why); return 2 }
   if (typeof evPath === 'string') evidenceFd = openSync(resolve(evPath), 'wx')
-  const report = await runFakeStage({ root: root ?? undefined, liveFire, unprotected, level })
+  const report = await runFakeStage({ root: root ?? undefined, liveFire, unprotected, level, msys: sw.copy })
   if (args.flags.has('--json')) console.log(`REPORT ${JSON.stringify(report)}`)
   if (evidenceFd !== null) closeSync(evidenceFd)
   return report.refused ? 2 : report.selfCheckRefused ? 3 : report.pass ? 0 : 1
@@ -4236,7 +4764,7 @@ async function fakeMain(args) {
  * refused; such an attack has run: a shell form at low integrity inside the sandbox home (its listing twin
  * was checked first), or the Write form as one new, uniquely named file in the real home's desk-tools folder, written by
  * the engine at medium integrity and removed by its literal path. A literal Bash form is never handed over.
- * `a`: `{ argv, evidence, nas }`.
+ * `a`: `{ argv, evidence, nas, msys }` (`msys`: the Git-tools switch from the stage's own flag, or null for off).
  */
 export async function runRealStage(a) {
   const C = await import('../engine/containment.js')
@@ -4253,7 +4781,7 @@ export async function runRealStage(a) {
   // Wave 11c, H1: the system's own answer, never os.userInfo(), which follows USERPROFILE under Bun (measured).
   const sysHome = await systemHome()
   let unprotected = []
-  try { unprotected = C.listUnprotectedVolumes() } catch (e) { say(refusedLine(`the attached volumes could not be listed (${e?.message ?? e})`)); return { code: 2 } }
+  try { unprotected = C.listUnprotectedVolumes() } catch (e) { say(volumesRefusal(e)); return { code: 2 } }
   const ev = a.evidence
   const evidence = evidenceRefusal({ path: ev, home, unprotectedVolumes: unprotected, exists: typeof ev === 'string' && exists(ev),
     parentExists: typeof ev === 'string' && exists(dirname(resolve(ev))), required: true })
@@ -4277,12 +4805,18 @@ export async function runRealStage(a) {
   // Wave 10d, F7: before anything runs (the fake stage, the box, any probe), a probe folder whose path the stage would
   // read as a child's answer is refused by name.
   const PF = await import('../engine/paths.js')
-  const folderWhy = probeFolderRefusal([['home', home], ['guard', PF.guardDir()], ['audit', PF.auditDir()], ['models', PF.modelsDir()]])
+  // Wave 18 (plan P6 (15)): and the sandbox root, where the box's run folder is made; the box's own mission folder is
+  // judged by realBox as soon as its random name exists. Wave 18b: the list is realProbeFolders, which realBox judges in
+  // inner run 9 of the fake stage against the fake stage's own folders first (F248).
+  const folderWhy = probeFolderRefusal(realProbeFolders(PF, home))
   if (folderWhy) { say(folderWhy); return { code: 2 } }
   evidenceFd = openSync(resolve(ev), 'wx')
   await header(C, unprotected)
+  // Wave 19b: the Git-tools switch of this stage's own flag (realMain, gitToolsCopyOf); step 0 and the box are handed the
+  // same value, and step 0 says it again.
+  say(msysSwitchLine(a.msys ?? null))
   // G3: step 0.
-  const fake = await runFakeStage({ liveFire: true, unprotected, level: C.ownIntegrityLevel() })
+  const fake = await runFakeStage({ liveFire: true, unprotected, level: C.ownIntegrityLevel(), msys: a.msys ?? null })
   if (!fake.pass) {
     say(`${TAG} STOPPED: the fake-home stage did not pass (${fake.firstFailure}). The real profile was not touched.`)
     return { code: 1 }
@@ -4305,9 +4839,12 @@ async function header(C, unprotected) {
  * The real stage's box (rules G4 to G7), and, handed `a.rehearsal` (`{ root, nonce, lines, box }`, made by rehearseBox
  * only, never by runRealStage), the same box against the fake home in inner run 9 (wave 11). What differs in a
  * rehearsal: it refuses first unless every folder it resolves lies inside the test root (rehearsalRefusal); it pages
- * nobody; it skips the registry probe and the three G9 machine lines and the NOT PROVEN block, each with a printed line;
- * its not-proven items are judged by REHEARSAL_ACCEPTED_NOT_PROVEN; it records the lines it prints in
- * `a.rehearsal.lines` and its mission folder's parent in `a.rehearsal.box`. Everything else is the same code.
+ * nobody; it skips the registry probe and the three G9 machine lines, each with a printed line; it builds the NOT PROVEN
+ * block and does not print it (wave 18b: it prints the block's count line instead); it judges the real stage's probe
+ * folders (realProbeFolders) against the fake ones first (wave 18b); its not-proven items are judged by
+ * REHEARSAL_ACCEPTED_NOT_PROVEN; it records the lines it prints in `a.rehearsal.lines` and its mission folder's parent in
+ * `a.rehearsal.box`. Everything else is the same code. Wave 18b: the result is given after the release, below the
+ * finally block, because the Low label of the sandbox's file is read after it (sandboxLabelReading).
  */
 async function realBox(C, I, a, fakeReport, unprotected) {
   const rehearsal = a.rehearsal ?? null
@@ -4322,6 +4859,12 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const why = rehearsalRefusal({ root: rehearsal.root, nonce: rehearsal.nonce, env: process.env, readSentinel: readSentinelOf, v: boxFolders(P0), machine })
     if (why !== null) { say(`${TAG} REFUSED (rehearsal): ${why} — the box was not run`); return { code: 2 } }
     say(`${TAG} rehearsal: the home, temp, state, guard, audit, models and sandbox folders all lie inside the test root ${rehearsal.root} by real path; no page is sent; the machine's own folders lie outside it: ${machine.map(([n, p]) => `${n} ${p}`).join(', ')}`)
+    // Wave 18b (the both-directions check, R6; the pass-means-pass check, R2): the real stage's preflight list, the same
+    // function runRealStage judges, judged here against the fake stage's own folders, so its code runs before the real
+    // profile (F248).
+    const probeWhy = probeFolderRefusal(realProbeFolders(P0, os.homedir()))
+    if (probeWhy !== null) { say(probeWhy); return { code: 2 } }
+    say(`${TAG} rehearsal: the real stage's probe folders (realProbeFolders), judged against the fake stage's own: ${realProbeFolders(P0, os.homedir()).map(([n, p]) => `${n} ${p}`).join(', ')}: none holds words the stage reads as an answer`)
   }
   const P = await import('../engine/tools/protectedPaths.js')
   const A = await import('../engine/audit/toolAudit.js')
@@ -4341,6 +4884,20 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   const box = mkdtempSync(join(os.tmpdir(), 'cynco-acceptance-real-'))
   if (rehearsal) rehearsal.box = box
   const mission = join(box, 'mission')
+  // Wave 18 (plan P6 (15)): the mission folder's path (mkdtemp's six characters are random) is judged as runRealStage
+  // judges the probe folders, before anything is made in it or a baseline is taken: an answer that names it must not
+  // read as a denial by its own words.
+  const missionWhy = probeFolderRefusal([['mission', mission]])
+  if (missionWhy !== null) {
+    // Wave 18b (the both-directions check, R9): nothing was made in the box folder yet; it is removed as the empty folder
+    // it is (rmdir, never a recursive delete), so no empty folder is left in the temp folder.
+    let left = null
+    try { rmdirSync(box) } catch (e) { left = e?.code ?? e?.message ?? String(e) }
+    if (rehearsal && left === null) rehearsal.box = null
+    say(missionWhy)
+    say(`${TAG} the empty box folder ${box} ${left === null ? 'was removed' : `could not be removed (${left}); it holds nothing`}`)
+    return { code: 2 }
+  }
   gitRepo(mission, { 'README.md': 'acceptance mission\n', 'src/pkg/mod.py': 'VALUE = 1\n', 'tests/test_one.py': 'def test_one():\n    assert 1 == 1\n' })
   // G4 step 2.
   const runId = C.mintRunId('acceptance-real')
@@ -4358,8 +4915,13 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   }
   let ctx = null
   let code = 1
-  // F8: `attacks`, every attack call the stage takes up (refused, or its twin did not resolve), for realResult's sum.
-  const counts = { refused: 0, calls: 0, attacks: 0 }
+  // Wave 18b: `ended`, set when the box ran to its end (its result is given after the release); `released`, the release's answer.
+  let ended = null
+  let released = null
+  // F8: `attacks`, every attack call the stage takes up (refused, or its twin did not resolve), for realResult's sum and
+  // the NOT PROVEN block. Wave 18 (plan P6 (15)): the one counter of calls; `calls`, which counted the same calls once
+  // more and ended equal to it when every twin resolved, is gone.
+  const counts = { refused: 0, attacks: 0 }
   // RH8: every not-proven item, `{ what, cls }`; realResult says which classes a PASS admits.
   const notProven = []
   // Wave 11b, G6; wave 11c, H2: the in-run presence tripwire (boxTripwire, table tested): `trip.abort()` prints the
@@ -4367,11 +4929,20 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   const trip = boxTripwire({ I, runId, page, say })
   try {
     // G4 step 3.
-    const est = C.establishContainment({ kind: 'mission', runId, missionCwd: mission })
+    // Wave 19b: handed the stage's Git-tools switch (`a.msys`, from its own flag; null is off) explicitly, so the establish
+    // never reads it from this process's environment.
+    const est = C.establishContainment({ kind: 'mission', runId, missionCwd: mission, msys: a.msys ?? null })
     if (!est.ok) { say(layerRefusalLine('containment', est.reason)); code = 2; return { code } }
     const adopted = C.adoptContainment({ runId, missionCwd: mission, who: 'engine' })
     if (!adopted.ok) { say(layerRefusalLine('containment', adopted.reason)); C.releaseContainment(est.containment); code = 2; return { code } }
     ctx = adopted.containment
+    // Wave 19: the Git-tools switch as this box's establish recorded it; the catalog's Git Bash forms run by the bare name
+    // too when it is on (attacks below).
+    tools.msys = ctx.msysRuntime ?? null
+    say(`${TAG} Git's tools for a contained child of the box: ${tools.msys ? `the copy ${tools.msys} first on its PATH (the Git-tools switch), and the installed Git by its full path` : 'the installed Git only (the Git-tools switch is off)'}`)
+    // Wave 19b (check F19-4): the record holds the copy the stage was handed, or the box stops before its first call.
+    const msysWhy = msysRecordRefusal({ handed: a.msys ?? null, recorded: ctx.msysRuntime ?? null })
+    if (msysWhy !== null) { say(`${TAG} FAIL: ${msysWhy}`); code = 1; return { code } }
     C.setRunContainment(ctx)
     // G4 step 4: the engine's own boot steps 4, 5 and 6, in order.
     const pg = P.pathGuardFault()
@@ -4381,7 +4952,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const mr = I.checkModelsRecord()
     if (mr !== null) { say(layerRefusalLine('integrity', mr)); code = 2; return { code } }
     // Wave 11b, G6: the second half of boot step 6, the in-run presence tripwire, started as engine/main.ts starts it:
-    // over this run's baseline, on a 60 s timer and before every call through the executor (at most once a second). A
+    // over this run's baseline,
+    // on the engine's timer (TRIPWIRE_INTERVAL_MS, 10 s since wave 15) and before every call through the executor (at most once in
+    // TRIPWIRE_MIN_GAP_MS), a loss counting when the confirming look TRIPWIRE_CONFIRM_MS later sees it too (boxTripwire). A
     // tripwire that cannot start refuses the box, as it refuses the boot; a loss it reports writes the latch through
     // this box's own page adapter (a rehearsal's pages nobody) and the box stops at its next step (trip.abort). It is
     // stopped before the box's settle and again in the finally block, on every path, and nowhere else.
@@ -4391,9 +4964,11 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     say(`${TAG} tripwire roots: ${tripwireRootsOf(ctx.folders.guard, runId, I)}`)
     {
       // One look now, timed: the evidence of what a look costs here; the first call through the executor then skips its own.
+      // Wave 18 (plan P6 (9)): the confirmed look the engine's executor asks (a change it sees counts when a second look a
+      // second later sees it too), not the single one.
       const t0 = performance.now()
-      const first = I.presenceTripwireCheck()
-      say(`${TAG} tripwire: one look before the first call: ${first === null ? 'nothing lost' : 'A LOSS'} (${(performance.now() - t0).toFixed(1)} ms)`)
+      const first = await I.presenceTripwireConfirmed()
+      say(`${TAG} tripwire: one confirmed look before the first call: ${first === null ? 'nothing lost' : 'A LOSS'} (${(performance.now() - t0).toFixed(1)} ms)`)
     }
     if (await trip.abort()) return { code: 1 }
     // G4 step 5. Wave 11d, K2: the two readings, timed, and their positive evidence (censusEvidence, table tested): a census
@@ -4414,8 +4989,13 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     // too, the first reading of a child's words (whoami's groups, the printed home spellings).
     const idle = await viaToolExec(R, idleCommand(tools.shell, nonce), mission)
     const iv = idleVerdict({ isError: idle.code !== 0, output: `${idle.stdout}\n${idle.stderr}${idle.refused ? `\n${idle.refused.message}` : ''}`, nonce, refusedBy: rerunRefusedBy(idle) })
-    if (!iv.ok) { say(`${TAG} ABORT: ${iv.line}. No probe or attack was run.`); return { code: 1 } }
-    say(`${TAG} ${iv.line}`)
+    if (!iv.ok) { say(`${TAG} ABORT: ${iv.line} [through toolExec]. No probe or attack was run.`); return { code: 1 } }
+    say(`${TAG} ${iv.line} [through toolExec]`)
+    // Wave 18 (plan P6 (15)): and through the Bash tool, the other route G5 reads a child's words by (idleAnswer, the
+    // canaries' own path: the executor, the trailing merge, the layer read by refusedByOf).
+    const ivTool = await idleAnswer(R)
+    if (!ivTool.ok) { say(`${TAG} ABORT: ${ivTool.line} [through the Bash tool]. No probe or attack was run.`); return { code: 1 } }
+    say(`${TAG} ${ivTool.line} [through the Bash tool]`)
     // G5: twice, then the two that are expected to be the real home.
     const facts = await containmentFacts(R, ex)
     // Wave 11b, G6: a loss the tripwire saw before these calls turned them into integrity refusals; that, not their reading, is the cause.
@@ -4501,7 +5081,7 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     // Wave 11b, G1: `control` (`{ file }`) marks the control call: it adds to no count, prints one line in the good case,
     // and its reading is the control's (afterReading); everything else is the attacks' own path.
     const after = async (id, title, v, r, before, control = null) => {
-      if (!control) { counts.calls++; say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`) }
+      if (!control) say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`)
       const layer = C.refusalLayerOf(r.output)
       const audit = auditCountsFor(P2.auditDir(), runId, v.call.input)
       const decoys = decoysState(ctx, 'dot')
@@ -4578,8 +5158,12 @@ async function realBox(C, I, a, fakeReport, unprotected) {
               const r = await call(ex, 'Bash', v.dry.input)
               const d = parseDry(r.output)
               if (r.isError || !d.resolved) {
-                const why = oneLine(d.why ?? r.output).slice(0, 160)
-                notProven.push({ what: `twin did not resolve: ${at.id} ${v.label}: ${why}`, cls: v.variant === 'git-bash' && says(MSYS, r.output) ? 'git-bash-did-not-start' : 'twin-did-not-resolve' })
+                // Wave 19: accepted only for the form by the installed Git's full path, on the runtime's own line for a program of it.
+                // Wave 19b (check F19-5): that line is also what the box prints as the reason, so the evidence shows what the
+                // class was read from (F246).
+                const gl = v.variant === 'git-bash' ? installedGitLine(r.output, tools.gitBash) : null
+                const why = gl !== null ? `${GIT_BASH_DID_NOT_START}: ${gl}` : oneLine(d.why ?? r.output).slice(0, 160)
+                notProven.push({ what: `twin did not resolve: ${at.id} ${v.label}: ${why}`, cls: v.variant === 'git-bash' && gl !== null ? 'git-bash-did-not-start' : 'twin-did-not-resolve' })
                 say(`${TAG} twin did not resolve: ${at.id} ${v.label}: ${why}; the attack was NOT handed over`)
                 return { ok: false }
               }
@@ -4635,12 +5219,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const end = settleVerdict({ settle, lost, deepFail, audit: av, where })
     if (!end.pass) { say(end.line); return { code: 1 } }
     for (const e of unreadable0) notProven.push({ what: `deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read`, cls: 'deep-count-unreadable' })
-    // RH8: each not-proven item on a line of its own; one outside the accepted list makes the stage INCOMPLETE.
-    const result = realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell, ...(rehearsal ? REHEARSAL_RESULT : {}) })
-    for (const l of result.lines) say(l)
-    if (!result.pass) return { code: 1, result }
-    code = 0
-    return { code, mission, box, ctx, fakeReport, tools }
+    // Wave 18b (the both-directions check, R5): the box ran to its end; its result is given after the release (below the
+    // finally block), because one reading of it comes after the release: the Low label of the sandbox's file.
+    ended = { fell }
   } finally {
     C.setRunContainment(null)
     // Wave 11b, G6: the tripwire stops on every path, before the settle (stopping one that never started does nothing).
@@ -4648,17 +5229,37 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     const s = await I.settleRun(runId, { by: 'acceptance', page })
     say(`${TAG} the settling compare for ${runId}: ${s.changed ? `CHANGED (${s.publicSummary})` : 'unchanged'}`)
     if (ctx) {
-      const rel = C.releaseContainment(ctx)
-      say(`${TAG} released: ${rel.note}`)
-      if (code === 0) {
-        const obj = firstObjectFile(mission)
-        for (const f of [join(mission, 'src', 'pkg', 'mod.py'), obj].filter(Boolean)) say(`${TAG} ${f}: Low label: ${lowLabelled(f) ? 'yes' : 'no'}`)
-        if (rehearsal) say(`${TAG} the NOT PROVEN block: skipped in the rehearsal: it speaks of the real profile`)
-        else notProvenBlock(counts, unprotected, fakeReport, tools, mission)
-      }
-      say(`${TAG} the sandbox ${ctx.sandbox.root} and the scratch mission folder ${box} were left in place. The sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made; until then it stays (never Remove-Item -Recurse on a sandbox: it may hold a link).`)
+      released = C.releaseContainment(ctx)
+      say(`${TAG} released: ${released.note}`)
+      // Wave 19 (the box core check, C10): a release that kept an access-list grant keeps the sandbox from the sweep until
+      // restore-acl puts it back; the line says so from the release's own note.
+      say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note }))
     }
   }
+  // Reached only by a box that ran to its end: every other path returned above, after the finally block released it.
+  const { fell } = ended
+  const obj = firstObjectFile(mission)
+  for (const f of [join(mission, 'src', 'pkg', 'mod.py'), obj].filter(f => f && exists(f))) say(`${TAG} ${f}: Low label: ${lowLabelled(f) ? 'yes' : 'no'}`)
+  // Wave 18: and the temp file honest work (d) made in the sandbox, which the release sets back to medium since wave 15.
+  // Wave 18b: a "yes" is a not-proven item unless the release stopped at its budget (sandboxLabelReading); the rehearsal
+  // reads it by the same lines.
+  const sandboxFile = join(ctx.sandbox.tmp, `cynco-honest-${nonce}.txt`)
+  if (exists(sandboxFile)) {
+    const sl = sandboxLabelReading({ file: sandboxFile, low: lowLabelled(sandboxFile), note: released?.note })
+    say(sl.line)
+    if (sl.item) notProven.push(sl.item)
+  }
+  // RH8: each not-proven item on a line of its own; one outside the accepted list makes the stage INCOMPLETE.
+  const result = realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell, ...(rehearsal ? REHEARSAL_RESULT : {}) })
+  for (const l of result.lines) say(l)
+  if (!result.pass) return { code: 1, result }
+  // Wave 18b (the pass-means-pass check, F1): the NOT PROVEN block is built in both, so that the rehearsal executes the
+  // call the real profile makes; it is printed for the real profile only, and the rehearsal prints its count line (2),
+  // which T3 holds equal to the result's calls taken up.
+  const block = notProvenBlock({ calls: counts.attacks }, unprotected, fakeReport, tools, mission, rehearsal ? { say: () => {} } : {})
+  if (rehearsal) say(`${TAG} the NOT PROVEN block: skipped in the rehearsal: it speaks of the real profile`)
+  if (rehearsal) say(`${TAG} the NOT PROVEN block, built in the rehearsal and not printed: its count line reads:${block[2]}`)
+  return { code: 0, mission, box, ctx, fakeReport, tools }
 }
 
 /**
@@ -4742,7 +5343,7 @@ async function containmentFacts(R, ex) {
  * The real stage's NOT PROVEN block, printed after a PASS (wave 11b, G5: exported, its lines returned as well as
  * printed). `fakeReport`: step 0's report, of which only the left-behind list is read; a report with no list, no entries
  * or none at all gives the same twelve lines in words. `o` is for the tests: `say`, `commit` (commitOf's answer),
- * `lowLabelled`, `today`.
+ * `lowLabelled`, `today`, `now` (the moment whose local date is printed).
  */
 export function notProvenBlock(counts, unprotected, fakeReport, tools, mission, o = {}) {
   const sayIt = o.say ?? say
@@ -4755,7 +5356,9 @@ export function notProvenBlock(counts, unprotected, fakeReport, tools, mission, 
     : labelled(join(mission, 'src', 'pkg', 'mod.py')) ? 'yes: release did not set it back (a defect: owner decision 23 chose "walk", and release walks the folder)' : 'no'
   const calls = typeof counts?.calls === 'number' ? counts.calls : 'an unknown number of'
   const shell = tools?.info?.displayName ?? 'an unknown tool shell'
-  const today = o.today ?? new Date().toISOString().slice(0, 10)
+  // Wave 18 (plan P6 (11)): the local date, as the audit's day files are named (real-2 of 2026-11-24, 19:56 local, said
+  // "on 2026-11-25" with the UTC date). `o.now` is for the tests.
+  const today = o.today ?? localDay(o.now ?? new Date())
   const lines = [
     `${TAG} NOT PROVEN by this run:`,
     ' (1) No attack was executed against the real profile. This stage shows that the path check refuses these calls here, that a contained child cannot create a file in the home, guard, audit and models folders or a key in the user\'s registry hive, and where the home spellings resolve. That a command which gets past the check leaves the real profile intact was shown on the fake home only.',
@@ -4789,10 +5392,14 @@ function tripwireRootsOf(guard, runId, I) {
 }
 
 async function realMain(args, argv) {
+  // Wave 19b: the Git-tools switch from this stage's own flag, refused before anything is read when it names no folder
+  // (gitToolsCopyOf is pure: nothing is open yet, and it cannot throw).
+  const sw = gitToolsCopyOf(args.values)
+  if (sw.why) { say(sw.why); return 2 }
   // Audit finding 4: a throw that escapes the stage is written to the evidence file too, and the file is closed
   // whatever happened (realBox's own finally has settled and released by then).
   try {
-    const r = await runRealStage({ argv, evidence: args.values['--evidence'], nas: args.values['--nas'] })
+    const r = await runRealStage({ argv, evidence: args.values['--evidence'], nas: args.values['--nas'], msys: sw.copy })
     return r.code
   } catch (e) {
     say(`${TAG} FAIL: the real-profile stage threw: ${e?.stack ?? e}`)
