@@ -18,14 +18,16 @@
 // dispatch, the driver wait, the ledger read, the campaign lock, the env
 // scrubber, the campaign-log append — arrives through the `io` argument, and
 // `defaultAuthorIo` builds that io from helpers the runner hands over.
-import { basename, join, dirname, resolve } from 'node:path'
+import { basename, join, dirname, resolve, isAbsolute } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawnSync, execFile } from 'node:child_process'
 import { cyncoHome } from '../engine/paths.js'
+import { ownedExec, ownProcessTree } from '../engine/processTree.js'
+import { harnessAudit } from '../engine/audit/toolAudit.js'
 import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../engine/missionRule.js'
-import { harnessGitEnv } from '../engine/harnessGit.js'
+import { harnessGitEnv, isHarnessRefused } from '../engine/harnessGit.js'
 import { frozenWriteRefusal } from '../engine/integrity.js'
 import { calibrate, archiveBase, defaultIo as calibrateDefaultIo } from './cynco-campaign-calibrate.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
@@ -239,8 +241,229 @@ export function exemplarFor({ prevId, io }) {
  */
 export const SELF_SCRIPT = norm(fileURLToPath(new URL('./cynco-gate-author.mjs', import.meta.url)))
 
-export function checkCommand(stagingDir, baseDir) {
-  return `bun ${JSON.stringify(SELF_SCRIPT)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
+export function checkCommand(stagingDir, baseDir, selfScript = SELF_SCRIPT) {
+  return `bun ${JSON.stringify(selfScript)} --check ${JSON.stringify(norm(stagingDir))} ${JSON.stringify(norm(baseDir))}`
+}
+
+/**
+ * The inverse of `checkCommand` (decision sheet item 25): `{ stagingDir, baseDir }` when `command` is
+ * exactly what `checkCommand` builds for `selfScript`, null for anything else (another script, a third
+ * argument, a `;`, a backslash spelling, a relative folder). Exact by construction: the parts read are
+ * built back with `checkCommand` and must give the same text, so the two cannot drift. The script is
+ * this checkout's by `samePathText` (wave 19b, check A-R4: a runner started from a `c:\` spelling and a
+ * driver loaded through Git Bash's `C:` name the same file), and the text is rebuilt with the command's
+ * own spelling of it; the driver starts its own `SELF_SCRIPT` whatever the command spelled.
+ */
+export function parseCheckCommand(command, selfScript = SELF_SCRIPT) {
+  const q = '("(?:[^"\\\\]|\\\\.)*")'
+  const m = new RegExp(`^bun ${q} --check ${q} ${q}$`).exec(String(command ?? ''))
+  if (!m) return null
+  let parts
+  try { parts = [m[1], m[2], m[3]].map(s => JSON.parse(s)) } catch { return null }
+  const [script, stagingDir, baseDir] = parts
+  if (script.includes('\\') || script.endsWith('/') || !samePathText(script, selfScript) || !stagingDir || !baseDir) return null
+  if (!isAbsolute(stagingDir) || !isAbsolute(baseDir) || /[\0\r\n]/.test(script + stagingDir + baseDir)) return null
+  if (checkCommand(stagingDir, baseDir, script) !== command) return null
+  return { stagingDir, baseDir }
+}
+
+/**
+ * Decision sheet item 25 (the owner, 2026-11-24: "Driver runs outside box"). The one mark of the
+ * authoring dispatch, set only by `authorCampaign` below. A Bun at low integrity cannot load a module
+ * from a folder not labelled low, so the acceptance check cannot start inside the box; with this mark
+ * the mission driver runs it itself, at its own integrity, as a harness process. The dispatch reads it
+ * and takes it out of its own environment, so only the driver is handed it, and the driver deletes it
+ * from its own before it starts anything; every tool child drops it with the other `LOCALCODE_MISSION_*`
+ * keys (`toolEnv`). Every other dispatch has no mark, and its check runs in the box as before.
+ */
+export const AUTHOR_CHECK_MARK = 'LOCALCODE_MISSION_AUTHOR_CHECK'
+
+const samePathText = (a, b) => {
+  const f = (p) => norm(p).replace(/\/+$/, '')
+  return process.platform === 'win32' ? f(a).toLowerCase() === f(b).toLowerCase() : f(a) === f(b)
+}
+
+/**
+ * What the driver does with the check of the dispatch it was handed (item 25). `{ kind: 'none' }`
+ * without the mark: the check runs in the box, as before. `{ kind: 'run', stagingDir, baseDir }` with
+ * the mark and the exact `checkCommand` of this checkout for the driver's own mission folder. Anything
+ * else under the mark is `{ kind: 'refused', why }`, and the driver starts nothing.
+ */
+export function authorCheckPlan({ mark, checkCmd, markerCheck, probeCmd, cwd, selfScript = SELF_SCRIPT }) {
+  if (mark === undefined || mark === null || mark === '') return { kind: 'none' }
+  const refused = (why) => ({ kind: 'refused', why: `the authoring dispatch's mark (${AUTHOR_CHECK_MARK}) ${why}, so nothing is run outside the box` })
+  if (mark !== '1') return refused(`is ${JSON.stringify(mark)}, not "1"`)
+  if (markerCheck) return refused('came with a marker check on its own channel (CYNCO_MARKER_CHECK), which the gate-authoring script never sets')
+  if (probeCmd) return refused('came with a probe command, which the gate-authoring script never sets')
+  const parsed = parseCheckCommand(checkCmd, selfScript)
+  if (!parsed) return refused(`came with a check command that is not the one this checkout's ${basename(selfScript)} builds (${JSON.stringify(String(checkCmd ?? ''))})`)
+  if (!cwd || !samePathText(parsed.stagingDir, cwd)) return refused(`came with a check command for another mission folder (${parsed.stagingDir}, not ${norm(cwd ?? '')})`)
+  return { kind: 'run', stagingDir: parsed.stagingDir, baseDir: parsed.baseDir }
+}
+
+/** How often the driver's own run of the check asks the integrity latch (plan P6 item 6). */
+export const AUTHOR_CHECK_LATCH_POLL_MS = 30_000
+
+/**
+ * The acceptance check, run by the mission driver as a harness process (item 25): this checkout's
+ * own script, by argument vector (no shell), with Bun's `--no-install`, from the checkout (so no
+ * `bunfig.toml` or `.env` the mission wrote is read), its process tree owned from its start
+ * (`ownedExec`), under the cap, and with the latch asked every `pollMs`: a latch, or a guard folder
+ * that became unusable, ends the tree. What the check starts is unchanged: its gate runs go into the
+ * box (calibration's own sandbox around the BASE archive) and are recorded (`authorRunOpts`).
+ *
+ * The result has `runCheckAsync`'s shape (`scripts/cynco-verify.mjs`). The check is asked for its
+ * `--json` verdict (wave 19b, check A-R5): `verified` is true only for exit 0 with its `PASS` line and a
+ * verdict that says ok, and false only for exit 1 with its `REFUSED` line and a verdict that does not;
+ * an exit 0 or 1 without both is a harness fault ("the check ended without its verdict"), because a
+ * tree ended from outside also exits 1 on Windows. A check that was cut (the cap, the latch, an
+ * overrun), that could not start, or that refused its own arguments (exit 2) is null with a
+ * `harnessFault`: "did not run", never failed or passed. `integrity` carries the guard's state when
+ * the latch or an unusable guard ended it, or was seen while the check ended by itself (wave 19c). `audit` is `{ handle, src }`: the start is written before
+ * anything starts, and a start that cannot be written starts nothing.
+ *
+ * A correct triple ends as a correct triple (wave 19b, check A-F1): the check runs while this run's
+ * integrity baseline is open, so calibration may not write the suite baseline (the held-out folder is
+ * frozen) and says so as its only problem. That is no failure of the triple and no note to the model:
+ * `verified` stays null, `baselineOwed` is true, and `harnessFault` says what was shown and that the
+ * authoring runner's check after the run takes the baseline and gives the verdict (`authorCampaign`
+ * waits for the run's settle first). The JSON line is not kept in `output`, so a note never carries it.
+ */
+export async function runAuthorCheck({ stagingDir, baseDir, timeoutMs, ordinal = null, latch = () => null, audit = null }, hooks = {}) {
+  const t0 = Date.now()
+  const selfScript = hooks.selfScript ?? SELF_SCRIPT
+  const bun = hooks.bun !== undefined ? hooks.bun : (process.versions?.bun ? process.execPath : null)
+  const args = ['--no-install', selfScript, '--check', norm(stagingDir), norm(baseDir), '--json']
+  const cwd = norm(dirname(dirname(selfScript)))
+  const notRun = (why, extra = {}) => {
+    const output = `[check] HARNESS FAULT: ${why}`
+    return { verified: null, exitCode: null, timedOut: false, spawnFailed: true, harnessFault: why, durationMs: Date.now() - t0, outputTail: output, output, integrity: null, ...extra }
+  }
+  const poll = latchPoll(latch, hooks.pollMs)
+  const before = poll.ask()
+  if (before) return notRun(`${guardWords(before)} before the check started; nothing was run`, { integrity: before })
+  if (!bun) return notRun('the driver is not running under Bun, so the check was not started')
+  const started = audit ? audit.handle.start({ src: audit.src, command: [bun, ...args].join(' '), cwd }) : null
+  if (started && !started.ok) return notRun(`[tool-audit] not run: ${started.reason}`)
+  const env = { ...process.env, ...(ordinal !== null ? { CYNCO_CHECK_ORDINAL: String(ordinal) } : {}) }
+  delete env[AUTHOR_CHECK_MARK]
+  poll.start()
+  let end
+  try {
+    end = await (hooks.ownedExec ?? ownedExec)(
+      // Spelled as a call of execFile so the wiring guard's scan counts it (SPAWN_SITES).
+      (cb) => {
+        const o = { cwd, env, shell: false, windowsHide: true, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+        return hooks.execFile ? hooks.execFile(bun, args, o, cb) : execFile(bun, args, o, cb)
+      },
+      { capMs: timeoutMs, own: hooks.own ?? ownProcessTree, signal: poll.signal, ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}) })
+  } catch (e) {
+    poll.stop()
+    const r = notRun(`the check could not be started (${e?.code ?? e?.message ?? e})`)
+    if (started?.ok) audit.handle.end(started.call, { isError: true, exitCode: null, ms: r.durationMs, output: r.output })
+    return r
+  }
+  poll.stop()
+  const cutBy = poll.cutBy()
+  const durationMs = Date.now() - t0
+  const code = typeof end.err?.code === 'number' ? end.err.code : (end.err ? null : 0)
+  let harnessFault = null
+  if (end.stopped && cutBy) harnessFault = latchCutWords(cutBy)
+  else if (end.timedOut) harnessFault = `timed out after ${timeoutMs}ms`
+  else if (end.overran) harnessFault = 'the check printed more than the driver keeps, so its process tree was ended'
+  else if (code === null) harnessFault = `the check could not be started (${end.err?.code ?? end.err?.message ?? 'no exit code'})`
+  else if (code === 2) harnessFault = 'the check refused its own arguments (exit 2)'
+  else if (code !== 0 && code !== 1) harnessFault = `the check ended with exit ${code}, which it never gives for a verdict`
+  const said = checkVerdictOf(`${end.stdout ?? ''}${end.stderr ?? ''}`, basename(norm(stagingDir)))
+  let baselineOwed = false
+  if (!harnessFault) {
+    const wanted = code === 0 ? 'PASS' : 'REFUSED'
+    if (said.headline !== wanted || !said.verdict || said.verdict.ok !== (code === 0)) {
+      harnessFault = `the check ended with exit ${code} without its verdict (its "[check] <id>: ${wanted}" line and a ${CHECK_JSON_MARKER.trim()} line that agrees), so it is not read as ${code === 0 ? 'passed' : 'failed'}`
+    } else if (code === 1 && said.verdict.problems.length > 0 && said.verdict.problems.every(p => String(p).startsWith(BASELINE_NOT_WRITTEN))) {
+      baselineOwed = true
+      harnessFault = BASELINE_OWED
+    }
+  }
+  const output = said.text + (harnessFault ? `\n[check] HARNESS FAULT: ${harnessFault}` : '')
+  if (started?.ok) audit.handle.end(started.call, { isError: code !== 0, exitCode: code, ms: durationMs, output })
+  return {
+    verified: harnessFault ? null : code === 0, exitCode: code, timedOut: Boolean(end.timedOut), spawnFailed: code === null && !end.timedOut && !end.stopped,
+    // Wave 19c (check CB-A-2): the latch the poll saw is carried even when the check ended by itself in the same window.
+    harnessFault, durationMs, outputTail: output.slice(-2000), output, integrity: cutBy ?? null, baselineOwed,
+  }
+}
+
+/** Calibration's own words when the held-out folder is frozen (`scripts/cynco-campaign-calibrate.mjs`). */
+export const BASELINE_NOT_WRITTEN = 'suite baseline not written: '
+
+/** What the driver says of a check whose only problem is the frozen suite baseline (check A-F1). */
+export const BASELINE_OWED = 'not a failure: the triple passed its lint and every gate run; its only problem is that the suite baseline '
+  + 'was not written while this run\'s integrity baseline is open (the held-out folder is frozen), which the model cannot fix. '
+  + 'Still owed: the authoring runner\'s check after the run, once the run has settled, takes the suite baseline and gives the verdict'
+
+/**
+ * What a `--check` run said (wave 19b): `headline` is PASS or REFUSED from its own `[check] <id>: ...`
+ * line at a line's start, `verdict` the last `--json` line read whole (`{ ok, problems }`) or null, and
+ * `text` the output with every JSON line taken out (the tails are for the runner, never for a note).
+ */
+export function checkVerdictOf(out, id) {
+  const lines = String(out ?? '').split(/\r?\n/)
+  const head = new RegExp(`^\\[check\\] ${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: (PASS|REFUSED)(?: |$)`)
+  const headline = lines.map(l => head.exec(l)?.[1]).find(Boolean) ?? null
+  const json = lines.filter(l => l.startsWith(CHECK_JSON_MARKER))
+  let verdict = null
+  if (json.length) {
+    try {
+      const v = JSON.parse(json[json.length - 1].slice(CHECK_JSON_MARKER.length))
+      if (v && typeof v.ok === 'boolean' && Array.isArray(v.problems)) verdict = { ok: v.ok, problems: v.problems }
+    } catch { verdict = null }
+  }
+  return { headline, verdict, text: lines.filter(l => !l.startsWith(CHECK_JSON_MARKER)).join('\n') }
+}
+
+export function guardWords(s) {
+  return s.state === 'unusable' ? `the integrity guard became unusable (${s.summary})` : `the integrity latch was set (${s.summary})`
+}
+
+/** The harness fault of a check whose tree the latch poll ended. */
+export function latchCutWords(s) {
+  return `${guardWords(s)} while the check ran: its process tree was ended and the check did not run to its end`
+}
+
+/**
+ * The latch asked while a check runs (plan P6 item 6), shared by the driver's own run of the authoring check
+ * and its in-box marker check (wave 19b). `ask()` is the guard's state when it is not clear, else null; a latch
+ * that throws is a guard that cannot be asked (check A-R7), never an uncaught throw in a timer. `start()` asks
+ * every `pollMs`; the first state that is not clear is kept (`cutBy()`) and aborts `signal`, which the caller
+ * hands the check's spawn so its tree is ended. `stop()` ends the asking.
+ */
+export function latchPoll(latch, pollMs = AUTHOR_CHECK_LATCH_POLL_MS) {
+  const stopper = new AbortController()
+  let cutBy = null
+  let timer = null
+  const ask = () => {
+    let s
+    try { s = latch() } catch (e) { s = { state: 'unusable', summary: `the latch could not be asked (${e?.message ?? e})` } }
+    return s && s.state && s.state !== 'clear' ? s : null
+  }
+  return {
+    ask,
+    signal: stopper.signal,
+    cutBy: () => cutBy,
+    start: () => { timer = setInterval(() => { const s = ask(); if (s && !cutBy) { cutBy = s; stopper.abort() } }, pollMs ?? AUTHOR_CHECK_LATCH_POLL_MS) },
+    stop: () => { if (timer) clearInterval(timer); timer = null },
+  }
+}
+
+/**
+ * The options of a run the authoring io starts (plan P6 item 7): a contained run (the check's gate,
+ * perturb, positive and baseline runs) is recorded in the tool-call audit with src 'gate' and the run id
+ * of its own containment, as calibration's own io records it; until wave 19 the authoring io's `run`
+ * replaced calibration's and none of them was recorded.
+ */
+export function authorRunOpts(opts = {}) {
+  return opts.contained ? { ...opts, audit: { forRun: (run) => harnessAudit({ run }), src: 'gate' } } : opts
 }
 
 /**
@@ -399,8 +622,9 @@ export async function checkStagedViaSubprocess({ id, stagingDir, baseDir, io, ti
     }
   }
   // `--json` asks for the tails; the brief's DONE WHEN command deliberately does
-  // not, so the model's own runs stay short.
-  const args = [SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir), '--json']
+  // not, so the model's own runs stay short. `--no-install` (wave 19b): Bun never
+  // fetches a package by itself.
+  const args = ['--no-install', SELF_SCRIPT, '--check', norm(stagingDir), norm(baseDir), '--json']
   const r = io.run('bun', args, { timeoutMs, retryImpossibleTimeout: true })
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
   if (r.fault) {
@@ -667,7 +891,14 @@ the marker, budget, invariants, posiwid, sweep, prBase, ideation, author).
               detail that a worker can build to it without ever seeing the
               gate. Name seed 7. Never name a file called gate_${id}.py,
               perturb_${id}.py or positive_${id}.py — the campaign refuses a
-              brief that names its own instrument.
+              brief that names its own instrument. Where the gate runs the
+              game in folders it makes for itself (a temporary working
+              directory, empty stand-ins for the user's folders, a new
+              cache), say that the grader makes them and throws them away,
+              name the variable or call that points the program at each, and
+              never word them as a state for the worker to produce: a
+              worker's own clean start is new empty folders inside its
+              scratch folder, never an existing folder emptied (F242).
   work        [ { id, title, gateIds: [...], text } ] — the cuts, in the order
               you would do them. Between them the gateIds must cover EVERY
               graded line except ${P}.9, and no id twice.
@@ -699,9 +930,9 @@ ${perturbHead}`
     if (previousCheck) {
       body.push(
 `The last authoring run left the triple in ${staging} and the check REFUSED it.
-These are its words, from the PREVIOUS run — run the check yourself (DONE WHEN,
-below; it works from any directory) to see where the triple stands now. Fix what
-it reports; do not start over.
+These are its words, from the PREVIOUS run. The harness runs the check again
+when your turn ends (DONE WHEN, below) and tells you where the triple stands
+then. Fix what it reports; do not start over.
 
 ${noSealedPath(previousCheck)}`)
     }
@@ -728,16 +959,18 @@ what the gate means, not a repair of the shim.`))
   out.push(section('DONE WHEN',
 `  ${checkCommand(staging, base)}
 
-Run this exact command from anywhere — it names its script by absolute path, so
-it does not matter which directory you are in. It exits 0 only when the lint
-finds no problems AND Rule 11 holds at BASE (terminator MISS, every line failing
-by absence, zero error lines) AND Rule 14 holds (positive_${id}.py prints
-GATE: PASS with zero error lines) AND the perturb's EXPECT-FLIP / MUST-FAIL
-header matches what the stub actually does. Any other exit code prints the
-problems; fix those and run it again.
+This is the acceptance check, and the harness runs it, not you: when your turn
+ends it runs this exact command outside your mission and, if it fails, sends
+you its failures once. Running it from inside the mission is refused. It exits
+0 only when the lint finds no problems AND Rule 11 holds at BASE (terminator
+MISS, every line failing by absence, zero error lines) AND Rule 14 holds
+(positive_${id}.py prints GATE: PASS with zero error lines) AND the perturb's
+EXPECT-FLIP / MUST-FAIL header matches what the stub actually does. Any other
+exit code prints the problems; fix those and end your turn again.
 
-Commit in ${staging} after each cut — it is the only backup you have. When the
-check is green, print, as the last thing you say:
+Commit in ${staging} after each cut — it is the only backup you have. When you
+believe the triple passes, commit it with this in the commit message, then say
+it as the last thing you say, and end your turn:
 
   gate ${id} authored`))
 
@@ -854,12 +1087,30 @@ export function gateAuthorPromotion(summary, currentAuthority, alpha = 0.05, { e
   }, null)
 }
 
+/**
+ * One harness git in the staging folder that writes its work tree or reads it into a commit or a patch
+ * (wave 19, A3): `{ worktreeLinks: true }`, so a link in the tree that leads outside it, or a tree that
+ * cannot be read, refuses the call. A refused call is not started at all (`git apply` applies a patch
+ * through a refused `GIT_DIR`, measured by the harness-children builder): `{ refused }` with the reason
+ * harness git logged, which every caller names and never reads as a success.
+ */
+function stagingTreeGit(io, dir, args) {
+  const env = harnessGitEnv({}, { repo: dir, worktreeLinks: true })
+  if (isHarnessRefused(env)) {
+    return { refused: `harness git refused the staging folder ${dir} (the [harness-git] line says why), so git ${args[0]} was not run`, status: null, stdout: '', stderr: '' }
+  }
+  return io.run('git', ['-C', dir, ...args], { timeoutMs: 60_000, env })
+}
+
 function commitStaging(stagingDir, message, io) {
   // F242: the staging folder is the authoring mission's own, so the harness's git there runs with its
   // hooks, monitor and repository-defined filters off and the work tree pinned.
-  const r = io.run('git', ['-C', norm(stagingDir), 'add', '-A'], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: norm(stagingDir) }) })
-  if (r.status !== 0) { console.error(`[author] git add in ${norm(stagingDir)} failed: ${String(r.stderr).trim()}`); return }
-  const c = io.run('git', ['-C', norm(stagingDir), 'commit', '-m', message], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: norm(stagingDir) }) })
+  const dir = norm(stagingDir)
+  const r = stagingTreeGit(io, dir, ['add', '-A'])
+  if (r.refused) { console.error(`[author] REFUSED: ${r.refused}; nothing was committed`); return }
+  if (r.status !== 0) { console.error(`[author] git add in ${dir} failed: ${String(r.stderr).trim()}`); return }
+  const c = stagingTreeGit(io, dir, ['commit', '-m', message])
+  if (c.refused) { console.error(`[author] REFUSED: ${c.refused}; nothing was committed`); return }
   // "nothing to commit" is exit 1 and is not a fault: a resume that changed
   // nothing but the brief number still has a brief to dispatch.
   if (c.status !== 0 && !/nothing to commit/i.test(String(c.stdout) + String(c.stderr))) {
@@ -895,7 +1146,8 @@ export function positiveLeavesFailing(positiveTail) {
  * this function can answer for free and for certain. Anything else (a lint
  * problem, a calibration problem) is about a file that still exists and is
  * still worth reporting; the brief now tells the model the list is the PREVIOUS
- * run's and to re-run the check, which it can, from anywhere.
+ * run's, and that the harness runs the check again when its turn ends (decision sheet item 25: the
+ * driver runs it outside the box; the model's own run of it is refused there).
  */
 export function livePreviousCheck({ stagingDir, lastCheck, io }) {
   const output = lastCheck?.output
@@ -1058,7 +1310,8 @@ export function restoreUncommittedWork({ stagingDir, missionId, io, snapshotDir 
   const patch = `${norm(snapshotDir)}/${missionId}.uncommitted.patch`
   if (!io.exists(patch)) return null
   const dir = norm(stagingDir)
-  const check = io.run('git', ['-C', dir, 'apply', '--check', patch], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: dir }) })
+  const check = stagingTreeGit(io, dir, ['apply', '--check', patch])
+  if (check.refused) return `The previous run's uncommitted work (${patch}) was NOT restored: ${check.refused}. The tree is at its last commit.`
   if (check.fault) {
     return `The previous run's uncommitted work (${patch}) was NOT restored: git apply --check could not run (${faultSummary(check.fault)}). The tree is at its last commit.`
   }
@@ -1066,7 +1319,8 @@ export function restoreUncommittedWork({ stagingDir, missionId, io, snapshotDir 
     const why = String(check.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${check.status}`
     return `The previous run's uncommitted work (${patch}) was NOT restored: it does not apply cleanly to the current tree (${why}). The tree is at its last commit — nothing is half-applied.`
   }
-  const applied = io.run('git', ['-C', dir, 'apply', patch], { timeoutMs: 60_000, env: harnessGitEnv({}, { repo: dir }) })
+  const applied = stagingTreeGit(io, dir, ['apply', patch])
+  if (applied.refused) return `The previous run's uncommitted work (${patch}) was NOT restored: ${applied.refused}. The tree is at its last commit.`
   if (applied.fault || applied.status !== 0) {
     const why = applied.fault ? faultSummary(applied.fault) : (String(applied.stderr ?? '').trim().split(/\r?\n/)[0] || `exit ${applied.status}`)
     return `The previous run's uncommitted work (${patch}) was NOT restored: git apply failed after passing --check (${why}). The tree may be partly changed — run the check before you trust it.`
@@ -1200,7 +1454,10 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
   io.writeFile(sidecarPath(briefFile), JSON.stringify(authoringSidecar({ stagingDir, baseDir }), null, 2) + '\n')
   commitStaging(stagingDir, `${id}-author: brief ${attempt}`, io)
 
-  const pidFile = `C:/tmp/driver_${id}-author.pid`, driverLog = `C:/tmp/driver_${id}-author.log`
+  // Wave 19 (plan P6 item 4): one name per attempt. The dispatch refuses a run whose engine or driver log
+  // already exists rather than truncate it, and an attempt's brief stem (`brief-<n>`) repeats across campaigns.
+  const pidFile = `C:/tmp/driver_${id}-author-${attempt}.pid`, driverLog = `C:/tmp/driver_${id}-author-${attempt}.log`
+  const engineLog = `C:/tmp/engine_${id}-author-${attempt}.log`
   const env = io.dispatchEnv(process.env, {
     LOCALCODE_MAX_ITERATIONS: String(AUTHOR_ITERATIONS),
     CYNCO_MISSION_INVARIANTS: JSON.stringify(AUTHOR_INVARIANTS),
@@ -1216,11 +1473,12 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
     // and the driver's check cap at 600 s; both would kill the very command
     // the mission is graded on.
     //
-    // The two numbers are ONE number on purpose. The model is told to run the
-    // check itself and the driver runs the same command to grade it; a Bash
-    // cap below the check cap means the model's run dies where the driver's
-    // survives, and the mission spends its budget chasing a timeout the grader
-    // never sees. 7,200,000 ms is what the sidecar assertion allows.
+    // The two numbers are ONE number on purpose. Since decision sheet item 25
+    // the driver alone runs the check (the model's run of it is refused in the
+    // box), but the model still runs the gate itself against BASE (Rule 11),
+    // which runs the prior campaigns' chain; a Bash cap below the check cap
+    // would kill that run where the driver's survives. 7,200,000 ms is what
+    // the sidecar assertion allows.
     CYNCO_BASH_TIMEOUT_MS: '7200000',
     CYNCO_CHECK_TIMEOUT_MS: '7200000',
     CYNCO_SKIP_IDLE_ENGINE: '1',
@@ -1230,6 +1488,11 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
     // labels that folder for the run too (dispatch-mission.sh hands it to cynco-sandbox.mjs create
     // --also). toolEnv strips the key from every tool child.
     CYNCO_MISSION_ALSO_LABEL: baseDir,
+    // Decision sheet item 25: the one mark of the authoring dispatch. The driver runs the acceptance check
+    // itself, outside the box, as this checkout's own script for this staging folder (authorCheckPlan).
+    [AUTHOR_CHECK_MARK]: '1',
+    // Wave 19 (plan P6 item 4): the dispatch refuses a stem whose logs already exist, so each attempt names its own.
+    ENGINE_LOG: engineLog,
   })
   // Persist BEFORE the wall clock starts, the same discipline runWave keeps: a
   // runner that dies in the wait must not let the next invocation dispatch a
@@ -1280,6 +1543,16 @@ export async function authorCampaign({ id, roadmap, state, io, notePath = null }
     } catch (e) {
       console.error(`[author] ${id}: the integrity latch step failed: ${e?.message ?? e}`)
     }
+  }
+
+  // Wave 19b (check A-F1): the re-check takes the suite baseline the driver's in-run check could not write
+  // (the held-out folder is frozen while this run's integrity baseline is open), so it waits for the dispatch
+  // watcher's settle first, bounded, as the wave runner does; a run still open after the bound is said, and
+  // the re-check then names the frozen baseline itself.
+  if (driverExited && runId && io.integrity?.settled) {
+    const until = Date.now() + (io.integrity.settleWaitMs ?? 300_000)
+    while (!io.integrity.settled(runId) && Date.now() < until) await (io.integrity.sleep ?? ((ms) => new Promise(r => setTimeout(r, ms))))(10_000)
+    if (!io.integrity.settled(runId)) console.error(`[author] ${id}: run ${runId} had not settled ${Math.round((io.integrity.settleWaitMs ?? 300_000) / 1000)} s after the driver's exit, so the re-check runs with its integrity baseline open and may not write the suite baseline`)
   }
 
   // Whenever the driver came back at all, the triple on disk gets graded — a
@@ -1625,7 +1898,8 @@ export function defaultAuthorIo(helpers = {}) {
     // F155: `runSync`, never a bare spawnSync. The authoring runner's first
     // spawn after `waitForDriver` follows a FOUR-HOUR gap, which is the exact
     // shape that made bun report a stale deadline as a two-hour timeout.
-    run: (cmd, args, opts = {}) => runSync(cmd, args, opts),
+    // Plan P6 item 7: a contained run (the check's gate runs) is recorded (authorRunOpts).
+    run: (cmd, args, opts = {}) => runSync(cmd, args, authorRunOpts(opts)),
     exists: existsSync,
     readFile: (p) => readFileSync(p, 'utf8'),
     writeFile: (p, s) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, s, 'utf8') },

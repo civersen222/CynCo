@@ -19,6 +19,19 @@ TIMEOUT_S=${4:-21600}
 CHECK_CMD=${5:-}
 PROBE_CMD=${6:-}
 
+# Decision sheet item 25 (the owner, 2026-11-24: "Driver runs outside box"): the one mark of the authoring
+# dispatch, set only by scripts/cynco-gate-author.mjs. It is read here and taken out of this shell's
+# environment, so no program this script starts holds it but the driver, which is handed it on its own line
+# below (the engine, the guard, the sandbox, the audit and the index never see it). With it the driver runs
+# the acceptance check itself, outside the box, and only in the exact form that script builds; every other
+# dispatch has none, and its check runs in the box.
+AUTHOR_CHECK_MARK=${LOCALCODE_MISSION_AUTHOR_CHECK:-}
+unset LOCALCODE_MISSION_AUTHOR_CHECK
+if [ -n "$AUTHOR_CHECK_MARK" ] && [ "$AUTHOR_CHECK_MARK" != 1 ]; then
+  echo "[dispatch] REFUSED: the authoring dispatch's mark (LOCALCODE_MISSION_AUTHOR_CHECK) is \"$AUTHOR_CHECK_MARK\", not \"1\" — nothing was dispatched" >&2
+  exit 1
+fi
+
 # --- context ---------------------------------------------------------------
 # Nothing is set here any more, and that is the point.
 #
@@ -69,10 +82,29 @@ CYNCO_BASH_TIMEOUT_MS=${CYNCO_BASH_TIMEOUT_MS:-300000}
 STAMP=$(basename "$BRIEF" | sed 's/\.[^.]*$//')
 ENGINE_LOG=${ENGINE_LOG:-/c/tmp/engine_${STAMP}.log}
 DRIVER_LOG=${DRIVER_LOG:-/c/tmp/driver_${STAMP}.log}
+IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
+
+# Wave 19 (plan P6 item 4, R4-3): this script truncates its engine and driver logs (and the idle engine's, when it
+# may boot one), so a log of that name already there is an earlier run's evidence. Refused by name, before anything
+# is minted, stopped or started; the caller names another brief stem (the gate author names one per attempt).
+log_collision() {
+  for _lc in "$@"; do
+    if [ -e "$_lc" ]; then
+      echo "[dispatch] REFUSED: $_lc already exists, and this dispatch would overwrite it: an earlier run's log is evidence. Name another brief stem (or another ENGINE_LOG, DRIVER_LOG or IDLE_LOG), or move that log first — nothing was dispatched" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+if [ -z "${CYNCO_SKIP_IDLE_ENGINE:-}" ]; then
+  log_collision "$ENGINE_LOG" "$DRIVER_LOG" "$IDLE_LOG" || exit 1
+else
+  log_collision "$ENGINE_LOG" "$DRIVER_LOG" || exit 1
+fi
 
 # --- containment (F242) ------------------------------------------------------
 # One run id for the sandbox, the record, the baseline, the audit and the engine.
-if ! RUN_ID=$(bun scripts/cynco-sandbox.mjs mint "$STAMP" | tr -d '\r') || [ -z "$RUN_ID" ]; then
+if ! RUN_ID=$(bun --no-install scripts/cynco-sandbox.mjs mint "$STAMP" | tr -d '\r') || [ -z "$RUN_ID" ]; then
   echo "[dispatch] REFUSED: containment: no run id could be minted for $STAMP — nothing was dispatched" >&2
   exit 1
 fi
@@ -94,9 +126,10 @@ SANDBOX_CREATED=
 BASELINE_TAKEN=
 # F242: under the integrity latch, or with no usable guard folder, nothing is dispatched. A pure check:
 # the trap is not armed and nothing has been stopped.
-GUARD_LINE=$(bun scripts/cynco-guard.mjs status --quiet | tr -d '\r') || { echo "[dispatch] REFUSED: integrity: ${GUARD_LINE:-the integrity guard did not answer} — nothing was dispatched" >&2; exit 1; }
+GUARD_LINE=$(bun --no-install scripts/cynco-guard.mjs status --quiet | tr -d '\r') || { echo "[dispatch] REFUSED: integrity: ${GUARD_LINE:-the integrity guard did not answer} — nothing was dispatched" >&2; exit 1; }
 # F242: no dispatch unless the tool-call audit can be written. Before anything is stopped.
-AUDIT_LINE=$(bun scripts/cynco-audit.mjs check | tr -d '\r') || { echo "[dispatch] REFUSED: audit: $AUDIT_LINE — nothing was dispatched" >&2; exit 1; }
+# Wave 19 (plan P6 item 1): the probe record carries this run's id and src dispatch-check.
+AUDIT_LINE=$(bun --no-install scripts/cynco-audit.mjs check --run "$RUN_ID" | tr -d '\r') || { echo "[dispatch] REFUSED: audit: $AUDIT_LINE — nothing was dispatched" >&2; exit 1; }
 echo "[dispatch] tool-call audit: $AUDIT_LINE"
 
 # --- a fresh engine, always ------------------------------------------------
@@ -115,26 +148,119 @@ echo "[dispatch] tool-call audit: $AUDIT_LINE"
 PHONE_ENGINE_TASK='CynCo headless engine'
 phone_engine_task_state() { powershell -NoProfile -Command "(Get-ScheduledTask -TaskName '$PHONE_ENGINE_TASK' -ErrorAction SilentlyContinue).State" 2>/dev/null | tr -d '\r'; }
 PHONE_ENGINE_WAS_RUNNING=
+# Wave 13c: ENGINE_PID is this shell's own `$!` of the engine or nothing, never a value inherited from the
+# caller: the trap routes on it (C1) and ends it with kill -9 (C3). Wave 13d (P1): these start values are run
+# by the trap's case as they are written here, with stray values of the same names in its environment.
+ENGINE_PID=
 ENGINE_WINPID=
-# F242: is the mission engine still listed? Fail closed. ENGINE_LISTING is "gone" only when tasklist
-# ran and printed its own no-match line; a CSV row naming the pid is "listed"; anything else (a
-# tasklist that cannot be run, exits non-zero, prints nothing or prints what this does not read) is
+ENGINE_TREE_WINPID=
+ENGINE_STARTED=
+# F242: is the mission engine still listed? Fail closed. tasklist is asked by PID alone. ENGINE_LISTING
+# is "gone" only when tasklist ran and printed its own no-match line; a CSV row naming the pid with
+# image bun.exe is "listed"; a row naming the pid with any other image is "unknown: pid <n> is held by
+# <image>, not bun.exe" (wave 13, D1: right after the start the pid read names Git Bash's forked bash
+# and then the npm shim's sh.exe, and a live pid of another image used to read "gone"); anything else
+# (a tasklist that cannot be run, exits non-zero, prints nothing or prints what this does not read) is
 # "unknown: <why>", and an engine whose last answer was not "gone" is not confirmed dead.
 engine_listing() {
   # The status is captured beside the assignment, never on a line of its own: under the script's
   # `set -euo pipefail` a failed command substitution standing alone would abort the trap or the
   # watcher that called this, and nothing after it (the guard post, the sandbox release, the
   # phone engine) would run.
+  # Wave 19 (w13 check, ps-no-timeout): bounded at 20 s (Git's coreutils timeout; exit 124 reads unknown).
   _el_rc=0
-  _el_out=$(tasklist //FI "PID eq $1" //FI "IMAGENAME eq bun.exe" //NH //FO CSV 2>/dev/null) || _el_rc=$?
+  _el_out=$(timeout 20 tasklist //FI "PID eq $1" //NH //FO CSV 2>/dev/null) || _el_rc=$?
   _el_out=$(printf '%s' "$_el_out" | tr -d '\r')
+  # The image of the row naming this pid, read by bash itself (no pipe that could end early). Wave 19 (plan P6
+  # item 3): no English text is read. A CSV row is a line that starts with a quote; tasklist that ran, exited 0
+  # and printed lines none of which is a CSV row printed its no-match line, in whatever language Windows speaks.
+  _el_image=
+  _el_csv=
+  _el_row_re="^\"([^\"]*)\",\"$1\","
+  while IFS= read -r _el_line; do
+    if [[ $_el_line =~ $_el_row_re ]]; then _el_image=${BASH_REMATCH[1]}; break; fi
+    if [[ $_el_line == \"* ]]; then _el_csv=1; fi
+  done <<< "$_el_out"
   if [ "$_el_rc" -ne 0 ]; then ENGINE_LISTING="unknown: tasklist could not be run or failed (exit $_el_rc)"
-  elif printf '%s\n' "$_el_out" | grep -q "^\"[^\"]*\",\"$1\","; then ENGINE_LISTING=listed
+  elif [ "$_el_image" = bun.exe ]; then ENGINE_LISTING=listed
+  elif [ -n "$_el_image" ]; then ENGINE_LISTING="unknown: pid $1 is held by $_el_image, not bun.exe"
   elif [ -z "$_el_out" ]; then ENGINE_LISTING="unknown: tasklist printed nothing"
-  elif printf '%s\n' "$_el_out" | grep -qx 'INFO: No tasks are running which match the specified criteria\.'; then ENGINE_LISTING=gone
+  elif [ -z "$_el_csv" ]; then ENGINE_LISTING=gone
   else ENGINE_LISTING="unknown: tasklist printed what this does not read"
   fi
 }
+# Wave 13d (R8): the creation time of a Windows process, in .NET ticks (UTC, 100 ns), as PROCESS_STARTED; empty,
+# with PROCESS_STARTED_WHY, when it cannot be read. Two processes that held one pid one after the other never share
+# it. Measured on this PC (2026-11-24, w13 scratch b1d\m): about 0.2 s a read, the same value on every read of a
+# live bun.exe, PowerShell exit 1 for a pid nobody holds. The status is captured beside the assignment, as in
+# engine_listing.
+process_started() {
+  PROCESS_STARTED=
+  PROCESS_STARTED_WHY=
+  _ps_rc=0
+  # Wave 19 (w13 check, ps-no-timeout): bounded at 20 s, as mission-end's reader is; a timeout is exit 124.
+  _ps_out=$(timeout 20 powershell -NoProfile -NonInteractive -Command "(Get-Process -Id $1 -ErrorAction Stop).StartTime.ToUniversalTime().Ticks" 2>/dev/null) || _ps_rc=$?
+  _ps_out=$(printf '%s' "$_ps_out" | tr -d '\r\n')
+  if [ "$_ps_rc" -ne 0 ]; then PROCESS_STARTED_WHY="its start time could not be read (PowerShell exit $_ps_rc)"
+  elif [[ $_ps_out =~ ^[0-9]+$ ]]; then PROCESS_STARTED=$_ps_out
+  else PROCESS_STARTED_WHY="its start time could not be read (PowerShell printed what this does not read)"
+  fi
+}
+# Wave 13b: the answer for the CONFIRMED engine pid, asked by the trap and the watcher after the engine was
+# started. "Confirmed" is ENGINE_WINPID: it is set in one place only, once tasklist showed that pid as bun.exe.
+# A process never changes its image, so a later "held by <image>" for THAT pid can only mean the confirmed
+# bun.exe has ended and Windows gave its pid to another program: gone, with ENGINE_REUSED_LINE saying so for the
+# caller to print. Any other pid (one never confirmed) keeps engine_listing's own answer, never "gone" by that line.
+# Wave 13d (R8): a reuse by ANOTHER bun.exe read "listed", so the trap's taskkill //T and mission-end's kill ended
+# that bun.exe's tree, and the watcher latched for nothing. ENGINE_STARTED, the creation time read when the pid was
+# confirmed, tells them apart: a bun.exe on the pid is the engine only with that creation time; with another it is
+# the pid reused (gone, said in the reuse line); one whose creation time cannot be read, or a confirmed pid with no
+# creation time recorded, is "unknown": never killed by its pid and never confirmed dead.
+engine_listing_confirmed() {
+  ENGINE_REUSED_LINE=
+  engine_listing "$1"
+  if [ -n "${ENGINE_WINPID:-}" ] && [ "$1" = "$ENGINE_WINPID" ]; then
+    case "$ENGINE_LISTING" in
+      "unknown: pid $1 is held by "*", not bun.exe")
+        _elc_image=${ENGINE_LISTING#"unknown: pid $1 is held by "}
+        _elc_image=${_elc_image%", not bun.exe"}
+        ENGINE_REUSED_LINE="pid $1 is now $_elc_image: the engine's bun.exe has ended and its pid was reused"
+        ENGINE_LISTING=gone ;;
+      listed)
+        if [ -z "${ENGINE_STARTED:-}" ]; then
+          ENGINE_LISTING="unknown: pid $1 is a bun.exe, but no creation time of the engine was read when it was confirmed"
+        else
+          process_started "$1"
+          if [ -z "$PROCESS_STARTED" ]; then ENGINE_LISTING="unknown: pid $1 is a bun.exe, but $PROCESS_STARTED_WHY"
+          elif [ "$PROCESS_STARTED" != "$ENGINE_STARTED" ]; then
+            ENGINE_REUSED_LINE="pid $1 is now another bun.exe (created $PROCESS_STARTED; the engine was created $ENGINE_STARTED): the engine's bun.exe has ended and its pid was reused"
+            ENGINE_LISTING=gone
+          fi
+        fi ;;
+    esac
+  fi
+}
+# Wave 13d (R5): this script runs only as bash.exe. A pid read right after a start (the engine's, the driver's)
+# names, for its first milliseconds, a child this shell forked, and that child's image is this shell's own; the
+# trap's tree branch and the driver pid block accept the npm shim's sh.exe. Run as `sh scripts/dispatch-mission.sh`
+# under Git Bash, this shell is sh.exe (bash in POSIX mode), so is its forked child, and the child would be taken
+# for the shim. The image is asked, not the mode: `bash --posix` and POSIXLY_CORRECT are bash.exe in POSIX mode,
+# and Git's bin/sh.exe starts bash.exe (measured 2026-11-24, w13 scratch b1d\m\r5-run.txt). Before the trap and the
+# baseline, so nothing has been started or stopped; a tasklist that cannot be asked here would leave every pid of
+# the run unconfirmed later, after the baseline, where a refusal latches.
+SELF_WINPID=$(cat "/proc/$$/winpid" 2>/dev/null || true)
+if [ -n "$SELF_WINPID" ]; then engine_listing "$SELF_WINPID"; else ENGINE_LISTING="unknown: /proc/$$/winpid could not be read"; fi
+if [ "$ENGINE_LISTING" != "unknown: pid $SELF_WINPID is held by bash.exe, not bun.exe" ]; then
+  # Wave 19 (w13 check, self-check-headline): the shell headline only when an image was read; otherwise the
+  # image could not be read, said as such.
+  case "$ENGINE_LISTING" in
+    listed|"unknown: pid $SELF_WINPID is held by "*)
+      echo "[dispatch] REFUSED: this script runs only as bash.exe (bash scripts/dispatch-mission.sh, never sh scripts/dispatch-mission.sh): a pid read right after a start names, for its first milliseconds, a child this shell forked, and it is told from the npm shim's sh.exe by its image; this shell (pid ${SELF_WINPID:-unread}) answers: ${ENGINE_LISTING#unknown: } — nothing was dispatched" >&2 ;;
+    *)
+      echo "[dispatch] REFUSED: this shell's own image could not be read (${ENGINE_LISTING#unknown: }): every pid of the run would stay unconfirmed — nothing was dispatched" >&2 ;;
+  esac
+  exit 1
+fi
 # F236: a dispatch that stops before its driver is running (a refused sweep, a
 # port collision, the F91 refusal, a model that never loads) must not leave the
 # dashboard without its engine, or with half a mission's: the engine this
@@ -142,32 +268,110 @@ engine_listing() {
 # again. Cleared once the driver and the end-of-mission watcher are running.
 dispatch_abandoned() {
   ENGINE_LISTING=gone
+  _da_killed=
+  _da_end_child=
   if [ -n "${ENGINE_WINPID:-}" ]; then
-    taskkill //PID "$ENGINE_WINPID" //T //F >/dev/null 2>&1 || true
-    echo "[dispatch] stopped before the mission started — the mission engine this dispatch started is stopped"
     # F242: a taskkill that failed is not a dead engine; asked again after a short wait. Only a
     # tasklist that answered "no such task" confirms it (engine_listing fails closed).
+    # Wave 13c (C4): asked BEFORE any kill, and killed (once) only while tasklist lists the pid as bun.exe
+    # (wave 13d, R8: a bun.exe with the creation time read when the pid was confirmed).
+    # A confirmed engine that already ended may have had its pid given to another program, and a
+    # taskkill //T would end that program's tree; that pid reads gone with the reuse line, and a pid
+    # tasklist cannot be asked about is not killed either.
     for _ in 1 2 3 4 5; do
-      engine_listing "$ENGINE_WINPID"
+      engine_listing_confirmed "$ENGINE_WINPID"
       if [ "$ENGINE_LISTING" = gone ]; then break; fi
+      if [ "$ENGINE_LISTING" = listed ] && [ -z "$_da_killed" ]; then
+        taskkill //PID "$ENGINE_WINPID" //T //F >/dev/null 2>&1 || true
+        _da_killed=1
+        echo "[dispatch] stopped before the mission started — the mission engine this dispatch started is stopped"
+      fi
       sleep 2
     done
+    if [ -n "${ENGINE_REUSED_LINE:-}" ]; then echo "[dispatch] $ENGINE_REUSED_LINE"; fi
+    if [ -z "$_da_killed" ]; then
+      if [ "$ENGINE_LISTING" = gone ]; then echo "[dispatch] stopped before the mission started — the mission engine (bun.exe pid $ENGINE_WINPID) had already ended; nothing was killed"
+      else
+        echo "[dispatch] stopped before the mission started — the mission engine (bun.exe pid $ENGINE_WINPID) was not killed by its pid: ${ENGINE_LISTING#unknown: }"
+        _da_end_child="nothing was stopped by Windows pid"
+      fi
+    fi
+    # Wave 13d (R3): a taskkill that did not end the engine (access denied, a taskkill fault), or after which
+    # the engine was not seen gone, is backed by the end of the dispatch's own child below, as when nothing was
+    # stopped by pid at all.
+    if [ -n "$_da_killed" ] && [ "$ENGINE_LISTING" != gone ]; then
+      if [ "$ENGINE_LISTING" = listed ]; then _da_end_child="pid $ENGINE_WINPID was still listed 10 s after its taskkill"
+      else _da_end_child="pid $ENGINE_WINPID was not seen gone 10 s after its taskkill (${ENGINE_LISTING#unknown: })"
+      fi
+    fi
+  elif [ -n "${ENGINE_TREE_WINPID:-}" ] && [ -n "${ENGINE_PID:-}" ] && ! kill -0 "$ENGINE_PID" 2>/dev/null; then
+    # Wave 19 (w13 check, tree-after-child-gone): the shim's sh.exe lives exactly as long as bun.exe, so once the
+    # dispatch's own child has ended the last pid read is gone or a stranger's; nothing is stopped by it.
+    echo "[dispatch] stopped before the mission started — the dispatch's own child (shell pid ${ENGINE_PID:-none}) has ended, so pid $ENGINE_TREE_WINPID can no longer be the mission engine's tree; nothing was stopped by pid"
+    ENGINE_LISTING="unknown: the dispatch's own child had ended before its pid was confirmed"
+  elif [ -n "${ENGINE_TREE_WINPID:-}" ]; then
+    engine_listing "$ENGINE_TREE_WINPID"
+    # Wave 13, D1: the pid was never confirmed as bun.exe. The tree is stopped by the last pid read, and
+    # only while that pid is still a bun.exe or the npm shim's sh.exe, which is bun.exe's parent for its
+    # whole life (a taskkill //T of it ends bun.exe too, measured); a pid now held by anything else is
+    # left alone. Either way the baseline below is settled as not confirmed dead.
+    # Wave 13d (R3): asked again after its taskkill, for up to 10 s; still a bun.exe or the shim's sh.exe
+    # then, the taskkill did not end it, and the dispatch's own child is ended below.
+    case "$ENGINE_LISTING" in
+      listed|"unknown: pid $ENGINE_TREE_WINPID is held by sh.exe, not bun.exe") taskkill //PID "$ENGINE_TREE_WINPID" //T //F >/dev/null 2>&1 || true
+        echo "[dispatch] stopped before the mission started — the mission engine's tree is stopped by pid $ENGINE_TREE_WINPID (its own pid was never confirmed)"
+        for _ in 1 2 3 4 5; do
+          sleep 2
+          engine_listing "$ENGINE_TREE_WINPID"
+          case "$ENGINE_LISTING" in listed|"unknown: pid $ENGINE_TREE_WINPID is held by sh.exe, not bun.exe") ;; *) break ;; esac
+        done
+        case "$ENGINE_LISTING" in
+          gone) ;;
+          listed) _da_end_child="pid $ENGINE_TREE_WINPID was still listed 10 s after its taskkill" ;;
+          "unknown: pid $ENGINE_TREE_WINPID is held by sh.exe, not bun.exe") _da_end_child="pid $ENGINE_TREE_WINPID was still the npm shim's sh.exe 10 s after its taskkill" ;;
+          *) _da_end_child="pid $ENGINE_TREE_WINPID was not seen gone after its taskkill (${ENGINE_LISTING#unknown: })" ;;
+        esac ;;
+      *) echo "[dispatch] stopped before the mission started — the mission engine's pid was never confirmed and pid $ENGINE_TREE_WINPID is not its tree now (${ENGINE_LISTING#unknown: }); nothing was stopped by pid"
+        _da_end_child="nothing was stopped by Windows pid" ;;
+    esac
+  elif [ -n "${ENGINE_PID:-}" ]; then
+    echo "[dispatch] stopped before the mission started — no Windows pid of the mission engine was ever read"
+    _da_end_child="nothing was stopped by Windows pid"
+  fi
+  # Wave 13c (C3): nothing was stopped by a Windows pid (tasklist failed on every read, no pid was ever
+  # read, or the pid read is not the engine's tree now), yet the engine this dispatch started may live
+  # and hold the ports while the phone engine's task is started again below. So the dispatch's own child
+  # is ended: an MSYS kill -9 of $ENGINE_PID ended the bun.exe the npm shim starts at every moment of
+  # its start, while the pid named the forked bash, the shim's sh.exe or bun.exe (50 of 50, nothing left;
+  # measured 2026-11-24, w13 scratch b1c\c3). It reaches only this shell's own child. Wave 13d (R3): also
+  # when a taskkill by pid did not end what it was aimed at; _da_end_child says which, in the line.
+  if [ -n "$_da_end_child" ] && [ -n "${ENGINE_PID:-}" ]; then
+    if kill -0 "$ENGINE_PID" 2>/dev/null; then
+      kill -9 "$ENGINE_PID" 2>/dev/null || true
+      echo "[dispatch] stopped before the mission started — $_da_end_child, so the dispatch's own child (shell pid $ENGINE_PID) is ended with kill -9 (measured: that ends the bun.exe the npm shim started, at every moment of its start)"
+    else
+      echo "[dispatch] stopped before the mission started — $_da_end_child, and the dispatch's own child (shell pid $ENGINE_PID) is not running"
+    fi
   fi
   if [ -n "${BASELINE_TAKEN:-}" ]; then
-    # F242: the engine this dispatch started was killed above; when its pid was never read, it is
-    # still listed after the kill, or tasklist gave no answer this reads, it is not confirmed dead.
+    # F242: the engine this dispatch started was killed above; when its pid was never confirmed as
+    # bun.exe, it is still listed after the kill, or tasklist gave no answer this reads, it is not
+    # confirmed dead. Wave 13c (C1): both halves of the first test are needed. ENGINE_PID unset is a
+    # dispatch that stopped after its baseline and before any engine was started (the sandbox not made,
+    # the engines or llama-servers not listed, a llama-server that survived its kill): nothing is
+    # unconfirmed there, and it takes the plain post.
     if [ -n "${ENGINE_PID:-}" ] && [ -z "${ENGINE_WINPID:-}" ]; then
-      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "the mission engine's Windows pid was never read" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+      bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "the mission engine's Windows pid was never confirmed as bun.exe" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     elif [ "$ENGINE_LISTING" = listed ]; then
-      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID still listed 10 s after taskkill" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+      bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID still listed 10 s after taskkill" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     elif [ "$ENGINE_LISTING" != gone ]; then
-      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID after taskkill: ${ENGINE_LISTING#unknown: }" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+      bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned --engine-not-confirmed-dead "pid $ENGINE_WINPID asked for 10 s by the abandoned dispatch: ${ENGINE_LISTING#unknown: }" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     else
-      bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+      bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-abandoned 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
     fi
   fi
   if [ -n "${SANDBOX_CREATED:-}" ]; then
-    bun scripts/cynco-sandbox.mjs release "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+    bun --no-install scripts/cynco-sandbox.mjs release "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
   fi
   if [ -n "$PHONE_ENGINE_WAS_RUNNING" ]; then
     echo "[dispatch] stopped before the mission started — starting the phone engine again"
@@ -180,19 +384,19 @@ trap dispatch_abandoned EXIT
 # file cache, 6 to 9 s cold: the held-out folder's ~33,000 entries); it prints its own refusal line.
 # --max-seconds: past the mission's wall clock and three hours more, a baseline still open is an orphan
 # that the daemon compares (and, not confirmed dead, latches).
-bun scripts/cynco-guard.mjs pre "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} --by dispatch --max-seconds "$((TIMEOUT_S + 10800))" || exit 1
+bun --no-install scripts/cynco-guard.mjs pre "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} --by dispatch --max-seconds "$((TIMEOUT_S + 10800))" || exit 1
 BASELINE_TAKEN=1
-bun scripts/cynco-sandbox.mjs create --run-id "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} || exit 1
+bun --no-install scripts/cynco-sandbox.mjs create --run-id "$RUN_ID" --cwd "$MISSION_CWD" ${ALSO_ARGS[@]+"${ALSO_ARGS[@]}"} || exit 1
 SANDBOX_CREATED=1
 # Old mission logs go only now: every refusal gate has passed (switch, latch, audit, baseline, sandbox).
-bun scripts/cynco-logs.mjs prune-mission-logs --keep "$ENGINE_LOG" --keep "$DRIVER_LOG" || echo "[dispatch] old mission logs not pruned (see above)"
+bun --no-install scripts/cynco-logs.mjs prune-mission-logs --keep "$ENGINE_LOG" --keep "$DRIVER_LOG" || echo "[dispatch] old mission logs not pruned (see above)"
 if [ "$(phone_engine_task_state)" = "Running" ]; then
   PHONE_ENGINE_WAS_RUNNING=1
   echo "[dispatch] stopping the phone engine through its task (started again when the mission is over)"
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 stop engine 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
 fi
 echo "[dispatch] killing any live engine tree"
-lc_engine_pids() { bun scripts/cynco-engine-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+lc_engine_pids() { bun --no-install scripts/cynco-engine-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
 if ! LC_ENGINE_PIDS=$(lc_engine_pids); then
   echo "[dispatch] could not list the live engines — refusing to dispatch blind" >&2
   exit 1
@@ -200,14 +404,14 @@ fi
 for pid in $LC_ENGINE_PIDS; do
   taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
 done
-bun scripts/cynco-sandbox.mjs release-dead --kind mission --except "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
+bun --no-install scripts/cynco-sandbox.mjs release-dead --kind mission --except "$RUN_ID" 2>&1 | tr -d '\r' | sed 's/^/[dispatch] /' || true
 # The owner's local-LLM apps first (F219): a model server of theirs on our port
 # is named, stopped and owed its server back when the mission ends, by the rule
 # a chat turn and a one-shot follow (engine/apps), instead of being killed by
 # path below with nothing to bring it back. Ollama is asked to unload what it
 # holds for them. Never a reason to stop a dispatch: the sweep below is the same
 # either way.
-bun scripts/cynco-apps.mjs take --by "the mission $STAMP" || echo "[dispatch] the apps check did not run; going on with the sweep"
+bun --no-install scripts/cynco-apps.mjs take --by "the mission $STAMP" || echo "[dispatch] the apps check did not run; going on with the sweep"
 # Match on PATH, not on image name. Ollama ships a binary called llama-server
 # too, at AppData/Local/Programs/Ollama/lib/ollama/llama-server.exe, and it is
 # respawned by `ollama.exe serve` the instant anything asks it for a model. A
@@ -217,7 +421,7 @@ bun scripts/cynco-apps.mjs take --by "the mission $STAMP" || echo "[dispatch] th
 # activations tier). So does the embedding service since 2026-11-08, the same
 # binary with --embeddings, and it must survive a dispatch (F215): the selector
 # is scripts/cynco-llama-sweep.mjs, shared with the driver's teardown.
-lc_llama_pids() { bun scripts/cynco-llama-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
+lc_llama_pids() { bun --no-install scripts/cynco-llama-sweep.mjs | tr -d '\r'; return "${PIPESTATUS[0]}"; }
 if ! LC_LLAMA_PIDS=$(lc_llama_pids); then
   echo "[dispatch] could not list CynCo's llama-servers — refusing to dispatch blind" >&2
   exit 1
@@ -247,7 +451,7 @@ echo "[dispatch] engine log $ENGINE_LOG"
 # Build/refresh the mission repo's index before launch so the first semantic
 # query answers from vectors. Non-fatal: the tool also self-builds on first use.
 LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" \
-  bun scripts/build-code-index.ts "$MISSION_CWD" \
+  bun --no-install scripts/build-code-index.ts "$MISSION_CWD" \
   || echo "[dispatch] warning: code-index build failed — CodeIndex will fall back to regex" >&2
 
 # LOCALCODE_EMBED_MODEL: until 2026-11-17 the engine's built-in default embed
@@ -294,7 +498,14 @@ if [ -n "${CYNCO_MARKER_CHECK:-}" ]; then
   echo "[dispatch] marker check on its own channel (driver-run, cap ${CYNCO_MARKER_CHECK_TIMEOUT_MS:-unset}ms)"
 fi
 
-MISSION_BASE=$(git -C "$MISSION_CWD" rev-parse HEAD)
+# Wave 19 (plan P6 item 2): HEAD of the mission folder, which a run may have written, read through harness git
+# (engine/harnessGit.ts: no hooks, monitor or repository filters, the repository named outright, git by its full
+# path), by Bun with --no-install. A refused or failed read refuses the dispatch before the engine starts.
+MISSION_BASE=$(bun --no-install -e 'const { harnessGitBin, harnessGitEnv, isHarnessRefused } = await import("./engine/harnessGit.ts"); const { spawnSync } = await import("node:child_process"); const d = process.argv[1]; const env = harnessGitEnv(process.env, { repo: d }); if (isHarnessRefused(env)) { console.log("harness git refused the mission folder"); process.exit(1) } const r = spawnSync(harnessGitBin(), ["rev-parse", "HEAD"], { cwd: d, env, encoding: "utf8", timeout: 60000 }); const sha = String(r.stdout ?? "").trim(); if (r.status !== 0 || !/^[0-9a-f]{40}$/.test(sha)) { console.log("git rev-parse HEAD failed (exit " + r.status + "): " + String(r.stderr ?? "").trim()); process.exit(1) } process.stdout.write(sha)' "$MISSION_CWD" | tr -d '\r') || {
+  _mb=${MISSION_BASE:-no answer}
+  echo "[dispatch] REFUSED: the mission folder's HEAD could not be read through harness git: ${_mb//$'\n'/; } — nothing was dispatched" >&2
+  exit 1
+}
 echo "[dispatch] mission baseline $MISSION_BASE"
 if [ -n "${CYNCO_MISSION_INVARIANTS:-}" ]; then echo "[dispatch] invariants: $CYNCO_MISSION_INVARIANTS"; fi
 # LOCALCODE_S5_ENFORCE: earned rules only. Phase 4 gave each S5 rule its own
@@ -314,12 +525,67 @@ LOCALCODE_MISSION_CHECK="${CHECK_CMD:-}" \
 LOCALCODE_MISSION_RUN_ID="$RUN_ID" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
 CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
-  bun engine/main.ts > "$ENGINE_LOG" 2>&1 &
-# The Windows pid of the mission engine's tree (MSYS $! is invisible outside
-# this shell): the abandoned-dispatch trap and the end-of-mission watcher stop
-# it by this when the driver did not (F236).
+  bun --no-install engine/main.ts > "$ENGINE_LOG" 2>&1 &
+# The Windows pid of the mission engine (MSYS $! is invisible outside this
+# shell): the abandoned-dispatch trap and the end-of-mission watcher stop it by
+# this when the driver did not (F236), and only its "gone" confirms the engine
+# dead (F242).
+#
+# Wave 13, D1: /proc/$!/winpid names whichever Windows process holds the MSYS
+# pid NOW. Measured on this PC through the npm shim: Git Bash's forked bash for
+# the first ~10 ms (gone at once), then the shim's sh.exe (bun.exe's parent for
+# bun.exe's whole life), and bun.exe only from ~0.1 s; the read on the line after
+# the start named the sh.exe 40 times in 40. So the pid is read again until
+# tasklist shows it as bun.exe, up to 120 reads 0.25 s apart (about a minute with
+# the reads themselves: over a hundred times the measured start, and a healthy
+# start leaves at its second read, before the model-load wait below begins). Only
+# a confirmed pid is ENGINE_WINPID. Unconfirmed, ENGINE_WINPID stays empty and
+# ENGINE_TREE_WINPID keeps the last pid read, which the trap can still stop the
+# tree by.
+#
+# Wave 13b (the owner's decision): an unconfirmed start is refused HERE. A
+# mission run on it could only end in a latch (no settle can confirm an engine
+# dead whose pid nobody saw as bun.exe), so it is not run: the exit goes through
+# the trap, which stops the tree by ENGINE_TREE_WINPID while that is still a
+# bun.exe or the shim's sh.exe, settles the baseline as not confirmed dead (the
+# latch, cleared by the owner at a terminal), releases the sandbox and starts
+# the phone engine again. So every line after this block, the end-of-mission
+# watcher included, runs with a confirmed ENGINE_WINPID.
+#
+# Wave 13d (R8): a listed bun.exe is confirmed only with its creation time
+# (process_started, about 0.2 s), kept as ENGINE_STARTED: every later kill by
+# this pid, and every "gone", asks it again (engine_listing_confirmed), so a
+# bun.exe that took the pid after the engine ended is never killed or taken for
+# the engine. One whose creation time cannot be read is not confirmed, and the
+# reads go on.
 ENGINE_PID=$!
-ENGINE_WINPID=$(cat "/proc/$ENGINE_PID/winpid" 2>/dev/null || true)
+ENGINE_WINPID=
+ENGINE_TREE_WINPID=
+ENGINE_PID_READS=0
+for _ in $(seq 1 120); do
+  _w=$(cat "/proc/$ENGINE_PID/winpid" 2>/dev/null || true)
+  ENGINE_PID_READS=$((ENGINE_PID_READS + 1))
+  if [ -n "$_w" ]; then
+    ENGINE_TREE_WINPID=$_w
+    engine_listing "$_w"
+    if [ "$ENGINE_LISTING" = listed ]; then
+      process_started "$_w"
+      if [ -n "$PROCESS_STARTED" ]; then ENGINE_STARTED=$PROCESS_STARTED; ENGINE_WINPID=$_w; break; fi
+      ENGINE_LISTING="unknown: pid $_w is a bun.exe, but $PROCESS_STARTED_WHY"
+    fi
+  else
+    ENGINE_LISTING="unknown: /proc/$ENGINE_PID/winpid could not be read"
+  fi
+  # An engine that already exited is never confirmed: no "gone" for a pid nobody saw as bun.exe.
+  if ! kill -0 "$ENGINE_PID" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+if [ -n "$ENGINE_WINPID" ]; then
+  echo "[dispatch] mission engine: bun.exe pid $ENGINE_WINPID (tasklist confirmed it at read $ENGINE_PID_READS; created $ENGINE_STARTED in .NET ticks, UTC)"
+else
+  echo "[dispatch] REFUSED: the mission engine's pid was never confirmed as bun.exe: $ENGINE_PID_READS read(s) of /proc/$ENGINE_PID/winpid, the last ${ENGINE_TREE_WINPID:-none} (${ENGINE_LISTING#unknown: }) — no mission is run whose every settle would latch: the tree is stopped by that pid while it is still a bun.exe or the shim's sh.exe, this run's baseline is settled as not confirmed dead (the integrity latch), the sandbox is released and a phone engine stopped for this run is started again" >&2
+  exit 1
+fi
 
 echo "[dispatch] waiting for the model to load"
 for _ in $(seq 1 120); do
@@ -475,13 +741,19 @@ if [ -n "${CYNCO_CAMPAIGN_ID:-}" ]; then echo "[dispatch] campaign $CYNCO_CAMPAI
 # CYNCO_BASH_TIMEOUT_MS (F235): the driver's mid-turn silence limit while a
 # tool runs is the engine's own Bash cap (bashMaxTimeoutMs) plus a margin, so
 # the driver must read the same value the engine was given above.
+# Wave 19 (plan P6 item 5): CYNCO_ENGINE_WINPID and CYNCO_ENGINE_STARTED, the pid and creation time confirmed above,
+# are the one tree the driver's teardown may end. Decision sheet item 25: the authoring mark reaches the driver here
+# and nowhere else (empty on every other dispatch).
 CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS" \
 CYNCO_PROBE_TIMEOUT_MS="$CYNCO_PROBE_TIMEOUT_MS" \
 CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \
 CYNCO_CAMPAIGN_ID="${CYNCO_CAMPAIGN_ID:-}" \
 LOCALCODE_MISSION_RUN_ID="$RUN_ID" \
 CYNCO_TEARDOWN_ENGINE=1 \
-  bun scripts/cynco-mission-driver.mjs \
+CYNCO_ENGINE_WINPID="$ENGINE_WINPID" \
+CYNCO_ENGINE_STARTED="$ENGINE_STARTED" \
+LOCALCODE_MISSION_AUTHOR_CHECK="$AUTHOR_CHECK_MARK" \
+  bun --no-install scripts/cynco-mission-driver.mjs \
     "$BRIEF" "$MARKER" "$MISSION_CWD" "$TIMEOUT_S" "${CHECK_CMD:-}" ${PROBE_CMD:+"$PROBE_CMD"} \
   > "$DRIVER_LOG" 2>&1 &
 DRIVER_PID=$!
@@ -490,10 +762,55 @@ DRIVER_PID=$!
 # file from bun, whose process.kill() goes straight to OpenProcess, so handing
 # it the pseudo-PID makes an 8-hour mission look like it exited in zero seconds.
 # /proc/<pid>/winpid is the Windows PID both sides can see.
+#
+# Wave 13b: read right after the start through the same npm shim, this pid
+# names the shim's sh.exe, as the engine's first read did (40 of 40, wave 13
+# D1). Its readers (the campaign runner's waitForDriver and pidAlive, the
+# gate-authoring wait) only ask whether it is alive, and the sh.exe lives as long
+# as the driver's bun.exe and ends within half a second of it (measured, 5 of
+# 5), so that answer holds. Nothing may KILL by this pid without //T: the sh.exe
+# killed alone leaves the driver's bun.exe running (measured, 5 of 5).
+#
+# Wave 13c (C5): for its first 5 to 7 ms the read names Git Bash's forked bash,
+# which is gone at once (wave 13 D1, mode D), and a reader handed that pid would
+# find the driver "already invisible on the first probe". So the pid is read the
+# way the engine's is: again, up to 40 reads 0.25 s apart (about 20 s with the
+# reads themselves; a healthy start leaves at its first read), until tasklist
+# shows it as bun.exe or the shim's sh.exe, and the file is written only then.
+# A file left by an earlier dispatch of the same name is removed first, so no
+# reader takes its pid for this driver's. Unconfirmed, nothing is written: the
+# readers find no file (waitForDriver's read of it throws ENOENT, unless the
+# driver log already holds the ledger line, which it reads first), and the
+# campaign runner and the gate author fault the run and set the integrity latch
+# as the mission engine not confirmed dead.
 if [ -n "${DRIVER_PID_FILE:-}" ]; then
-  DRIVER_WINPID=$(cat "/proc/$DRIVER_PID/winpid" 2>/dev/null || true)
-  echo "${DRIVER_WINPID:-$DRIVER_PID}" > "$DRIVER_PID_FILE"
-  echo "[dispatch] driver pid ${DRIVER_WINPID:-$DRIVER_PID} → $DRIVER_PID_FILE"
+  rm -f -- "$DRIVER_PID_FILE"
+  DRIVER_WINPID=
+  DRIVER_IMAGE=
+  DRIVER_LAST_READ=
+  DRIVER_PID_READS=0
+  for _ in $(seq 1 40); do
+    _dw=$(cat "/proc/$DRIVER_PID/winpid" 2>/dev/null || true)
+    DRIVER_PID_READS=$((DRIVER_PID_READS + 1))
+    if [ -n "$_dw" ]; then
+      DRIVER_LAST_READ=$_dw
+      engine_listing "$_dw"
+      case "$ENGINE_LISTING" in
+        listed) DRIVER_WINPID=$_dw; DRIVER_IMAGE=bun.exe; break ;;
+        "unknown: pid $_dw is held by sh.exe, not bun.exe") DRIVER_WINPID=$_dw; DRIVER_IMAGE=sh.exe; break ;;
+      esac
+    else
+      ENGINE_LISTING="unknown: /proc/$DRIVER_PID/winpid could not be read"
+    fi
+    if ! kill -0 "$DRIVER_PID" 2>/dev/null; then break; fi
+    sleep 0.25
+  done
+  if [ -n "$DRIVER_WINPID" ]; then
+    echo "$DRIVER_WINPID" > "$DRIVER_PID_FILE"
+    echo "[dispatch] driver pid $DRIVER_WINPID ($DRIVER_IMAGE; tasklist confirmed it at read $DRIVER_PID_READS) → $DRIVER_PID_FILE"
+  else
+    echo "[dispatch] driver pid NOT confirmed: $DRIVER_PID_READS read(s) of /proc/$DRIVER_PID/winpid, the last ${DRIVER_LAST_READ:-none} (${ENGINE_LISTING#unknown: }) — nothing was written to $DRIVER_PID_FILE, so a reader finds no pid file: the campaign runner and the gate author then fault the run with \"dispatch or wait failed: ENOENT ...\" and set the integrity latch as the mission engine not confirmed dead, unless the driver log already holds the driver's ledger line ($DRIVER_LOG)" >&2
+  fi
 fi
 echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 
@@ -523,40 +840,45 @@ echo "[dispatch] dispatched — tail -f $DRIVER_LOG"
 # hold the GPU. The mission engine gave the GPU back to an app on its way out;
 # an eager start here would take it straight back.
 boot_idle_engine() {
-  LOCALCODE_LLAMA_LAZY=true LOCALCODE_LLAMA_IDLE_UNLOAD_MS="${LOCALCODE_LLAMA_IDLE_UNLOAD_MS:-900000}" LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun engine/main.ts > "$IDLE_LOG" 2>&1 &
+  LOCALCODE_LLAMA_LAZY=true LOCALCODE_LLAMA_IDLE_UNLOAD_MS="${LOCALCODE_LLAMA_IDLE_UNLOAD_MS:-900000}" LOCALCODE_EMBED_MODEL="${LOCALCODE_EMBED_MODEL:-nomic-embed-text}" bun --no-install engine/main.ts > "$IDLE_LOG" 2>&1 &
   echo "[dispatch] mission over — idle engine booted so the dashboard on 9161 keeps answering (log $IDLE_LOG)" >> "$DRIVER_LOG"
 }
 #
-# A subshell cannot `wait` on a sibling it did not spawn, so poll the pid.
-IDLE_LOG=${IDLE_LOG:-/c/tmp/engine_idle_after_${STAMP}.log}
+# A subshell cannot `wait` on a sibling it did not spawn, so poll the pid. (IDLE_LOG is set at the top, wave 19.)
 (
   while kill -0 "$DRIVER_PID" 2>/dev/null; do sleep 20; done
   sleep 10
-  END_OUT=$(bun scripts/cynco-mission-end.mjs --engine-pid "${ENGINE_WINPID:-0}" ${CYNCO_SKIP_IDLE_ENGINE:+--skip-idle} 2>&1 | tr -d '\r' || true)
+  # Wave 13b: ENGINE_WINPID is confirmed here (an unconfirmed start is refused before the driver runs).
+  # Wave 13d (R8): with its creation time, so mission-end kills only that bun.exe, never another on the same pid.
+  END_OUT=$(bun --no-install scripts/cynco-mission-end.mjs --engine-pid "$ENGINE_WINPID" --engine-started "$ENGINE_STARTED" ${CYNCO_SKIP_IDLE_ENGINE:+--skip-idle} 2>&1 | tr -d '\r' || true)
   printf '%s\n' "$END_OUT" | grep '^\[mission-end\]' >> "$DRIVER_LOG" || true
   # F242, directive 15: the settling compare, after the mission engine is confirmed dead.
   ENGINE_GONE=
   if [ -n "${ENGINE_WINPID:-}" ]; then
     # Fail closed (engine_listing): only tasklist's own "no such task" answer confirms the engine dead.
     for _ in $(seq 1 30); do
-      engine_listing "$ENGINE_WINPID"
+      engine_listing_confirmed "$ENGINE_WINPID"
       if [ "$ENGINE_LISTING" = gone ]; then ENGINE_GONE=1; break; fi
       sleep 2
     done
+    if [ -n "${ENGINE_REUSED_LINE:-}" ]; then echo "[dispatch] $ENGINE_REUSED_LINE" >> "$DRIVER_LOG"; fi
     if [ "$ENGINE_LISTING" = listed ]; then NOT_DEAD_WHY="pid $ENGINE_WINPID still listed 60 s after mission end"
     else NOT_DEAD_WHY="pid $ENGINE_WINPID 60 s after mission end: ${ENGINE_LISTING#unknown: }"; fi
   else
-    NOT_DEAD_WHY="the mission engine's Windows pid was never read"
+    # Wave 13, D1: no pid was confirmed as bun.exe at the start, so nothing here can confirm it dead. Since wave
+    # 13b such a start is refused before the driver runs, so this is not reached; kept so that a path added later
+    # fails closed.
+    NOT_DEAD_WHY="the mission engine's Windows pid was never confirmed as bun.exe"
   fi
   if [ -n "$ENGINE_GONE" ]; then
-    bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher >> "$DRIVER_LOG" 2>&1 || true
+    bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher >> "$DRIVER_LOG" 2>&1 || true
   else
-    bun scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher --engine-not-confirmed-dead "$NOT_DEAD_WHY" >> "$DRIVER_LOG" 2>&1 || true
+    bun --no-install scripts/cynco-guard.mjs post "$RUN_ID" --by dispatch-watcher --engine-not-confirmed-dead "$NOT_DEAD_WHY" >> "$DRIVER_LOG" 2>&1 || true
   fi
-  GUARD_NOW=$(bun scripts/cynco-guard.mjs status --quiet 2>/dev/null | tr -d '\r' || true)
+  GUARD_NOW=$(bun --no-install scripts/cynco-guard.mjs status --quiet 2>/dev/null | tr -d '\r' || true)
   if [ "$GUARD_NOW" != "clear" ]; then echo "[dispatch] integrity latch present: ${GUARD_NOW:-the integrity guard did not answer}" >> "$DRIVER_LOG"; fi
-  bun scripts/cynco-audit.mjs verify --run "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
-  bun scripts/cynco-sandbox.mjs release "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
+  bun --no-install scripts/cynco-audit.mjs verify --run "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
+  bun --no-install scripts/cynco-sandbox.mjs release "$RUN_ID" >> "$DRIVER_LOG" 2>&1 || true
   case "$(printf '%s\n' "$END_OUT" | sed -n 's/^ACTION //p' | tail -1)" in
     phone)
       powershell -NoProfile -ExecutionPolicy Bypass -File scripts/cynco-services.ps1 start engine >> "$DRIVER_LOG" 2>&1 || true

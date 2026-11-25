@@ -1,7 +1,7 @@
 /**
  * scripts/cynco-audit.mjs: the tool-call audit of unattended runs, from the command line (F242).
  *
- *   bun scripts/cynco-audit.mjs check
+ *   bun scripts/cynco-audit.mjs check [--run <id>]
  *       Asks whether the audit can be written now: a probe record is appended and fsynced. One line
  *       on stdout, `writing to <real audit folder>` (exit 0) or the reason (exit 3). Nothing else
  *       goes to stdout, because scripts/dispatch-mission.sh captures it as one line.
@@ -31,14 +31,17 @@ const EXIT_FOUND = 1
 const EXIT_USAGE = 2
 const EXIT_REFUSED = 3
 
-const USAGE = 'usage: bun scripts/cynco-audit.mjs check | verify [--run <id>] [file ...]'
+const USAGE = 'usage: bun scripts/cynco-audit.mjs check [--run <id>] | verify [--run <id>] [file ...]'
 
 /**
  * The answer of `check`. `io.auditRefusal` is the gate question (null means a probe record was
  * written just now); `io.realDir` names the folder it wrote to.
  */
 export function checkLine(io = {}) {
-  const refusal = io.auditRefusal ?? (() => auditRefusal({ by: 'dispatch' }))
+  // Wave 19 (plan P6 item 1): the probe record carries src 'dispatch-check' and the run id (`--run`), so
+  // `verify --run <id>` finds the dispatch's own gate record and never takes it for the driver's probe.
+  const ask = { by: 'dispatch-check', run: io.runId ?? null }
+  const refusal = io.auditRefusal ? () => io.auditRefusal(ask) : () => auditRefusal(ask)
   const realDir = io.realDir ?? (() => {
     const r = resolveAuditDir({ dir: auditDir(), home: homedir() })
     return r.ok ? r.dir : String(auditDir())
@@ -124,8 +127,13 @@ export function main(argv, io = {}) {
   const err = io.err ?? ((l) => console.error(l))
   const [cmd, ...rest] = argv
   if (cmd === 'check') {
-    if (rest.length > 0) { err(USAGE); return EXIT_USAGE }
-    const r = checkLine(io)
+    // Wave 19 (plan P6 item 1): `check --run <id>`, the dispatch's form; a malformed id probes nothing.
+    let runId = null
+    if (rest.length > 0) {
+      if (rest.length !== 2 || rest[0] !== '--run' || !RUN_ID_RE.test(rest[1])) { err(USAGE); return EXIT_USAGE }
+      runId = rest[1]
+    }
+    const r = checkLine({ ...io, runId })
     out(r.line)
     return r.exit
   }

@@ -1196,8 +1196,17 @@ describe('history-rewrite wiring guard', () => {
     // Taken around the check, not near it — a SHA read after `runCheck` on both
     // sides would agree with itself forever and detect nothing.
     const before = driver.indexOf('const headBefore = gitHead(')
-    // Phase 7 review C1: the check is awaited (runCheckAsync), still between the two reads.
-    const check = driver.search(/const r = (await )?runCheck(Async)?\(/)
+    // Phase 7 review C1: the check is awaited (runCheckAsync), still between the two reads. Changed on purpose in
+    // wave 19 (decision sheet item 25): one assignment picks the box's run or, under the authoring dispatch's mark,
+    // the driver's own (runAuthorCheck); both are between the two reads.
+    const check = driver.indexOf('const r = resetRefused ? notRunResult(resetRefused)')
+    expect(driver.indexOf('await runAuthorCheck(', check)).toBeGreaterThan(check)
+    // Changed on purpose in wave 19b (plan P6 item 6, the in-box half): the box's run is inBoxCheck, which awaits
+    // runCheckAsync with the latch poll's signal; the call is still between the two reads.
+    expect(driver.indexOf('await inBoxCheck(ordinal)', check)).toBeGreaterThan(check)
+    expect(driver.indexOf('const headAfter = gitHead(')).toBeGreaterThan(driver.indexOf('await inBoxCheck(ordinal)', check))
+    const inBox = driver.slice(driver.indexOf('\nasync function inBoxCheck('), driver.indexOf('\n}\n', driver.indexOf('\nasync function inBoxCheck(')))
+    expect(inBox).toContain('r = await runCheckAsync(MARKER.command')
     const after = driver.indexOf('const headAfter = gitHead(')
     expect(before).toBeGreaterThan(-1)
     expect(check).toBeGreaterThan(before)

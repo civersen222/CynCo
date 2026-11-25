@@ -57,11 +57,11 @@ export const AUDIT_NOT_WRITTEN = (code: string): string =>
   `the record of this call could not be written before it ran (${code})`
 
 export type AuditSrc = 'tool' | 'subagent' | 'contract' | 'best-of-n' | 'lsp' | 'precheck'
-                     | 'driver' | 'driver-probe' | 'driver-marker' | 'gate'
+                     | 'driver' | 'driver-probe' | 'driver-marker' | 'gate' | 'dispatch-check'
 /** Sources whose command and output are withheld from the model: written as hashes and lengths only. */
 export const WITHHELD_SRC: readonly AuditSrc[] = ['contract', 'gate', 'driver-marker', 'driver-probe']
 
-export type AuditProbeBy = 'dispatch' | 'capability' | 'preflight' | 'task-runner' | 'driver'
+export type AuditProbeBy = 'dispatch' | 'dispatch-check' | 'capability' | 'preflight' | 'task-runner' | 'driver'
 
 export interface ToolAudit {
   open(): { ok: true; dir: string } | { ok: false; reason: string }
@@ -122,6 +122,8 @@ function session(): string | undefined {
 
 /** The `src` an open or probe record carries: which kind of process wrote it. */
 function srcOfProbe(by: AuditProbeBy): AuditSrc {
+  // Wave 19 (plan P6 item 1): the dispatch's own gate (`cynco-audit.mjs check --run`) is told from the driver's probe.
+  if (by === 'dispatch-check') return 'dispatch-check'
   if (by === 'driver' || by === 'dispatch') return 'driver'
   if (by === 'task-runner') return 'precheck'
   return 'tool'
@@ -688,8 +690,8 @@ export function harnessAudit(a: { dir?: string | null; home?: string; missionCwd
  * The gate question for a starter: null means a probe record was appended and fsynced just now; a
  * string is the operator's reason (`<code>: <sentence>`).
  */
-export function auditRefusal(a?: { dir?: string | null; home?: string; missionCwd?: string;
-                                   by?: 'dispatch' | 'preflight' | 'task-runner' | 'driver' }): string | null {
+export function auditRefusal(a?: { dir?: string | null; home?: string; missionCwd?: string; run?: string | null;
+                                   by?: 'dispatch' | 'dispatch-check' | 'preflight' | 'task-runner' | 'driver' }): string | null {
   return harnessAudit(a).probe(a?.by ?? 'dispatch')
 }
 

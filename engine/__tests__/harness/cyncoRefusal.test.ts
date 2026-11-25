@@ -227,6 +227,25 @@ describe('the ledger counts refusals on tool-less answers', () => {
     expect(c.refusals).toMatchObject({ judged: 2, declined: 1 })
   })
 
+  // Wave 13b (B1-1): the mission driver keeps a completion that closed an aborted turn away from ingest (it is not
+  // the model's answer) and tells the collector the turn ended so; what that turn streamed is dropped unjudged.
+  it('an aborted turn\'s streamed text is dropped unjudged: the next answer is judged alone', () => {
+    const c: any = createMissionCollector(() => 1)
+    c.ingest({ type: 'stream.token', text: 'I cannot' })
+    c.endAbortedTurn() // the driver, for `message.complete` with stopReason 'aborted'
+    c.ingest({ type: 'stream.token', text: 'Done.' })
+    c.ingest({ type: 'message.complete', messageId: 'm2', stopReason: 'end_turn' })
+    expect(c.refusals).toEqual({ judged: 1, declined: 0, markerHits: 0, toolMessages: 0, samples: [] })
+    // The answer judged is the next one's own text, never the aborted opening in front of it.
+    const d: any = createMissionCollector(() => 2)
+    d.ingest({ type: 'stream.token', text: 'Working on the parser now' })
+    d.endAbortedTurn()
+    tokens(d, "I won't change the sealed gate.")
+    d.ingest({ type: 'message.complete', messageId: 'm3', stopReason: 'end_turn' })
+    expect(d.refusals.judged).toBe(1)
+    expect(d.refusals.samples).toEqual([{ t: 2, stopReason: 'end_turn', opening: "I won't change the sealed gate." }])
+  })
+
   it('samples are capped and their opening is cut to the detector\'s window', () => {
     const c: any = createMissionCollector(() => 1)
     for (let i = 0; i < REFUSAL_SAMPLE_CAP + 2; i++) {
