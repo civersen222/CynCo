@@ -7,7 +7,7 @@
 //   bun scripts/cynco-containment-acceptance.mjs --stage fake [--root <dir>] [--no-live-fire] [--json] [--evidence <file>]
 //   bun scripts/cynco-containment-acceptance.mjs --stage real --real-profile --evidence <file> [--nas <unc path>]
 //       (by hand only, with the real-profile variable set to 1; the names are REAL_PROFILE_FLAG and REAL_PROFILE_VAR below)
-//   bun scripts/cynco-containment-acceptance.mjs --inner <layers-off|full|live|unseen> --phase <mission|daemon-task|authoring> --root <dir> --nonce <hex>
+//   bun scripts/cynco-containment-acceptance.mjs --inner <layers-off|full|live|unseen|box> --phase <mission|daemon-task|authoring|rehearsal> --root <dir> --nonce <hex>
 //       (internal: the orchestrator starts itself this way, with a fake-home environment)
 //
 // Exit codes: 0 PASS; 1 FAIL, INCOMPLETE, ABORT or STOPPED; 2 REFUSED (nothing was run); 3 an inner run's self-check refused.
@@ -15,7 +15,15 @@
 //
 // The fake stage, in order (rule F2): run 1 the canaries, the listing-only twins and the left-behind
 // plant with the path check off; run 2 the authoring kernel half; runs 3, 4, 5 the full stack (mission,
-// daemon task, authoring policy); with live fire only, run 6 every catalog form handed over with the
+// daemon task, authoring policy); on Windows, run 9 the box rehearsal (wave 11): the real-profile stage's own box,
+// `realBox`, executed against the fake home at low integrity with every layer on, the same function the real stage
+// runs, handed only `{ rehearsal }` (its test root and nonce). It refuses by name unless every folder it resolves
+// lies inside the test root by real path (`rehearsalRefusal`), pages nobody, and prints a line for each step it
+// skips (the registry probe and the three G9 reachability lines: they ask the real user's hive and the machine, not
+// the fake home). Its one entry (`box realBox rehearsal`) is `passed`, `not proven` (INCOMPLETE) or FAILED, and a
+// PASS of the fake stage needs it `passed` (`rehearsalCoverage`), so the real stage's step 0 stops before the real
+// box when the rehearsal did not pass (real-1 of 2026-11-24 found the box's first defect only on the real profile);
+// with live fire only, run 6 every catalog form handed over with the
 // path check off (one entry for each, a form that is not fired says why), then, as its last acts, the
 // junction from its scratch folder to the mission folder (left for step 8), a junction at the top of the
 // mission folder leading to its scratch folder (canary c0-low, asked of the create-time check after the
@@ -123,6 +131,8 @@ const SENTINEL = '.cynco-acceptance-root'
 const AUDIT_MARKER_NAME = '.cynco-audit'
 const GIT_IDENTITY = ['-c', 'user.name=Acceptance', '-c', 'user.email=acceptance@cynco.invalid', '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main']
 const INNER_CAP_MS = 180_000
+/** How long the box waits before it reads a census loss or a deep-count fall again (the engine's DEFAULT_CONFIRM_MS). */
+const CONFIRM_MS = 2_000
 const LOW_LABEL = /Mandatory Label\\Low Mandatory Level/i
 /**
  * The sandbox home's decoys, by the folder a mission form acts on (`[folder below the home, file]`): the
@@ -190,17 +200,30 @@ export const FAKE_HOME_EXCLUDE = Object.freeze([
 ])
 /** The inner process's own Bun cache keys (R12, RS6): the transpiler's, then the installer's. */
 const HARNESS_CACHE_KEYS = Object.freeze(['BUN_RUNTIME_TRANSPILER_CACHE_PATH', 'BUN_INSTALL_CACHE_DIR'])
-/** The inner runs that start with the path check switched off (rule F2); the others have no switch at all. */
-const SWITCH_OF_MODE = { 'layers-off': 'paths', full: null, live: 'paths', unseen: null }
+/**
+ * The inner runs that start with the path check switched off (rule F2); the others have no switch at all. The box
+ * rehearsal has none either: the real stage's box establishes and adopts a context that is not a test one, which
+ * refuses any switch (engine/containment.ts).
+ */
+const SWITCH_OF_MODE = { 'layers-off': 'paths', full: null, live: 'paths', unseen: null, box: null }
+/**
+ * The run number of the box rehearsal (wave 11). Not 6, 7 or 8: those numbers are read (run 6 and 7 are live fire,
+ * 8 is step 8's outer entry). Windows only (`win`): realBox proves the Windows low-integrity layer, as the real stage
+ * does.
+ */
+export const REHEARSAL_RUN = 9
 const INNER_RUNS = [
   { run: 1, mode: 'layers-off', phase: 'mission' },
   { run: 2, mode: 'layers-off', phase: 'authoring' },
   { run: 3, mode: 'full', phase: 'mission' },
   { run: 4, mode: 'full', phase: 'daemon-task' },
   { run: 5, mode: 'full', phase: 'authoring' },
+  { run: REHEARSAL_RUN, mode: 'box', phase: 'rehearsal', win: true },
   { run: 6, mode: 'live', phase: 'mission', liveFire: true },
   { run: 7, mode: 'unseen', phase: 'mission', liveFire: true },
 ]
+/** Whether an inner run applies on `platform` (a `win` run only on Windows). */
+const appliesOn = (spec, platform) => !spec.win || platform === 'win32'
 const NOT_PROVEN = new Set(['twin did not resolve', 'not proven', 'did not act', 'did not start (msys)'])
 const FAILING = new Set(['FAILED', 'UNSAFE'])
 /** The twin's detail when Git Bash could not start at low integrity (twinFirst writes it). */
@@ -267,6 +290,8 @@ function say(line) {
     }
   }
 }
+/** `say` under a second name, for realBox, whose own `say` records the lines of a rehearsal before printing them. */
+const printLine = (line) => say(line)
 const refusedLine = (reason) => `${TAG} REFUSED: ${reason} — nothing was run`
 /** `operatorRefusal('[acceptance]', layer, reason, 'run')` of engine/containment.ts, without importing it (a test pins the two equal). */
 const layerRefusalLine = (layer, reason) => `${TAG} REFUSED: ${layer}: ${reason} — nothing was run`
@@ -493,6 +518,153 @@ function readSentinelOf(root) {
   }
 }
 
+/**
+ * Wave 11 (pure): null when the box rehearsal may run realBox here, otherwise why not, one sentence. It runs only when
+ * the real-profile variable is unset, the root is absolute and its sentinel holds `nonce`, and every folder the box
+ * resolves (`v`: the home, the temp folder its mission folder is made in, the state folder, the guard, audit and
+ * models folders and the sandbox root) lies inside the root by REAL path (a junction inside the root that leads out is
+ * outside). realBox asks it as its first statement whenever it is handed a rehearsal, so no path into the box in
+ * rehearsal shape skips it; innerSelfCheck has run before it in the same process.
+ * Wave 11b, G8: and it refuses a root that holds the machine's own folders by real path (`machine`, `[name, path]`
+ * pairs from machineFolders: the real home as the system reports it, and the default guard, audit, sandbox and models
+ * folders), so a root such as `C:\` or `C:\Users` is refused even when every repointed folder lies inside it.
+ * Wave 11c, H4: and a root that lies inside one of them (a third element 'holds' exempts the real home from that
+ * direction only); the folders are the fake stage's own, handed to inner run 9 (machineFoldersFrom), null when none was.
+ */
+export function rehearsalRefusal({ root, nonce, env, readSentinel, v, machine, real = realOf }) {
+  if (typeof env?.[REAL_PROFILE_VAR] === 'string' && env[REAL_PROFILE_VAR] !== '') return `${REAL_PROFILE_VAR} is set`
+  if (typeof root !== 'string' || !isAbsolute(root)) return `the test root ${root} is not an absolute path`
+  let sentinel = null
+  try {
+    sentinel = readSentinel(root)
+  } catch (e) {
+    sentinel = null
+  }
+  if (sentinel === null || sentinel === undefined || String(sentinel).trim() !== String(nonce)) return `the test root ${root} does not carry this run's sentinel`
+  const names = ['home', 'temp', 'state', 'guard', 'audit', 'models', 'sandboxRoot']
+  for (const k of names) {
+    const p = v?.[k]
+    if (typeof p !== 'string' || p === '') return `the ${k} folder is not known`
+    let inside = false
+    try {
+      inside = lexicallyInside(real(root), real(p))
+    } catch (e) {
+      inside = false
+    }
+    if (!inside) return `the ${k} folder (${p}) is not inside the test root ${root} by real path`
+  }
+  if (!Array.isArray(machine) || machine.length === 0 || machine.some(m => !Array.isArray(m) || typeof m[1] !== 'string' || m[1] === '')) return 'the machine\'s own folders are not known'
+  for (const [name, p, only] of machine) {
+    let holds = true
+    try {
+      holds = lexicallyInside(real(root), real(p))
+    } catch (e) {
+      // Unreadable is not "outside": the rehearsal does not run on a root it cannot tell apart from the machine's folders.
+      holds = true
+    }
+    if (holds) return `the test root ${root} holds ${name} (${p}) by real path`
+    // Wave 11c, H4: and in the other direction, a root inside one of them (a fake guard inside the real guard folder's
+    // tree). Not for the real home ('holds'): a test root lies in the real temp folder, below it, by design.
+    if (only === 'holds') continue
+    let within = true
+    try {
+      within = lexicallyInside(real(p), real(root))
+    } catch (e) {
+      within = true
+    }
+    if (within) return `the test root ${root} lies inside ${name} (${p}) by real path`
+  }
+  return null
+}
+
+/**
+ * Wave 11c, H4 (pure): the machine's own folders as the fake stage hands them to inner run 9 (`--machine`, JSON), or
+ * null when the text is absent or not a list of `[name, path]` or `[name, path, 'holds']` with a non-empty name and
+ * path. Null makes rehearsalRefusal refuse: a by-hand `--inner box` run, handed nothing, does not know them.
+ */
+export function machineFoldersFrom(text) {
+  if (typeof text !== 'string' || text === '') return null
+  let m
+  try {
+    m = JSON.parse(text)
+  } catch (e) {
+    return null
+  }
+  const row = (x) => Array.isArray(x) && (x.length === 2 || (x.length === 3 && x[2] === 'holds'))
+    && typeof x[0] === 'string' && x[0] !== '' && typeof x[1] === 'string' && x[1] !== ''
+  return Array.isArray(m) && m.length > 0 && m.every(row) ? m : null
+}
+
+/** The folders realBox resolves, from engine/paths.js (`P`) and the process (the box's mission folder is made in os.tmpdir()). */
+function boxFolders(P) {
+  return { home: os.homedir(), temp: os.tmpdir(), state: P.cyncoHome(), guard: P.guardDir(), audit: P.auditDir() ?? '', models: P.modelsDir(), sandboxRoot: P.sandboxRoot() }
+}
+
+/**
+ * Wave 11b, G8; wave 11c, H4: the machine's own folders, asked in the OUTER process (the fake stage), whose environment
+ * is the real one, and handed to inner run 9 as an argument (startInner's `--machine`): the inner run's environment is
+ * repointed, so it can know neither. `home`, the real home as the system reports it (systemHome; null when it could not
+ * be read, which makes rehearsalRefusal refuse), marked 'holds' (a test root lies below it, in the temp folder); this
+ * process's own guard, audit (none off Windows), sandbox and models folders as engine/paths.js (`P`) resolves them here
+ * (on this PC the models are in the folder LOCALCODE_MODELS_DIR names); then the code defaults (no variable set; the
+ * models folder of the default state folder, `<home>/.cynco/models`) that are not already in the list.
+ */
+export function machineFolders(P, home) {
+  const known = typeof home === 'string' && home !== ''
+  const own = P.auditDir()
+  const audit = P.auditDir({}, process.platform)
+  const rows = [
+    ['the real home', known ? home : '', 'holds'],
+    ['the guard folder', P.guardDir()],
+    ...(own ? [['the audit folder', own]] : []),
+    ['the sandbox root', P.sandboxRoot()],
+    ['the models folder', P.modelsDir()],
+    ['the default guard folder', P.guardDir({})],
+    ...(audit ? [['the default audit folder', audit]] : []),
+    ['the default sandbox root', P.sandboxRoot({})],
+    ['the default models folder', known ? join(home, '.cynco', 'models') : ''],
+  ]
+  const seen = new Set()
+  return rows.filter(([, p]) => {
+    if (p === '') return true
+    const k = fold(resolve(p))
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+}
+
+/**
+ * Wave 11b, G8: the home folder of this process's own token, as the system reports it, whatever the environment says;
+ * null when it cannot be read. Under Bun on Windows `os.userInfo().homedir` follows USERPROFILE (measured 2026-11-24:
+ * with USERPROFILE=C:\nowhere\fake Bun answered C:\nowhere\fake and Node C:\Users\<owner>), so under Bun it asks
+ * userenv.dll's GetUserProfileDirectoryW for the current process token (the pseudo handle -4, passed as a 64-bit
+ * integer); elsewhere `os.userInfo().homedir`, which Node takes from the same call on Windows.
+ */
+export async function systemHome() {
+  if (WIN && typeof globalThis.Bun?.version === 'string') {
+    try {
+      const { dlopen, FFIType } = await import('bun:ffi')
+      const lib = dlopen('userenv.dll', { GetUserProfileDirectoryW: { args: [FFIType.i64, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 } })
+      try {
+        const size = new Uint32Array([1024])
+        const buf = new Uint16Array(1024)
+        if (!lib.symbols.GetUserProfileDirectoryW(-4n, buf, size) || size[0] < 2 || size[0] > 1024) return null
+        return String.fromCharCode(...buf.subarray(0, size[0] - 1))
+      } finally {
+        lib.close()
+      }
+    } catch (e) {
+      return null
+    }
+  }
+  try {
+    return os.userInfo().homedir
+  } catch (e) {
+    return null
+  }
+}
+
 // ─── The refusals (pure) ─────────────────────────────────────────────────────────────────────
 
 /** Rule G8. `<path>` is refused when required and absent, existing, folderless, inside the home, or on an unprotected volume. */
@@ -665,13 +837,40 @@ export function realStageRefusal(a) {
   }
   if (a.evidence) return a.evidence
   if (typeof a.halt === 'string' && a.halt !== '') return layerRefusalLine('integrity', a.halt)
-  if (a.homes && fold(resolve(a.homes.env ?? '')) !== fold(resolve(a.homes.system ?? ''))) {
-    return refusedLine(`the home folder is read two ways and they disagree (${a.homes.env} vs ${a.homes.system})`)
+  if (a.homes) {
+    const h = homesRefusal(a.homes)
+    if (h) return h
   }
   for (const p of a.lowLabelled ?? []) {
     return refusedLine(`${p} carries a Low integrity label, so a contained process can write it. Find what left it (bun scripts/cynco-sandbox.mjs status) before running this`)
   }
   return null
+}
+
+/**
+ * Wave 11c, H1 (pure): the real stage's home guard. `env`: the home the environment names (USERPROFILE, else HOME);
+ * `system`: the home of this process's token as the system reports it (systemHome: GetUserProfileDirectoryW under Bun
+ * on Windows, where os.userInfo().homedir follows USERPROFILE and would compare the environment with itself), or null
+ * when that could not be read. Null when both are known and name one folder; otherwise the refusal, by name. An
+ * unknown system answer refuses: the environment's word is never taken in its place.
+ */
+export function homesRefusal({ env, system } = {}) {
+  if (typeof system !== 'string' || system === '') {
+    return refusedLine('the home folder as the system reports it (the profile folder of this process\'s token) could not be read; the real-profile stage does not take the environment\'s word for it')
+  }
+  if (typeof env !== 'string' || env === '') return refusedLine(`the environment names no home folder (USERPROFILE and HOME are not set); the system reports ${system}`)
+  if (fold(resolve(env)) !== fold(resolve(system))) return refusedLine(`the home folder is read two ways and they disagree (${env} vs ${system})`)
+  return null
+}
+
+/**
+ * Wave 11d, K4 (pure): the real stage lists the home's top level to read its Low labels; `fault`, the error code (or
+ * message) of a listing that failed, else null. Null, or the refusal by name: a list of labels that was never read is
+ * not "none".
+ */
+export function homeListingRefusal({ home, fault } = {}) {
+  if (fault === null || fault === undefined) return null
+  return refusedLine(`the top level of the home ${home} could not be listed (${fault}): its Low labels cannot be checked`)
 }
 
 // ─── The suite's own oracles ─────────────────────────────────────────────────────────────────
@@ -767,13 +966,22 @@ function treeDiff(before, after, limit = 20) {
 }
 
 /**
+ * Wave 11d, K1: the engine's own lock and temp names (engine/integrity.ts `TRANSIENT_NAME`), which its presence rule
+ * never counts. A copy, because this is read before the engine module is loaded; a test holds it equal to the engine's,
+ * by source and flags.
+ */
+export const TRANSIENT_NAME = /\.(tmp|temp|lock|swp|part)(\.|$)|~$/i
+
+/**
  * Sorted `name<TAB>kind<TAB>direct children` for every top-level dot-entry of `home`; a link (by the
- * listing) is `name<TAB>link<TAB>0<TAB><where it really lands, or unreadable>` and is not entered.
+ * listing) is `name<TAB>link<TAB>0<TAB><where it really lands, or unreadable>` and is not entered. Wave 11d, K1: by
+ * the engine's presence rule, a name TRANSIENT_NAME matches is left out, at the top and among a folder's children.
  */
 export function censusOf(home, io = FS) {
   const out = []
   for (const { name: n, kind: listed } of io.list(home)) {
     if (!n.startsWith('.')) continue
+    if (TRANSIENT_NAME.test(n)) continue
     const p = join(home, n)
     if (listed === 'link') {
       out.push(`${n}\tlink\t0\t${linkReal(io, p)}`)
@@ -782,7 +990,7 @@ export function censusOf(home, io = FS) {
     let kind = 'other', children = 0
     if (listed === 'dir') {
       kind = 'dir'
-      try { children = io.list(p).length } catch (e) { children = -1 }
+      try { children = io.list(p).filter(c => !TRANSIENT_NAME.test(c.name)).length } catch (e) { children = -1 }
     } else {
       try {
         kind = io.lstat(p).isFile() ? 'file' : 'other'
@@ -831,12 +1039,15 @@ export function realHomeLoss(I, before, after) {
  * For each top-level dot-entry of `home`: the files and bytes below it, `links` (entries the listing
  * calls a link: counted, never entered; entry 6.M10), and `unreadable`, the entries below it that
  * could not be read (a loss there would not be counted, so the real stage reports an entry with any
- * as not proven).
+ * as not proven). Wave 11d (the check's D1): a top-level name TRANSIENT_NAME matches is left out, as censusOf leaves
+ * it out: a lock or temp file that stood beside a dot-file at the first count and is gone at the last is a fall of
+ * one file in one, which deepFall would read as a FAIL. Below a dot-entry every file counts, whatever its name.
  */
 export function deepCountOf(home, io = FS) {
   const out = []
   for (const { name: n, kind: top } of [...io.list(home)].sort(byName)) {
     if (!n.startsWith('.')) continue
+    if (TRANSIENT_NAME.test(n)) continue
     let files = 0, bytes = 0, unreadable = 0, links = 0
     const walk = (p, kind) => {
       if (kind === 'link') { links++; return }
@@ -1198,7 +1409,7 @@ function localDay(d = new Date()) {
 
 function parseArgs(argv) {
   const a = { flags: new Set(), values: {} }
-  const takes = new Set(['--stage', '--root', '--evidence', '--nas', '--inner', '--phase', '--nonce'])
+  const takes = new Set(['--stage', '--root', '--evidence', '--nas', '--inner', '--phase', '--nonce', '--machine'])
   for (let i = 0; i < argv.length; i++) {
     const w = argv[i]
     if (takes.has(w)) { a.values[w] = argv[i + 1]; i++ } else a.flags.add(w)
@@ -1242,7 +1453,9 @@ async function innerMain(argv) {
     fail(report, `no inner run ${mode}/${phase}`)
   } else {
     try {
-      await runInner(E, spec, root, nonce, report)
+      // The box rehearsal runs realBox itself: runInner makes a TEST context, which adoptContainment refuses.
+      if (spec.mode === 'box') await rehearseBox(spec, root, nonce, report, machineFoldersFrom(a.values['--machine']))
+      else await runInner(E, spec, root, nonce, report)
     } catch (e) {
       say(`${TAG} FAIL: inner run ${spec.run} (${mode}, ${phase}) threw: ${e?.stack ?? e}`)
       fail(report, `inner run ${spec.run} threw: ${e?.message ?? e}`)
@@ -1255,8 +1468,75 @@ async function innerMain(argv) {
 function newInnerReport(run, mode, phase) {
   return {
     run, mode, phase, runId: null, tools: null, lowIntegrity: null, canary: {}, entries: [], labelLeak: [], leftBehind: [], links: [],
-    acknowledged: [], fakeHomeChanged: false, canaryFailed: false, failures: [], notes: [], released: null,
+    acknowledged: [], fakeHomeChanged: false, canaryFailed: false, failures: [], notes: [], released: null, boxFolder: null,
   }
+}
+
+/** The first line of a box that decides it (its RESULT, an ABORT, a REFUSED, a FAIL or an UNSAFE line), without the tag; or null. */
+export function boxVerdictLine(lines) {
+  const l = (lines ?? []).find(x => /^\[acceptance\] (?:RESULT|ABORT|REFUSED|FAIL|UNSAFE)\b/.test(String(x)))
+  return l === undefined ? null : String(l).slice(TAG.length + 1)
+}
+
+/**
+ * Wave 11 (pure): the box rehearsal's one entry. `code`: realBox's code (null when it threw: `threw`, the error's
+ * words); `result`: its realResult, present when it reached its verdict; `homeDiff`: what changed in the fake home
+ * outside the box's own mission folder; `latch`: the latch the fake guard holds afterwards, or null; `verdict`: the
+ * box's deciding line. A PASS (`code` 0) is `passed` only when the fake home is unchanged and nothing latched; an
+ * INCOMPLETE (a result that did not pass) is `not proven`, which no row of the accepted table admits; everything else
+ * (an ABORT, a refusal, a FAIL, a throw) is FAILED.
+ */
+export function rehearsalOutcome({ code, result = null, homeDiff = [], latch = null, threw = null, verdict = null }) {
+  const said = verdict ?? 'the box printed no deciding line'
+  if (threw !== null) return { outcome: 'FAILED', detail: `the box threw: ${threw}` }
+  if (homeDiff.length) return { outcome: 'FAILED', detail: `the rehearsal changed the fake home: ${homeDiff.join(', ')} (${said})` }
+  if (latch !== null) return { outcome: 'FAILED', detail: `the fake guard holds the integrity latch after the rehearsal: ${latch} (${said})` }
+  if (code === 0) return { outcome: 'passed', detail: said }
+  if (code === 1 && result && result.pass === false) return { outcome: 'not proven', detail: said }
+  return { outcome: 'FAILED', detail: said }
+}
+
+/**
+ * Inner run 9, the box rehearsal (wave 11): realBox, the real stage's own box, against the fake home. The models hash
+ * record of the fake guard is taken first, by the engine's own hashModels (`cynco-guard hash-models` takes the real
+ * one), only after the same refusal realBox asks; then realBox runs with `{ rehearsal }`; then the fake home (outside
+ * the box's mission folder, which realBox leaves in place in the temp folder as the real stage does) and the fake guard
+ * are read. One entry, `box realBox rehearsal` (rehearsalOutcome).
+ */
+async function rehearseBox(spec, root, nonce, report, machine) {
+  const C = await import('../engine/containment.js')
+  const I = await import('../engine/integrity.js')
+  const P = await import('../engine/paths.js')
+  const fake = fakePaths(root)
+  const one = (o) => entry(report, { id: 'box', variant: 'realBox', form: 'rehearsal', ...o })
+  say(`${TAG} inner run ${spec.run}: ${spec.mode}, ${spec.phase}; switch none; the real-profile stage's box (realBox) against the fake home ${fake.home}`)
+  // Wave 11c, H4: the machine's own folders are the fake stage's (`--machine`, machineFoldersFrom): this process's
+  // environment is repointed and knows none of them. Handed none (null), rehearsalRefusal refuses.
+  const why = rehearsalRefusal({ root, nonce, env: process.env, readSentinel: readSentinelOf, v: boxFolders(P), machine })
+  if (why !== null) {
+    say(`${TAG} REFUSED (rehearsal): ${why} — the box was not run`)
+    one({ outcome: 'FAILED', detail: `REFUSED (rehearsal): ${why}` })
+    return
+  }
+  if (I.readModelsRecord() === null) {
+    const rec = await I.hashModels({})
+    say(`${TAG} rehearsal: the fake models record was taken in ${P.guardDir()} (root ${rec.root}, ${rec.files.length} file(s): ${rec.files.map(f => f.rel).join(', ')}), as scripts/cynco-guard.mjs hash-models takes the real one`)
+  }
+  const h0 = homeEntries(fake)
+  const rehearsal = { root, nonce, lines: [], box: null, machine }
+  let r = null, threw = null
+  try {
+    r = await realBox(C, I, { rehearsal }, null, [])
+  } catch (e) {
+    threw = oneLine(e?.stack ?? e).slice(0, 400)
+    say(`${TAG} FAIL: the box rehearsal threw: ${e?.stack ?? e}`)
+  }
+  report.boxFolder = rehearsal.box
+  const extra = rehearsal.box ? [relative(fake.home, rehearsal.box).replace(/\\/g, '/')] : []
+  const homeDiff = treeDiff(h0, homeEntries(fake, extra))
+  if (homeDiff.length) report.fakeHomeChanged = true
+  const o = rehearsalOutcome({ code: r?.code ?? null, result: r?.result ?? null, homeDiff, latch: I.haltRefusal(), threw, verdict: boxVerdictLine(rehearsal.lines) })
+  one(o)
 }
 
 function fail(report, why) {
@@ -2611,8 +2891,11 @@ export const REAL_ACCEPTED_NOT_PROVEN = Object.freeze({
  * twin that did not resolve (`git-bash-did-not-start`); `fell`, the deep-count entries whose fall the stage printed
  * and the 2 % allowance admitted: the line then says that the loss was within the allowance, and which.
  */
-export function realResult({ items, refused, calls, fell = [] }) {
-  const outside = items.filter(x => !Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls))
+export function realResult({ items, refused, calls, fell = [], accepted = REAL_ACCEPTED_NOT_PROVEN, where = 'real profile', probes = 5 }) {
+  // Wave 11: `accepted`, `where` and `probes` are the box rehearsal's (REHEARSAL_RESULT); their defaults give the real
+  // stage's text unchanged.
+  const isAccepted = (cls) => Object.prototype.hasOwnProperty.call(accepted, cls)
+  const outside = items.filter(x => !isAccepted(x.cls))
   const twins = items.filter(x => x.cls === 'git-bash-did-not-start').length
   const addsUp = typeof calls === 'number' && refused + twins === calls
   const loss = (fell ?? []).length
@@ -2624,13 +2907,238 @@ export function realResult({ items, refused, calls, fell = [] }) {
     ...(addsUp ? [] : [`the calls do not add up: ${sums}`]),
   ]
   const lines = [why.length === 0
-    ? `${TAG} RESULT: PASS (real profile): 5 create probes denied, ${sums}, ${items.length} not proven (each in the accepted list), manifest unchanged after each, ${loss}.`
-    : `${TAG} RESULT: INCOMPLETE (real profile): ${why.join('; ')}; ${refused} calls refused before running, manifest unchanged after each, ${loss}.`]
+    ? `${TAG} RESULT: PASS (${where}): ${probes} create probes denied, ${sums}, ${items.length} not proven (each in the accepted list), manifest unchanged after each, ${loss}.`
+    : `${TAG} RESULT: INCOMPLETE (${where}): ${why.join('; ')}; ${refused} calls refused before running, manifest unchanged after each, ${loss}.`]
   for (const x of items) {
-    const words = REAL_ACCEPTED_NOT_PROVEN[x.cls]
-    lines.push(`${TAG} not proven: ${x.what} ${Object.prototype.hasOwnProperty.call(REAL_ACCEPTED_NOT_PROVEN, x.cls) ? `[accepted, ${x.cls}: ${words}]` : '[NOT in the accepted list]'}`)
+    const words = accepted[x.cls]
+    lines.push(`${TAG} not proven: ${x.what} ${isAccepted(x.cls) ? `[accepted, ${x.cls}: ${words}]` : '[NOT in the accepted list]'}`)
   }
   return { pass: why.length === 0, lines }
+}
+
+/**
+ * Wave 11: what the box rehearsal's not-proven items are judged by: the real stage's accepted list and one class more,
+ * `pytest-not-in-fake-site`, in the words of the fake stage's row for the same cause (the child's user site is the
+ * fake one, where no pytest is installed). Four create probes: the registry probe is skipped in the rehearsal.
+ */
+export const REHEARSAL_ACCEPTED_NOT_PROVEN = Object.freeze({
+  ...REAL_ACCEPTED_NOT_PROVEN,
+  'pytest-not-in-fake-site': ACCEPTED_NOT_PROVEN.find(x => x.reason === 'pytest-not-in-fake-site').words,
+})
+const REHEARSAL_RESULT = Object.freeze({ accepted: REHEARSAL_ACCEPTED_NOT_PROVEN, where: 'box rehearsal, fake home', probes: 4 })
+/** Wave 11b, G2: how the box rehearsal's own PASS line begins (realResult's words, without the tag). */
+const REHEARSAL_PASS_PREFIX = `RESULT: PASS (${REHEARSAL_RESULT.where}): `
+
+/**
+ * Wave 11 (pure): the not-proven class of one line of honest work in the box. The real stage's classes are
+ * `honest-<key>` (none is accepted). In the rehearsal only, the two lines that say pytest cannot be imported from the
+ * fake user site are `pytest-not-in-fake-site`: line (b) in exactly the words pytestCause gives that cause, and line
+ * (c) when the child imported nothing from the user site because pytest is not importable at all.
+ */
+export function honestClass(l, rehearsal) {
+  if (rehearsal && l.key === 'b' && /^\(b\) not proven: no module named pytest/.test(l.line)) return 'pytest-not-in-fake-site'
+  if (rehearsal && l.key === 'c' && /^\(c\) not proven: no module was imported from the user site .+ \(pytest: not importable\)$/.test(l.line)) return 'pytest-not-in-fake-site'
+  return `honest-${l.key}`
+}
+
+/**
+ * Wave 11 (pure; audit finding 1, real-1 of 2026-11-24): the box's audit preflight, the engine's boot step 5. Null when
+ * the run has an audit handle and its `probe('preflight')` wrote the probe record (probe answers null then), else
+ * the refusal's reason. The line before it read `toolAudit()?.probe('preflight') ?? '<no handle>'`, which turned the
+ * probe's null into the no-handle text and refused every real run; engine/main.ts reads it as `if (why)`.
+ */
+export function auditPreflight(handle) {
+  if (!handle) return 'no audit handle for this run'
+  // Only the probe's own null is a written record (positive evidence); anything else that is not a reason refuses too.
+  const why = handle.probe('preflight')
+  return why === null ? null : typeof why === 'string' && why !== '' ? why : `the audit probe gave no answer (${String(why)})`
+}
+
+/**
+ * Wave 11 (pure; audit finding 5): the reading of one attack call in the box. `ok` when the path check refused it
+ * before it ran (an error whose refusal layer is the protected path), the audit holds exactly one `refused` record for
+ * its input and no start or end, and the decoys are intact. Otherwise `why` says which of these failed, in words that
+ * never call a refused call one that ran: a call refused by the path check whose audit counts are off is "refused, but
+ * its audit record does not match", with the counts.
+ */
+export function afterVerdict({ isError, layer, audit, decoys }) {
+  const refusedHere = isError === true && layer === 'protected path'
+  const countsOk = audit?.refused === 1 && audit?.start === 0 && audit?.end === 0 && audit?.layer === 'protected path'
+  const counts = `audit ${JSON.stringify(audit ?? null)}`
+  if (refusedHere && countsOk && decoys === 'intact') {
+    return { ok: true, why: null, line: `refused before it ran by the protected path layer; ${counts}` }
+  }
+  if (refusedHere && countsOk) return { ok: false, why: `was refused by the path check, but the decoys are ${decoys}: the command ran before the refusal (${counts})` }
+  if (refusedHere) return { ok: false, why: `was refused by the path check, but its audit record does not match (${counts}; decoys ${decoys})` }
+  // Wave 11b, G4: the audit holds the path check's refusal and nothing of a run, but the answer names another layer or
+  // none: say what was seen, never "not refused".
+  if (countsOk) return { ok: false, why: `was refused (the audit records the protected path layer), but its answer does not name the layer (isError ${isError}, layer ${layer ?? 'none'}, ${counts}, decoys ${decoys})` }
+  return { ok: false, why: `was not refused before it ran (isError ${isError}, layer ${layer ?? 'none'}, ${counts}, decoys ${decoys})` }
+}
+
+/** Wave 11b, G1: the ABORT line of the control call read as refused. */
+export const CONTROL_READ_AS_REFUSED = 'ABORT: the control call, which the path check allows, was read as refused: this box cannot tell a refused call from one that ran. No attack was run.'
+
+/**
+ * Wave 11b, G1 (pure): what follows from the reading of one call in the box, an attack's or the control's (realBox's
+ * after() does what it says). `verdict`: afterVerdict's; `control`: the call is the control (a Write the path check
+ * allows); `made`: whether the control's file exists after it (the control only); `changed`: the compare after the call
+ * changed (anything but false counts as changed); `lost`: the confirmed census loss, or null while it has not been read
+ * (after() reads it only when the call is to go on, as before wave 11b). `{ act, by?, line }`:
+ * - 'abort': an attack that is not read as refused (`line` null: realBox prints its own ABORT line, pinned by T2.37), the
+ *   control read as refused (`line` CONTROL_READ_AS_REFUSED) or a control that made no file (positive evidence that it ran);
+ * - 'census': read the census, then ask again with `lost`;
+ * - 'latch': `by` 'compare' when the compare changed (compareRun has written the latch), else 'census' (the box writes
+ *   it); the same for the control as for an attack: a change after a harmless call is a change all the same;
+ * - 'go'.
+ */
+export function afterReading({ control = false, verdict, made = null, changed, lost = null }) {
+  if (control) {
+    if (verdict?.ok !== false) return { act: 'abort', line: CONTROL_READ_AS_REFUSED }
+    if (made !== true) return { act: 'abort', line: `ABORT: the control call, which the path check allows, made no file (${verdict.why}): this box cannot show that a call that ran is read as one that ran. No attack was run.` }
+  } else if (verdict?.ok !== true) {
+    return { act: 'abort', line: null }
+  }
+  if (lost === null) return { act: 'census', line: null }
+  if (changed !== false || !Array.isArray(lost) || lost.length > 0) return { act: 'latch', by: changed !== false ? 'compare' : 'census', line: null }
+  return { act: 'go', line: null }
+}
+
+/**
+ * Wave 11b, G3 (pure): the end of the box. `settle`: settleRun's compare; `lost`: the confirmed census loss; `deepFail`:
+ * the deep count's second reading failed; `audit`: auditVerdict's; `where`: the place the RESULT line names. A PASS needs
+ * positive evidence of each (a settle that says `changed: false`, a census list, a deep count that says false, an audit
+ * that says ok); the first that is missing or failing decides, in that order. `{ pass, why, line }`, `line` the RESULT:
+ * FAIL line (null on a pass: realResult writes the PASS or INCOMPLETE line after it).
+ */
+export function settleVerdict({ settle, lost, deepFail, audit, where }) {
+  const why = settle?.changed !== false
+    ? (settle?.changed === true ? `the settling compare found a change${settle.publicSummary ? `: ${settle.publicSummary}` : ''}` : 'the settling compare gave no reading')
+    : !Array.isArray(lost) ? 'the census gave no reading'
+      : lost.length > 0 ? `census loss: ${lost.join('; ')}`
+        : deepFail !== false ? (deepFail === true ? 'the deep count fell by more than 2 %' : 'the deep count gave no reading')
+          : audit?.ok !== true ? (audit?.why ?? 'the audit gave no verdict')
+            : null
+  return why === null ? { pass: true, why: null, line: null } : { pass: false, why, line: `${TAG} RESULT: FAIL (${where}): ${why}` }
+}
+
+/**
+ * Wave 11b, G6 (pure): the box's ABORT line when the presence tripwire reported a loss (`loss`: what onLoss was handed;
+ * `latchPath`: what the box's tripHalt answered, or null when it wrote none: a loss of kind 'latch' is the latch already
+ * there, which the box does not write again).
+ */
+export function tripwireLossLine({ loss, latchPath }) {
+  const head = `ABORT: the presence tripwire reported a loss: ${loss?.publicSummary ?? 'no summary was given'}.`
+  const latch = loss?.kind === 'latch' ? 'The latch was not written by this box (it was there, or the guard folder cannot be used).'
+    : latchPath ? `The integrity latch was written (${latchPath}).` : 'The integrity latch could not be written.'
+  return `${head} ${latch} Nothing more was run.`
+}
+
+/**
+ * Wave 11c, H2: the box's in-run presence tripwire, as one tested piece (it was inline in realBox, where a tripwire
+ * started and stopped at once, or an onLoss that recorded nothing, passed every test). `I`: engine/integrity.js (a
+ * stub in the tests); `runId`, `page`, `say`: the box's own. `start(ctx)` starts the engine's tripwire over the run's
+ * baseline with an onLoss that keeps the first loss it is handed and, for a loss of kind 'presence', writes the latch
+ * through tripHalt with the box's page adapter (synchronously begun, as in the engine); a loss of kind 'latch' is the
+ * latch already there, and the box writes none. It answers `{ ok, line }`: the "tripwire on" line, or the refusal.
+ * `abort()` answers false while no loss was reported; after one it prints the ABORT line once (tripwireLossLine, after
+ * the latch's write has ended) and answers true every time. `stop()` stops the engine's tripwire.
+ */
+export function boxTripwire({ I, runId, page, say }) {
+  let loss = null
+  let latch = null
+  let said = false
+  return {
+    start(ctx) {
+      const tw = I.startPresenceTripwire({
+        ctx,
+        onLoss: (l) => {
+          if (loss !== null) return
+          loss = l
+          if (l?.kind === 'presence') latch = I.tripHalt({ by: 'acceptance', run: runId, reason: 'presence-lost', compare: l.compare ?? undefined, detail: l.summary, guard: ctx.folders.guard, cwd: ctx.missionCwd, page })
+        },
+      })
+      if (!tw?.ok) return { ok: false, line: layerRefusalLine('integrity', tw?.reason ?? 'the presence tripwire gave no answer') }
+      return { ok: true, line: `${TAG} tripwire on: ${tw.folders} folder(s) under ${tw.roots} root(s), every 60 s and before a tool call through the executor (at most once a second)` }
+    },
+    async abort() {
+      if (loss === null) return false
+      const t = latch ? await latch : null
+      if (!said) {
+        said = true
+        say(`${TAG} ${tripwireLossLine({ loss, latchPath: t?.latched ? t.latchPath : null })}`)
+      }
+      return true
+    },
+    stop() {
+      I.stopPresenceTripwire()
+    },
+  }
+}
+
+/**
+ * Wave 11 (pure; audit finding 3): the census losses of two readings (censusLoss's lines) that both show, by name,
+ * in the second reading's words. A top-level dot-entry missing in one reading only is a moment (a file replaced by
+ * delete-then-rename), as the engine's own compare reads it with its confirming walk; the box latches only on a loss
+ * both readings show.
+ */
+export function confirmedLoss(first, second) {
+  const nameOf = (l) => /^(.*) (?:is gone|fell from -?\d+ to -?\d+ entries)$/.exec(l)?.[1] ?? l
+  const firstNames = new Set((first ?? []).map(nameOf))
+  return (second ?? []).filter(l => firstNames.has(nameOf(l)))
+}
+
+/**
+ * Wave 11 (pure; was inline in realBox): the deep count's falls between D0 and a later count. `fell`, every entry whose
+ * files or bytes fell (printed, and named in a PASS line); `lines`, one line each; `fail`, a fall of files by more than
+ * 2 % of an entry's D0 files. An entry gone is counted as 0 files and 0 bytes.
+ */
+export function deepFall(d0, d1) {
+  const fell = [], lines = []
+  let fail = false
+  for (const e0 of d0) {
+    const e1 = d1.find(x => x.name === e0.name) ?? { files: 0, bytes: 0, unreadable: 0 }
+    if (e1.files < e0.files || e1.bytes < e0.bytes) {
+      lines.push(`deep count: ${e0.name}: files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes}`)
+      fell.push(`${e0.name} (files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes})`)
+      if (e0.files > 0 && (e0.files - e1.files) / e0.files > 0.02) fail = true
+    }
+  }
+  return { fell, lines, fail }
+}
+
+/**
+ * Wave 11 (pure; audit finding 2): the audit files the box reads at its end: every name of the audit folder that is an
+ * audit day file (`re`: the engine's AUDIT_FILE_RE, its `.n` roll-overs included) dated from the day the box began
+ * (`from`) to today (`to`), local dates as the writer names them, sorted.
+ */
+export function auditFilesFor(names, { from, to, re }) {
+  return (names ?? []).filter(n => re.test(n) && n.slice(0, 10) >= from && n.slice(0, 10) <= to).sort()
+}
+
+/**
+ * Wave 11 (pure; audit finding 2): the box's audit verdict from `verifyAuditFiles(files)` (`v`), counted over the
+ * processes that wrote for this run only (`runId`): a gap or an open start another process left that day is not this
+ * run's. `ok` needs positive evidence: at least one file read, no unparsable or unreadable file, a process that wrote
+ * for this run, its head present, no gap and no open start. `line` keeps the counts' words; `why` names the first
+ * failing reading.
+ */
+export function auditVerdict({ v, runId, files }) {
+  const mine = (v?.procs ?? []).filter(x => (x.runs ?? []).includes(runId))
+  const gaps = mine.reduce((n, x) => n + x.gapCount, 0)
+  const open = mine.reduce((n, x) => n + x.openStarts.length, 0)
+  const head = mine.some(x => x.headMissing)
+  const unparsable = v?.unparsable ?? 0
+  const records = mine.reduce((n, x) => n + x.records, 0)
+  const read = (files ?? []).map(f => basename(f)).join(', ') || 'none'
+  const line = `${gaps} gap(s), ${open} start(s) without an end, ${unparsable} unparsable line(s)${head ? ', the head of a process missing' : ''}; files read: ${read}; ${mine.length} process(es) wrote ${records} record(s) for ${runId}`
+  const why = (files ?? []).length === 0 ? 'no audit file of the days of this run was found'
+    : unparsable > 0 ? `the audit has ${unparsable} unparsable line(s) or unreadable file(s)`
+      : mine.length === 0 ? `no audit record of ${runId} was found`
+        : head ? 'the audit is missing the head of a process of this run'
+          : gaps || open ? 'the audit has a gap or an open start'
+            : null
+  return { ok: why === null, why, line }
 }
 
 /** The run 3 rule: every variant refused by the full stack, or its honest twin did not resolve; the run-folders form answered. */
@@ -3250,10 +3758,13 @@ function relayInner(r) {
  * would throw away the first attempt's lines and the links it made (`retryImpossibleTimeout` is for
  * commands that are). A fault reads as an inner run that printed no report. `run` is injected by tests.
  * --no-env-file: a stray .env in the checkout must not add a switch the self-check would then see as given.
+ * Wave 11c, H4: `machine` (machineFolders, asked in this outer process) goes on the command line as `--machine <json>`,
+ * not in the environment, which repointedEnv rewrites; the box rehearsal is the only run handed it.
  */
-export function startInner(spec, root, nonce, env, starter = runSync) {
-  return starter(process.execPath, ['--no-env-file', SELF, '--inner', spec.mode, '--phase', spec.phase, '--root', root, '--nonce', nonce],
-    { cwd: CHECKOUT, env, envExact: true, timeoutMs: INNER_CAP_MS })
+export function startInner(spec, root, nonce, env, starter = runSync, machine = null) {
+  return starter(process.execPath, ['--no-env-file', SELF, '--inner', spec.mode, '--phase', spec.phase, '--root', root, '--nonce', nonce,
+    ...(machine ? ['--machine', JSON.stringify(machine)] : [])],
+  { cwd: CHECKOUT, env, envExact: true, timeoutMs: INNER_CAP_MS })
 }
 
 /**
@@ -3266,6 +3777,7 @@ export async function runFakeStage(a = {}) {
     stage: 'fake', platform: process.platform, bun: globalThis.Bun?.version ?? null, shell: null, root: a.root ? resolve(a.root) : null, commit: null,
     tools: null, lowIntegrity: WIN ? 'FAILED' : 'not-applicable', liveFire: Boolean(a.liveFire) && WIN, acknowledged: [], canary: {}, entries: [],
     labelLeak: 'none', leftBehind: [], links: [], notProven: 0, realProfileLoss: null, realProfileUnmeasured: [], pass: false, firstFailure: null, innerRuns: [],
+    boxFolder: null,
   }
   const failWith = (why) => { if (report.firstFailure === null) report.firstFailure = why }
   // Refused before anything is made: live fire while a volume without labels is attached, and a root
@@ -3285,18 +3797,25 @@ export async function runFakeStage(a = {}) {
   // The real profile is read (never written) before and after, by the PRESENCE rule of the real stage: the
   // top-level dot-entries (the census), and since wave 8 (RT1) every presence root of the real stage, AppData's
   // four application roots and the home's whole top level among them, because the ninth attack fires at AppData.
-  const realHome = os.userInfo().homedir
+  // Wave 11c, H1: the real home as the system reports it (systemHome), not os.userInfo(), which follows USERPROFILE
+  // under Bun: a shell with USERPROFILE repointed would have the stage compare that folder and call it the real profile.
+  const realHome = await systemHome()
   let census0 = null
   // F6: each comparison that could not be made is named, so that a live-fire PASS never stands without it.
   const unmeasured = (what) => report.realProfileUnmeasured.push(what)
-  try { census0 = censusOf(realHome) } catch (e) {
-    say(`${TAG} the real home's census could not be taken (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`)
-    unmeasured(`the real home's census could not be taken (${e?.message ?? e})`)
+  if (realHome === null) {
+    say(`${TAG} the real home as the system reports it could not be read (systemHome); the real profile is not read before or after, and realProfileLoss is not measured`)
+    unmeasured('the real home as the system reports it could not be read (systemHome)')
+  } else {
+    try { census0 = censusOf(realHome) } catch (e) {
+      say(`${TAG} the real home's census could not be taken (${e?.message ?? e}); realProfileLoss (a top-level dot-entry lost, by the presence rule) is not measured`)
+      unmeasured(`the real home's census could not be taken (${e?.message ?? e})`)
+    }
   }
   let I = null, reading0 = null
   try {
     I = await import('../engine/integrity.js')
-    reading0 = realHomeReading(I, realHome)
+    if (realHome !== null) reading0 = realHomeReading(I, realHome)
   } catch (e) {
     say(`${TAG} the real profile's presence roots could not be read (${e?.message ?? e}); a loss under AppData or of a top-level folder of the real home is not measured`)
     unmeasured(`the real profile's presence roots could not be read (${e?.message ?? e})`)
@@ -3315,6 +3834,7 @@ export async function runFakeStage(a = {}) {
   say(`${TAG} the fake profile is at ${fake.home}; the test root is ${root}`)
   for (const spec of INNER_RUNS) {
     if (spec.liveFire && !report.liveFire) continue
+    if (!appliesOn(spec, process.platform)) continue
     if (spec.liveFire && report.lowIntegrity !== 'low') {
       say(`${TAG} live fire skipped: run 1 did not report low integrity`)
       break
@@ -3324,7 +3844,11 @@ export async function runFakeStage(a = {}) {
       ...(report.acknowledged.length ? { LOCALCODE_UNPROTECTED_VOLUMES_OK: report.acknowledged.join(';') } : {}),
     })
     say(`${TAG} inner run ${spec.run}: --inner ${spec.mode} --phase ${spec.phase}`)
-    const r = startInner(spec, root, nonce, env)
+    // Wave 11c, H4: the box rehearsal is handed the machine's own folders as this process sees them (its environment is
+    // the real one; the inner run's is repointed).
+    const r = spec.run === REHEARSAL_RUN
+      ? startInner(spec, root, nonce, env, runSync, machineFolders(await import('../engine/paths.js'), realHome))
+      : startInner(spec, root, nonce, env)
     relayInner(r)
     const last = `${r.stdout ?? ''}`.split(/\r?\n/).filter(l => l.startsWith('INNER ')).pop()
     let inner = null
@@ -3342,12 +3866,14 @@ export async function runFakeStage(a = {}) {
       failWith(`inner run ${spec.run} ${why}`)
       // Only the inner process was ended: what it started (a launcher, a low shell) may still be
       // running, and its release did not run, so the folders it labelled may still read low.
-      say(`${TAG} WARNING: inner run ${spec.run} ${why}; only that process was ended. Processes it started may still be running (look for bun and powershell under ${root}), and these may still carry a Low label: ${spec.phase === 'authoring' ? `${fake.a1} and ${fake.baseArchive}` : fake.mission}, and the sandbox under ${fake.sandboxRoot}. Read them with: bun scripts/cynco-sandbox.mjs status (with LOCALCODE_SANDBOX_ROOT=${fake.sandboxRoot}) before removing the root.`)
+      say(`${TAG} WARNING: inner run ${spec.run} ${why}; only that process was ended. Processes it started may still be running (look for bun and powershell under ${root}), and these may still carry a Low label: ${spec.phase === 'authoring' ? `${fake.a1} and ${fake.baseArchive}` : spec.phase === 'rehearsal' ? `the box's mission folder (cynco-acceptance-real-*) under ${fake.temp}` : fake.mission}, and the sandbox under ${fake.sandboxRoot}. Read them with: bun scripts/cynco-sandbox.mjs status (with LOCALCODE_SANDBOX_ROOT=${fake.sandboxRoot}) before removing the root.`)
       break
     }
     report.innerRuns.push({ run: inner.run, runId: inner.runId, released: inner.released, notes: inner.notes })
     if (report.tools === null && inner.tools) report.tools = inner.tools
     report.entries.push(...inner.entries)
+    // Wave 11: the box rehearsal leaves its mission folder in the fake temp folder, as the real stage leaves its own.
+    if (spec.run === REHEARSAL_RUN && inner.boxFolder) report.boxFolder = inner.boxFolder
     for (const l of inner.links ?? []) addLink(report, l)
     if (spec.run === 1) {
       report.canary = inner.canary
@@ -3527,7 +4053,28 @@ async function disarmMission(fake, nonce) {
  */
 export function innerRunCoverage(report) {
   const have = new Set((report.innerRuns ?? []).map(r => r.run))
-  return INNER_RUNS.filter(s => !s.liveFire || report.liveFire).filter(s => !have.has(s.run)).map(s => `inner run ${s.run} (${s.mode}, ${s.phase}) did not report`)
+  // Wave 11: the box rehearsal (run 9) applies on Windows only, with live fire on or off.
+  const platform = report.platform ?? process.platform
+  return INNER_RUNS.filter(s => !s.liveFire || report.liveFire).filter(s => appliesOn(s, platform)).filter(s => !have.has(s.run)).map(s => `inner run ${s.run} (${s.mode}, ${s.phase}) did not report`)
+}
+
+/**
+ * Wave 11 (pure): a fake stage whose box rehearsal reported holds exactly one entry for it (`box realBox rehearsal`),
+ * one sentence per gap. Its outcome is judged as any entry's is: FAILED fails the stage, `not proven` is outside the
+ * accepted table (INCOMPLETE), `passed` counts. A run 9 that did not report is innerRunCoverage's gap.
+ */
+export function rehearsalCoverage(report) {
+  if (!appliesOn({ win: true }, report.platform ?? process.platform)) return []
+  if (!(report.innerRuns ?? []).some(r => r.run === REHEARSAL_RUN)) return []
+  const mine = (report.entries ?? []).filter(e => e.run === REHEARSAL_RUN && e.id === 'box' && e.variant === 'realBox' && e.form === 'rehearsal')
+  const n = mine.length
+  if (n !== 1) return [n === 0 ? `run ${REHEARSAL_RUN} has no entry for box realBox rehearsal` : `run ${REHEARSAL_RUN} has ${n} entries for box realBox rehearsal`]
+  // Wave 11b, G2: a passed entry carries the box's own deciding line, its PASS line; the mapping alone is not trusted.
+  const e = mine[0]
+  if (e.outcome === 'passed' && !String(e.detail ?? '').startsWith(REHEARSAL_PASS_PREFIX)) {
+    return [`run ${REHEARSAL_RUN}'s box realBox rehearsal reads passed, but its detail is not the box's own PASS line: ${oneLine(e.detail ?? '(no detail)').slice(0, 160) || '(no detail)'}`]
+  }
+  return []
 }
 
 /**
@@ -3578,6 +4125,8 @@ export function finishFake(report, o = {}) {
     if (report.liveFire) gaps.push(...liveProofCoverage(report.entries))
     // Wave 10d, F6: every inner run that applies to the stage reported (runs 6 and 7 only with live fire on).
     gaps.push(...innerRunCoverage(report))
+    // Wave 11: the box rehearsal's one entry, with live fire on or off.
+    gaps.push(...rehearsalCoverage(report))
     for (const g of gaps) say(`${TAG} FAIL (coverage): ${g}`)
     if (gaps.length) report.firstFailure = `coverage: ${gaps.join('; ')}`
   }
@@ -3662,7 +4211,11 @@ async function fakeMain(args) {
   const vol = realRoot ? /^([A-Za-z]):/.exec(realRoot) : null
   const rootVolume = vol ? unprotected.find(v => v.root === `${vol[1].toUpperCase()}:\\`) ?? null : null
   const evPath = args.values['--evidence']
-  const evidence = typeof evPath === 'string' ? evidenceRefusal({ path: evPath, home: os.homedir(), unprotectedVolumes: unprotected, exists: exists(evPath), parentExists: exists(dirname(resolve(evPath))) }) : null
+  // Wave 11c, H1: evidence inside the home is refused for the home the system reports (systemHome) and for the one the
+  // environment names (os.homedir(), which follows USERPROFILE): inside either is refused, so a repointed shell cannot
+  // move the check, and an unreadable system answer leaves the environment's check standing.
+  const evidenceIn = (home) => evidenceRefusal({ path: evPath, home, unprotectedVolumes: unprotected, exists: exists(evPath), parentExists: exists(dirname(resolve(evPath))) })
+  const evidence = typeof evPath === 'string' ? evidenceIn(await systemHome()) ?? evidenceIn(os.homedir()) : null
   const level = C.ownIntegrityLevel()
   const liveFire = !args.flags.has('--no-live-fire') && WIN
   const why = fakeStageRefusal({ env: process.env, argv: process.argv, runtime: runtimeName(), platform: process.platform, level,
@@ -3694,22 +4247,33 @@ export async function runRealStage(a) {
     platform: process.platform, runtime: runtimeName() })
   if (first) { say(first); return { code: 2 } }
   const I = await import('../engine/integrity.js')
+  // The environment's home (USERPROFILE). Read before the home guard below only to list labels; from the guard on it
+  // is the folder the system reports, or the stage has refused.
   const home = os.homedir()
+  // Wave 11c, H1: the system's own answer, never os.userInfo(), which follows USERPROFILE under Bun (measured).
+  const sysHome = await systemHome()
   let unprotected = []
   try { unprotected = C.listUnprotectedVolumes() } catch (e) { say(refusedLine(`the attached volumes could not be listed (${e?.message ?? e})`)); return { code: 2 } }
   const ev = a.evidence
   const evidence = evidenceRefusal({ path: ev, home, unprotectedVolumes: unprotected, exists: typeof ev === 'string' && exists(ev),
     parentExists: typeof ev === 'string' && exists(dirname(resolve(ev))), required: true })
   const lowList = []
+  // Wave 11d, K4: a home that cannot be listed is kept as a fault and refused by name below (homeListingRefusal), after
+  // realStageRefusal, which names a home mismatch first; an empty label list is never read as "none" then.
+  let listFault = null
   if (WIN) {
-    for (const n of readdirSync(home).filter(x => x.startsWith('.'))) if (explicitLowLabelled(join(home, n))) lowList.push(join(home, n))
+    let names = []
+    try { names = readdirSync(home) } catch (e) { listFault = e?.code ?? e?.message ?? String(e) }
+    for (const n of names.filter(x => x.startsWith('.'))) if (explicitLowLabelled(join(home, n))) lowList.push(join(home, n))
     const P = await import('../engine/paths.js')
     for (const d of [P.cyncoHome(), P.modelsDir(), P.guardDir(), P.auditDir()]) if (typeof d === 'string' && exists(d) && explicitLowLabelled(d)) lowList.push(d)
   }
   const why = realStageRefusal({ argv: a.argv, env: process.env, contained: isContainedRun(process.env, process.argv), level: C.ownIntegrityLevel(),
     platform: process.platform, runtime: runtimeName(), evidence, halt: I.haltRefusal(), unprotected,
-    homes:{ env: process.env.USERPROFILE ?? process.env.HOME ?? '', system: os.userInfo().homedir }, lowLabelled: lowList })
+    homes: { env: process.env.USERPROFILE ?? process.env.HOME ?? '', system: sysHome }, lowLabelled: lowList })
   if (why) { say(why); return { code: 2 } }
+  const listWhy = homeListingRefusal({ home, fault: listFault })
+  if (listWhy) { say(listWhy); return { code: 2 } }
   // Wave 10d, F7: before anything runs (the fake stage, the box, any probe), a probe folder whose path the stage would
   // read as a child's answer is refused by name.
   const PF = await import('../engine/paths.js')
@@ -3737,27 +4301,55 @@ async function header(C, unprotected) {
   say(`${TAG} header: the volume listing (listUnprotectedVolumes) named ${unprotected.length ? 'only the volumes above' : 'no volume'} as unprotected; every other attached volume it read is local NTFS or has no file system`)
 }
 
+/**
+ * The real stage's box (rules G4 to G7), and, handed `a.rehearsal` (`{ root, nonce, lines, box }`, made by rehearseBox
+ * only, never by runRealStage), the same box against the fake home in inner run 9 (wave 11). What differs in a
+ * rehearsal: it refuses first unless every folder it resolves lies inside the test root (rehearsalRefusal); it pages
+ * nobody; it skips the registry probe and the three G9 machine lines and the NOT PROVEN block, each with a printed line;
+ * its not-proven items are judged by REHEARSAL_ACCEPTED_NOT_PROVEN; it records the lines it prints in
+ * `a.rehearsal.lines` and its mission folder's parent in `a.rehearsal.box`. Everything else is the same code.
+ */
 async function realBox(C, I, a, fakeReport, unprotected) {
+  const rehearsal = a.rehearsal ?? null
+  // In a rehearsal every line this box prints is also kept for rehearseBox's entry; on the real profile `say` is the
+  // module's own.
+  const say = rehearsal ? (line) => { rehearsal.lines.push(String(line)); printLine(line) } : printLine
+  const where = rehearsal ? 'box rehearsal, fake home' : 'real profile'
+  if (rehearsal) {
+    const P0 = await import('../engine/paths.js')
+    // Wave 11c, H4: the folders the fake stage handed (rehearseBox); never this repointed process's own.
+    const machine = rehearsal.machine ?? null
+    const why = rehearsalRefusal({ root: rehearsal.root, nonce: rehearsal.nonce, env: process.env, readSentinel: readSentinelOf, v: boxFolders(P0), machine })
+    if (why !== null) { say(`${TAG} REFUSED (rehearsal): ${why} — the box was not run`); return { code: 2 } }
+    say(`${TAG} rehearsal: the home, temp, state, guard, audit, models and sandbox folders all lie inside the test root ${rehearsal.root} by real path; no page is sent; the machine's own folders lie outside it: ${machine.map(([n, p]) => `${n} ${p}`).join(', ')}`)
+  }
   const P = await import('../engine/tools/protectedPaths.js')
   const A = await import('../engine/audit/toolAudit.js')
   const X = await import('../engine/tools/executor.js')
   const S = await import('../engine/tools/shellInfo.js')
   const T = await import('../engine/processTree.js')
-  const { notify } = await import('./cynco-campaign-verdict.mjs')
-  const page = async (p) => notify(p.message, process.env, globalThis.fetch, { title: p.title, priority: p.priority })
+  // A rehearsal pages nobody, whatever the environment holds: a latch it trips keeps its page in the fake guard.
+  const page = rehearsal ? async () => false : await (async () => {
+    const { notify } = await import('./cynco-campaign-verdict.mjs')
+    return async (p) => notify(p.message, process.env, globalThis.fetch, { title: p.title, priority: p.priority })
+  })()
   const home = os.homedir()
   const info = S.getShellInfo()
   const tools = { info, shell: 'powershell', python: versionOf('python') ? 'python' : 'python3', gitBash: (() => { try { return bashExe() } catch (e) { return null } })() }
   const nonce = randomBytes(4).toString('hex')
   // G4 step 1: the mission folder.
   const box = mkdtempSync(join(os.tmpdir(), 'cynco-acceptance-real-'))
+  if (rehearsal) rehearsal.box = box
   const mission = join(box, 'mission')
   gitRepo(mission, { 'README.md': 'acceptance mission\n', 'src/pkg/mod.py': 'VALUE = 1\n', 'tests/test_one.py': 'def test_one():\n    assert 1 == 1\n' })
   // G4 step 2.
   const runId = C.mintRunId('acceptance-real')
   // Printed now, not only at the end: a stage killed or stopped with Ctrl-C runs no finally block, and leaves an open
   // baseline (every later takeBaseline refuses while it stands), a sandbox and the box's mission folder labelled Low.
-  say(`${TAG} run id ${runId}; mission folder ${mission}. If this stage is interrupted, recover with: bun scripts/cynco-guard.mjs post ${runId} --by acceptance, then bun scripts/cynco-sandbox.mjs release ${runId}`)
+  say(`${TAG} run id ${runId}; mission folder ${mission}. If this stage is interrupted, recover with: bun scripts/cynco-guard.mjs post ${runId} --by acceptance, then bun scripts/cynco-sandbox.mjs release ${runId}${rehearsal ? ` (with LOCALCODE_GUARD_DIR, LOCALCODE_AUDIT_DIR and LOCALCODE_SANDBOX_ROOT set to the fake ones under ${rehearsal.root})` : ''}`)
+  // Audit finding 2: the first day whose audit file can hold this run's records (the writer names a file by the local
+  // date of each record), read before anything is written.
+  const day0 = localDay()
   try {
     I.takeBaseline({ runId, cwd: mission, by: 'acceptance', holderPid: process.pid })
   } catch (e) {
@@ -3770,6 +4362,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   const counts = { refused: 0, calls: 0, attacks: 0 }
   // RH8: every not-proven item, `{ what, cls }`; realResult says which classes a PASS admits.
   const notProven = []
+  // Wave 11b, G6; wave 11c, H2: the in-run presence tripwire (boxTripwire, table tested): `trip.abort()` prints the
+  // ABORT line of a reported loss once and says whether the box stops.
+  const trip = boxTripwire({ I, runId, page, say })
   try {
     // G4 step 3.
     const est = C.establishContainment({ kind: 'mission', runId, missionCwd: mission })
@@ -3781,13 +4376,34 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     // G4 step 4: the engine's own boot steps 4, 5 and 6, in order.
     const pg = P.pathGuardFault()
     if (pg !== null) { say(layerRefusalLine('protected path', pg)); code = 2; return { code } }
-    const au = A.toolAudit()?.probe('preflight') ?? 'no audit handle for this run'
+    const au = auditPreflight(A.toolAudit())
     if (au !== null) { say(layerRefusalLine('audit', au)); code = 2; return { code } }
     const mr = I.checkModelsRecord()
     if (mr !== null) { say(layerRefusalLine('integrity', mr)); code = 2; return { code } }
-    // G4 step 5.
+    // Wave 11b, G6: the second half of boot step 6, the in-run presence tripwire, started as engine/main.ts starts it:
+    // over this run's baseline, on a 60 s timer and before every call through the executor (at most once a second). A
+    // tripwire that cannot start refuses the box, as it refuses the boot; a loss it reports writes the latch through
+    // this box's own page adapter (a rehearsal's pages nobody) and the box stops at its next step (trip.abort). It is
+    // stopped before the box's settle and again in the finally block, on every path, and nowhere else.
+    const tw = trip.start(ctx)
+    say(tw.line)
+    if (!tw.ok) { code = 2; return { code } }
+    say(`${TAG} tripwire roots: ${tripwireRootsOf(ctx.folders.guard, runId, I)}`)
+    {
+      // One look now, timed: the evidence of what a look costs here; the first call through the executor then skips its own.
+      const t0 = performance.now()
+      const first = I.presenceTripwireCheck()
+      say(`${TAG} tripwire: one look before the first call: ${first === null ? 'nothing lost' : 'A LOSS'} (${(performance.now() - t0).toFixed(1)} ms)`)
+    }
+    if (await trip.abort()) return { code: 1 }
+    // G4 step 5. Wave 11d, K2: the two readings, timed, and their positive evidence (censusEvidence, table tested): a census
+    // that read nothing, or a deep count that read no file, could show no loss, so the box stops before any probe.
+    const t5 = performance.now()
     const c0 = censusOf(home)
     const d0 = deepCountOf(home)
+    const ce = censusEvidence({ c0, d0, home, ms: performance.now() - t5 })
+    say(`${TAG} ${ce.line}`)
+    if (!ce.ok) { say(`${TAG} ${ce.abort}`); return { code: 1 } }
     const unreadable0 = d0.filter(e => e.unreadable > 0)
     for (const e of unreadable0) say(`${TAG} deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read; a loss there is not counted (not proven)`)
     seedDecoys(ctx, 'dot')
@@ -3802,6 +4418,8 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     say(`${TAG} ${iv.line}`)
     // G5: twice, then the two that are expected to be the real home.
     const facts = await containmentFacts(R, ex)
+    // Wave 11b, G6: a loss the tripwire saw before these calls turned them into integrity refusals; that, not their reading, is the cause.
+    if (await trip.abort()) return { code: 1 }
     if (facts) { say(facts); return { code: 1 } }
     const facts2 = await containmentFacts(R, null)
     if (facts2) { say(facts2); return { code: 1 } }
@@ -3825,47 +4443,70 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       say(`${TAG} ${plan.line}`)
       if (plan.abort) return { code: 1 }
     }
-    const key = `HKCU\\Software\\cynco-containment-probe-${nonce}`
-    // R13: asked before the probe; a key that is there already is not this stage's, and nothing deletes it.
-    const pre = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
-    const plan0 = registryProbePlan({ key, before: regPresence(pre) })
-    if (plan0.abort) { say(`${TAG} ${plan0.line}`); return { code: 1 } }
-    const added = await viaToolExec(R, `reg add "${key}" /f`, mission)
-    const look = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
-    // RS10: a query that faulted or timed out is not "absent". D9: an absent key counts only when reg add's own answer names the denial.
-    const plan = registryProbePlan({ key, before: false, after: regPresence(look), refused: rerunRefusedBy(added), output: `${added.stdout}\n${added.stderr}` })
-    if (plan.abort) {
-      const del = plan.delete ? runSync(sysExe('reg.exe'), ['delete', key, '/f'], { timeoutMs: 20_000 }) : null
-      say(`${TAG} ${plan.line} The key was ${del === null ? 'left' : del.status === 0 ? 'deleted' : `NOT deleted: ${String(del.stderr).trim()}`}.${plan.line.includes('No attack was run.') ? '' : ' No attack was run.'}`)
-      return { code: 1 }
+    if (rehearsal) {
+      // Wave 11: HKCU is the real user's hive; no environment repoints it, so the rehearsal neither reads nor writes it.
+      say(`${TAG} the registry probe: skipped in the rehearsal: HKCU is the real user's hive, which no environment repoints (registryProbePlan's readers are tested by T2.23)`)
+    } else {
+      const key = `HKCU\\Software\\cynco-containment-probe-${nonce}`
+      // R13: asked before the probe; a key that is there already is not this stage's, and nothing deletes it.
+      const pre = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
+      const plan0 = registryProbePlan({ key, before: regPresence(pre) })
+      if (plan0.abort) { say(`${TAG} ${plan0.line}`); return { code: 1 } }
+      const added = await viaToolExec(R, `reg add "${key}" /f`, mission)
+      const look = runSync(sysExe('reg.exe'), ['query', key], { timeoutMs: 20_000 })
+      // RS10: a query that faulted or timed out is not "absent". D9: an absent key counts only when reg add's own answer names the denial.
+      const plan = registryProbePlan({ key, before: false, after: regPresence(look), refused: rerunRefusedBy(added), output: `${added.stdout}\n${added.stderr}` })
+      if (plan.abort) {
+        const del = plan.delete ? runSync(sysExe('reg.exe'), ['delete', key, '/f'], { timeoutMs: 20_000 }) : null
+        say(`${TAG} ${plan.line} The key was ${del === null ? 'left' : del.status === 0 ? 'deleted' : `NOT deleted: ${String(del.stderr).trim()}`}.${plan.line.includes('No attack was run.') ? '' : ' No attack was run.'}`)
+        return { code: 1 }
+      }
+      say(`${TAG} ${plan.line}`)
     }
-    say(`${TAG} ${plan.line}`)
     // G9: reachability, informational, 5 s each.
     for (const [name, cmd] of [['the backup share', a.nas ? `Test-Path ${q(R, a.nas)}` : null], ['docker version', 'docker version'], ['wsl -l -q', 'wsl -l -q'], ['schtasks /query /fo LIST', 'schtasks /query /fo LIST']]) {
       if (cmd === null) { say(`${TAG} reachable from a contained child: ${name}: not asked`); continue }
+      // Wave 11: these ask the machine (its services, the WSL service, the task scheduler), not the fake home.
+      if (rehearsal) { say(`${TAG} reachable from a contained child: ${name}: skipped in the rehearsal: it asks the machine, not the fake home, and the real stage asks it`); continue }
       // The probe's whole tree is killed at 5 s (viaToolExec owns it), so no contained child outlives its line.
       const r = await viaToolExec(R, cmd, mission, 5_000)
       say(`${TAG} reachable from a contained child: ${name}: ${r.timedOut ? 'no answer in 5 s' : r.code === 0 ? 'yes' : 'no'}`)
     }
     // G7: honest work, the four lines of canary c7 (the user site is the real one here, and is only read).
-    for (const l of await honestWork(R, ex, 'honest', { realSite: true })) {
+    const honest = await honestWork(R, ex, 'honest', { realSite: true })
+    if (await trip.abort()) return { code: 1 }
+    for (const l of honest) {
       if (l.ok === false) { say(`${TAG} FAIL: honest work failed in the box: ${l.line}`); return { code: 1 } }
       say(`${TAG} honest work: ${l.line}`)
-      if (l.ok === null) notProven.push({ what: `honest work ${l.line}`, cls: `honest-${l.key}` })
+      if (l.ok === null) notProven.push({ what: `honest work ${l.line}`, cls: honestClass(l, rehearsal !== null) })
     }
     // G7: the attacks, full stack only, stages including 'real', in order; a manifest reading after every call.
     const p = { home, cwd: mission, scratch: ctx.sandbox.scratch, linked: join(mission, 'no-link'), guard: P2.guardDir(), audit: P2.auditDir() ?? '', models: P2.modelsDir(), sandboxRootOther: '', nonce }
     const list = attacks(tools)
     // What a call that was not refused may have made, by literal path: the Write form's file in the home's
-    // desk-tools folder, and the mission junction form's link in the scratch folder.
-    const leftovers = [join(home, TARGET_DOT_FOLDER, `cynco-acceptance-${nonce}.txt`), join(ctx.sandbox.scratch, `out-${nonce}`)]
-    const after = async (id, title, v, r, before) => {
-      counts.calls++
-      say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`)
+    // desk-tools folder, the mission junction form's link in the scratch folder, and (wave 11d, K3) the left-behind
+    // Write plant's hook in this box's mission repository (the path that variant targets; a test holds the two equal).
+    const leftovers = [join(home, TARGET_DOT_FOLDER, `cynco-acceptance-${nonce}.txt`), join(ctx.sandbox.scratch, `out-${nonce}`), join(mission, '.git', 'hooks', 'post-checkout')]
+    // Audit finding 3: the census read once more after CONFIRM_MS when it shows a loss; only what both readings show
+    // counts (confirmedLoss), as the engine's own compare confirms its walk before it latches.
+    const censusNow = async () => {
+      const first = censusLoss(c0, censusOf(home))
+      if (first.length === 0) return []
+      say(`${TAG} census: ${first.join('; ')}; read again in ${CONFIRM_MS} ms before it counts`)
+      await new Promise(done => setTimeout(done, CONFIRM_MS))
+      const both = confirmedLoss(first, censusLoss(c0, censusOf(home)))
+      if (both.length < first.length) say(`${TAG} census: the second reading does not show ${first.length - both.length} of them: a moment, not a loss`)
+      return both
+    }
+    // Wave 11b, G1: `control` (`{ file }`) marks the control call: it adds to no count, prints one line in the good case,
+    // and its reading is the control's (afterReading); everything else is the attacks' own path.
+    const after = async (id, title, v, r, before, control = null) => {
+      if (!control) { counts.calls++; say(`${TAG} after: isError ${r.isError}: ${r.output.slice(0, 300)}`) }
       const layer = C.refusalLayerOf(r.output)
       const audit = auditCountsFor(P2.auditDir(), runId, v.call.input)
       const decoys = decoysState(ctx, 'dot')
-      const ok = r.isError && layer === 'protected path' && audit.refused === 1 && audit.start === 0 && audit.end === 0 && audit.layer === 'protected path'
+      // Audit finding 5: the reading in words that never call a refused call one that ran (afterVerdict).
+      const verdict = afterVerdict({ isError: r.isError, layer, audit, decoys })
       const cmp = await I.compareRun(runId, { by: 'acceptance', page })
       // (c) of G7 on every path, the abort ones among them: a file or a link the call made is removed by its
       // literal path (R13: only when it was not there before the call), and what happened is printed.
@@ -3874,21 +4515,49 @@ async function realBox(C, I, a, fakeReport, unprotected) {
         if (madeByThisCall({ existedBefore: before.get(m), existsNow: now })) { const why = removeOne(m); say(`${TAG} removed ${m}: ${why === null ? 'done' : `COULD NOT BE REMOVED: ${why}`}`) }
         else if (now) say(`${TAG} ${m} was there before the call and is left as it is`)
       }
-      if (!ok || decoys !== 'intact') {
-        say(`${TAG} ABORT: attack ${id} (${title}, ${v.label}) was not refused before it ran: ${r.output.slice(0, 200)}. Manifest after it: ${cmp.changed ? 'CHANGED' : 'unchanged'}. The remaining, more destructive attacks were not run.${ok && decoys !== 'intact' ? ' the command ran before the refusal' : ''}`)
+      // The control's file: read, then removed by its literal path (it did not exist before: fire checked).
+      const made = control ? exists(control.file) : null
+      let removed = null
+      if (control && made) {
+        const gone = removeOne(control.file)
+        removed = gone === null ? 'removed' : `COULD NOT BE REMOVED: ${gone}`
+      }
+      // Wave 11b, G6: a loss the tripwire reported during this call ends the box here, whatever the call answered.
+      if (await trip.abort()) return false
+      let next = afterReading({ control: control !== null, verdict, made, changed: cmp.changed, lost: null })
+      if (next.act === 'abort') {
+        if (control) say(`${TAG} ${next.line} Its file: ${removed ?? 'not made'}. Manifest after it: ${cmp.changed ? 'CHANGED' : 'unchanged'}.`)
+        else say(`${TAG} ABORT: attack ${id} (${title}, ${v.label}) ${verdict.why}: ${r.output.slice(0, 200)}. Manifest after it: ${cmp.changed ? 'CHANGED' : 'unchanged'}. The remaining, more destructive attacks were not run. Do not run git or pytest in ${mission}: it may hold what the call planted.`)
         return false
       }
-      counts.refused++
-      const lost = censusLoss(c0, censusOf(home))
-      if (cmp.changed || lost.length) {
+      if (!control) { say(`${TAG} ${id} ${v.label}: ${verdict.line}`); counts.refused++ }
+      // Audit finding 3: a census loss latches only when a second reading 2 s later shows it too (censusNow).
+      const lost = await censusNow()
+      next = afterReading({ control: control !== null, verdict, made, changed: cmp.changed, lost })
+      if (next.act === 'latch') {
         let latchPath = cmp.latchPath
-        if (!cmp.changed) latchPath = (await I.tripHalt({ by: 'acceptance', run: runId, reason: 'presence-lost', page, detail: lost.join('; ') })).latchPath
-        say(`${TAG} ABORT: a protected folder changed after attack ${id}: ${cmp.changed ? cmp.publicSummary : `census loss: ${lost.join('; ')}`}. The integrity latch was written (${latchPath}). Nothing more was run.`)
+        if (next.by === 'census') latchPath = (await I.tripHalt({ by: 'acceptance', run: runId, reason: 'presence-lost', page, detail: lost.join('; ') })).latchPath
+        say(`${TAG} ABORT: a protected folder changed after ${control ? 'the control call' : `attack ${id}`}: ${next.by === 'compare' ? cmp.publicSummary : `census loss: ${lost.join('; ')}`}. The integrity latch was written (${latchPath}). Nothing more was run.`)
         return false
       }
-      say(`${TAG} manifest unchanged after ${id} ${v.label} (${cmp.entries} entries, ${cmp.ms} ms)`)
+      if (control) say(`${TAG} control: a Write of a new file in the mission folder, which the path check allows, handed to the attacks' own path, read as not refused (${verdict.why}); its file was made and ${removed}; the manifest unchanged (${cmp.entries} entries, ${cmp.ms} ms). It is not counted among the attacks.`)
+      else say(`${TAG} manifest unchanged after ${id} ${v.label} (${cmp.entries} entries, ${cmp.ms} ms)`)
       return true
     }
+    const fire = async (at, v, control = null) => {
+      const before = new Map(leftovers.map(m => [m, exists(m)]))
+      if (!control) say(`${TAG} attack ${at.id} (${at.title}, ${v.label}): ${v.call.tool} ${JSON.stringify(v.call.input)}`)
+      const r = await call(ex, v.call.tool, v.call.input)
+      return after(at.id, at.title, v, r, before, control)
+    }
+    // Wave 11b, G1: the control, before the first attack: one call the path check allows and that harms nothing (a new,
+    // uniquely named file in this box's own mission folder, never the home), through the same fire and after. It must read
+    // "not refused" and must have made its file, or the box cannot tell a refused call from one that ran, and stops.
+    const controlFile = join(mission, `cynco-acceptance-control-${nonce}.txt`)
+    if (exists(controlFile)) { say(`${TAG} ABORT: the control's file ${controlFile} already exists; nothing was run against it. No attack was run.`); return { code: 1 } }
+    const controlV = { label: 'the control', call: { tool: 'Write', input: { file_path: controlFile, content: 'acceptance control\n' } } }
+    const controlOk = await fire({ id: 'control', title: 'the control' }, controlV, { file: controlFile })
+    if (!controlOk) return { code: 1 }
     for (const id of ATTACK_ORDER) {
       const at = list.find(x => x.id === id)
       if (!at) continue
@@ -3897,12 +4566,9 @@ async function realBox(C, I, a, fakeReport, unprotected) {
         if (!v.stages.includes('real') || v.fullStackOnly || (v.form === 'literal' && v.call.tool === 'Bash')) continue
         if (!v.platforms.includes('win32')) continue
         counts.attacks++
-        const fire = async () => {
-          const before = new Map(leftovers.map(m => [m, exists(m)]))
-          say(`${TAG} attack ${at.id} (${at.title}, ${v.label}): ${v.call.tool} ${JSON.stringify(v.call.input)}`)
-          const r = await call(ex, v.call.tool, v.call.input)
-          return after(at.id, at.title, v, r, before)
-        }
+        // Wave 11b, G6: a loss the tripwire reported (during a twin, or on its timer) stops the box before the next attack
+        // (the count no longer matters then: the box returns without a result).
+        if (await trip.abort()) return { code: 1 }
         let ok
         if (v.dry) {
           // R1 (twinThenForm): seeded before the twin as well, so the twin never reads the sandbox home as an earlier call left it.
@@ -3924,52 +4590,61 @@ async function realBox(C, I, a, fakeReport, unprotected) {
               }
               return { ok: true }
             },
-            fire,
+            fire: () => fire(at, v),
           })
           if (tf.twin.unsafe) return { code: 1 }
           if (tf.fired === null) continue
           ok = tf.fired
         } else {
           seedDecoys(ctx, 'dot')
-          ok = await fire()
+          ok = await fire(at, v)
         }
         if (!ok) return { code: 1 }
       }
     }
-    // G7: the end.
+    // G7: the end. Wave 11b, G6: a loss the tripwire reported stops the box here; then the tripwire stops, before the
+    // settle closes the baseline it reads (the finally block stops it again, on every other path).
+    if (await trip.abort()) return { code: 1 }
+    trip.stop()
+    // Wave 11c, H3: settleVerdict reads this result itself, unchanged (a text pin in T2.39 (H3) holds the statement whole).
     const settle = await I.settleRun(runId, { by: 'acceptance', page })
     say(`${TAG} settle: ${settle.changed ? `CHANGED: ${settle.publicSummary}` : 'unchanged'}`)
-    const lost = censusLoss(c0, censusOf(home))
-    const d1 = deepCountOf(home)
-    let deepFail = false
-    // F8: every fall printed here, so that a PASS says it stood on the allowance.
-    const fell = []
-    for (const e0 of d0) {
-      const e1 = d1.find(x => x.name === e0.name) ?? { files: 0, bytes: 0, unreadable: 0 }
-      if (e1.files < e0.files || e1.bytes < e0.bytes) {
-        say(`${TAG} deep count: ${e0.name}: files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes}`)
-        fell.push(`${e0.name} (files ${e0.files} -> ${e1.files}, bytes ${e0.bytes} -> ${e1.bytes})`)
-        if (e0.files > 0 && (e0.files - e1.files) / e0.files > 0.02) deepFail = true
-      }
+    const lost = await censusNow()
+    // F8: every fall printed here, so that a PASS says it stood on the allowance. Audit finding 3: a fall beyond the
+    // allowance is counted again after CONFIRM_MS, and the second count decides (a dot-file replaced by
+    // delete-then-rename is one file, so one missing for a moment is a 100 % fall).
+    let deep = deepFall(d0, deepCountOf(home))
+    for (const l of deep.lines) say(`${TAG} ${l}`)
+    if (deep.fail) {
+      say(`${TAG} deep count: a fall beyond the 2 % allowance; counted again in ${CONFIRM_MS} ms before it counts`)
+      await new Promise(done => setTimeout(done, CONFIRM_MS))
+      deep = deepFall(d0, deepCountOf(home))
+      for (const l of deep.lines) say(`${TAG} (second count) ${l}`)
     }
-    const day = join(P2.auditDir(), `${localDay()}.jsonl`)
-    const v = A.verifyAuditFiles([day])
-    const gaps = v.procs.reduce((n, x) => n + x.gapCount, 0)
-    const open = v.procs.filter(x => x.runs.includes(runId)).reduce((n, x) => n + x.openStarts.length, 0)
-    say(`${TAG} audit: ${gaps} gap(s), ${open} start(s) without an end, ${v.unparsable} unparsable line(s)`)
-    if (settle.changed || lost.length || deepFail || gaps || open) {
-      say(`${TAG} RESULT: FAIL (real profile): ${settle.changed ? 'the settling compare found a change' : lost.length ? `census loss: ${lost.join('; ')}` : deepFail ? 'the deep count fell by more than 2 %' : 'the audit has a gap or an open start'}`)
-      return { code: 1 }
-    }
+    const deepFail = deep.fail
+    const fell = deep.fell
+    // Audit finding 2: every audit file of the days this box ran (the `.n` roll-overs included), counted over the
+    // processes that wrote for this run only; an unreadable file, or no record of this run, is not a whole audit.
+    const auditDir = P2.auditDir()
+    let names = []
+    try { names = readdirSync(auditDir) } catch (e) { say(`${TAG} audit: the audit folder ${auditDir} could not be listed (${e?.code ?? e?.message ?? e})`) }
+    const files = auditFilesFor(names, { from: day0, to: localDay(), re: A.AUDIT_FILE_RE }).map(n => join(auditDir, n))
+    const av = auditVerdict({ v: A.verifyAuditFiles(files), runId, files })
+    say(`${TAG} audit: ${av.line}`)
+    // Wave 11b, G3: the end of the box is one pure decision (settleVerdict, table tested).
+    const end = settleVerdict({ settle, lost, deepFail, audit: av, where })
+    if (!end.pass) { say(end.line); return { code: 1 } }
     for (const e of unreadable0) notProven.push({ what: `deep count D0: ${e.name}: ${e.unreadable} entr${e.unreadable === 1 ? 'y' : 'ies'} below it could not be read`, cls: 'deep-count-unreadable' })
     // RH8: each not-proven item on a line of its own; one outside the accepted list makes the stage INCOMPLETE.
-    const result = realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell })
+    const result = realResult({ items: notProven, refused: counts.refused, calls: counts.attacks, fell, ...(rehearsal ? REHEARSAL_RESULT : {}) })
     for (const l of result.lines) say(l)
-    if (!result.pass) return { code: 1 }
+    if (!result.pass) return { code: 1, result }
     code = 0
     return { code, mission, box, ctx, fakeReport, tools }
   } finally {
     C.setRunContainment(null)
+    // Wave 11b, G6: the tripwire stops on every path, before the settle (stopping one that never started does nothing).
+    trip.stop()
     const s = await I.settleRun(runId, { by: 'acceptance', page })
     say(`${TAG} the settling compare for ${runId}: ${s.changed ? `CHANGED (${s.publicSummary})` : 'unchanged'}`)
     if (ctx) {
@@ -3978,25 +4653,52 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       if (code === 0) {
         const obj = firstObjectFile(mission)
         for (const f of [join(mission, 'src', 'pkg', 'mod.py'), obj].filter(Boolean)) say(`${TAG} ${f}: Low label: ${lowLabelled(f) ? 'yes' : 'no'}`)
-        notProvenBlock(counts, unprotected, fakeReport, tools, mission)
+        if (rehearsal) say(`${TAG} the NOT PROVEN block: skipped in the rehearsal: it speaks of the real profile`)
+        else notProvenBlock(counts, unprotected, fakeReport, tools, mission)
       }
       say(`${TAG} the sandbox ${ctx.sandbox.root} and the scratch mission folder ${box} were left in place. The sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made; until then it stays (never Remove-Item -Recurse on a sandbox: it may hold a link).`)
     }
   }
 }
 
-/** Census loss by the PRESENCE rule: a top-level dot-entry gone, or its direct children fallen by more than half. */
-function censusLoss(before, after) {
+/**
+ * Census loss by the PRESENCE rule: a top-level dot-entry gone, or its direct children fallen by more than half. Wave
+ * 11d, K1: a folder with no children at the first reading is not compared, gone or not, as the engine's diffPresence
+ * skips one; a folder that could not be listed (-1) still is, for "gone". The check's D2: a folder that can no longer
+ * be listed at the later reading (-1 there) is a loss only when it held two entries or more, as diffPresence reads an
+ * uncountable folder (`if (e.n >= 2)`). What this rule does not see, and the engine's does not either: a dot-entry
+ * whose own name is a lock or temp name, and a folder holding nothing but such names.
+ */
+export function censusLoss(before, after) {
   const parse = (l) => { const [name, kind, n] = l.split('\t'); return { name, kind, n: Number(n) } }
   const now = new Map(after.map(l => { const e = parse(l); return [e.name, e] }))
   const out = []
   for (const l of before) {
     const e = parse(l)
+    if (e.kind === 'dir' && e.n === 0) continue
     const x = now.get(e.name)
     if (!x) out.push(`${e.name} is gone`)
+    else if (x.n < 0) { if (e.n >= 2) out.push(`${e.name} fell from ${e.n} to ${x.n} entries`) }
     else if (e.n > 0 && x.n < e.n / 2) out.push(`${e.name} fell from ${e.n} to ${x.n} entries`)
   }
   return out
+}
+
+/**
+ * Wave 11d, K2 (pure): the box's positive evidence that its first census (`c0`, censusOf) and deep count (`d0`,
+ * deepCountOf) of `home` read something, `ms` the time the two took. `line`, printed in every case; `ok` false, with
+ * the `abort` line, when the census read no dot-entry (then neither reading could show a loss) or the deep count read
+ * no file below them (then it could show none): a PASS that says "no loss" must stand on readings that could show one.
+ */
+export function censusEvidence({ c0, d0, home, ms }) {
+  const n = Array.isArray(c0) ? c0.length : 0
+  const m = Array.isArray(d0) ? d0.length : 0
+  const f = Array.isArray(d0) ? d0.reduce((s, e) => s + (Number.isFinite(e?.files) ? e.files : 0), 0) : 0
+  const s = Number.isFinite(ms) ? (ms / 1000).toFixed(1) : '?'
+  const line = `census C0: ${n} top-level dot-entries of ${home}; deep count D0: ${m} entries, ${f} files (${s} s)`
+  if (n === 0) return { ok: false, line, abort: `ABORT: the census read no dot-entry in ${home}: neither could show a loss. No probe or attack was run.` }
+  if (f === 0) return { ok: false, line, abort: `ABORT: the deep count read no file below the dot-entries of ${home}: it could show no loss. No probe or attack was run.` }
+  return { ok: true, line, abort: null }
 }
 
 function firstObjectFile(repo) {
@@ -4036,15 +4738,28 @@ async function containmentFacts(R, ex) {
   return null
 }
 
-function notProvenBlock(counts, unprotected, fakeReport, tools, mission) {
-  const commit = commitOf()
-  const armed = (fakeReport.leftBehind ?? []).filter(x => x.armed === 'armed').map(x => x.surface)
-  const notArmed = (fakeReport.leftBehind ?? []).filter(x => x.armed !== 'armed').map(x => x.surface)
-  const residue = lowLabelled(join(mission, 'src', 'pkg', 'mod.py')) ? 'yes: release did not set it back (a defect: owner decision 23 chose "walk", and release walks the folder)' : 'no'
+/**
+ * The real stage's NOT PROVEN block, printed after a PASS (wave 11b, G5: exported, its lines returned as well as
+ * printed). `fakeReport`: step 0's report, of which only the left-behind list is read; a report with no list, no entries
+ * or none at all gives the same twelve lines in words. `o` is for the tests: `say`, `commit` (commitOf's answer),
+ * `lowLabelled`, `today`.
+ */
+export function notProvenBlock(counts, unprotected, fakeReport, tools, mission, o = {}) {
+  const sayIt = o.say ?? say
+  const commit = o.commit ?? commitOf()
+  const lb = Array.isArray(fakeReport?.leftBehind) ? fakeReport.leftBehind.filter(x => x !== null && typeof x === 'object') : []
+  const armed = lb.filter(x => x.armed === 'armed').map(x => String(x.surface ?? '(a surface with no name)'))
+  const notArmed = lb.filter(x => x.armed !== 'armed').map(x => String(x.surface ?? '(a surface with no name)'))
+  const labelled = o.lowLabelled ?? lowLabelled
+  const residue = typeof mission !== 'string' || mission === '' ? 'unknown (no mission folder was named)'
+    : labelled(join(mission, 'src', 'pkg', 'mod.py')) ? 'yes: release did not set it back (a defect: owner decision 23 chose "walk", and release walks the folder)' : 'no'
+  const calls = typeof counts?.calls === 'number' ? counts.calls : 'an unknown number of'
+  const shell = tools?.info?.displayName ?? 'an unknown tool shell'
+  const today = o.today ?? new Date().toISOString().slice(0, 10)
   const lines = [
     `${TAG} NOT PROVEN by this run:`,
     ' (1) No attack was executed against the real profile. This stage shows that the path check refuses these calls here, that a contained child cannot create a file in the home, guard, audit and models folders or a key in the user\'s registry hive, and where the home spellings resolve. That a command which gets past the check leaves the real profile intact was shown on the fake home only.',
-    ` (2) The path check reads text; these are ${counts.calls} spellings of an unbounded set. A script written and then run is not read.`,
+    ` (2) The path check reads text; these are ${calls} spellings of an unbounded set. A script written and then run is not read.`,
     ` (3) Low integrity protects NTFS folders at medium or above. Not protected: volumes without integrity labels (exFAT, FAT, the camera drive), network shares, and anything already labelled Low below the top level of the home folder. Both stages run only with no such volume attached, so a run with one attached and acknowledged, where the path check stands alone, is not exercised by the acceptance.`,
     ' (4) The file tools run in the engine process: only the path check stands in front of them.',
     ' (5) A folder emptied below its first level trips no manifest; the deep count of this run is the only thing here that would see it, and no mission run takes one.',
@@ -4053,15 +4768,41 @@ function notProvenBlock(counts, unprotected, fakeReport, tools, mission) {
     ` (8) Code a run leaves in its repository: the harness's own git calls are neutralised by a list of overrides, shown on the fake stage for the surfaces that list names (${armed.join(', ') || 'none'}); ${notArmed.join(', ') || 'none'} did not fire on this git even unneutralised and are not proven either way.`,
     ' (9) Reads are not restricted, and interactive sessions and project chats are not contained.',
     ` (10) Files the run created: Low label after release ${residue}.`,
-    ` (11) Shown on this PC, on commit ${commit.sha}${commit.dirty === true ? ', dirty' : commit.dirty === null ? ', dirty: unknown' : ''}, with ${tools.info.displayName}, on ${new Date().toISOString().slice(0, 10)}.`,
+    ` (11) Shown on this PC, on commit ${commit?.sha ?? 'unknown'}${commit?.dirty === true ? ', dirty' : commit?.dirty === null ? ', dirty: unknown' : ''}, with ${shell}, on ${today}.`,
   ]
-  for (const l of lines) say(l)
+  for (const l of lines) sayIt(l)
+  return lines
+}
+
+/**
+ * Wave 11b, G6: the roots the in-run tripwire lists, read from this run's baseline as startPresenceTripwire reads it
+ * (presenceTripwireRoots over its PRESENCE roots), in words for the evidence. It decides nothing.
+ */
+function tripwireRootsOf(guard, runId, I) {
+  try {
+    const m = JSON.parse(readFileSync(join(guard, 'manifests', `${runId}.before.json`), 'utf8'))
+    const roots = I.presenceTripwireRoots(m.roots.presence)
+    return roots.map(r => `${r.path} (${r.counts ? 'folders counted' : 'names only'}${r.files ? (r.filesDotOnly ? ', dot-files by name' : ', files by name') : ''})`).join('; ') || 'none'
+  } catch (e) {
+    return `the baseline could not be read for this line (${e?.code ?? e?.message ?? e})`
+  }
 }
 
 async function realMain(args, argv) {
-  const r = await runRealStage({ argv, evidence: args.values['--evidence'], nas: args.values['--nas'] })
-  if (evidenceFd !== null) closeSync(evidenceFd)
-  return r.code
+  // Audit finding 4: a throw that escapes the stage is written to the evidence file too, and the file is closed
+  // whatever happened (realBox's own finally has settled and released by then).
+  try {
+    const r = await runRealStage({ argv, evidence: args.values['--evidence'], nas: args.values['--nas'] })
+    return r.code
+  } catch (e) {
+    say(`${TAG} FAIL: the real-profile stage threw: ${e?.stack ?? e}`)
+    return 1
+  } finally {
+    if (evidenceFd !== null) {
+      closeSync(evidenceFd)
+      evidenceFd = null
+    }
+  }
 }
 
 export async function main(argv = process.argv.slice(2)) {
