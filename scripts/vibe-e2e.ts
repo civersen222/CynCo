@@ -21,7 +21,8 @@ const repoRoot = resolve(import.meta.dir, '..')
 const workDir = mkdtempSync(join(tmpdir(), 'vibe-e2e-'))
 console.log(`[e2e] Workdir: ${workDir}`)
 
-const engine = Bun.spawn(['bun', join(repoRoot, 'engine', 'main.ts')], {
+// Wave 19b: --no-install, so this Bun never fetches a package by itself.
+const engine = Bun.spawn(['bun', '--no-install', join(repoRoot, 'engine', 'main.ts')], {
   cwd: workDir,
   env: { ...process.env, LOCALCODE_WS_PORT: String(WS_PORT) },
   stdout: 'inherit',

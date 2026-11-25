@@ -17,14 +17,17 @@
  *
  * Kept as well (review of wave 5): every log whose name, or whose stamp (the name without its
  * engine_ / driver_ / engine_idle_after_ prefix and its extension), is a word of
- * docs/cynco-failure-log.md, since those logs are the evidence behind its entries; when that file
- * cannot be read, nothing is deleted. Nothing is deleted when the newest file directly in the folder
- * is itself older than 90 days (a clock that runs ahead, or a folder nobody writes to); at most 200
- * are deleted in one run. `--dry-run` prints each name it would delete and deletes nothing.
+ * docs/cynco-failure-log.md, or a run of the -/_ segments of one of its words (a mission id such as
+ * `c4-wave3-1787791284792` keeps engine_c4-wave3.log; R4-2, wave 12). The match is by word, not by
+ * entry: a stamp that is an ordinary word of the log (`restart`, `brain`) is kept too, which errs
+ * toward keeping. When that file cannot be read, nothing is deleted. Nothing is deleted when the newest
+ * file directly in the folder is itself older than 90 days (a clock that runs ahead, or a folder nobody
+ * writes to); at most 200 are deleted in one run. `--dry-run` prints each name it would delete and
+ * deletes nothing.
  *
- * Prints `[logs] pruned <n> mission log(s) older than 90 days from <dir>` (with `--dry-run`:
- * `[logs] would prune <n> ...` and one `[logs] would delete: <name>` each) and one
- * `[logs] not pruned: <name>: <error>` per failure. Exit 0 always (a dispatch never fails on its old
+ * Prints `[logs] pruned <n> mission log(s) older than 90 days from <dir>` and one
+ * `[logs] deleted: <name>` each (with `--dry-run`: `[logs] would prune <n> ...` and one
+ * `[logs] would delete: <name>` each) and one `[logs] not pruned: <name>: <error>` per failure. Exit 0 always (a dispatch never fails on its old
  * logs), except 2 for an unknown verb, a refused --dir, or --keep without a value.
  */
 import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
@@ -144,9 +147,28 @@ function newestFileTime(dir) {
   return newest
 }
 
-/** The words of the failure log's text, lower-cased, for `citedKeep`. */
+/**
+ * The words of the failure log's text, lower-cased, for `citedKeep`: each token of letters, digits, `-`
+ * and `_`, and every run of its `-`/`_` segments (R4-2, wave 12). A run is cited by its mission id, the
+ * stamp of its logs with a time after it (`c4-wave3-1787791284792`), so the logs' own stamp is a run of the
+ * token's segments and not the whole token. This errs toward keeping.
+ */
 export function citedWords(text) {
-  return new Set(String(text).toLowerCase().split(/[^a-z0-9_-]+/).filter(w => w.length >= 3))
+  const words = new Set()
+  for (const token of String(text).toLowerCase().split(/[^a-z0-9_-]+/)) {
+    if (token.length < 3) continue
+    words.add(token)
+    // `a-b_c` → segments [a, b, c] with the separators kept between them, so a run is written as in the text.
+    const parts = token.split(/([-_])/)
+    for (let i = 0; i < parts.length; i += 2) {
+      let run = ''
+      for (let j = i; j < parts.length; j += 2) {
+        run = j === i ? parts[j] : `${run}${parts[j - 1]}${parts[j]}`
+        if (run.length >= 3) words.add(run)
+      }
+    }
+  }
+  return words
 }
 
 /** True when a mission log's name (without extension) or its stamp is a word of the failure log. */
@@ -211,6 +233,7 @@ export function main(argv, io = {}) {
     for (const n of r.deleted) out(`[logs] would delete: ${n}`)
   } else {
     out(`[logs] pruned ${r.deleted.length} mission log(s) older than ${MISSION_LOG_KEEP_DAYS} days from ${r.dir}`)
+    for (const n of r.deleted) out(`[logs] deleted: ${n}`)
   }
   if (r.left > 0) out(`[logs] ${r.left} more ${args.dryRun ? 'would go' : 'go'} on a later run (at most ${MAX_PRUNED_PER_RUN} a run)`)
   for (const f of r.failed) err(`[logs] not pruned: ${f.name}: ${f.error}`)

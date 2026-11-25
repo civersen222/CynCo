@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync, rmdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   progressCadence, everyMsFor, probeProgress, probeIo, probeGateTimeoutMs, shadowNoProgress, shadowStalled, runnerRowsFrom, progressLine, progressTracker, seedGateMs,
   STALLED_AT, STALLED_RULE, STALLED_WINDOW,
@@ -200,6 +201,35 @@ describe('probeIo — the gate runs on the archive, capped, and is never retried
     const r = probeProgress({ spec: { id: 'pstale', repo: 'C:/r', gate: 'g.py' }, sha: 'abc', io, n: 1 })
     expect(r.fault).toMatch(/gate did not run \(code ETIMEDOUT/)
     expect(gateCalls).toHaveLength(1)
+  })
+
+  // Wave 19b: the archive is a folder the gate ran in, contained, so it is removed by the walk that never
+  // follows a link (calibrate's removeNoFollow), not by rmSync. On Linux the 'junction' type is ignored and a
+  // directory symlink is made, which the walk removes as an entry the same way.
+  it('removeDir removes the archive by the no-follow walk: a link in it goes as an entry, what it points at stays', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign-progress.mjs', import.meta.url)), 'utf8')
+    expect(src).toContain('removeDir: (p) => removeNoFollow(p)')
+    expect(src).not.toMatch(/\brmSync\b/)
+    const root = mkdtempSync(join(tmpdir(), 'cynco-progress-rm-'))
+    const archive = join(root, 'archive')
+    const outside = join(root, 'outside')
+    const link = join(archive, 'sub', 'out')
+    try {
+      mkdirSync(join(archive, 'sub'), { recursive: true })
+      mkdirSync(outside)
+      writeFileSync(join(archive, 'sub', 'a.txt'), 'archive\n')
+      writeFileSync(join(outside, 'keep.txt'), 'the owner\'s file\n')
+      symlinkSync(outside, link, 'junction')
+      probeIo().removeDir(archive)
+      expect(existsSync(archive)).toBe(false)
+      expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('the owner\'s file\n')
+      // An archive that is already gone is nothing to do.
+      expect(() => probeIo().removeDir(archive)).not.toThrow()
+    } finally {
+      // A link left by a failed run is removed as an entry before the folder.
+      try { if (process.platform === 'win32') rmdirSync(link); else unlinkSync(link) } catch (e) { if (e.code !== 'ENOENT') throw e }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 

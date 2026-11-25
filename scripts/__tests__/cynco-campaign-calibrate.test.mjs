@@ -1,11 +1,20 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { calibrate, instrumentOf } from '../cynco-campaign-calibrate.mjs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { ownIntegrityLevel } from '../../engine/containment.js'
+import { basename, dirname, join } from 'node:path'
+import { calibrate, instrumentOf, archiveBase, defaultIo, removeNoFollow } from '../cynco-campaign-calibrate.mjs'
+import { listEntries } from '../../engine/realPath.js'
 import { SUITE_TIMEOUT_MS } from '../cynco-campaign-grade.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 const spec = { id: 'c8', repo: 'C:/repo', base: '1d03308', gate: 'C:/h/gate_c8.py', perturb: 'C:/h/perturb_c8.py', suiteBaseline: 'C:/h/suite_baseline_1d03308.txt' }
-const header = '# EXPECT-FLIP: C8.5.palette.Atlas C8.5.river-reserved\n# MUST-FAIL: C8.1b C8.1c C8.2b\nimport os\n'
+// The real c8 header also declares C8.5.river-reserved, a line that PASSes at BASE in this log: since the
+// EXPECT-FLIP check of wave 15 that is a problem of its own (compareCalibration), so the fixture declares
+// the one line the stub really flips. The refusal of the real header is pinned below.
+const header = '# EXPECT-FLIP: C8.5.palette.Atlas\n# MUST-FAIL: C8.1b C8.1c C8.2b\nimport os\n'
+const c8RealHeader = '# EXPECT-FLIP: C8.5.palette.Atlas C8.5.river-reserved\n# MUST-FAIL: C8.1b C8.1c C8.2b\nimport os\n'
 
 // A header that classifies EVERY line the c8 BASE log fails, which is what
 // compareCalibration demands once a positive shim is in play.
@@ -65,6 +74,34 @@ describe('calibrate', () => {
     expect(r.problems.join('\n')).toMatch(/C8\.1b/)
     expect(r.suiteBaselineCreated).toBe(false)
     expect(fake.writes).toHaveLength(0)
+  })
+
+  // The c8 header as it is on disk declares a flip of C8.5.river-reserved, which PASSes at BASE: refused now,
+  // in the perturb's name, and no baseline is written.
+  it('refuses the real c8 header, whose EXPECT-FLIP names a line already PASSing at BASE, in the stub\'s name', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: false, headerText: c8RealHeader })
+    const r = await calibrate(spec, fake)
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual(['EXPECT-FLIP C8.5.river-reserved names only lines that already PASS at BASE (C8.5.river-reserved), so the cheat stub cannot flip it (perturb_c8.py)'])
+    expect(fake.writes).toHaveLength(0)
+  })
+
+  // R3-F2 (wave 12): the runner's --dry-run takes the reading and writes nothing, the suite baseline included.
+  it('dryRun takes the reading and neither runs nor writes the suite baseline, and says one was due', async () => {
+    const perturbLog = baseLog.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS')
+    const fake = io({ perturbLog, baselineExists: false })
+    fake.frozenWriteRefusal = () => { throw new Error('a dry run must not ask whether it may write') }
+    const r = await calibrate(spec, fake, { dryRun: true })
+    expect(r.ok).toBe(true)
+    expect(r.baseFails).toHaveLength(14)
+    expect(r.suiteBaselineCreated).toBe(false)
+    expect(r.suiteBaselineSkipped).toBe(true)
+    expect(fake.writes).toEqual([])
+    expect(fake.ran.filter(k => /pytest/.test(k))).toEqual([])
+    // A baseline that exists already is not "due": nothing to say.
+    const again = await calibrate(spec, io({ perturbLog, baselineExists: true }), { dryRun: true })
+    expect(again.suiteBaselineSkipped).toBeUndefined()
   })
 
   it('does not rewrite an existing suite baseline', async () => {
@@ -170,6 +207,7 @@ describe('calibrate', () => {
     expect(instrumentOf('too few gate lines: 3 < 8')).toBe('gate')
     expect(instrumentOf('unclassified base fails: C8.1a')).toBe('perturb')
     expect(instrumentOf('C8.1a flipped to PASS under the cheat stub but was not declared in EXPECT-FLIP')).toBe('perturb')
+    expect(instrumentOf('EXPECT-FLIP C8.5.river-reserved names only lines that already PASS at BASE (C8.5.river-reserved), so the cheat stub cannot flip it')).toBe('perturb')
     expect(instrumentOf('positive shim printed errors: 2')).toBe('positive')
   })
 
@@ -377,5 +415,155 @@ describe('calibrate while an integrity baseline is open', () => {
     const r = await calibrate(spec, fake)
     expect(r.ok).toBe(true)
     expect(asked).toBe(0)
+  })
+})
+
+// B5-5 (wave 15c): the BASE folder (default C:/tmp/<id>_base) is where a contained grader ran at low integrity
+// (`contained: { own: baseDir }`), so it may hold a junction that low process made, which lstat reads as a folder
+// (decision record F4). freshDir empties it by the listing-based walk that never enters a link, as the sandbox
+// sweep does, never by fs.rmSync (whose not entering one is the runtime's choice: F5), and refuses by name a link
+// it cannot remove as an entry. Everything here is under a folder of this file's own, removed at the end.
+describe('freshDir: the BASE folder is emptied without ever entering a link', () => {
+  const ROOT = mkdtempSync(join(tmpdir(), 'cynco-freshdir-test-'))
+  const links = []
+  afterAll(() => {
+    // Links first, as entries (a case that failed half way may leave one), then this file's own folder.
+    const linksUnder = (d, out = []) => {
+      for (const e of listEntries(d)) {
+        if (e.kind === 'link') out.push(join(d, e.name))
+        else if (e.kind === 'dir') linksUnder(join(d, e.name), out)
+      }
+      return out
+    }
+    // Wave 19: a link whose folder a passing case removed with it is gone, not a link that could not be removed;
+    // asking its parent's listing threw ENOENT there and printed a false 'could not be removed' line.
+    const entryThere = (l) => { try { return readdirSync(dirname(l)).includes(basename(l)) } catch { return false } }
+    for (const l of [...links, ...linksUnder(ROOT)]) {
+      if (!entryThere(l)) continue
+      try { rmdirSync(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${e.message}`) }
+    }
+    const left = linksUnder(ROOT)
+    if (left.length > 0) throw new Error(`links are left under ${ROOT}, so it is not removed: ${left.join(', ')}`)
+    rmSync(ROOT, { recursive: true, force: true })
+  })
+  /** A BASE folder with a nested tree, a read-only file and a junction to an outside folder holding the owner's file. */
+  const baseWithJunction = () => {
+    const t = mkdtempSync(join(ROOT, 't-'))
+    const outside = join(t, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'keep.txt'), 'the owner\'s file')
+    const base = join(t, 'c8_base')
+    mkdirSync(join(base, 'gilded', 'tests'), { recursive: true })
+    writeFileSync(join(base, 'gilded', 'tests', 'a.py'), 'x')
+    const ro = join(base, 'gilded', 'pack.idx')
+    writeFileSync(ro, 'z')
+    chmodSync(ro, 0o444)
+    const junction = join(base, 'gilded', 'to-outside')
+    symlinkSync(outside, junction, 'junction')
+    links.push(junction)
+    return { t, base, outside, junction }
+  }
+
+  it('empties the folder and makes it again; a junction in it is removed as an entry and the file it points at stays', () => {
+    const { base, outside } = baseWithJunction()
+    defaultIo.freshDir(base)
+    expect(existsSync(base)).toBe(true)
+    expect(readdirSync(base)).toEqual([])
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('the owner\'s file')
+  })
+
+  // The hazard itself: a junction made by a LOW-integrity process, stored with the substitute name
+  // \??\Global\..., for which lstat answers with the target's stat. A walk that asked lstat would enter it.
+  // Skipped by name where a low copy of cmd.exe cannot be made (off Windows, in a process already low, no USERNAME).
+  const SYS = (n) => join(process.env.SystemRoot || 'C:\\Windows', 'System32', n)
+  const sh = (file, args, o = {}) => {
+    const r = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: o.verbatim, cwd: o.cwd, timeout: 60_000 })
+    return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? ` (${r.error.message})` : ''}` }
+  }
+  const icaclsOk = (args) => {
+    const r = sh(SYS('icacls.exe'), args)
+    if (r.code !== 0) throw new Error(`icacls ${args.join(' ')} failed (${r.code}): ${r.out.trim().slice(0, 300)}`)
+  }
+  const cannotMakeLow = process.platform !== 'win32' || ownIntegrityLevel() === 'low' || !process.env.USERNAME
+  it.skipIf(cannotMakeLow)('Windows: a junction a LOW-integrity process made in the BASE folder is removed as an entry, its target\'s file stays (skipped off Windows, in a process already low, or with USERNAME unset)', () => {
+    const user = process.env.USERNAME
+    const t = mkdtempSync(join(ROOT, 'low-'))
+    const lowCmd = join(t, 'lowcmd.exe')
+    copyFileSync(SYS('cmd.exe'), lowCmd)
+    icaclsOk([lowCmd, '/grant', `${user}:(F)`])
+    icaclsOk([lowCmd, '/setintegritylevel', 'low'])
+    expect(sh(lowCmd, ['/d', '/c', `${SYS('whoami.exe')} /groups`]).out, 'the copy of cmd.exe runs at low integrity (S-1-16-4096)').toMatch(/S-1-16-4096/)
+    const base = join(t, 'c8_base')
+    const outside = join(t, 'outside')
+    mkdirSync(base)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'keep.txt'), 'the file the junction points at')
+    for (const d of [base, outside]) {
+      icaclsOk([d, '/grant', `${user}:(OI)(CI)(F)`])
+      icaclsOk([d, '/setintegritylevel', '(OI)(CI)low'])
+    }
+    const junction = join(base, 'gilded', 'to-outside')
+    links.push(junction)
+    const made = sh(lowCmd, [`/d /c mkdir gilded && mklink /J "${junction}" "${outside}"`], { verbatim: true, cwd: base })
+    expect(made.code, `the low cmd made the junction: ${made.out.trim()}`).toBe(0)
+    expect(listEntries(join(base, 'gilded'))).toEqual([{ name: 'to-outside', kind: 'link' }])
+    console.log(`[test] lstat of the low-made junction: isSymbolicLink ${lstatSync(junction).isSymbolicLink()}, isDirectory ${lstatSync(junction).isDirectory()}`)
+    defaultIo.freshDir(base)
+    expect(readdirSync(base)).toEqual([])
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('the file the junction points at')
+  })
+
+  it('a folder that is not there is made; the BASE folder itself a junction is removed as an entry, its target untouched', () => {
+    const t = mkdtempSync(join(ROOT, 't-'))
+    const absent = join(t, 'c9_base')
+    defaultIo.freshDir(absent)
+    expect(readdirSync(absent)).toEqual([])
+    const target = join(t, 'target')
+    mkdirSync(target)
+    writeFileSync(join(target, 'keep.txt'), 'k')
+    const asLink = join(t, 'c10_base')
+    symlinkSync(target, asLink, 'junction')
+    links.push(asLink)
+    defaultIo.freshDir(asLink)
+    expect(listEntries(t).find(e => e.name === 'c10_base')).toEqual({ name: 'c10_base', kind: 'dir' })
+    expect(readdirSync(asLink)).toEqual([])
+    expect(readFileSync(join(target, 'keep.txt'), 'utf8')).toBe('k')
+  })
+
+  it('an entry the listing calls a folder but that resolves elsewhere is refused by name and not entered', () => {
+    const { base, outside, junction } = baseWithJunction()
+    const lying = (d) => listEntries(d).map(e => (e.name === 'to-outside' ? { ...e, kind: 'dir' } : e))
+    expect(() => removeNoFollow(base, lying)).toThrow(/to-outside resolves to .*outside, not to .*to-outside; it was not entered and nothing beneath it was removed/)
+    expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('the owner\'s file')
+    expect(listEntries(dirname(junction)).find(e => e.name === 'to-outside')?.kind).toBe('link')
+  })
+
+  it('a link it cannot remove as an entry is refused by name, nothing beneath it is removed', () => {
+    const t = mkdtempSync(join(ROOT, 't-'))
+    const base = join(t, 'c8_base')
+    mkdirSync(join(base, 'full'), { recursive: true })
+    writeFileSync(join(base, 'full', 'keep.txt'), 'k')
+    // A listing that calls a folder with a file in it a link: rmdir answers ENOTEMPTY and unlink refuses a folder.
+    const lying = (d) => listEntries(d).map(e => (e.name === 'full' ? { ...e, kind: 'link' } : e))
+    expect(() => removeNoFollow(base, lying)).toThrow(/full is a link that could not be removed as an entry \(rmdir answered ENOTEMPTY, unlink answered [A-Z]+\); nothing beneath it was entered/)
+    expect(readFileSync(join(base, 'full', 'keep.txt'), 'utf8')).toBe('k')
+  })
+
+  it('archiveBase: a BASE folder that cannot be emptied is a named problem and nothing is archived', () => {
+    const ran = []
+    const r = archiveBase('C:/repo', '1d03308', 'C:/tmp/c8_base', {
+      freshDir: () => { throw new Error('C:/tmp/c8_base\\x is a link that could not be removed as an entry (rmdir answered EPERM, unlink answered EPERM); nothing beneath it was entered') },
+      run: (cmd, args) => { ran.push([cmd, ...args].join(' ')); return { status: 0, stdout: '', stderr: '' } },
+    })
+    expect(r).toEqual({ ok: false, problems: ['the BASE folder C:/tmp/c8_base could not be emptied, so nothing was archived: C:/tmp/c8_base\\x is a link that could not be removed as an entry (rmdir answered EPERM, unlink answered EPERM); nothing beneath it was entered'] })
+    expect(ran).toEqual([])
+  })
+
+  it('cynco-campaign-calibrate.mjs calls no recursive remove: no rmSync, no rm, no rimraf, no shell delete in its code', () => {
+    const text = readFileSync(new URL('../cynco-campaign-calibrate.mjs', import.meta.url), 'utf8')
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    expect(code).toContain('rmdirSync(')
+    expect(code).not.toMatch(/\brmSync\b/)
+    expect(code).not.toMatch(/\brm\s*\(|[{,]\s*rm\s*[,}]|\.rm\b|\brm -r|\brd \/s|Remove-Item|rimraf/)
   })
 })

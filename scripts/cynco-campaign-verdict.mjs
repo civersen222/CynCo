@@ -196,6 +196,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
+  // P5-C3: a wave adopted with no settled integrity baseline (--adopt-inflight wrote the note on its ledger row).
+  if (row.integrityNote) lines.push(`- Integrity: ${row.integrityNote}.`)
   const idLine = identityLine(identity)
   if (idLine) lines.push(idLine)
   // Phase 4 ruling 4: the campaign checklist (scripts/cynco-autopoiesis.mjs),

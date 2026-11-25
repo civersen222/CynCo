@@ -114,6 +114,12 @@ describe('lintGate — rules with no fixture of their own', () => {
     expect(r.at[1]).toEqual({ file: 'p', line: 1, problem: 'lint: the perturb header names C99.1, which is not a gate line id (p:1)' })
     expect(r.at.map(a => a.problem)).toEqual(r.problems)
   })
+  // P5-C5 (wave 15c, pin 3): since R3-F5 a perturb header may be written with // lines, and the lint's own
+  // header-line regex read only #, so such a problem named no line. The lint now asks the parser's one shape.
+  it('names the // header line that declares an unknown id', () => {
+    const r = lint({ perturb: src().perturb.replace('# EXPECT-FLIP: C99.1\n# MUST-FAIL: C99.9', '// EXPECT-FLIP: C99.1\n// MUST-FAIL: C99.7') })
+    expect(r.at).toEqual([{ file: 'p', line: 2, problem: 'lint: the perturb header names C99.7, which is not a gate line id (p:2)' }])
+  })
   it('names the second occurrence of a duplicate id, the network import, and the regression line with no skip', () => {
     const dup = lint({ gate: src().gate.replace('check("C99.9", x, d)', 'check("C99.1.a", x, d)\ncheck("C99.9", x, d)') })
     expect(dup.at).toEqual([{ file: 'g', line: 3, problem: 'lint: duplicate gate line id C99.1.a — two facts graded under one id hide one of them (g:3)' }])

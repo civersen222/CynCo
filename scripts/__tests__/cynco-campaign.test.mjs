@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
-import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS, dispatchRunId } from '../cynco-campaign.mjs'
+import { decide, runWave, waveContext, budgetSpent, defaultIo, claimedSurvivors, dispatchEnv, waveEnvBase, dirtyOutsideCampaign, inFlightRefusal, adoptInFlight, takeLock, releaseLock, applyProposalDecision, recordReseal, main, ensureCampaignCheckout, campaignCheckoutRefusal, waveDispatch, suiteGateCommand, suiteGateRefusal, STALE_WORKTREE_HINT, salvageFrom, MARKER_CHECK_TIMEOUT_MS, dispatchRunId, calibrateIfMoved, waveLogNames } from '../cynco-campaign.mjs'
 import { DISPATCH_RUN_PREFIX } from '../../engine/containment.js'
 import { summarize as summarizeGateLines } from '../cynco-gate-lines.mjs'
 import { adopt } from '../cynco-campaign-adopt.mjs'
@@ -8,7 +8,7 @@ import { promotionProposal } from '../cynco-ideation.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { defaultIo as calibrateIo } from '../cynco-campaign-calibrate.mjs'
 import { writeRuleVerdicts as realWriteRuleVerdicts, main as verdictsMain } from '../cynco-rule-verdicts.mjs'
-import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -558,6 +558,70 @@ describe('runWave with an adopted row', () => {
     expect(new CampaignState(state.dir).load().state.adoptedRow).toBeUndefined()
   })
 
+  // P5-C3 (wave 15): --adopt-inflight puts `integrityNote` on the ledger row of a wave whose baseline nothing
+  // settled; the wave record carries it beside `integrity` (which stays null: no reading was taken), so the
+  // campaign's own record says it as well as the ledger. A row without the note gives a record without it.
+  it('the integrity note of an adopted row is carried onto the wave record; a row without it adds nothing', async () => {
+    for (const note of ['no integrity baseline was settled for this wave', undefined]) {
+      const state = freshState()
+      state.state.adoptedRow = 'c8-wave1-1788634174399'
+      const rec = await runWave(spec, state, {
+        writeBrief: (p) => p, dispatch: async () => { throw new Error('no dispatch for an adopted row') },
+        waitForDriver: async () => { throw new Error('no wait for an adopted row') },
+        repoHead: () => { throw new Error('no repoHead for an adopted row') },
+        engineLive: async () => false, ideate: async () => ({ ideation: null }),
+        readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason: 'timeout', durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {}, ...(note ? { integrityNote: note } : {}) }),
+        commitsBetween: () => [{ sha: '1bc0f8c', subject: 'C8 wave 1' }],
+        grade: async () => g(), checkIdentity: okIdentity, salvageOf: () => null, patchRow: () => {},
+        commit: () => ({ sha: 'v1' }), notify: async () => true, economics: () => [], appendLog: () => {},
+        ...inertTriples,
+      })
+      expect(rec.adopted).toBe(true)
+      expect(rec.integrity).toBeNull()
+      if (note) expect(rec.integrityNote).toBe(note)
+      else expect('integrityNote' in rec).toBe(false)
+      expect(state.waves().at(-1).integrityNote).toBe(note)
+    }
+  })
+
+  // Wave 19c (check G, GB-5): the driver's own integrity stops are read from an adopted row too. A wave adopted
+  // by --adopt-inflight (after the owner cleared the latch) or by hand is a fault in the dispatched path's words.
+  it('an adopted row whose driver stopped under the latch or for an unusable guard folder: a fault in the same words, not graded', async () => {
+    const top = mkdtempSync(join(tmpdir(), 'camp-adopt-integ-'))
+    try {
+      for (const [exitReason, words] of [
+        ['integrity-latch', 'the mission driver stopped the mission under the integrity latch'],
+        ['integrity-guard-unusable', 'the mission driver stopped the mission because the integrity guard folder could not be used'],
+      ]) {
+        // freshState's state, in a folder this case removes.
+        const state = new CampaignState(join(top, exitReason, 'c8')).load()
+        state.state.calibration = { gateSha256: calibrateIo.sha256(GATE), perturbSha256: calibrateIo.sha256(PERTURB), baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL x' }], basePasses: [] }
+        state.state.lastBase = '1d03308'; state.state.lastFails = ['C8.1a']
+        state.state.adoptedRow = 'c8-wave1-1788634174399'
+        const seen = { graded: 0, committed: null }
+        const rec = await runWave(spec, state, {
+          writeBrief: (p) => p, dispatch: async () => { throw new Error('no dispatch for an adopted row') },
+          waitForDriver: async () => { throw new Error('no wait for an adopted row') },
+          repoHead: () => { throw new Error('no repoHead for an adopted row') },
+          engineLive: async () => false, ideate: async () => ({ ideation: null }),
+          readRow: (missionId) => ({ missionId, briefFile: 'docs/civkings-redesign-briefs/c8-wave1.txt', exitReason, durationS: 28824, commitRange: { base: '1d03308', head: '1bc0f8c' }, outcome: 'landed', markerSeen: false, toolStats: {} }),
+          commitsBetween: () => [{ sha: '1bc0f8c', subject: 'C8 wave 1' }],
+          grade: async () => { seen.graded++; return g() }, checkIdentity: okIdentity, salvageOf: () => null, patchRow: () => {},
+          commit: (args) => { seen.committed = args.message; return { sha: 'v1' } }, notify: async () => true, appendLog: () => {},
+          readLedgerRows: () => [], datasetsHome: () => join(top, exitReason, 'datasets'), economics: () => null,
+          ...inertTriples,
+        })
+        expect(seen.graded).toBe(0)
+        expect(rec.decision).toEqual({ kind: 'fault', why: `integrity: ${words} — the wave was not graded` })
+        expect(rec.adopted).toBe(true)
+        expect(rec.missionId).toBe('c8-wave1-1788634174399')
+        expect(rec.durationS).toBe(28824)
+        expect(state.state.adoptedRow).toBeUndefined()
+        expect(state.state.waveCount).toBe(1)
+      }
+    } finally { rmSync(top, { recursive: true, force: true }) }
+  })
+
   it('refuses an adopted missionId the ledger does not have', async () => {
     const state = freshState()
     state.state.adoptedRow = 'ghost-1'
@@ -772,13 +836,70 @@ describe('runWave — in-flight state', () => {
   it('persists inFlight the moment dispatch returns and clears it after the grade', async () => {
     const state = freshState()
     let duringWait = null
-    await runWave(spec, state, gradedIo({
-      waitForDriver: async () => { duringWait = new CampaignState(state.dir).load().state.inFlight; return { exited: true } },
-    }))
+    // Wave 19c (check G, GB-8 c): a first dispatch of a stem says nothing about an earlier one.
+    const lines = []
+    const log = console.log
+    console.log = (...a) => { lines.push(a.join(' ')); log(...a) }
+    try {
+      await runWave(spec, state, gradedIo({
+        waitForDriver: async () => { duringWait = new CampaignState(state.dir).load().state.inFlight; return { exited: true } },
+      }))
+    } finally { console.log = log }
+    expect(lines.filter((l) => l.includes('an earlier dispatch of'))).toEqual([])
     expect(duringWait).toMatchObject({ wave: 1, missionId: null, pidFile: 'C:/tmp/driver_c8-wave1.pid', driverLog: 'C:/tmp/driver_c8-wave1.log' })
     expect(duringWait.dispatchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     expect(state.state.inFlight).toBeUndefined()
     expect(new CampaignState(state.dir).load().state.inFlight).toBeUndefined()
+  })
+
+  // Wave 19b (from package A, R4-3): dispatch-mission.sh refuses a run whose engine or driver log already
+  // exists. A wave dispatched again under the same stem (a dispatch that failed after its logs were written)
+  // names its logs for the attempt, as the gate author does, instead of being refused for its own evidence.
+  it('a wave dispatched again under the same stem names its logs for the attempt, and the in-flight record carries them', async () => {
+    const state = freshState()
+    let dispatched = null
+    let duringWait = null
+    const taken = new Set(['C:/tmp/engine_c8-wave1.log', 'C:/tmp/driver_c8-wave1-attempt2.pid'])
+    const lines = []
+    const log = console.log
+    console.log = (...a) => { lines.push(a.join(' ')); log(...a) }
+    try {
+      await runWave(spec, state, gradedIo({
+        logExists: (p) => taken.has(p),
+        dispatch: async (d) => { dispatched = d; return { missionId: 'c8-wave1-1' } },
+        waitForDriver: async () => { duringWait = new CampaignState(state.dir).load().state.inFlight; return { exited: true } },
+      }))
+    } finally { console.log = log }
+    expect(dispatched).toMatchObject({ pidFile: 'C:/tmp/driver_c8-wave1-attempt3.pid', driverLog: 'C:/tmp/driver_c8-wave1-attempt3.log', engineLog: 'C:/tmp/engine_c8-wave1-attempt3.log' })
+    expect(duringWait).toMatchObject({ pidFile: 'C:/tmp/driver_c8-wave1-attempt3.pid', driverLog: 'C:/tmp/driver_c8-wave1-attempt3.log', engineLog: 'C:/tmp/engine_c8-wave1-attempt3.log' })
+    expect(lines).toContain('[campaign] wave 1: an earlier dispatch of c8-wave1 left its logs in C:/tmp, which are kept; this one is attempt 3 and writes engine_c8-wave1-attempt3.log and driver_c8-wave1-attempt3.log')
+  })
+
+  it('waveLogNames: the first attempt keeps the stem\'s own names; any of the three files taken moves it on', () => {
+    expect(waveLogNames('c8-wave1', () => false)).toEqual({ attempt: 1, pidFile: 'C:/tmp/driver_c8-wave1.pid', driverLog: 'C:/tmp/driver_c8-wave1.log', engineLog: 'C:/tmp/engine_c8-wave1.log' })
+    for (const taken of ['C:/tmp/driver_c8-wave1.pid', 'C:/tmp/driver_c8-wave1.log', 'C:/tmp/engine_c8-wave1.log']) {
+      expect(waveLogNames('c8-wave1', (p) => p === taken)).toEqual({ attempt: 2, pidFile: 'C:/tmp/driver_c8-wave1-attempt2.pid', driverLog: 'C:/tmp/driver_c8-wave1-attempt2.log', engineLog: 'C:/tmp/engine_c8-wave1-attempt2.log' })
+    }
+    // Every attempt name taken: the runner refuses by name rather than overwrite or loop for ever.
+    expect(() => waveLogNames('c8-wave1', () => true)).toThrow(/no free log name for c8-wave1 in C:\/tmp after 99 attempts/)
+    // Wave 19c (check G, GB-8 b): the last attempt the refusal names is really tried.
+    expect(waveLogNames('s', (p) => !p.includes('-attempt99.')).attempt).toBe(99)
+  })
+
+  it('every attempt name taken: the wave stops by name before the brief is written, and nothing is dispatched', async () => {
+    const state = freshState()
+    let dispatched = 0
+    let written = 0
+    const rec = await runWave(spec, state, gradedIo({ logExists: () => true, writeBrief: (p) => { written++; return p }, dispatch: async () => { dispatched++; return { missionId: 'x' } } }))
+    expect(rec.decision.kind).toBe('stop')
+    expect(rec.decision.why).toBe('no free log name for c8-wave1 in C:/tmp after 99 attempts: move the old driver_ and engine_ logs of c8-wave1 first — nothing was dispatched')
+    expect({ dispatched, written }).toEqual({ dispatched: 0, written: 0 })
+    expect(state.state.inFlight).toBeUndefined()
+  })
+
+  it('a runner without the logExists seam never asks the real C:/tmp (only defaultIo does)', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    expect(src).toContain('io.logExists ?? (io === defaultIo ? existsSync : () => false)')
   })
 
   it('clears inFlight on the fault path too', async () => {
@@ -1238,6 +1359,20 @@ describe('waveDispatch — the marker check', () => {
     }
   }))
 
+  // Wave 19b (check A, A-F4): the authoring mark is the gate author's alone. A wave dispatch drops it
+  // whatever the runner's own environment or the spec's `env` hold (with it, the driver refuses the wave).
+  it('a wave dispatch never carries the authoring mark, from the runner\'s environment or the spec\'s env', () => withHome(() => {
+    const MARK = 'LOCALCODE_MISSION_AUTHOR_CHECK'
+    expect(waveDispatch(suiteSpec, wave, { PATH: '/usr/bin', [MARK]: '1' }).env[MARK]).toBeUndefined()
+    expect(waveDispatch({ ...suiteSpec, env: { [MARK]: '1' } }, wave, { PATH: '/usr/bin' }).env[MARK]).toBeUndefined()
+    expect(waveDispatch({ ...suiteSpec, env: { [MARK]: '1' } }, wave, { PATH: '/usr/bin', [MARK]: '1' }).env).not.toHaveProperty(MARK)
+  }))
+
+  it('hands the wave\'s engine log to the dispatch as ENGINE_LOG when the runner names one', () => withHome(() => {
+    expect(waveDispatch(suiteSpec, { ...wave, engineLog: 'C:/tmp/engine_c8-wave1-attempt2.log' }, { PATH: '/usr/bin' }).env.ENGINE_LOG).toBe('C:/tmp/engine_c8-wave1-attempt2.log')
+    expect(waveDispatch(suiteSpec, wave, { PATH: '/usr/bin' }).env).not.toHaveProperty('ENGINE_LOG')
+  }))
+
   it('hands a spec markerRetryMinS to the driver as CYNCO_MARKER_RETRY_MIN_S', () => withHome(() => {
     expect(waveDispatch({ ...suiteSpec, markerRetryMinS: 60 }, wave, { PATH: '/usr/bin' }).env.CYNCO_MARKER_RETRY_MIN_S).toBe('60')
   }))
@@ -1276,7 +1411,8 @@ describe('waveDispatch — the marker check', () => {
   it('is what defaultIo.dispatch runs', () => {
     const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
     const body = src.slice(src.indexOf('  dispatch: async'), src.indexOf('  dispatchRaw: async'))
-    expect(body).toMatch(/waveDispatch\(spec, \{ briefFile, invariants, timeoutS, pidFile, driverLog \}\)/)
+    // Wave 19b: the engine log is named per attempt by the runner (waveLogNames), so it travels too.
+    expect(body).toMatch(/waveDispatch\(spec, \{ briefFile, invariants, timeoutS, pidFile, driverLog, engineLog \}\)/)
     expect(body).not.toMatch(/spec\.keepGreen/)
   })
 })
@@ -1691,6 +1827,76 @@ describe('recordReseal', () => {
     const assign = src.indexOf('state.state.calibration = next')
     expect(call, 'the CALIBRATE block never calls recordReseal').toBeGreaterThan(-1)
     expect(assign, 'the CALIBRATE block no longer assigns the new calibration').toBeGreaterThan(call)
+  })
+})
+
+// R3-F2 and R3-F3 (wave 12): the runner calibrated, recorded a reseal and saved the state BEFORE it looked at
+// --dry-run, so the one way to take a calibration reading overwrote the reading it was to be compared with; and
+// the stored calibration dropped the positive shim's reading, the one part that shows the gate can be passed.
+describe('calibrateIfMoved: the CALIBRATE block, and --dry-run writes nothing', () => {
+  const reading = (over = {}) => ({ ok: true, problems: [], gateSha256: 'g2', perturbSha256: 'p2', positiveSha256: 'q2',
+    baseFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL other words' }], basePasses: [{ id: 'C8.9', line: 'C8.9: PASS' }], perturbFails: [{ id: 'C8.1a', line: 'C8.1a: FAIL other words' }],
+    positive: { terminator: 'PASS', fails: [], passes: [], failCount: 0, errors: [], priorRegressions: null }, baseGateMs: 1234, suiteBaselineCreated: false, ...over })
+  const moved = () => {
+    const state = freshState()
+    state.state.waveCount = 2
+    state.state.calibration = { ...state.state.calibration, gateSha256: 'old-gate' }   // the gate's sha moved
+    state.save()
+    return state
+  }
+  const quiet = async (fn) => {
+    const logs = [], ol = console.log, oe = console.error
+    console.log = (m) => logs.push(String(m)); console.error = (m) => logs.push(String(m))
+    try { return { r: await fn(), logs: logs.join('\n') } } finally { console.log = ol; console.error = oe }
+  }
+
+  it('a dry run with moved instruments calibrates and prints, and leaves state.json byte-identical', async () => {
+    const state = moved()
+    const file = join(state.dir, 'state.json')
+    const before = readFileSync(file)
+    const asked = []
+    const { r, logs } = await quiet(() => calibrateIfMoved(spec, state, { dryRun: true, calibrate: async (s, io, o) => { asked.push(o); return reading({ suiteBaselineSkipped: true }) } }))
+    expect(asked).toEqual([{ dryRun: true }])
+    expect(readFileSync(file).equals(before)).toBe(true)
+    expect(state.state.calibration.gateSha256).toBe('old-gate')
+    expect(state.state.reseals ?? []).toEqual([])
+    expect(r.calibration).toMatchObject({ gateSha256: 'g2', positive: 'PASS' })
+    expect(logs).toMatch(/\[campaign\] --dry-run: calibration NOT saved, no reseal recorded/)
+    expect(logs).toMatch(/a suite baseline would be written/)
+    // C8.1a's words changed, and C8.9 is a passing line the old calibration did not have.
+    expect(logs).toMatch(/RESEAL would be recorded after wave 2: gate old-gate → g2, 2 graded line\(s\) changed: C8\.1a, C8\.9/)
+  })
+
+  it('without --dry-run the reseal is recorded, the calibration saved, and the positive terminator kept', async () => {
+    const state = moved()
+    const { r } = await quiet(() => calibrateIfMoved(spec, state, { calibrate: async () => reading() }))
+    const saved = new CampaignState(state.dir).load().state
+    expect(saved.calibration).toMatchObject({ gateSha256: 'g2', positiveSha256: 'q2', positive: 'PASS', baseGateMs: 1234 })
+    expect(saved.reseals.map(x => x.wave)).toEqual([2])
+    expect(r.calibration).toEqual(saved.calibration)
+  })
+
+  it('instruments that did not move are not calibrated, and the calibration on record is the one returned', async () => {
+    const state = freshState()
+    const { r } = await quiet(() => calibrateIfMoved(spec, state, { dryRun: true, calibrate: async () => { throw new Error('must not calibrate') } }))
+    expect(r.calibration).toBe(state.state.calibration)
+  })
+
+  it('a refused calibration is exit 3 and saves nothing, dry run or not', async () => {
+    for (const dryRun of [true, false]) {
+      const state = moved()
+      const before = readFileSync(join(state.dir, 'state.json'))
+      const { r } = await quiet(() => calibrateIfMoved(spec, state, { dryRun, notify: async () => true, calibrate: async () => reading({ ok: false, problems: ['BASE must MISS the gate; terminator was PASS (gate_c8.py)'] }) }))
+      expect(r).toEqual({ code: 3 })
+      expect(readFileSync(join(state.dir, 'state.json')).equals(before)).toBe(true)
+    }
+  })
+
+  it('main prints the dry-run brief from the reading it did not save', () => {
+    const src = readFileSync(fileURLToPath(new URL('../cynco-campaign.mjs', import.meta.url)), 'utf8')
+    const block = src.slice(src.indexOf('const calibrated = await calibrateIfMoved(spec, state, { dryRun })'))
+    expect(block.indexOf('const calibrated = await calibrateIfMoved')).toBe(0)
+    expect(block.slice(0, 400)).toContain('waveContext(spec, { ...state.state, calibration: calibrated.calibration })')
   })
 })
 
@@ -3095,6 +3301,17 @@ describe('the integrity layer of a wave (F242)', () => {
     expect(rec.decision.why).toBe('integrity: the mission driver stopped the mission under the integrity latch — the wave was not graded')
   })
 
+  // Wave 19b (from package A): the driver's other integrity stop, a guard folder it could not use.
+  it('a mission the driver stopped because the guard folder could not be used (integrity-guard-unusable): a fault in its own words', async () => {
+    const state = freshState()
+    const { seam } = integ()
+    const { io, seen } = waveIo(seam, { readRow: (missionId) => ({ ...row(missionId), exitReason: 'integrity-guard-unusable' }) })
+    const rec = await runWave(spec, state, io)
+    expect(seen.graded).toBe(0)
+    expect(rec.decision.kind).toBe('fault')
+    expect(rec.decision.why).toBe('integrity: the mission driver stopped the mission because the integrity guard folder could not be used — the wave was not graded')
+  })
+
   it('the reading waits for the dispatch watcher\'s settle (the authority), and a settle that never comes is the latch', async () => {
     const state = freshState()
     const { calls, seam } = integ()
@@ -3237,6 +3454,30 @@ describe('the integrity layer of a wave (F242)', () => {
       const b = integ({ early: changed })
       expect((await adoptInFlight(spec, inFlight(freshState()), adoptIo(b.seam, { missionIdFrom: () => null, pidAlive: () => true }))).kind).toBe('alive')
       expect(b.calls.early).toEqual([])
+    })
+    // NOW.md (2026-11-24): a wave adopted by hand had no integrity baseline, and nothing said so. A record with
+    // no run id cannot be looked up in the check log: the adoption goes on (the owner adopts by hand), the line
+    // says that no baseline was settled for the wave, and the ledger row carries it.
+    it('a record without runId adopts, says no integrity baseline was settled for this wave, and the row carries it', async () => {
+      const { calls, seam } = integ({ early: changed })
+      const patched = [], logs = []
+      const ol = console.log
+      console.log = (m) => logs.push(String(m))
+      let r
+      try { r = await adoptInFlight(spec, inFlight(freshState(), { runId: undefined }), adoptIo(seam, { patchRow: (id, f) => patched.push({ id, f }) })) }
+      finally { console.log = ol }
+      expect(r).toEqual({ kind: 'adopted', missionId: 'c8-wave2-1', integrityNote: 'no integrity baseline was settled for this wave' })
+      expect(patched).toEqual([{ id: 'c8-wave2-1', f: { integrityNote: 'no integrity baseline was settled for this wave' } }])
+      expect(logs.join('\n')).toMatch(/\[campaign\] --adopt-inflight: wave 2 wrote ledger row c8-wave2-1 — grading it; no integrity baseline was settled for this wave \(the in-flight record names no run id\)/)
+      expect(calls.early).toEqual([])
+      expect(calls.halt).toEqual([])
+    })
+    it('a settled clean record adopts with no note, and patches nothing', async () => {
+      const { seam } = integ({ early: { changed: false, settled: true, changeCount: 0, latchPath: null } })
+      const patched = []
+      const r = await adoptInFlight(spec, inFlight(freshState()), adoptIo(seam, { patchRow: (id, f) => patched.push({ id, f }) }))
+      expect(r).toEqual({ kind: 'adopted', missionId: 'c8-wave2-1' })
+      expect(patched).toEqual([])
     })
   })
 

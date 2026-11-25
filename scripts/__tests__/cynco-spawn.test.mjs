@@ -462,6 +462,150 @@ describe('runAsync: the async sibling of runSync', () => {
   })
 })
 
+// Plan P6 item 6, the in-box half (wave 19b): the driver polls the integrity latch every 30 s and
+// must be able to end an in-box marker check it is waiting on. The `signal` option: an aborted run
+// ends its child's tree and is its own fault code, EABORTED, never a status, a timeout or a pass.
+describe('runAsync: the signal option', () => {
+  const node = process.execPath
+  /** A child stand-in that closes only when killed (or after `closeAfterMs`, if given). */
+  const childOf = (pid, closeAfterMs = null) => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter(); child.stderr = new EventEmitter(); child.pid = pid
+    if (closeAfterMs !== null) setTimeout(() => { child.stdout.emit('data', 'done'); child.emit('close', 0, null) }, closeAfterMs)
+    return child
+  }
+
+  it('an abort while the child runs ends its tree and is EABORTED, never a status or a timeout', async () => {
+    const killed = []
+    let child
+    const ac = new AbortController()
+    const p = runAsync('x', [], { timeoutMs: 60_000, signal: ac.signal }, {
+      spawn: () => { child = childOf(31); return child },
+      kill: (c) => { killed.push(c.pid); setTimeout(() => c.emit('close', null, 'SIGKILL'), 5) },
+    })
+    setTimeout(() => ac.abort(), 20)
+    const r = await p
+    expect(killed).toEqual([31])
+    expect(r.status).toBeNull()
+    expect(r.timedOut).toBe(false)
+    expect(r.fault).toMatchObject({ code: 'EABORTED', status: null })
+    expect(faultSummary(r.fault)).toContain('code EABORTED')
+  })
+
+  it('really ends a running process: the run comes back long before its own end or its cap', async () => {
+    const ac = new AbortController()
+    const t0 = Date.now()
+    setTimeout(() => ac.abort(), 300)
+    const r = await runAsync(node, ['-e', 'setTimeout(() => {}, 60000)'], { timeoutMs: 60_000, signal: ac.signal })
+    expect(r.fault?.code).toBe('EABORTED')
+    expect(r.timedOut).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(30_000)
+  })
+
+  it('a signal aborted before the start: nothing is spawned, recorded or established, EABORTED', async () => {
+    let spawned = 0
+    const events = []
+    const handle = { start: (rec) => { events.push(rec); return { ok: true, call: 1 } }, end: () => { events.push('end') } }
+    const ac = new AbortController()
+    ac.abort()
+    const r = await runAsync('python', ['gate.py'], { timeoutMs: 1000, signal: ac.signal, audit: { handle, src: 'driver-marker' }, contained: { own: 'C:/never-made' } }, {
+      spawn: () => { spawned++; return childOf(9, 5) },
+      establish: () => { throw new Error('must not establish') },
+    })
+    expect(spawned).toBe(0)
+    expect(events).toEqual([])
+    expect(r).toMatchObject({ status: null, timedOut: false, fault: { code: 'EABORTED', started: false } })
+    expect(r.stderr).toContain('aborted before it was started')
+    // Wave 19c (check G, GB-3): a check whose signal was aborted before the call ran nothing and ended no
+    // tree, and its line says so (the line for an abort while it ran says the tree was ended).
+    const pre = await runCheckAsync('anything at all', tmpdir(), 1000, { signal: ac.signal })
+    expect(pre).toMatchObject({ verified: null, stopped: true, spawnFailed: false, timedOut: false })
+    expect(pre.harnessFault).toBe('stopped by its caller before it started: nothing was run')
+    expect(pre.output).toContain('[check] HARNESS FAULT: stopped by its caller before it started: nothing was run')
+    expect(pre.output).not.toContain('its process tree was ended')
+  })
+
+  it('an abort after the close changes nothing, and the listener is gone', async () => {
+    const killed = []
+    const ac = new AbortController()
+    const r = await runAsync('x', [], { timeoutMs: 1000, signal: ac.signal }, { spawn: () => childOf(12, 5), kill: (c) => { killed.push(c.pid) } })
+    ac.abort()
+    expect(r).toMatchObject({ status: 0, fault: null, timedOut: false })
+    expect(killed).toEqual([])
+    // A long-lived signal (the driver's poll) must not collect one listener per check.
+    const listeners = new Set()
+    const signal = { aborted: false, addEventListener: (ev, fn) => listeners.add(fn), removeEventListener: (ev, fn) => listeners.delete(fn) }
+    const p = runAsync('x', [], { timeoutMs: 1000, signal }, { spawn: () => childOf(15, 5) })
+    expect(listeners.size).toBe(1)
+    await p
+    expect(listeners.size).toBe(0)
+  })
+
+  it('a deadline spent before the abort stays a timeout; an abort first is never a timeout', async () => {
+    let t = 0
+    const ac1 = new AbortController()
+    const timedOut = await runAsync('x', [], { timeoutMs: 10, signal: ac1.signal }, {
+      spawn: () => childOf(13), now: () => t,
+      kill: (c) => { t += 10; ac1.abort(); setTimeout(() => c.emit('close', null, 'SIGKILL'), 5) },
+    })
+    expect(timedOut.timedOut).toBe(true)
+    expect(timedOut.fault).toBeNull()
+    const ac2 = new AbortController()
+    const kills = []
+    const p = runAsync('x', [], { timeoutMs: 60, signal: ac2.signal }, {
+      spawn: () => childOf(14),
+      kill: (c) => { kills.push(c.pid); setTimeout(() => c.emit('close', null, 'SIGKILL'), 120) },
+    })
+    setTimeout(() => ac2.abort(), 5)
+    const aborted = await p
+    expect(aborted.fault?.code).toBe('EABORTED')
+    expect(aborted.timedOut).toBe(false)
+    // Changed on purpose in wave 19c (check G, GB-2), was [14]: the abort's kill at 5 ms has not closed
+    // the child by the deadline at 60 ms, so the deadline kills the tree a second time (a second try for
+    // a root the first kill left running). The abort still names the end.
+    expect(kills).toEqual([14, 14])
+  })
+
+  // Wave 19c (check G, GB-2): after an abort, a run still open at the deadline is killed once more: a
+  // second try for a root the first kill left running (shown here with a fake kill), and the run settles
+  // as EABORTED, not a timeout. A process that outlived a dead root is not reached by it (killTree finds
+  // the tree from the root's pid); such a run stays open.
+  it('an abort whose kill missed: the deadline kills again, and the run settles as EABORTED, never a timeout', async () => {
+    const kills = []
+    const ac = new AbortController()
+    const p = runAsync('x', [], { timeoutMs: 50, signal: ac.signal }, {
+      spawn: () => childOf(16),
+      // The first kill (the abort's) misses; the second (the deadline's) ends the child.
+      kill: (c) => { kills.push(c.pid); if (kills.length > 1) setTimeout(() => c.emit('close', null, 'SIGKILL'), 5) },
+    })
+    setTimeout(() => ac.abort(), 5)
+    const r = await p
+    expect(kills).toEqual([16, 16])
+    expect(r.fault?.code).toBe('EABORTED')
+    expect(r.timedOut).toBe(false)
+    expect(r.status).toBeNull()
+  })
+
+  it('runCheckAsync forwards the signal: verified null, stopped, not a spawn failure, and the line says the check was stopped', async () => {
+    // The check's shell is the engine's (PowerShell on Windows, which needs `&` before a quoted program).
+    const RUNTIME = process.platform === 'win32' ? `& "${node}"` : `"${node}"`
+    const ac = new AbortController()
+    setTimeout(() => ac.abort(), 1500)
+    const r = await runCheckAsync(`${RUNTIME} -e "setTimeout(() => {}, 60000)"`, tmpdir(), 60_000, { signal: ac.signal })
+    expect(r.verified).toBeNull()
+    expect(r.stopped).toBe(true)
+    expect(r.spawnFailed).toBe(false)
+    expect(r.timedOut).toBe(false)
+    expect(r.harnessFault).toContain('stopped by its caller while it ran')
+    expect(r.output).toContain('[check] HARNESS FAULT: stopped by its caller while it ran')
+    const ok = await runCheckAsync(`${RUNTIME} -e "process.exit(0)"`, tmpdir(), 60_000, { signal: new AbortController().signal })
+    expect(ok).toMatchObject({ verified: true, stopped: false, spawnFailed: false })
+    // Wave 19c (check G, GB-1): an abort at 1.5 s and a second PowerShell start took 1.78 s on a quiet PC;
+    // under the whole suite's load that is too near vitest's 5 s default, so this case has its own limit.
+    // The abort stays at 1.5 s so PowerShell has started node and the tree kill is the real one.
+  }, 20_000)
+})
+
 // F242 (01-isolation 7.1, tests 9.7): the `contained` option. A command that runs workspace
 // code for an unattended run starts inside a containment, or not at all; a launcher that could
 // not run it is a fault, never the command's own exit code.
@@ -572,7 +716,9 @@ describe('the contained option', () => {
     }
     const { calls, spawn } = recorder()
     expect(runSync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn }).status).toBe(0)
-    expect(asked).toEqual([{ kind: 'grader', label: 'grade-base', missionCwd: own, labelCwd: true, extraRoots: undefined }])
+    // R3-F1 (wave 12): the run id is minted before the audit start (so the grader's records can carry it) and
+    // handed to establish; it used to be a label establish minted from. The same label, so the same id shape.
+    expect(asked).toEqual([{ kind: 'grader', runId: expect.stringMatching(/^grade-base-\d{8}T\d{6}-[0-9a-f]{4}$/), missionCwd: own, labelCwd: true, extraRoots: undefined }])
     expect(calls[0].opts.env.HOME).toBe(ctx.sandbox.home)
     expect(released).toEqual([ctx])
     expect(() => runSync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: () => { throw new Error('spawn blew up') } })).toThrow('spawn blew up')
@@ -596,7 +742,7 @@ describe('the contained option', () => {
       establish: (a) => { asked.push(a); return { ok: true, containment: ctx, ms: 0 } },
       release: () => ({ relabelled: true, note: '' }),
     })
-    expect(asked).toEqual([{ kind: 'grader', label: 'grade-archive', missionCwd: own, labelCwd: false, extraRoots: [join(dir, 'x')] }])
+    expect(asked).toEqual([{ kind: 'grader', runId: expect.stringMatching(/^grade-archive-\d{8}T\d{6}-[0-9a-f]{4}$/), missionCwd: own, labelCwd: false, extraRoots: [join(dir, 'x')] }])
     expect(calls[0].opts.env.PYTHONDONTWRITEBYTECODE).toBe('1')
   })
 
@@ -678,6 +824,142 @@ describe('the contained option', () => {
       expect(plain).toMatchObject({ status: 1, fault: null })
     })
   })
+  // R3-F1 (wave 12): a grader's start and end records carried run null, so `cynco-audit verify --run <grader id>`
+  // found none of them. With `forRun`, the handle is made for the run id the command's own containment gets,
+  // which is minted before the start record is written and handed to establish.
+  describe('forRun: the records of a grader carry its run id', () => {
+    const ownHooks = (asked, released = []) => ({
+      ownLevel: () => 'medium',
+      establish: (a) => { asked.push(a); return { ok: true, containment: ctxOf({ kind: 'grader', runId: a.runId, missionCwd: a.missionCwd }), ms: 0 } },
+      release: (c) => { released.push(c); return { relabelled: true, note: '' } },
+    })
+    const handleOf = (refuse = null) => {
+      const events = []
+      let n = 0
+      return { events, handle: {
+        start(rec) { events.push(['start', rec]); return refuse ? { ok: false, reason: refuse } : { ok: true, call: ++n } },
+        end(call, rec) { events.push(['end', call, rec]) },
+      } }
+    }
+    const forRunOf = () => {
+      const made = []
+      const h = handleOf()
+      return { made, events: h.events, audit: { src: 'gate', forRun: (run) => { made.push(run); return h.handle } } }
+    }
+
+    it('runSync and runAsync: the handle is made for the minted id, before the start, and establish gets the same id', async () => {
+      allowTestRun()
+      const own = join(dir, 'base')
+      const runs = [
+        (o, hk) => runSync('python', ['gate.py'], o, { ...hk, spawn: recorder().spawn }),
+        (o, hk) => runAsync('python', ['gate.py'], o, { ...hk, spawn: asyncChild(0) }),
+      ]
+      for (const run of runs) {
+        const asked = []
+        const released = []
+        const f = forRunOf()
+        const r = await run({ contained: { own }, timeoutMs: 1000, audit: f.audit }, ownHooks(asked, released))
+        expect(r.status).toBe(0)
+        expect(released.map(c => c.runId)).toEqual(f.made)
+        expect(f.made).toHaveLength(1)
+        expect(f.made[0]).toMatch(/^grade-base-\d{8}T\d{6}-[0-9a-f]{4}$/)
+        expect(asked.map(a => a.runId)).toEqual(f.made)
+        expect(f.events[0][0]).toBe('start')
+      }
+    })
+
+    it('two attempts (the F155 retry) are two containments, each with its own id on its own records', () => {
+      allowTestRun()
+      const asked = []
+      const f = forRunOf()
+      const clock = clockOf()
+      let calls = 0
+      const spawn = () => { calls++; clock.t += 3; return calls === 1 ? ETIMEDOUT : { status: 0, stdout: 'ok', stderr: '' } }
+      const r = runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') }, timeoutMs: 7_200_000, retryImpossibleTimeout: true, onStaleRetry: () => {}, audit: f.audit }, { ...ownHooks(asked), spawn, now: () => clock.t })
+      expect(r.status).toBe(0)
+      expect(f.made).toHaveLength(2)
+      expect(asked.map(a => a.runId)).toEqual(f.made)
+      expect(f.events.map(e => e[0])).toEqual(['start', 'end', 'start', 'end'])
+    })
+
+    it('a run context: forRun gets the context\'s own id; no containment: forRun gets null', () => {
+      allowTestRun()
+      const ctx = ctxOf()
+      const f = forRunOf()
+      runSync('python', ['gate.py'], { contained: ctx, timeoutMs: 1000, audit: f.audit }, { spawn: recorder().spawn })
+      runSync('python', ['gate.py'], { timeoutMs: 1000, audit: f.audit }, { spawn: recorder().spawn })
+      expect(f.made).toEqual([ctx.runId, null])
+    })
+
+    it('already low: no id is minted, forRun gets null, the command runs directly', () => {
+      const f = forRunOf()
+      const { calls, spawn } = recorder()
+      runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') }, timeoutMs: 1000, audit: f.audit }, { spawn, ownLevel: () => 'low', establish: () => { throw new Error('must not be asked') } })
+      expect(f.made).toEqual([null])
+      expect(calls[0].cmd).toBe('python')
+    })
+
+    it('ECONTAINMENT and EAUDIT are unchanged under forRun', () => {
+      const refusing = { src: 'gate', forRun: () => handleOf('the record of this call could not be written before it ran (audit-dir-missing)').handle }
+      let established = 0
+      const a = runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') }, timeoutMs: 1000, audit: refusing }, { spawn: () => { throw new Error('must not spawn') }, ownLevel: () => 'medium', establish: () => { established++; return { ok: false, reason: 'x' } } })
+      expect(a).toEqual({ status: null, stdout: '', stderr: '[tool-audit] not run: the record of this call could not be written before it ran (audit-dir-missing)', elapsedMs: 0, timedOut: false, fault: { code: 'EAUDIT', status: null, signal: null, elapsedMs: 0 } })
+      expect(established).toBe(0)
+      const f = forRunOf()
+      const b = runSync('python', ['gate.py'], { contained: { own: join(dir, 'base') }, timeoutMs: 1000, audit: f.audit }, { spawn: () => { throw new Error('must not spawn') }, ownLevel: () => 'medium', establish: () => ({ ok: false, reason: 'the sandbox root X is not an absolute path to an existing folder' }) })
+      expect(b).toEqual({ status: null, stdout: '', stderr: '[spawn] REFUSED: containment: the sandbox root X is not an absolute path to an existing folder — nothing was run', elapsedMs: 0, timedOut: false, fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
+      expect(f.events.map(e => e[0])).toEqual(['start', 'end'])
+    })
+
+    // P5-C7 (wave 15): a contained call with an exact environment is refused before anything is made, so no
+    // id is minted for it (its records would name a run with no containment record) and the integrity level is
+    // not asked. The refusal itself is unchanged.
+    it('a contained call with envExact: no id is minted, the level is not asked, the records carry null', async () => {
+      for (const run of [
+        (o, hk) => runSync('python', ['gate.py'], o, hk),
+        (o, hk) => runAsync('python', ['gate.py'], o, hk),
+      ]) {
+        const f = forRunOf()
+        let asked = 0, minted = 0
+        const r = await run({ contained: { own: join(dir, 'base') }, envExact: true, env: { PATH: 'x' }, timeoutMs: 1000, audit: f.audit }, {
+          spawn: () => { throw new Error('must not spawn') },
+          ownLevel: () => { asked++; return 'medium' },
+          mintRunId: () => { minted++; return 'grade-base-20261124T220000-ab12' },
+          establish: () => { throw new Error('must not be asked') },
+        })
+        expect(r).toEqual({ status: null, stdout: '', stderr: '[spawn] REFUSED: containment: a contained command cannot take an exact environment — nothing was run', elapsedMs: 0, timedOut: false, fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
+        expect(f.made).toEqual([null])
+        expect(asked).toBe(0)
+        expect(minted).toBe(0)
+        expect(f.events.map(e => e[0])).toEqual(['start', 'end'])
+      }
+    })
+
+    // B5-1 (wave 15c): a run context's call with an exact environment is refused the same way, but it is made
+    // inside a run that HAS a containment, so its records carry that run's id (`cynco-audit verify --run <id>`
+    // finds the call). Only a call with no containment of its own carries null.
+    it('a run context\'s call with envExact: the records carry the context\'s id, nothing is minted, the refusal is unchanged', async () => {
+      for (const run of [
+        (o, hk) => runSync('python', ['gate.py'], o, hk),
+        (o, hk) => runAsync('python', ['gate.py'], o, hk),
+      ]) {
+        const f = forRunOf()
+        let asked = 0, minted = 0
+        const r = await run({ contained: { runId: 'mission-x' }, envExact: true, env: { PATH: 'x' }, timeoutMs: 1000, audit: f.audit }, {
+          spawn: () => { throw new Error('must not spawn') },
+          ownLevel: () => { asked++; return 'medium' },
+          mintRunId: () => { minted++; return 'grade-base-20261124T220000-ab12' },
+          establish: () => { throw new Error('must not be asked') },
+        })
+        expect(r).toEqual({ status: null, stdout: '', stderr: '[spawn] REFUSED: containment: a contained command cannot take an exact environment — nothing was run', elapsedMs: 0, timedOut: false, fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
+        expect(f.made).toEqual(['mission-x'])
+        expect(asked).toBe(0)
+        expect(minted).toBe(0)
+        expect(f.events.map(e => e[0])).toEqual(['start', 'end'])
+      }
+    })
+  })
+
 })
 
 // F242, slice S5 (03-audit-logs 2.17): the `audit` option. The command the caller asked for is

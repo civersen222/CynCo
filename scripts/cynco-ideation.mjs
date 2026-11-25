@@ -122,7 +122,8 @@ export async function runIdeation({ spec, fails, prior, briefText, stateDir, rep
 
 function runTask(repoRoot, taskPath, env, cwd) {
   return new Promise((res) => {
-    const child = spawn('bun', [resolve(repoRoot, 'engine', 'main.ts'), '--run-task', taskPath], { cwd, env, stdio: 'ignore', windowsHide: true })
+    // Wave 19b: --no-install, so this Bun never fetches a package by itself.
+    const child = spawn('bun', ['--no-install', resolve(repoRoot, 'engine', 'main.ts'), '--run-task', taskPath], { cwd, env, stdio: 'ignore', windowsHide: true })
     // F242: a killed child is waited for; one still alive 10 s after the kill resolves 'not-dead', and the
     // caller's settling compare then writes the integrity latch (an engine not confirmed dead).
     let deadline = null

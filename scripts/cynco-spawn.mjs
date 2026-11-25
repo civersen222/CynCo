@@ -32,7 +32,7 @@ import { existsSync, unlinkSync } from 'node:fs'
 import { basename, win32 } from 'node:path'
 import {
   containedCommand, toolSpawnRefusal, establishContainment, releaseContainment, ownIntegrityLevel, launcherFaultOf,
-  refusalPrefix, refusalText,
+  refusalPrefix, refusalText, mintRunId,
 } from '../engine/containment.js'
 
 /**
@@ -185,13 +185,22 @@ function refusalReason(text) {
   return r
 }
 
-/** The result of a command that was refused before anything was started. */
 /**
  * The `audit` option (F242): `{ handle, src }`, a tool-call audit handle (engine/audit/toolAudit.ts)
  * and the source its records carry. The command the caller asked for is recorded before it starts,
  * and its status and duration after; a handle that cannot write the start refuses the command,
  * which is then not started and comes back as fault EAUDIT. Absent, nothing changes.
+ *
+ * `{ forRun, src }` instead of `handle` (R3-F1, wave 12): `forRun(runId)` makes the handle for the run
+ * the command runs in, so its start and end records carry `run`: the id minted for the command's own
+ * containment (minted before the start record, then handed to establish), a run context's own id, or
+ * null when there is no containment. The handle is made once per attempt, before the start.
  */
+function auditFor(audit, runId) {
+  if (!audit) return null
+  return typeof audit.forRun === 'function' ? { src: audit.src, handle: audit.forRun(runId) } : audit
+}
+
 function auditStart(audit, cmd, args, cwd) {
   if (!audit) return null
   return audit.handle.start({ src: audit.src, command: [cmd, ...(args ?? [])].join(' '), cwd: cwd ?? process.cwd() })
@@ -200,6 +209,27 @@ function auditStart(audit, cmd, args, cwd) {
 function auditEnd(audit, started, rec) {
   if (audit && started && started.ok) audit.handle.end(started.call, rec)
 }
+
+/**
+ * Asked once per attempt, before the audit start: is this process already low (then the command runs
+ * directly, entry 1.B2 part 2), and which run id does the command run under? A `{ own }` containment gets
+ * its id minted here, from the label `grade-<folder>` establish used to mint it from, so the start record
+ * can carry it. `{ low, runId }`; runId null when there is no containment, or when containedPlan refuses
+ * the call before it makes one (a malformed option, an exact environment: P5-C7), so no record names a run
+ * that never had a containment. A run context's call carries the context's id even when it is refused for
+ * an exact environment: that run has a containment, and its verify finds the call (B5-1). A refusal by
+ * establish itself comes after the start record, which then names the id the command would have run under.
+ */
+function prepareRun(contained, hooks, envExact = false) {
+  if (contained == null) return { low: false, runId: null }
+  if (typeof contained.runId === 'string') return { low: false, runId: contained.runId }
+  if (envExact) return { low: false, runId: null }
+  if (typeof contained.own !== 'string' || contained.own === '') return { low: false, runId: null }
+  if ((hooks.ownLevel ?? ownIntegrityLevel)() === 'low') return { low: true, runId: null }
+  return { low: false, runId: (hooks.mintRunId ?? mintRunId)(`grade-${basename(contained.own)}`) }
+}
+
+/** The result of a command that was refused before anything was started. */
 
 function auditRefusedResult(reason) {
   return {
@@ -221,7 +251,7 @@ function refusedResult(reason) {
  * command's file and releases a containment made here. `hooks.ownLevel`, `hooks.establish`,
  * `hooks.release`, `hooks.platform` and `hooks.bun` are test seams.
  */
-function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks = {}) {
+function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks = {}, prepared = prepareRun(contained, hooks, envExact)) {
   const plain = () => ({
     cmd, args, shell, cwd, viaLauncher: false, done: () => {},
     env: envExact ? (env ?? process.env) : instrumentEnv(process.env, env),
@@ -238,15 +268,16 @@ function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hook
     }
     // Entry 1.B2 part 2: a process that is already low integrity (the authoring check started by a
     // contained Bash or check) cannot make a sandbox or set a label, and needs neither.
-    if ((hooks.ownLevel ?? ownIntegrityLevel)() === 'low') {
+    if (prepared.low) {
       if (!saidDirect) {
         saidDirect = true
         console.error('[spawn] already inside a contained run: commands run directly, with no second sandbox')
       }
       return plain()
     }
+    // R3-F1: the id was minted before the audit start (prepareRun), so the records and the containment share it.
     const est = (hooks.establish ?? establishContainment)({
-      kind: 'grader', label: `grade-${basename(contained.own)}`, missionCwd: contained.own,
+      kind: 'grader', runId: prepared.runId, missionCwd: contained.own,
       labelCwd: contained.labelOwn !== false, extraRoots: contained.extraRoots,
     })
     if (!est.ok) return { refused: est.reason }
@@ -290,9 +321,12 @@ function containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hook
 
 function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit } = {}, { spawn = spawnSync, now = () => Date.now(), ...hooks } = {}) {
   // F242: the record first, before an own containment exists, so an EAUDIT leaves nothing to release.
+  // R3-F1: the run id the containment will have is minted first, so the record carries it.
+  const prepared = prepareRun(contained, hooks, envExact)
+  audit = auditFor(audit, prepared.runId)
   const started = auditStart(audit, cmd, args, cwd)
   if (started && !started.ok) return auditRefusedResult(started.reason)
-  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
+  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks, prepared)
   if (plan.refused !== undefined) {
     const out = refusedResult(plan.refused)
     auditEnd(audit, started, { isError: true, exitCode: null, ms: 0, output: out.stderr })
@@ -328,6 +362,10 @@ function attempt(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, a
 
 /** Rules 1 and 2 above, shared by runSync and runAsync: an ETIMEDOUT is believed only when the time was spent. */
 function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeoutMs, viaLauncher = false, seal = undefined) {
+  // runAsync's `signal`: a run its caller ended is that, whatever the killed launcher or child printed.
+  if (error?.code === 'EABORTED') {
+    return { status: null, stdout, stderr, elapsedMs, timedOut: false, fault: { code: 'EABORTED', status: null, signal, elapsedMs } }
+  }
   // Entry 1.M1: a launcher that could not run the command (197 with its refused line), or whose
   // child ended with no status (198 with its line), is a fault, never the command's own exit code.
   // Both count only with the launcher's seal line for this spawn (`seal`): a command that prints
@@ -364,11 +402,26 @@ function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeou
  * plain kill). `hooks.spawn`, `hooks.now` and `hooks.kill` are test seams.
  * `contained` is runSync's option, with the same refusal; the containment is
  * released when the child has closed.
+ *
+ * `signal` (an AbortSignal; plan P6 item 6, wave 19b): the caller may end the
+ * run, as the driver does when its latch poll sees the integrity latch during
+ * an in-box marker check. An abort while the child runs kills its whole tree,
+ * as a timeout does, and the result is `fault.code === 'EABORTED'` with status
+ * null: never an exit status, never a timeout, so no caller reads it as a pass
+ * or a failed check. A signal already aborted starts nothing (no audit record,
+ * no containment; its fault carries `started: false`). Whichever comes first,
+ * the deadline or the abort, names the end; after an abort, a run still open at
+ * the deadline is killed once more (wave 19c): that reaches a root the first kill
+ * left running, never a process that outlived a dead root (killTree finds the tree
+ * from the root's pid), which keeps the run open until it ends.
  */
-export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
+export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit, signal } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
+  if (signal?.aborted) return Promise.resolve(abortedResult())
+  const prepared = prepareRun(contained, hooks, envExact)
+  audit = auditFor(audit, prepared.runId)
   const started = auditStart(audit, cmd, args, cwd)
   if (started && !started.ok) return Promise.resolve(auditRefusedResult(started.reason))
-  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks)
+  const plan = containedPlan({ cmd, args, shell, cwd, env, envExact, contained }, hooks, prepared)
   if (plan.refused !== undefined) {
     const out = refusedResult(plan.refused)
     auditEnd(audit, started, { isError: true, exitCode: null, ms: 0, output: out.stderr })
@@ -379,20 +432,31 @@ export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, cont
     let stdout = ''
     let stderr = ''
     let deadlineHit = false
+    let aborted = false
     let settled = false
     let child
+    const onAbort = () => {
+      if (settled || deadlineHit || aborted) return
+      aborted = true
+      kill(child)
+    }
     const settle = (fields) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      signal?.removeEventListener?.('abort', onAbort)
       plan.done()
       const elapsedMs = Math.max(0, now() - t0)
-      const out = classified({ stdout, stderr, ...fields }, elapsedMs, timeoutMs, plan.viaLauncher, plan.seal)
+      const out = classified({ stdout, stderr, ...fields, ...(aborted ? { status: null, error: { code: 'EABORTED' } } : {}) }, elapsedMs, timeoutMs, plan.viaLauncher, plan.seal)
       auditEnd(audit, started, { isError: out.status !== 0, exitCode: out.status, ms: elapsedMs, output: String(out.stdout) + String(out.stderr) })
       resolveRun(out)
     }
+    // After an abort, a run still open at the deadline is killed once more (the abort names the end): a
+    // second try for a root the first kill left running. A process that outlived a dead root (started
+    // during the kill, F210) is not reached: taskkill /T finds the tree from the root's pid, so it keeps
+    // the run open.
     const timer = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
-      ? setTimeout(() => { deadlineHit = true; kill(child) }, timeoutMs)
+      ? setTimeout(() => { if (aborted) { kill(child); return } deadlineHit = true; kill(child) }, timeoutMs)
       : null
     try {
       child = spawnImpl(plan.cmd, plan.args, {
@@ -410,12 +474,25 @@ export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, cont
     child.stdout?.on('data', (d) => { stdout += d })
     child.stderr?.on('data', (d) => { stderr += d })
     child.on('error', (e) => settle({ status: null, signal: null, error: { code: e?.code ?? 'ESPAWN' } }))
-    child.on('close', (code, signal) => settle({
+    child.on('close', (code, sig) => settle({
       status: deadlineHit ? null : (typeof code === 'number' ? code : null),
-      signal: signal ?? null,
+      signal: sig ?? null,
       error: deadlineHit ? { code: 'ETIMEDOUT' } : null,
     }))
+    if (signal) {
+      // The signal may have been aborted while the start ran: then the child is ended at once.
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
   })
+}
+
+/** A run whose signal was aborted before anything was started (`started: false`: no tree was ended). */
+function abortedResult() {
+  return {
+    status: null, stdout: '', stderr: '[spawn] aborted before it was started — nothing was run', elapsedMs: 0, timedOut: false,
+    fault: { code: 'EABORTED', status: null, signal: null, elapsedMs: 0, started: false },
+  }
 }
 
 /** Kill a child and everything under it. */

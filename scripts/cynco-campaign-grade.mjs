@@ -27,7 +27,8 @@ export const defaultIo = {
   // report that stale deadline as a two-hour timeout. `runSync` measures.
   run(cmd, args, opts = {}) {
     // F242: a contained run of workspace code is recorded before it starts; hashes only (src 'gate').
-    return runSync(cmd, args, opts.contained ? { ...opts, audit: { handle: harnessAudit(), src: 'gate' } } : opts)
+    // R3-F1: the records carry the run id of the grader's own containment (`forRun`, scripts/cynco-spawn.mjs).
+    return runSync(cmd, args, opts.contained ? { ...opts, audit: { forRun: (run) => harnessAudit({ run }), src: 'gate' } } : opts)
   },
   // I4: a failed `git diff` used to come back as an empty list, and an empty
   // list is the exact signal sweepTestsFor reads as "the diff shipped no test

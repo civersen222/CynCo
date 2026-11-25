@@ -1,7 +1,8 @@
 // scripts/cynco-campaign-calibrate.mjs
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, lstatSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { listEntries, whyNotAtOwnPath } from '../engine/realPath.js'
 import { parseGateOutput, parsePerturbHeader, compareCalibration, gateInterpreter } from './cynco-gate-parse.mjs'
 import { GATE_TIMEOUT_MS, SUITE_TIMEOUT_MS } from './cynco-campaign-grade.mjs'
 import { runSync, faultSummary, bashExe } from './cynco-spawn.mjs'
@@ -14,12 +15,107 @@ export const defaultIo = {
   // F155: `runSync`, never a bare spawnSync — a timeout must be an elapsed
   // measurement and anything else spawnSync reports is a named harness fault.
   // F242: a contained run of workspace code is recorded before it starts; hashes only (src 'gate').
-  run: (cmd, args, opts = {}) => runSync(cmd, args, opts.contained ? { ...opts, audit: { handle: harnessAudit(), src: 'gate' } } : opts),
+  // R3-F1: the records carry the run id of the grader's own containment (`forRun`, scripts/cynco-spawn.mjs).
+  run: (cmd, args, opts = {}) => runSync(cmd, args, opts.contained ? { ...opts, audit: { forRun: (run) => harnessAudit({ run }), src: 'gate' } } : opts),
   exists: existsSync,
   readFile: (p) => readFileSync(p, 'utf8'),
   writeFile: (p, s) => writeFileSync(p, s, 'utf8'),
   sha256: (p) => createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 16),
-  freshDir: (p) => { rmSync(p, { recursive: true, force: true }); mkdirSync(p, { recursive: true }) },
+  // B5-5: the BASE folder is where a contained grader ran at low integrity; emptied by the walk below.
+  freshDir: (p) => { removeNoFollow(p); mkdirSync(p, { recursive: true }) },
+}
+
+/**
+ * Remove `dir` and everything in it without ever following a link, as the sandbox sweep does
+ * (engine/containment.ts `removeTreeNoFollow`, which is not exported). B5-5 (wave 15c): the BASE folder
+ * (default `C:/tmp/<id>_base`) is where a contained grader ran at low integrity (`contained: { own }`), so
+ * it may hold a junction that low process made, and lstat reads such a junction as a folder (decision
+ * record docs/decisions/2026-11-23-mission-containment.md, F4). fs.rmSync(recursive) did not enter one on
+ * Bun 1.3.13 and Node 24 (F5, re-measured in wave 15b and 15c), but that is the runtime's choice.
+ *
+ * An entry's kind comes from its folder's listing (engine/realPath.ts `listEntries`), never from lstat; a
+ * link is removed as an entry and never entered; a folder is entered only when its real path is its
+ * parent's real path joined with its name (`whyNotAtOwnPath`). The only deleting calls are `rmdirSync`
+ * and `unlinkSync` (a read-only file is made writable first). Throws, naming the entry, at the first one
+ * it will not or cannot remove: a link that cannot be removed as an entry, a folder that resolves
+ * elsewhere. A `dir` that is not there is nothing to do. `list` is a test seam; it answers the walk's first
+ * look too (is `dir` itself a link, by its parent's listing: C5-1, wave 19).
+ *
+ * A folder entered at its own path is given its owner's permissions back first when it lacks them (C5-2, wave
+ * 19): on POSIX a folder without write permission refuses the removal of what is in it. On Windows, Node 24
+ * and Bun 1.3.13 remove a folder with the read-only attribute and the files in it as they are (measured
+ * 2026-11-25), so there it changes nothing that rmdir would not. The same rule is in the suite's
+ * `removeRunFolder` (engine/__tests__/setup/suiteRunFolder.ts); scripts/__tests__/cynco-no-follow-walks.test.mjs
+ * runs one table of cases against both.
+ */
+export function removeNoFollow(dir, list = listEntries) {
+  const top = linkByListing(dir, list)
+  if (top === null) {
+    // Not in its parent's listing: gone, or its parent is (nothing to do); anything else is refused.
+    try { lstatSync(dir) } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return; throw e }
+    throw new Error(`${dir} is not in the listing of ${dirname(dir)}, so whether it is a link is not known; nothing was removed`)
+  }
+  if (top === true) { removeLinkEntry(dir); return }
+  const walk = (d, parentReal) => {
+    const why = whyNotAtOwnPath(parentReal, basename(d))
+    if (why) throw new Error(`${d} ${why}; it was not entered and nothing beneath it was removed`)
+    const real = join(parentReal, basename(d))
+    ownerMayRemoveIn(d)
+    for (const e of list(d)) {
+      const p = join(d, e.name)
+      if (e.kind === 'link') {
+        removeLinkEntry(p)
+      } else if (e.kind === 'dir') {
+        walk(p, real)
+        rmdirSync(p)
+      } else {
+        try { unlinkSync(p) } catch (err) {
+          if (err.code !== 'EPERM' && err.code !== 'EACCES') throw err
+          // A read-only file (git archive and a grader may leave one): made writable, then removed. Never a
+          // link: the listing called it a file.
+          chmodSync(p, 0o666)
+          unlinkSync(p)
+        }
+      }
+    }
+  }
+  walk(dir, realpathSync.native(dirname(dir)))
+  rmdirSync(dir)
+}
+
+/**
+ * Is the entry `p` a link, by what `list` says of its parent (engine/realPath.ts `isLinkEntry`, with the listing
+ * handed in)? `null` when that cannot be told: the parent cannot be listed, or lists no such name.
+ */
+function linkByListing(p, list) {
+  const full = resolve(p)
+  const parent = dirname(full)
+  if (parent === full) return false
+  const fold = (s) => (process.platform === 'win32' ? s.toLowerCase() : s)
+  let entries
+  try { entries = list(parent) } catch (e) { void e; return null }
+  const hit = entries.find(e => fold(e.name) === fold(basename(full)))
+  return hit === undefined ? null : hit.kind === 'link'
+}
+
+/**
+ * C5-2: a folder this walk entered at its own path (never a link: the caller checked it) gets its owner's
+ * permissions back when it lacks them, so that what is in it and then the folder itself can be removed. On
+ * Windows only the write bit means anything (the read-only attribute; a folder reads as 0o666 or 0o444).
+ */
+function ownerMayRemoveIn(d) {
+  const mode = statSync(d).mode
+  const need = process.platform === 'win32' ? 0o200 : 0o700
+  if ((mode & need) !== need) chmodSync(d, (mode & 0o7777) | 0o700)
+}
+
+/** A link removed as an entry: a folder link by rmdir, a file link by unlink; never entered. */
+function removeLinkEntry(p) {
+  let asFolder
+  try { rmdirSync(p); return } catch (e) { asFolder = e }
+  try { unlinkSync(p) } catch (e) {
+    throw new Error(`${p} is a link that could not be removed as an entry (rmdir answered ${asFolder.code ?? asFolder.message}, unlink answered ${e.code ?? e.message}); nothing beneath it was entered`)
+  }
 }
 
 /**
@@ -37,7 +133,11 @@ export const defaultIo = {
  * integrity while another Git Bash runs.
  */
 export function archiveBase(repo, base, dest, io = defaultIo) {
-  io.freshDir?.(dest)
+  // B5-5: a folder that cannot be emptied (a link removeNoFollow will not enter or cannot remove) is a named
+  // problem of this calibration, not a crash of the runner, and nothing is extracted over what is left.
+  try { io.freshDir?.(dest) } catch (e) {
+    return { ok: false, problems: [`the BASE folder ${dest} could not be emptied, so nothing was archived: ${e.message}`] }
+  }
   const arch = io.run(bashExe(), ['-c', `git -C ${JSON.stringify(repo)} archive ${base} | tar -x -C ${JSON.stringify(dest)}`], { cwd: process.cwd(), env: harnessGitEnv({}, { repo }), timeoutMs: 300_000 })
   if (arch.status !== 0) return { ok: false, problems: [`git archive ${base} failed: ${String(arch.stderr).trim()}`] }
   return { ok: true, problems: [] }
@@ -53,7 +153,7 @@ export function archiveBase(repo, base, dest, io = defaultIo) {
 export function instrumentOf(problem) {
   const p = String(problem)
   if (/^positive shim/.test(p)) return 'positive'
-  if (/^perturbed run|^MUST-FAIL|^discriminator |^unclassified base fails|under the cheat stub/.test(p)) return 'perturb'
+  if (/^perturbed run|^MUST-FAIL|^EXPECT-FLIP |^discriminator |^unclassified base fails|under the cheat stub/.test(p)) return 'perturb'
   return 'gate'
 }
 
@@ -63,7 +163,9 @@ export function instrumentOf(problem) {
 // `baseDir` lets a caller that ALREADY archived the BASE hand it over instead of
 // paying for a second archive of the same commit (the authoring verb's --check
 // does exactly that). Omit it and calibrate archives for itself, as the runner does.
-export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir } = {}) {
+// `dryRun` (the runner's --dry-run, R3-F2): the reading is taken and returned, and the suite baseline is
+// neither measured nor written (`suiteBaselineSkipped` says that one would have been).
+export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir, dryRun = false } = {}) {
   const baseDir = providedBaseDir ?? `C:/tmp/${spec.id}_base`
   // A caller-supplied baseDir replaces the archive, so nothing else would
   // notice it is missing: the gate would run against an empty cwd and report a
@@ -157,10 +259,13 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
   // repository with no pytest suite (`suiteTarget: null`) has no baseline to take.
   let suiteBaselineCreated = false
   const { suiteTarget } = campaignHome(spec)
+  const wantsBaseline = ok && suiteTarget !== null && !io.exists(spec.suiteBaseline)
+  // A dry run writes nothing: the baseline it would take is only said (R3-F2).
+  const suiteBaselineSkipped = wantsBaseline && dryRun
   // The baseline file lands in the held-out folder, which is FROZEN while any run is open (F242, entry 4.M5).
-  const frozenWhy = ok && suiteTarget !== null && !io.exists(spec.suiteBaseline) ? (io.frozenWriteRefusal ?? frozenWriteRefusal)() : null
+  const frozenWhy = wantsBaseline && !dryRun ? (io.frozenWriteRefusal ?? frozenWriteRefusal)() : null
   if (frozenWhy) problems.push(`suite baseline not written: ${frozenWhy}`)
-  if (ok && !frozenWhy && suiteTarget !== null && !io.exists(spec.suiteBaseline)) {
+  if (wantsBaseline && !dryRun && !frozenWhy) {
     const py = io.run('python', ['-m', 'pytest', suiteTarget, '-q', '--tb=no'], { cwd: baseDir, env: { SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy' }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: baseDir } })
     // Entry 1.B2 part 3: a baseline run that never ran, or never finished, measured nothing. Writing
     // its (empty) failure list would read as "no standing failures" and launder every one of them
@@ -205,6 +310,7 @@ export async function calibrate(spec, io = defaultIo, { baseDir: providedBaseDir
     perturbFails: perturbed.fails,
     positive,
     suiteBaselineCreated,
+    ...(suiteBaselineSkipped ? { suiteBaselineSkipped: true } : {}),
     // Phase 6 (review M1): the BASE gate run's wall time — wave 1's progress
     // probe seeds its cadence from it before the first mid-wave reading.
     baseGateMs: typeof baseRun.elapsedMs === 'number' ? baseRun.elapsedMs : null,

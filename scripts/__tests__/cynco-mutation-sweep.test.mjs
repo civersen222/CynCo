@@ -24,13 +24,11 @@ function findPython() {
 }
 
 const python = findPython()
-// CI is set on the CI runner, where these have been gated off since they were written (35285d08,
-// no reason recorded); the skip still names itself.
-const skipWhy = process.env.CI
-  ? 'CI is set (these tests are gated off CI); run `npx vitest run scripts/__tests__/cynco-mutation-sweep.test.mjs` on a PC with Python'
-  : python === null
-    ? 'no python, python3 or py on PATH that runs `import ast`; the sweep script is Python, so nothing here can be checked'
-    : null
+// Until 2026-11-24 these were skipped whenever CI was set (35285d08, no reason recorded). The CI job has
+// Python, pytest and a git identity, so they run there as everywhere: only a machine without Python skips.
+const skipWhy = python === null
+  ? 'no python, python3 or py on PATH that runs `import ast`; the sweep script is Python, so nothing here can be checked'
+  : null
 if (skipWhy) console.warn(`[cynco-mutation-sweep] SKIPPED: ${skipWhy}`)
 
 /** A git repo with one base commit and one "mission" commit on top. */

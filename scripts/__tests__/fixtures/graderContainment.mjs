@@ -12,8 +12,9 @@
 //     (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
 //   beforeAll(() => graderContainment.start()); afterAll(() => graderContainment.stop())
 //
-// The graders also record every contained gate run in the tool-call audit (S5, `harnessAudit()` in
-// their `defaultIo.run`), whose default folder refuses in the suite. A test that runs a real gate
+// The graders also record every contained gate run in the tool-call audit (S5, `audit.forRun`, which makes
+// `harnessAudit({ run })` in their `defaultIo.run`, one handle per run, so each record carries the run id
+// of the grader's own containment), whose default folder refuses in the suite. A test that runs a real gate
 // mocks that module too, so the records go to a marked folder of its own (`graderContainment.audit`):
 //
 //   vi.mock('../../engine/audit/toolAudit.js', async (importOriginal) =>
@@ -43,22 +44,44 @@ export const graderContainment = {
   get audit() { return state.audit?.dir ?? null },
 }
 
-/** The real audit module with `harnessAudit` writing into a marked temp folder of this fixture. */
+/**
+ * The real audit module with `harnessAudit` writing into a marked temp folder of this fixture. As the real
+ * one, `harnessAudit({ run })` makes the handle for that run (the graders' `forRun`, R3-F1), so each record
+ * carries the run id of the grader's containment; one handle per run, each with a writer name of its own so
+ * their sequence numbers do not collide in the one folder.
+ */
 export function graderAuditModule(actual) {
   return {
     ...actual,
-    harnessAudit() {
+    harnessAudit(a = {}) {
       if (!state.audit) {
         const root = mkdtempSync(join(tmpdir(), 'cynco-grader-audit-'))
         state.roots.push(root)
         const dir = join(root, 'audit')
         mkdirSync(dir)
         writeFileSync(join(dir, actual.AUDIT_MARKER), '')
-        state.audit = { dir, handle: actual.createToolAudit({ dir }) }
+        state.audit = { dir, handles: new Map() }
       }
-      return state.audit.handle
+      const run = a.run ?? null
+      if (!state.audit.handles.has(run)) {
+        state.audit.handles.set(run, actual.createToolAudit({ dir: state.audit.dir, run, proc: `grader-fixture-${state.audit.handles.size}` }))
+      }
+      return state.audit.handles.get(run)
     },
   }
+}
+
+/**
+ * The TEST context establish returns for `a`, over the folders of `root`: it carries the run id establish was
+ * handed (`a.runId`, minted before the start record in scripts/cynco-spawn.mjs), as the real establish does.
+ */
+export function graderContext(actual, a, root) {
+  const sandbox = { root, home: join(root, 'home'), tmp: join(root, 'tmp'), scratch: join(root, 'scratch') }
+  return actual.testContainment({
+    kind: a.kind, missionCwd: a.missionCwd, extraRoots: a.extraRoots ?? [], sandbox, home: tmpdir(),
+    folders: { state: root, models: root, guard: root, audit: null },
+    ...(typeof a.runId === 'string' ? { runId: a.runId } : {}),
+  })
 }
 
 /** The real module with `establishContainment` and `releaseContainment` replaced. */
@@ -70,13 +93,8 @@ export function graderContainmentModule(actual) {
       if (!state.started) return { ok: false, reason: 'graderContainment.start() was not called' }
       const root = mkdtempSync(join(tmpdir(), 'cynco-grader-test-'))
       state.roots.push(root)
-      const sandbox = { root, home: join(root, 'home'), tmp: join(root, 'tmp'), scratch: join(root, 'scratch') }
-      for (const d of [sandbox.home, sandbox.tmp, sandbox.scratch]) mkdirSync(d)
-      const containment = actual.testContainment({
-        kind: a.kind, missionCwd: a.missionCwd, extraRoots: a.extraRoots ?? [], sandbox, home: tmpdir(),
-        folders: { state: root, models: root, guard: root, audit: null },
-      })
-      return { ok: true, containment, ms: 0 }
+      for (const d of ['home', 'tmp', 'scratch']) mkdirSync(join(root, d))
+      return { ok: true, containment: graderContext(actual, a, root), ms: 0 }
     },
     releaseContainment() {
       return { relabelled: true, note: '' }

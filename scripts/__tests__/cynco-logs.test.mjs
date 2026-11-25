@@ -3,7 +3,7 @@
 // folders; nothing here names C:/tmp for real except the refusal cases, which delete nothing, and the
 // parse of the default, which runs nothing.
 import { describe, it, expect, afterAll } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { citedKeep, citedWords, DEFAULT_MISSION_LOG_DIR, FAILURE_LOG, folderRefusal, main, parseArgs, pruneMissionLogs } from '../cynco-logs.mjs'
@@ -195,7 +195,8 @@ describe('the command line', () => {
       out: (l) => out.push(l), err: (l) => err.push(l), now: NOW, homes: farHome(), cited: '',
     })
     expect(code).toBe(0)
-    expect(out).toEqual([`[logs] pruned 1 mission log(s) older than 90 days from ${d}`])
+    // R4-2 checker (wave 12): a real prune names each log it deleted, as the dry run names each it would.
+    expect(out).toEqual([`[logs] pruned 1 mission log(s) older than 90 days from ${d}`, '[logs] deleted: engine_a.log'])
     expect(err).toEqual([])
     expect(existsSync(join(d, 'engine_a.log'))).toBe(false)
     expect(existsSync(join(d, 'driver_a.log'))).toBe(true)
@@ -223,7 +224,9 @@ describe('the command line', () => {
     for (const n of ['engine_mission_11O.log', 'driver_ui7h.log', 'engine_plain.log', 'driver_plain.pid']) expect(existsSync(join(d, n))).toBe(true)
     const out2 = []
     expect(main(['prune-mission-logs', '--dir', d], { out: (l) => out2.push(l), err: () => undefined, now: NOW, homes: farHome(), cited })).toBe(0)
-    expect(out2).toEqual([`[logs] pruned 2 mission log(s) older than 90 days from ${d}`])
+    // Each deleted name on a line of its own (R4-2 checker, wave 12).
+    expect(out2[0]).toBe(`[logs] pruned 2 mission log(s) older than 90 days from ${d}`)
+    expect(out2.slice(1).sort()).toEqual(['[logs] deleted: driver_plain.pid', '[logs] deleted: engine_plain.log'])
     expect(existsSync(join(d, 'engine_mission_11O.log'))).toBe(true)
     expect(existsSync(join(d, 'driver_ui7h.log'))).toBe(true)
     expect(existsSync(join(d, 'engine_plain.log'))).toBe(false)
@@ -247,6 +250,28 @@ describe('the command line', () => {
     expect(citedKeep(citedWords('see plain'))('engine_plain.log')).toBe(true)
     expect(citedKeep(citedWords('see plainer'))('engine_plain.log')).toBe(false)
     expect(FAILURE_LOG.replace(/\\/g, '/')).toMatch(/\/docs\/cynco-failure-log\.md$/)
+  })
+  // R4-2 (wave 12, measured by the dry run of 2026-11-24): a run is cited by its mission id, the stamp of its
+  // logs with a time after it, so the logs' own stamp was never a whole word and the prune would delete them:
+  // `c4-wave3-1787791284792` did not keep engine_c4-wave3.log, `mission_ui7h-<n>` did not keep engine_ui7h.log.
+  // Every run of a token's -/_ segments is a word as well. This errs toward keeping.
+  it('a log is kept when its stamp is a run of the -/_ segments of a word of the failure log', () => {
+    const words = citedWords('F201: see c4-wave3-1787791284792 and mission_ui7h-1787000000000 for the stall.')
+    const keep = citedKeep(words)
+    expect(keep('engine_c4-wave3.log')).toBe(true)
+    expect(keep('driver_c4-wave3.log')).toBe(true)
+    expect(keep('engine_ui7h.log')).toBe(true)
+    expect(keep('engine_wave3.log')).toBe(true)
+    expect(keep('engine_c4-wave4.log')).toBe(false)
+    expect(keep('engine_wave.log')).toBe(false)
+    for (const w of ['c4-wave3', 'wave3-1787791284792', 'mission_ui7h', 'ui7h-1787000000000', 'ui7h']) expect(words.has(w), w).toBe(true)
+    // Shorter than three characters is still no word, alone or as a segment.
+    expect(words.has('c4')).toBe(false)
+  })
+  it('the real failure log keeps engine_c4-wave3.log, which its mission id cites', () => {
+    const text = readFileSync(FAILURE_LOG, 'utf8')
+    expect(text).toMatch(/c4-wave3-\d+/)
+    expect(citedKeep(citedWords(text))('engine_c4-wave3.log')).toBe(true)
   })
   it('a refused folder says so on one line and exits 2', () => {
     const d = root()

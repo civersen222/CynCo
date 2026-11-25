@@ -37,6 +37,13 @@ describe('verdictEntry', () => {
     const relentText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: relentRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
     expect(relentText).toMatch(/The engine stopped enforcing commit-gap after repeated relents\./)
   })
+  // P5-C3 (wave 15c, pin 2): a wave adopted with no settled integrity baseline (--adopt-inflight on a record with
+  // no run id) carries integrityNote on its ledger row; the verdict says so on a line of its own.
+  it('an adopted wave whose ledger row says no integrity baseline was settled says it; a row without the note adds no line', () => {
+    const noted = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: { ...row, integrityNote: 'no integrity baseline was settled for this wave' }, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })
+    expect(noted).toMatch(/^- Integrity: no integrity baseline was settled for this wave\.$/m)
+    expect(text).not.toMatch(/^- Integrity:/m)
+  })
   it('reports the Bash-by-effect classifier/regulator agreement check', () => {
     const beRow = { ...row, toolStats: { ...row.toolStats, bashByEffect: { read: 200, write: 20, run: 30, commit: 5, revert: 0, other: 10 }, byName: { CodeIndex: 8, Bash: 265 } } }
     const beText = verdictEntry({ spec: { id: 'c8' }, wave: 1, row: beRow, grade, decision: { kind: 'next', why: 'x' }, ideationRecord: null, economicsLines: [] })

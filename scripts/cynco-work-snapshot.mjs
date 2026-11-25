@@ -15,7 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { harnessGitBin, harnessGitEnv, HARNESS_DIFF_FLAGS } from '../engine/harnessGit.js'
+import { harnessGitBin, harnessGitEnv, isHarnessRefused, HARNESS_DIFF_FLAGS } from '../engine/harnessGit.js'
 
 /**
  * Write a patch of the workspace's uncommitted tracked changes to `outDir`.
@@ -52,9 +52,17 @@ export function snapshotUncommittedWork(cwd, outDir, missionId, { ordinal = null
     // F242: the workspace is a contained run's to write, so the diff runs with the harness-git
     // environment (no hooks, monitor or repository-defined filter, the work tree pinned), names git
     // by its full path, and carries --no-ext-diff --no-textconv: a planted diff driver runs nothing.
+    // Wave 19b (A3): the diff reads the work tree into a patch, so the work tree is walked first
+    // (`worktreeLinks`): a link in it that leads out would copy what is behind it. When harness git
+    // refuses (that, or a .git it may not touch), no git is started at all and the error says so.
+    const diffEnv = harnessGitEnv(process.env, { repo: cwd, worktreeLinks: true })
+    if (isHarnessRefused(diffEnv)) {
+      result.error = `harness git refused the work tree ${cwd} (the [harness-git] line says why): no git was started, so nothing was saved`
+      return result
+    }
     const diff = spawn(harnessGitBin(), ['diff', ...HARNESS_DIFF_FLAGS, '--binary', 'HEAD', '--', '.',
       ':(exclude).cynco', ':(exclude).cynco-*', ':(exclude).cynco-snapshots'],
-      { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, env: harnessGitEnv(process.env, { repo: cwd }) })
+      { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, env: diffEnv })
     const untracked = spawn(harnessGitBin(), ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
 

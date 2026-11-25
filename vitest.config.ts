@@ -32,6 +32,12 @@ export default defineConfig({
       'engine/training/__tests__/**/*.test.ts',
       'engine/cybernetics-core/tests/**/*.test.ts',
     ],
+    // Once per run, before any worker starts: one temp folder for the whole run
+    // (<temp>\cynco-suite-runs\cv-<6 hex>), TEMP/TMP/TMPDIR pointed at it, and
+    // removed by a walk that never enters a link when no test failed; a failed or
+    // interrupted run keeps it and prints its path (NOW.md, 2026-11-24: the suite
+    // had left about 290,000 folders in the user temp folder).
+    globalSetup: ['engine/__tests__/setup/suiteRunFolder.ts'],
     // cyncoHome first: it redirects ~/.cynco to a temp dir. F58 was the suite
     // writing 117 session journals into the directory the live engine resumes
     // from, so nothing that touches state may load before the redirect.

@@ -37,12 +37,23 @@ export function parseGateOutput(text) {
   return out
 }
 
+// The start of a perturb header line declaring `key`: `#` (a Python stub) or `//` (a stub run under node,
+// which cannot start a line with `#`; R3-F5, wave 12), blanks, then `KEY:`. `[^\S\r\n]` not `\s`: `\s*`
+// crosses the newline. The one spelling of the shape: the parser below and the gate lint's line numbers
+// (scripts/cynco-gate-lint.mjs headerLine) both use it (P5-C5, wave 15).
+const HEADER_START = '^(?:#|//)[^\\S\\r\\n]*'
+
+/** Does one line of a perturb stub declare `key` (no flags: test it line by line)? */
+export function perturbHeaderKeyLine(key) {
+  return new RegExp(`${HEADER_START}${key}:`)
+}
+
 export function parsePerturbHeader(text) {
   const pick = (key) => {
     // `[^\S\r\n]` not `\s`: `\s*` after the colon crosses the newline, so a
     // declared-but-empty "# MUST-FAIL:" silently ate the NEXT line of the file
     // and returned its words as discriminator ids. The header is one line.
-    const m = new RegExp(`^#[^\\S\\r\\n]*${key}:[^\\S\\r\\n]*(.*)$`, 'm').exec(String(text ?? ''))
+    const m = new RegExp(`${HEADER_START}${key}:[^\\S\\r\\n]*(.*)$`, 'm').exec(String(text ?? ''))
     if (!m) throw new Error(`perturb header is missing a "# ${key}:" line — the runner cannot calibrate what the stub did not declare`)
     return m[1].trim().split(/\s+/).filter(Boolean)
   }
@@ -92,6 +103,13 @@ export function compareCalibration({ base, perturbed, positive = null, header })
   }
   for (const id of baseFail) {
     if (!pertFail.has(id) && !header.expectFlip.some(s => matches(id, s))) problems.push(`${id} flipped to PASS under the cheat stub but was not declared in EXPECT-FLIP`)
+  }
+  // A declared flip must be able to flip: an EXPECT-FLIP entry whose every line already PASSes at BASE says
+  // something false about the stub (a later check of wave 14). A prefix that also covers a BASE failure stands.
+  for (const short of header.expectFlip) {
+    if ([...baseFail].some(id => matches(id, short))) continue
+    const passing = base.passes.map(p => p.id).filter(id => matches(id, short))
+    if (passing.length) problems.push(`EXPECT-FLIP ${short} names only lines that already PASS at BASE (${passing.join(' ')}), so the cheat stub cannot flip it`)
   }
   return { ok: problems.length === 0, problems }
 }

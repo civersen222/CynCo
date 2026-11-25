@@ -183,7 +183,10 @@ def test_the_line_reaches_a_parent_over_a_pipe_at_once_without_pythonunbuffered(
     driver.write_text(DRIVER)
     env = {k: v for k, v in os.environ.items() if k != "PYTHONUNBUFFERED"}
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(server_mod.__file__)))
-    proc = subprocess.Popen([sys.executable, str(driver), package_root], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    # stdin is named: with none named, Popen duplicates this process's own standard input, and under the
+    # suite (pytest started from a test worker with no console) that handle was invalid in one detached run
+    # of two on 2026-11-25 ("[WinError 6] The handle is invalid"). The driver reads nothing from it.
+    proc = subprocess.Popen([sys.executable, str(driver), package_root], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
     lines = []
 
     def pump(stream):
