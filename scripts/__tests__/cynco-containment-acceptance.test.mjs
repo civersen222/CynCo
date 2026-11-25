@@ -4908,8 +4908,14 @@ describe('T2.43 wave 19: decision sheet item 25, the Git-tools switch, and what 
         // The same text, with the bare name in place of the installed Git's path: what the copy first on PATH answers.
         // Changed on purpose in wave 22c (the reader of live-7): and, first inside the shell, what it says of itself
         // (COPY_SHELL_SAYS: its program's Windows path and its integrity label; T2.47).
-        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
-        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
+        // The expected text is built with a function too: a replacement STRING would turn the `$$` of
+        // /proc/$$/winexename into one `$`, as the catalog itself did until the ninth live-fire run.
+        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, () => `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
+        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, () => `bash -c '${catalogModule.COPY_SHELL_SAYS}`))
+        for (const text of [c.call.input.command, c.dry.input.command]) {
+          expect(text, c.id).toContain('cat /proc/$$/winexename;')
+          expect(text, c.id).not.toContain('/proc/$/winexename')
+        }
         expect(c.call.input.command.startsWith('bash -c '), c.id).toBe(true)
         expect([c.form, c.expect, c.stages, c.platforms, c.decoys], c.id).toEqual([f.form, f.expect, f.stages, f.platforms, f.decoys])
       }
@@ -6026,8 +6032,11 @@ describe('T2.47 wave 22c: what the readers of live-6 and live-7 asked for (the e
       const on = forms({ msys: COPY })
       for (const c of on.filter(v => v.variant === 'git-bash-copy')) {
         const f = on.find(v => v.id === c.id && v.variant === 'git-bash')
-        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, `bash -c '${says}`))
-        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, `bash -c '${says}`))
+        expect(c.call.input.command, c.id).toBe(f.call.input.command.replace(`& '${GB}' -c '`, () => `bash -c '${says}`))
+        expect(c.dry.input.command, c.id).toBe(f.dry.input.command.replace(`& '${GB}' -c '`, () => `bash -c '${says}`))
+        // The text the shell is handed holds both dollar signs (a replacement string would leave one).
+        expect(c.call.input.command, c.id).toContain(says)
+        expect(c.dry.input.command, c.id).toContain(says)
       }
       // The installed Git's forms keep their text (their reading is unchanged).
       for (const f of on.filter(v => v.variant === 'git-bash')) expect(f.call.input.command).not.toContain('CYNCO-SHELL-BEGIN')

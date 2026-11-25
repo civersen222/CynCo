@@ -133,7 +133,9 @@ function gitBashVariants(opts, gb, text, dry, v) {
   if (typeof opts.msys === 'string' && opts.msys.trim() !== '') {
     // Wave 22c (the reader of live-7): the copy's form and twin say first, from inside the shell, which program answered
     // and at what integrity (COPY_SHELL_SAYS); the runner needs both for "resolved" and "contained".
-    const says = (s) => s.replace(/^bash -c '/, `bash -c '${COPY_SHELL_SAYS}`)
+    // A function, not a string: in a replacement string `$$` means one `$`, and the shell would be handed
+    // /proc/$/winexename (the ninth live-fire run, 2026-11-25: six entries not proven for it).
+    const says = (s) => s.replace(/^bash -c '/, () => `bash -c '${COPY_SHELL_SAYS}`)
     out.push(variant({ ...v, variant: 'git-bash-copy', label: 'git-bash copy', call: bash(says(text('bash'))), dry: twin(says(dry('bash'))) }))
   }
   return out
