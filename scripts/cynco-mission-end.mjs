@@ -17,7 +17,11 @@
 //   1. The mission engine is the launcher's. When it outlives its driver (the
 //      driver was killed, or its teardown failed) by more than a grace period,
 //      its tree is killed: a mission engine left alive keeps the dashboard with
-//      a mission's environment (approve-all) and nobody watching it.
+//      a mission's environment (approve-all) and nobody watching it. The pid is
+//      asked by its image (engineDeps): only while tasklist lists it as bun.exe
+//      is it the engine, and only then is its tree killed (wave 13c); a bun.exe
+//      only with the creation time the dispatch read when it confirmed the pid
+//      (--engine-started, wave 13d).
 //   2. A caller that owns the dashboard (CYNCO_SKIP_IDLE_ENGINE, the campaign
 //      runner between waves) is left to it.
 //   3. Anything already answering on the dashboard port is left alone.
@@ -25,7 +29,7 @@
 //      started, whether or not it ran before the mission. The bare idle engine
 //      is the answer only on a PC with no phone engine.
 //
-//   bun scripts/cynco-mission-end.mjs --engine-pid <windows pid> [--skip-idle]
+//   bun scripts/cynco-mission-end.mjs --engine-pid <windows pid> --engine-started <ticks> [--skip-idle]
 //
 // Prints its reasoning as `[mission-end] …` lines and, last, `ACTION phone`,
 // `ACTION idle` or `ACTION none`; dispatch-mission.sh acts on that word.
@@ -43,17 +47,23 @@ export const STARTABLE_TASK_STATES = new Set(['Ready', 'Running', 'Queued'])
 /**
  * The decision, with every fact asked through `deps` so it can be argued with in a test:
  * `engineAlive()`, `killEngine()`, `dashboardAnswers()`, `phoneTaskState()` ('' when not
- * registered), `sleep(ms)`, `log(line)`. Returns `{ action, reaped, why }`.
+ * registered), `sleep(ms)`, `log(line)`, and `now()` (optional, Date.now). Returns `{ action, reaped, why }`.
  */
 export async function missionEnd({ skipIdle = false, graceMs = ENGINE_GRACE_MS, pollMs = 5_000 } = {}, deps) {
   let reaped = false
+  // Wave 13d (R4): the grace is wall time as well as the sum of the sleeps. Each ask of engineAlive runs tasklist
+  // (and PowerShell for a bun.exe), up to 20 s each when they hang, so summing the sleeps alone stretched the 60 s
+  // grace to about six minutes (16 asks) before ACTION was printed and the phone engine started.
+  const now = deps.now ?? Date.now
+  const t0 = now()
   if (deps.engineAlive()) {
     let waited = 0
-    while (deps.engineAlive() && waited < graceMs) { await deps.sleep(pollMs); waited += pollMs }
+    while (deps.engineAlive() && waited < graceMs && now() - t0 < graceMs) { await deps.sleep(pollMs); waited += pollMs }
     if (deps.engineAlive()) {
-      deps.log(`the mission engine outlived its driver by ${Math.round(waited / 1000)}s (the driver was killed, or its teardown failed) — stopping its tree so it does not keep the dashboard (F236)`)
-      await deps.killEngine()
-      reaped = true
+      const outlived = Math.max(waited, now() - t0)
+      deps.log(`the mission engine outlived its driver by ${Math.round(outlived / 1000)}s (the driver was killed, or its teardown failed) — stopping its tree so it does not keep the dashboard (F236)`)
+      // `false` is a kill that was not made (engineDeps: the pid is not the engine's bun.exe at that moment).
+      reaped = (await deps.killEngine()) !== false
       // Its ports close with it; give the OS a moment before asking who answers.
       await deps.sleep(2_000)
     }
@@ -67,7 +77,94 @@ export async function missionEnd({ skipIdle = false, graceMs = ENGINE_GRACE_MS, 
   return { action: 'idle', reaped, why: state ? `the phone engine's task is ${state}, so a bare idle engine keeps the dashboard answering` : 'no phone engine task is registered, so a bare idle engine keeps the dashboard answering' }
 }
 
-const pidAlive = (pid) => { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true } catch { return false } }
+// Wave 13c (C4, C7): the engine's pid is asked by its image, never by a signal-0 probe. The dispatch hands
+// --engine-pid the pid tasklist CONFIRMED as the engine's bun.exe; if that engine has ended and Windows gave its pid
+// to another program within the watcher's 10 s and the grace, the old probe answered "alive" and killProcessTree
+// then ended that program's tree. Read as scripts/dispatch-mission.sh's engine_listing reads it: tasklist by PID
+// alone; a row naming the pid with image bun.exe is the engine; tasklist's own no-match line is gone; a row with
+// another image is the pid reused (a process never changes its image); anything else is unknown.
+const NO_SUCH_TASK = 'INFO: No tasks are running which match the specified criteria.'
+
+/** `tasklist /FI "PID eq <pid>" /NH /FO CSV`, as `{ status, stdout, error }`. */
+export function runTasklist(pid) {
+  if (process.platform !== 'win32') return { status: null, stdout: '', error: new Error('tasklist runs on Windows only') }
+  return spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { encoding: 'utf-8', windowsHide: true, timeout: 20_000 })
+}
+
+/**
+ * What tasklist says of `pid`: `{ state: 'listed' }` (a bun.exe), `{ state: 'gone' }`, `{ state: 'other', image }`,
+ * `{ state: 'unknown', why }`, or `{ state: 'none' }` for no usable pid (nothing is asked).
+ */
+export function engineListing(pid, tasklist = runTasklist) {
+  if (!Number.isInteger(pid) || pid <= 0) return { state: 'none' }
+  const r = tasklist(pid)
+  if (r.error || r.status !== 0) return { state: 'unknown', why: `tasklist could not be run or failed (${r.error ? r.error.message : `exit ${r.status}`})` }
+  const out = String(r.stdout ?? '').replace(/\r/g, '')
+  const lines = out.split('\n')
+  for (const line of lines) {
+    const m = /^"([^"]*)","(\d+)",/.exec(line)
+    if (m && Number(m[2]) === pid) return m[1] === 'bun.exe' ? { state: 'listed' } : { state: 'other', image: m[1] }
+  }
+  if (out === '') return { state: 'unknown', why: 'tasklist printed nothing' }
+  if (lines.some(l => l === NO_SUCH_TASK)) return { state: 'gone' }
+  return { state: 'unknown', why: 'tasklist printed what this does not read' }
+}
+
+/**
+ * Wave 13d (R8): the creation time of a Windows process, in .NET ticks (UTC, 100 ns), as `{ ticks }` (a string: the
+ * value is past what a Number holds exactly), or `{ error }`. Read as scripts/dispatch-mission.sh's process_started
+ * reads it, through PowerShell's Get-Process.
+ */
+export function runStartTime(pid) {
+  if (process.platform !== 'win32') return { error: new Error('the start time is read on Windows only') }
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: 'utf-8', windowsHide: true, timeout: 20_000 })
+  if (r.error) return { error: r.error }
+  if (r.status !== 0) return { error: new Error(`PowerShell exit ${r.status}`) }
+  const ticks = String(r.stdout ?? '').trim()
+  return /^\d+$/.test(ticks) ? { ticks } : { error: new Error('PowerShell printed what this does not read') }
+}
+
+/**
+ * `engineAlive` and `killEngine` for missionEnd, by image. Alive: listed, or unknown (fail closed: it is waited for).
+ * A pid held by another image is the engine gone, said once. The kill asks again first and is made only while the
+ * pid is listed as bun.exe; otherwise it is not made, said why, and `false` is returned.
+ *
+ * Wave 13d (R8): `started` is the creation time the dispatch read when it confirmed the pid (--engine-started). A
+ * bun.exe on the pid is the engine only with that creation time: with another it is the pid reused by another bun.exe
+ * (gone, said once, never killed); one whose creation time cannot be read, or no valid `started`, is unknown (waited
+ * for, never killed).
+ */
+export function engineDeps(pid, { tasklist = runTasklist, startTime = runStartTime, started, killTree, log }) {
+  let reuseSaid = false
+  const reuseLine = (image) => `pid ${pid} is now ${image}: the engine's bun.exe has ended and its pid was reused`
+  const ask = () => {
+    const l = engineListing(pid, tasklist)
+    if (l.state !== 'listed') return l
+    if (typeof started !== 'string' || !/^\d+$/.test(started)) return { state: 'unknown', why: `pid ${pid} is a bun.exe, but no creation time of the engine was given (--engine-started)` }
+    const t = startTime(pid)
+    if (!t || t.error || typeof t.ticks !== 'string') return { state: 'unknown', why: `pid ${pid} is a bun.exe, but its start time could not be read (${t?.error?.message ?? 'no answer'})` }
+    if (t.ticks !== started) return { state: 'other', image: `another bun.exe (created ${t.ticks}; the engine was created ${started})` }
+    return l
+  }
+  return {
+    engineAlive: () => {
+      const l = ask()
+      if (l.state === 'other' && !reuseSaid) { reuseSaid = true; log(reuseLine(l.image)) }
+      return l.state === 'listed' || l.state === 'unknown'
+    },
+    killEngine: async () => {
+      const l = ask()
+      if (l.state !== 'listed') {
+        const why = l.state === 'other' ? `pid ${pid} is now ${l.image}, not the engine's bun.exe`
+          : l.state === 'gone' ? `pid ${pid} is gone` : l.state === 'none' ? 'no engine pid was given' : l.why
+        log(`the mission engine was not killed: ${why}`)
+        return false
+      }
+      await killTree(pid, log)
+      return true
+    },
+  }
+}
 
 function readTaskState(name = PHONE_ENGINE_TASK) {
   if (process.platform !== 'win32') return ''
@@ -87,8 +184,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const log = (l) => console.log(`[mission-end] ${l}`)
   try {
     const r = await missionEnd({ skipIdle: process.argv.includes('--skip-idle') }, {
-      engineAlive: () => pidAlive(enginePid),
-      killEngine: () => killProcessTree(enginePid, log),
+      ...engineDeps(enginePid, { tasklist: runTasklist, startTime: runStartTime, started: arg('--engine-started'), killTree: killProcessTree, log }),
       dashboardAnswers: () => answers(),
       phoneTaskState: () => readTaskState(),
       sleep: (ms) => new Promise(r => setTimeout(r, ms)),

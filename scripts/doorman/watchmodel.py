@@ -6,7 +6,8 @@ Two kinds of finding, as the design defines them:
 
   wrong by construction   needs no history and works on the first day: a wake with no doorman burst
                           behind it, a service something depends on not answering, a model loaded
-                          with nothing using it, a box that went silent without saying why.
+                          with nothing using it, a box that went silent without saying why, a box
+                          that reports its integrity latch set (or its guard folder unusable).
   wrong by comparison     needs a baseline: each new reading of a series is classed as noise, a
                           transient, a change of slope or a step (Beer's Cyberstride filter; a rolling
                           median and a CUSUM detector here). Only a slope or a step is a finding, and a
@@ -18,6 +19,7 @@ Python 3 standard library only.
 from __future__ import annotations
 
 import datetime as _dt
+import re
 import statistics
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +43,9 @@ SUSTAIN = 3  # this many in a row on one side is a step
 CUSUM_K = 0.5  # slack, in sigmas (engine/cybernetics-core/src/metrics/index.ts)
 CUSUM_H = 5.0  # threshold, in sigmas
 HISTORY_DAYS = 21  # how far back the comparison looks
+
+INTEGRITY_STATES = ("clear", "latched", "unusable")  # IntegrityRow in engine/power/reporter/types.ts
+INTEGRITY_SUMMARY_MAX = 400  # characters of a box's latch summary the note shows
 
 DOORMAN_BOX = "doorman"
 
@@ -368,6 +373,83 @@ def holder_bands(samples: List[dict]) -> List[dict]:
     return out
 
 
+# ---- the integrity latch ----------------------------------------------------------------------
+# What is cut as a path: a drive (C:\ or C:/); two backslashes (a share); two or more slashes that do
+# not follow a word, a colon or a slash (a share written //nas/home); a file: address (file:///home/x);
+# a word that holds a backslash anywhere (civer\.ssh, %USERPROFILE%\.ssh, and the tail of a path that
+# an earlier cut stopped at a bracket, a comma or an apostrophe); a slash or ~/ that does not follow a
+# word, a dot, a colon, a slash or "<". What is not: "scripts/cynco-guard.mjs", "1/2", "and/or" and
+# "</b>", so a relative path written with forward slashes only is shown (it cannot be told from such
+# words). A web address is cut from the letter before its colon ("htt[a path]"), read as a drive. Each
+# runs to the end of its clause, so a name with a space in it is not cut in two: what is left out is
+# over-redacted, never shown.
+_PATH = re.compile(r"""(?:[A-Za-z]:[\\/]|\\\\|(?<![\w:/])/{2,}(?=[^\s/])|(?<!\w)(?i:file):/+|[^\s;,'"()<>]*\\|(?<![\w.:/\\~<-])~?/(?=[^\s/]))[^;,'"()<>\r\n]*""")
+# The tail of a cut path (check E19b-4): what follows "[a path]" directly at a bracket, a comma, an
+# apostrophe or another clause mark with no space before or after it ("C:/Users/O'Brien/x",
+# "C:/Users/a,b/c") is the rest of that path when it holds a slash or a path already cut (_PATH has
+# already cut every word that holds a backslash); it is cut after its first marks ("[a path]'[a path]").
+# A mark with a space beside it begins a new clause, which is kept ("C:/x, then a/b", "C:/x,y/z
+# (presence)"). Two cut paths joined by such marks are cut as one: over-redacted, never shown.
+_PATH_TAIL = re.compile(r"""(?<=\[a path\])(?:(?<=\S)[;,'"()<>]+(?=\S)[^;,'"()<>\r\n]*)+""")
+_MARKS = re.compile(r"""[;,'"()<>]+""")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _cut_tail(m: "re.Match[str]") -> str:
+    run = m.group(0)
+    if "/" not in run and "[a path]" not in run:
+        return run
+    return _MARKS.match(run).group(0) + "[a path]" + run[len(run.rstrip()):]
+
+
+def public_summary(text: Any) -> str:
+    """A box's latch summary as the note may show it: one line, no path, at most INTEGRITY_SUMMARY_MAX characters.
+
+    The engine already sends words with no path (`deskIntegrity`); any tailnet device can push, so the
+    watcher does not rely on that. Not text: the empty string.
+    """
+    if not isinstance(text, str):
+        return ""
+    s = _CONTROL.sub(" ", text[: 4 * INTEGRITY_SUMMARY_MAX])
+    s = _PATH.sub(lambda m: "[a path]" + m.group(0)[len(m.group(0).rstrip()):], s)
+    s = _PATH_TAIL.sub(_cut_tail, s).strip()
+    if len(s) > INTEGRITY_SUMMARY_MAX:
+        s = s[: INTEGRITY_SUMMARY_MAX - 3].rstrip() + "..."
+    return s
+
+
+def integrity_of(s: dict) -> Optional[dict]:
+    """The latch a sample reports, {"state","summary"}, or None (no field, null, not an object, a state not known)."""
+    v = s.get("integrity")
+    if not isinstance(v, dict) or v.get("state") not in INTEGRITY_STATES:
+        return None
+    return {"state": v["state"], "summary": public_summary(v.get("summary"))}
+
+
+def integrity_bands(samples: List[dict]) -> List[dict]:
+    """The latch as a box reported it, in stretches of one state: {"state","summary","from","last","endedAt","endedBy"}.
+
+    A stretch runs from the first sample that reported its state to the last one (`last`), across gaps:
+    the latch is a file on the box that stays until it is cleared, so a box that slept in between and
+    reports it again is the same stretch. `endedAt`/`endedBy`: the first sample that reported another
+    state, or None. A sample that carries no latch (an older reporter, or one that could not read it)
+    neither ends nor starts a stretch. The summary is the stretch's latest.
+    """
+    out: List[dict] = []
+    for s in samples:
+        v = integrity_of(s)
+        if v is None:
+            continue
+        if out and out[-1]["state"] == v["state"]:
+            out[-1]["last"] = s["at"]
+            out[-1]["summary"] = v["summary"]
+            continue
+        if out:
+            out[-1]["endedAt"], out[-1]["endedBy"] = s["at"], v["state"]
+        out.append({"state": v["state"], "summary": v["summary"], "from": s["at"], "last": s["at"], "endedAt": None, "endedBy": None})
+    return out
+
+
 # ---- measures ---------------------------------------------------------------------------------
 def _needed(s: dict) -> Optional[bool]:
     """Did anything need the box at this sample? None when the sample cannot say."""
@@ -444,8 +526,13 @@ def _hm(at: float) -> str:
     return _dt.datetime.fromtimestamp(at, _dt.timezone.utc).strftime("%H:%MZ")
 
 
-def findings_by_construction(samples: List[dict], events: List[dict], box: str, segments: List[dict], t0: float, t1: float, now: float, day_key: str) -> List[dict]:
-    """Findings that need no history. Each: id, kind, box, from, to, open, seen, expected, means, suggest, marks."""
+def findings_by_construction(samples: List[dict], events: List[dict], box: str, segments: List[dict], t0: float, t1: float, now: float, day_key: str,
+                             integrity_samples: Optional[List[dict]] = None) -> List[dict]:
+    """Findings that need no history. Each: id, kind, box, from, to, open, seen, expected, means, suggest, marks.
+
+    `integrity_samples`: the samples the latch is read from (default `samples`). The latch is the one
+    finding here that looks further back than the day, because it stays until it is cleared.
+    """
     end = min(t1, now)
     out: List[dict] = []
 
@@ -529,6 +616,41 @@ def findings_by_construction(samples: List[dict], events: List[dict], box: str, 
             "means": "Its reporter was not running, the box could not reach the doorman, or the box hung or lost power.",
             "suggest": "On that box: scripts\\cynco-services.ps1 (the watch row) and the end of %USERPROFILE%\\.cynco\\box-reporter.log.",
             "marks": [g["from"]],
+        })
+
+    # 5. the integrity latch set, or the guard folder that keeps it unusable: no unattended run starts on
+    # that box and no queued command runs there until the owner clears it at its desk. Still true while
+    # the box's last report says so (the latch is a file that stays until it is cleared), across its
+    # sleeps: `integrity_samples` reaches further back than `samples` (day_report hands it the box's
+    # HISTORY_DAYS), and an open stretch lasts to the end of what the day has seen.
+    bands = integrity_bands(samples if integrity_samples is None else integrity_samples)
+    said = {"clear": "it clear", "latched": "the latch set", "unusable": "its guard folder unusable"}
+    for b in bands:
+        if b["state"] == "clear":
+            continue
+        to = b["endedAt"] if b["endedAt"] is not None else max(b["last"], end)
+        if to < t0 or b["from"] >= t1:
+            continue
+        still = b["endedAt"] is None
+        what = "the integrity latch set" if b["state"] == "latched" else "its guard folder unusable"
+        seen = "%s reported %s from %s" % (box, what, iso(b["from"]))
+        if still:
+            seen += " and still does."
+        else:
+            seen += " to %s (%s), when it reported %s." % (iso(to), _dur(to - b["from"]), said.get(b["endedBy"], b["endedBy"]))
+        if b["summary"]:
+            seen += " What it said: %s" % b["summary"]
+        latched = b["state"] == "latched"
+        out.append({
+            "id": "integrity.%s:%s:%s" % (b["state"], box, iso(b["from"])), "kind": "integrity." + b["state"], "box": box,
+            "from": b["from"], "to": to, "open": still, "seen": seen,
+            "expected": "No integrity latch. It is set when an unattended run on that box changed or lost a protected folder, and it stays until the owner clears it at that box's desk." if latched
+            else "The box's guard folder can be read and written, so its integrity check can run.",
+            "means": "An unattended run on that box changed or lost a protected folder (or its check could not be completed); no unattended run starts and no queued command runs there until it is cleared." if latched
+            else "No unattended run starts on that box until its guard folder can be used.",
+            "suggest": "At that box's desk: bun scripts/cynco-guard.mjs status says what changed; once that is understood, bun scripts/cynco-guard.mjs clear." if latched
+            else "At that box's desk: bun scripts/cynco-guard.mjs status says why.",
+            "marks": [b["from"]],
         })
     return out
 
@@ -710,13 +832,19 @@ def day_report(store: Any, day: str, now: float, tz_offset_min: int) -> dict:
         near = store.samples(box, t0 - 6 * 3600.0, t1 + SILENT_GAP_S)
         inside = [s for s in near if t0 <= s["at"] < t1]
         segs = timeline(near, events, box, t0, t1, now)
-        found = findings_by_construction(near, events, box, segs, t0, t1, now, day)
         history = store.samples(box, t1 - HISTORY_DAYS * 86400.0, t1)
+        # The latch is read from the box's HISTORY_DAYS and the minutes after the day that `near` holds:
+        # a box that reported it set and then slept through the day still shows it (check E19-1). One
+        # whose last report is older than HISTORY_DAYS shows nothing of it.
+        found = findings_by_construction(near, events, box, segs, t0, t1, now, day, history + [s for s in near if s["at"] >= t1])
         cmp_found, cmp_learning, classified = findings_by_comparison(series(history), box, t0, t1)
         findings.extend(found + cmp_found)
         learning.extend(cmp_learning)
         last = store.last_seen(box)
         state = segs[-1]["state"] if segs else "unknown"
+        # The latch as the box last reported it up to the end of the day: the state and its summary, never a path.
+        reported = [(s["at"], v) for s in history for v in [integrity_of(s)] if v is not None]
+        integrity = {**reported[-1][1], "at": reported[-1][0]} if reported else None
         temps = []
         for s in inside:
             for g in s.get("gpus") or []:
@@ -734,6 +862,7 @@ def day_report(store: Any, day: str, now: float, tz_offset_min: int) -> dict:
             "measures": measures(near, events, box, segs, t0, t1),
             "series": {k: v for k, v in classified.items()},
             "samples": len(inside),
+            "integrity": integrity,
         })
     # What is still true comes first, and among the rest the oldest: an item that stays true rises
     # up the page from day to day. It does not become an alert.

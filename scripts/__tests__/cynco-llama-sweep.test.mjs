@@ -76,15 +76,22 @@ describe('chatModelServerPids', () => {
 describe('both sweeps use it', () => {
   it('dispatch-mission.sh asks the sweep script, refuses when it cannot, and no longer matches by path alone', () => {
     const sh = readFileSync('scripts/dispatch-mission.sh', 'utf-8')
-    expect(sh).toMatch(/bun scripts\/cynco-llama-sweep\.mjs/)
+    // Changed on purpose in wave 19b: every Bun start of the dispatch passes --no-install.
+    expect(sh).toMatch(/bun --no-install scripts\/cynco-llama-sweep\.mjs/)
     expect(sh).toMatch(/refusing to dispatch blind/)
     expect(sh).not.toMatch(/ExecutablePath -like/)
   })
 
-  it('the driver\'s teardown takes its llama-server roots from the same function', () => {
+  // Wave 19 (plan P6 item 5, R2-6), changed on purpose: the driver's teardown no longer sweeps the box. It ends
+  // the mission engine's own tree by the pid and creation time the dispatch confirmed (the engine's llama-server
+  // is in that tree); every other engine and chat llama-server is left alone. The dispatch's start sweep above
+  // stays the broad one.
+  it('the driver\'s teardown ends only the confirmed mission engine\'s tree, never every chat llama-server', () => {
     const driver = readFileSync('scripts/cynco-mission-driver.mjs', 'utf-8')
-    expect(driver).toMatch(/import \{ chatModelServerPids \} from '\.\/cynco-llama-sweep\.mjs'/)
-    expect(driver).toMatch(/chatModelServerPids\(\)/)
+    expect(driver).not.toMatch(/chatModelServerPids/)
+    expect(driver).not.toMatch(/CommandLine -like '\*engine\/main\.ts\*'/)
+    expect(driver).toMatch(/const target = engineTeardownTarget\(process\.env\)/)
+    expect(driver).toMatch(/const roots = \[target\.pid\]/)
     expect(driver).not.toMatch(/ExecutablePath -like/)
   })
 })

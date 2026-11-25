@@ -254,5 +254,5 @@ describe('read-loop escalation → hygiene wiring (behavioral)', () => {
     expect(div[0].tool).toBe('Read')
     expect((div[0].prunedMessages as number)).toBeGreaterThan(0)
     expect(alerts.some(a => String(a.message).includes('[context-hygiene]'))).toBe(true)
-  })
+  }, 20_000) // load-sensitive under the full suite (failed once at the 5 s default, 1.6 s alone; F207's pattern)
 })

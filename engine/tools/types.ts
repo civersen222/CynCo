@@ -34,6 +34,17 @@ export type ToolResult = {
    * session, and a project chat read its files through Bash.
    */
   wrongPath?: boolean
+  /**
+   * The exit status of the ONE process this call ran. Set by Bash and Git.
+   * `null`: a process was started and ended without a status (Stop or the
+   * timeout killed it, or the shell did not start). Absent: the tool ran no
+   * process (a file tool), or the call was refused before its process started.
+   * Under PowerShell the Bash value is the shell's own status, which is 1 for
+   * any failing external program unless the command says `exit N`. Carried by
+   * `ToolExecutor` at both places it rebuilds a result; written to the audit's
+   * end record and to the `[loop] Tool result` line.
+   */
+  exitCode?: number | null
 }
 
 export type ToolImpl = {

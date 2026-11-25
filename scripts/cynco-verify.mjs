@@ -204,13 +204,22 @@ const PYTEST_NO_TESTS = 5
 /**
  * Run a shell check command in `cwd` with a hard timeout, in the SAME shell
  * the model and the engine's contract runner use.
- * Returns { verified, exitCode, timedOut, spawnFailed, harnessFault, durationMs, outputTail }.
+ * Returns { verified, exitCode, timedOut, spawnFailed, stopped, harnessFault, durationMs, outputTail }
+ * (`stopped` is runCheckAsync's: always false here).
  * `verified` is true | false | null; null means the check never answered
  * about the DELIVERY — because it never finished, never started, or answered
  * about the HARNESS instead (`harnessFault` is set whenever `verified` is
  * null for one of those reasons).
+ *
+ * `contained` (F242): the mission's run context; the check then starts inside
+ * the run's sandbox (on Windows through the low-integrity launcher). A check
+ * that could not be run contained is a harness fault (`ECONTAINMENT`), never a
+ * failed delivery. No default: without it the check runs as it always has.
+ *
+ * `audit` (F242): `{ handle, src }`, forwarded to runSync: the check is recorded before it starts, and
+ * a record that cannot be written is a harness fault (`EAUDIT`) with nothing started.
  */
-export function runCheck(command, cwd, timeoutMs) {
+export function runCheck(command, cwd, timeoutMs, { contained, audit } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
   // Through runSync (scripts/cynco-spawn.mjs), not a bare spawnSync. F155: an
@@ -218,7 +227,7 @@ export function runCheck(command, cwd, timeoutMs) {
   // F166: the suite gate parses pytest's plain `FAILED ` lines, so the check
   // gets the colourless instrument environment rather than whatever
   // colour-forcing the operator's shell exported.
-  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true })
+  const result = runSync(runnable, [], { shell: info.shell, cwd, timeoutMs, retryImpossibleTimeout: true, ...(contained ? { contained } : {}), ...(audit ? { audit } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 
@@ -229,11 +238,17 @@ export function runCheck(command, cwd, timeoutMs) {
  * same result shape, through runAsync. `env` is laid over the instrument
  * environment — the driver hands each marker check its CYNCO_CHECK_ORDINAL
  * (final review I1), so a fixture can tell the driver's call from any other.
+ * `contained` and `audit` are runCheck's options.
+ *
+ * `signal` (wave 19b, plan P6 item 6): forwarded to runAsync. A check its
+ * caller ended (the driver's latch poll) answered nothing about the delivery:
+ * `verified: null`, `stopped: true`, not a spawn failure, and the harness-fault
+ * line says it was stopped.
  */
-export async function runCheckAsync(command, cwd, timeoutMs, { env } = {}) {
+export async function runCheckAsync(command, cwd, timeoutMs, { env, contained, audit, signal } = {}) {
   const start = Date.now()
   const { info, runnable } = checkRunnable(command)
-  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}) })
+  const result = await runAsync(runnable, [], { shell: info.shell, cwd, timeoutMs, ...(env ? { env } : {}), ...(contained ? { contained } : {}), ...(audit ? { audit } : {}), ...(signal ? { signal } : {}) })
   return checkResult(command, result, Date.now() - start, timeoutMs)
 }
 
@@ -256,11 +271,16 @@ function checkRunnable(command) {
 
 function checkResult(command, result, durationMs, timeoutMs) {
   const timedOut = result.timedOut
-  const spawnFailed = Boolean(result.fault)
+  // runAsync's EABORTED: the caller ended the check, or had before it started. Not a spawn failure either way.
+  const stopped = result.fault?.code === 'EABORTED'
+  const spawnFailed = Boolean(result.fault) && !stopped
   const exitCode = typeof result.status === 'number' ? result.status : null
   const mentionsPytest = /\bpytest\b/.test(String(command ?? ''))
   let harnessFault = null
   if (timedOut) harnessFault = `timed out after ${timeoutMs}ms`
+  // A signal already aborted when the call came (runAsync's abortedResult): nothing ran, no tree was ended.
+  else if (stopped && result.fault.started === false) harnessFault = 'stopped by its caller before it started: nothing was run'
+  else if (stopped) harnessFault = `stopped by its caller while it ran (${faultSummary(result.fault)}): its process tree was ended and the check did not run to its end`
   else if (spawnFailed) harnessFault = `spawn failed: ${faultSummary(result.fault)}`
   else if (mentionsPytest && exitCode === PYTEST_USAGE_ERROR) {
     harnessFault = 'pytest usage error (exit 4): the check command itself is wrong — a path did not resolve'
@@ -275,6 +295,7 @@ function checkResult(command, result, durationMs, timeoutMs) {
     exitCode,
     timedOut,
     spawnFailed,
+    stopped,
     harnessFault,
     durationMs,
     outputTail: output.slice(-OUTPUT_TAIL_CHARS),

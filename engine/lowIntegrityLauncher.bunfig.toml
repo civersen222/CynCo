@@ -1,0 +1,8 @@
+# The low-integrity launcher starts with this file so that no bunfig.toml of a mission folder is read.
+#
+# B4 (wave 19): nothing is downloaded without the owner's yes, and Bun fetches a package it cannot find
+# from the registry by itself when no node_modules folder stands above the script it runs. Measured
+# 2026-11-25 with the registry pointed at a listener that served nothing: this file as it was (a comment)
+# let the launcher's start form open 6 registry connections for a missing import; with the line below, 0.
+[install]
+auto = "disable"

@@ -266,3 +266,63 @@ describe('a task cannot rewrite the gate that scores it', () => {
     globalContract.clear()
   })
 })
+
+describe('the immutable check reads every path a call names (F242)', () => {
+  const mk = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'immutable-named-'))
+    const brief = join(dir, 'brief.md')
+    writeFileSync(brief, '# The real brief\n')
+    return { dir, brief }
+  }
+
+  it('refuses a MultiEdit, a NotebookEdit and an ApplyPatch that target a declared path', async () => {
+    const { dir, brief } = mk()
+    setTaskImmutablePaths([brief])
+    try {
+      expect(immutableTargetOf('MultiEdit', { edits: [
+        { file_path: join(dir, 'other.md'), old_string: 'a', new_string: 'b' },
+        { file_path: brief, old_string: 'real', new_string: 'fake' },
+      ] }, dir)).toBe(brief)
+      expect(immutableTargetOf('NotebookEdit', { notebook_path: brief, new_source: 'x' }, dir)).toBe(brief)
+      expect(immutableTargetOf('ApplyPatch', { patch: '--- a/brief.md\n+++ b/brief.md\n@@ -1 +1 @@\n-x\n+y\n' }, dir)).toBe(brief)
+      const executor = new ToolExecutor({ cwd: dir, requestApproval: mock(() => Promise.resolve(true)), approveAll: true })
+      const result = await executor.execute('MultiEdit', { edits: [{ file_path: brief, old_string: 'real', new_string: 'fake' }] })
+      expect(result.isError).toBe(true)
+      expect(result.output).toContain('read-only')
+      expect(readFileSync(brief, 'utf8')).toBe('# The real brief\n')
+    } finally {
+      setTaskImmutablePaths([])
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a Bash write, redirect or move whose exact target is the declared path, and nothing that only reads it', () => {
+    const { dir, brief } = mk()
+    setTaskImmutablePaths([brief])
+    try {
+      for (const command of [`Set-Content "${brief}" x`, `echo x > "${brief}"`, `Move-Item "${brief}" old.md`]) {
+        expect(immutableTargetOf('Bash', { command }, dir), command).toBe(brief)
+      }
+      for (const command of [`Get-Content "${brief}"`, `Copy-Item "${brief}" copy.md`, `python tool.py "${brief}"`]) {
+        expect(immutableTargetOf('Bash', { command }, dir), command).toBeNull()
+      }
+    } finally {
+      setTaskImmutablePaths([])
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('with nothing declared it answers null and never asks the namer', () => {
+    const { dir, brief } = mk()
+    delete process.env.LOCALCODE_IMMUTABLE_PATHS
+    setTaskImmutablePaths([])
+    try {
+      const namer = mock(() => ({ paths: [], spellings: [], texts: [], scan: null, faults: [] }))
+      expect(immutableTargetOf('Write', { file_path: brief }, dir, namer)).toBeNull()
+      expect(immutableTargetOf('Bash', { command: `Set-Content "${brief}" x` }, dir, namer)).toBeNull()
+      expect(namer).not.toHaveBeenCalled()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

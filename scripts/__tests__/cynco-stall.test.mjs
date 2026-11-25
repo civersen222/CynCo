@@ -403,8 +403,19 @@ describe('the driver is wired to it', () => {
     expect(arm.match(/\bengineError = /g)).toHaveLength(1)
     expect(driver).toMatch(/\} else if \(m\.type === 'session\.error' && !engineError\) \{\n(\s+\/\/.*\n)+\s+const held = stallRecovery\.onSessionError\(m\)\n/)
     expect(driver).toContain('if (WORK_BEGUN.has(m.type)) { workBegun = true; stallRecovery.onTurnActivity() }')
-    // The only assignments to engineError: its declaration, the terminal arm, a re-prompt that did not land, a stall left standing.
-    expect(driver.match(/\bengineError = /g)).toHaveLength(4)
+    // The only assignments to engineError: its declaration, the terminal arm, a re-prompt that did not land, a stall left standing,
+    // (F242, S5) a critical containment, audit or integrity alert from the engine, and (F242, S7) the integrity
+    // latch met by the wait loop's poll.
+    // Changed on purpose in wave 19 (plan P6 item 6): 6 to 8. A check the latch, or a guard that became unusable, cut
+    // ends the mission too, after the in-loop marker check and after the final verify, each through afterLatch.
+    expect(driver.match(/\bengineError = /g)).toHaveLength(8)
+    expect(driver.match(/\bengineError = latched\.engineError\b/g)).toHaveLength(3)
+    expect(driver).toContain("engineError = `${m.source}: ${String(m.message ?? '')}`")
+    // Changed on purpose in wave 13 (rehearsal R2-1): the latch's error and its layer come from afterLatch, which
+    // keeps an error already set (the old `if (!engineError)`) and names the layer integrity when the latch set it.
+    // Changed on purpose in wave 19 (plan P6 item 6): the poll's reason sentence comes from integrityStop.
+    expect(driver).toContain('const latched = afterLatch({ engineError, engineFaultLayer }, stopNow.why)\n    engineError = latched.engineError\n')
+    expect(driver).toContain('  if (state.engineError) return { engineError: state.engineError, engineFaultLayer: state.engineFaultLayer }\n  return { engineError: `integrity: ${latch}`, engineFaultLayer: \'integrity\' }\n')
   })
 
   it('never reads the error\'s text for the stall: the one text match on a session.error is the busy refusal', () => {

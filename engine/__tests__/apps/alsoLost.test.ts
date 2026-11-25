@@ -33,6 +33,8 @@ const take = async (procs: ListedProc[], gone: number[]) => {
     port: 8081, by: 'the chat engine (pid 77)', file: record, listProcesses: async () => procs,
     kill: async () => ({ stopped: true }), say: m => said.push(m),
     exists: pid => !gone.includes(pid), sleep: async () => {},
+    // The port read again just before the stop finds the same listener (F255: displace.test.ts shows the rest).
+    runPowerShell: async () => JSON.stringify([listener]),
   })
   return { outcome, said }
 }

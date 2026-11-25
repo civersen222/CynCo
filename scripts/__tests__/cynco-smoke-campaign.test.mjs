@@ -2,7 +2,7 @@
 // live proof. These tests run the REAL python against a temp clone of the
 // smoke repo — the triple has to be genuinely runnable, not a stand-in — and
 // never touch C:/tmp/phase2-smoke itself or the live ~/.cynco.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,15 @@ import { writeSmokeCampaign, runtimeEnvFrom, SMOKE_ID, MARKER_CHECK_ONCE, MARKER
 import { loadCampaignSpec, checkIdentity } from '../cynco-campaign-spec.mjs'
 import { calibrate, archiveBase } from '../cynco-campaign-calibrate.mjs'
 import { parseGateOutput } from '../cynco-gate-parse.mjs'
+import { graderContainment } from './fixtures/graderContainment.mjs'
+
+// F242: calibration runs its gates contained, in a grader sandbox the suite cannot make; they run under a
+// test context instead (fixtures/graderContainment.mjs).
+vi.mock('../../engine/containment.js', async (importOriginal) =>
+  (await import('./fixtures/graderContainment.mjs')).graderContainmentModule(await importOriginal()))
+// S5: the gate runs are recorded (hashes only) in a marked audit folder of the fixture's own.
+vi.mock('../../engine/audit/toolAudit.js', async (importOriginal) =>
+  (await import('./fixtures/graderContainment.mjs')).graderAuditModule(await importOriginal()))
 
 const SMOKE_REPO = 'C:/tmp/phase2-smoke'
 const HAS_SMOKE = existsSync(join(SMOKE_REPO, '.git'))
@@ -43,7 +52,9 @@ const SMOKE_BASE = '1b00179cdd81fe95ccb0ea0c09ecc85be1f8080f'
 
 describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
   let repo, home, specPath, spec
+  afterAll(() => graderContainment.stop())
   beforeAll(() => {
+    graderContainment.start()
     repo = cloneSmoke()
     if (git(['cat-file', '-e', `${SMOKE_BASE}^{commit}`], repo).status !== 0) throw new Error(`${SMOKE_REPO} lacks the fixture BASE ${SMOKE_BASE}`)
     // F163 / T7-M1: the generator refuses unless the repo's HEAD IS the base,
@@ -63,6 +74,8 @@ describe.skipIf(!HAS_SMOKE)(`smoke campaign s1 (needs ${SMOKE_REPO})`, () => {
     expect(spec).toMatchObject({
       id: 's1', repo, base: head, author: 'human', marker: 'smoke s1 complete',
       keepGreen: 'python -m pytest -q test_calc.py',
+      // Its own suite: the CivKings default path does not exist here and measured nothing.
+      suiteTarget: 'test_calc.py',
       // Phase 7 ruling 3 / review I3: the smoke's own fails-once fixture, and a
       // retry floor its one-hour wave can reach.
       markerCheck: `python ${home}/smoke/marker_check_once.py`,
@@ -310,6 +323,32 @@ describe('smoke campaign --runtime-from (F161)', () => {
     expect(() => runtimeEnvFrom(noProfile)).toThrow(/default\.yaml does not exist/)
     expect(() => runtimeEnvFrom(fakeRuntime({ profile: 'name: default\n' }))).toThrow(/lacks model/)
     expect(() => runtimeEnvFrom(fakeRuntime({ profile: 'model: qwen3.8-27b-nvfp4\nmodel_file: missing.gguf\n' }))).toThrow(/missing\.gguf does not exist/)
+  })
+
+  it('looks the GGUF up under LOCALCODE_MODELS_DIR when this process sets it, and refuses an empty or a relative folder', () => {
+    const saved = process.env.LOCALCODE_MODELS_DIR
+    try {
+      const moved = mkdtempSync(join(tmpdir(), 's1-models-elsewhere-'))
+      mkdirSync(join(moved, 'qwen3.8-27b-nvfp4'))
+      writeFileSync(join(moved, 'qwen3.8-27b-nvfp4', 'Q.gguf'), 'GGUF')
+      const r = fakeRuntime()
+      rmSync(join(r, 'models', 'qwen3.8-27b-nvfp4'), { recursive: true })
+      process.env.LOCALCODE_MODELS_DIR = moved
+      expect(runtimeEnvFrom(r).LOCALCODE_MODEL_PATH).toBe(`${moved.replace(/\\/g, '/')}/qwen3.8-27b-nvfp4/Q.gguf`)
+
+      const empty = mkdtempSync(join(tmpdir(), 's1-models-empty-'))
+      process.env.LOCALCODE_MODELS_DIR = empty
+      let message = ''
+      try { runtimeEnvFrom(r) } catch (e) { message = String(e.message) }
+      expect(message).toMatch(/does not exist \(models folder /)
+      expect(message).toContain(empty.replace(/\\/g, '/'))
+
+      process.env.LOCALCODE_MODELS_DIR = 'models-here'
+      expect(() => runtimeEnvFrom(r)).toThrow(/is not an absolute path/)
+    } finally {
+      if (saved === undefined) delete process.env.LOCALCODE_MODELS_DIR
+      else process.env.LOCALCODE_MODELS_DIR = saved
+    }
   })
 
   it('writes the env onto the spec, copies only the yaml profiles, and the spec still loads', () => {

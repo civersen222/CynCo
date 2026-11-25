@@ -4167,14 +4167,21 @@ function missionTriggerRow(t, nowIso, locked) {
     '<button type="button" class="mt-edit" data-act="edit"' + dis + '>Edit</button>' +
   '</div>';
 }
-/** Daemon state, the one Pause/Resume button, and the GPU line when a pass is running. */
-function missionsHeaderHtml(view, nowIso) {
+/**
+ * Daemon state, the one Pause/Resume button, and the GPU line when a pass is running. First, the
+ * integrity latch when one stands or the guard folder cannot be used (`/api/session` integrity, wave 15):
+ * nothing unattended runs under it, a queued command included, and only the owner clears it at the desk.
+ */
+function missionsHeaderHtml(view, nowIso, integrity) {
   var p = (view && view.paused) || { paused: false };
+  var latch = integrity && (integrity.state === 'latched' || integrity.state === 'unusable')
+    ? '<div class="mt-msg err mt-latch">' + escHtml((integrity.state === 'latched' ? 'Integrity latch: ' : 'Integrity: ') + String(integrity.summary || '')) + '</div>'
+    : '';
   var since = function(iso) { return whenText(iso, nowIso).replace(/^today /, ''); };
   var state = p.paused
     ? 'Paused' + (p.requestedAt ? ' since ' + since(p.requestedAt) : '') + (p.by ? ' (' + p.by + ')' : '')
     : 'Daemon: running';
-  var out = '<div class="mt-head-line"><span class="mt-state' + (p.paused ? ' paused' : '') + '">' + escHtml(state) + '</span>' +
+  var out = latch + '<div class="mt-head-line"><span class="mt-state' + (p.paused ? ' paused' : '') + '">' + escHtml(state) + '</span>' +
     '<button type="button" class="mt-pause" data-act="pause" data-paused="' + (p.paused ? 'false' : 'true') + '">' + (p.paused ? 'Resume' : 'Pause') + '</button></div>';
   var ms = (view && view.missions) || [];
   for (var i = 0; i < ms.length; i++) {
@@ -4247,7 +4254,7 @@ function missionsListShouldRender(hasOpenEditor) {
 }
 
 // DOM wiring: one fetch + render, a 10 s poll while the tab is active, delegated handlers on the tab.
-var missionsState = { timer: null, view: null, open: {} };
+var missionsState = { timer: null, view: null, open: {}, integrity: null };
 function readEditor(form) {
   var v = function(n) { return form.elements[n] ? form.elements[n].value : ''; };
   var shape = v('shape');
@@ -4270,7 +4277,7 @@ function renderMissions(view) {
   var head = document.getElementById('missionsHeader');
   var list = document.getElementById('missionsList');
   if (!head || !list) return;
-  head.innerHTML = missionsHeaderHtml(view, now);
+  head.innerHTML = missionsHeaderHtml(view, now, missionsState.integrity);
   // While an editor is open the list is left alone: moving its node would blur the focused input
   // (on a phone that closes the keyboard and collapses an open picker every 10 s).
   if (!missionsListShouldRender(!!list.querySelector('.mt-item.editing'))) return;
@@ -4290,6 +4297,11 @@ function liveMissionItem(mid, tid) {
   return null;
 }
 function loadMissions() {
+  // The latch (wave 15) comes from /api/session; a failure leaves the last answer, and the list still loads.
+  fetch('/api/session')
+    .then(function(r) { return r.json(); })
+    .then(function(d) { missionsState.integrity = d && d.integrity ? d.integrity : null; if (missionsState.view) renderMissions(missionsState.view); })
+    .catch(function(err) { console.warn('[missions] /api/session: ' + err.message); });
   fetch('/api/missions')
     .then(function(r) { return r.json(); })
     .then(renderMissions)

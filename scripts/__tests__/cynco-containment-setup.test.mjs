@@ -1,0 +1,138 @@
+/**
+ * scripts/cynco-containment-setup.ps1 is the one file of mission containment the owner runs by hand on
+ * the real machine (F242). It creates the three folders no run may create and sets two user variables,
+ * and only with -Apply. The suite cannot run it (it reads the machine's variables and scheduled tasks
+ * and can set a user variable), so its text is pinned: the switch name it checks, the only commands
+ * that change anything, their place after both gates, and the absence of anything that deletes,
+ * copies, recurses or changes an access list. Patterns are word-bounded and anchored on command
+ * position, so an ordinary word such as "model " does not match a ban.
+ */
+import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+import { SWITCH_IN_UNATTENDED } from '../../engine/containment.js'
+// The audit writer's own marker name (spec 05 section 4.7): the setup script writes the marker the
+// writer requires, so the two cannot drift apart with every test green.
+import { AUDIT_MARKER } from '../../engine/audit/toolAudit.js'
+
+const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'cynco-containment-setup.ps1'), 'utf-8')
+const at = (needle) => { const i = src.indexOf(needle); expect(i, `not found: ${needle}`).toBeGreaterThan(-1); return i }
+
+// Any command position, not only a line's start (`if ($x) { New-Item ... }`), and the aliases.
+const CHANGING = /(?:^|[;{|(])\s*(New-Item|ni|md|mkdir|sc|ac|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Remove-Item|Rename-Item|Clear-Content|Set-Acl|Set-ItemProperty|New-ItemProperty|Register-ScheduledTask|Unregister-ScheduledTask|Enable-ScheduledTask|Disable-ScheduledTask|Start-ScheduledTask|Stop-ScheduledTask|Start-Process|Stop-Process|\[Environment\]::SetEnvironmentVariable|\[System\.IO\.(Directory|File)\]::(Move|Delete|Copy|Create\w*|Write\w*))\b/
+const FOUR = [
+  'New-Item -ItemType Directory -Path $d | Out-Null',
+  'New-Item -ItemType File -Path $marker | Out-Null',
+  "[Environment]::SetEnvironmentVariable('LOCALCODE_MODELS_DIR', $modelsTarget, 'User')",
+  "[Environment]::SetEnvironmentVariable('LOCALCODE_UNPROTECTED_VOLUMES_OK', $ackTarget, 'User')",
+]
+// B1 (wave 19), added on purpose: the copy of Git's Unix tools (-MsysCopy). Its folder, the copy itself
+// (robocopy, which never deletes: no /MIR, /PURGE or /MOV; never a link: /XJ) and its manifest, all inside
+// `Copy-MsysRuntime`, which the main flow calls only after -Apply and the blocking-STOP gate.
+const MSYS = [
+  'if (-not (Test-Path -LiteralPath $target)) { New-Item -ItemType Directory -Path $target | Out-Null }',
+  '[System.IO.File]::WriteAllText((Join-Path $target $MsysManifestName), $json)',
+]
+const ROBOCOPY = '$null = & robocopy (Join-Path $gitRoot $part) (Join-Path $target $part) /E /COPY:DAT /DCOPY:DAT /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP'
+
+describe('scripts/cynco-containment-setup.ps1', () => {
+  it('checks the engine\'s own switch name (entry 5.M2)', () => {
+    const lines = src.split(/\r?\n/).filter(l => /^\$SwitchVar = '/.test(l))
+    expect(lines).toHaveLength(1)
+    const name = /^\$SwitchVar = '([A-Z_]+)'$/.exec(lines[0].trim())?.[1]
+    expect(name).toBeTruthy()
+    expect(SWITCH_IN_UNATTENDED.startsWith(`${name} `)).toBe(true)
+  })
+
+  it('changes things with exactly four commands, and the copy of Git\'s tools with its own two and robocopy', () => {
+    const changing = src.split(/\r?\n/).filter(l => CHANGING.test(l)).map(l => l.trim())
+    expect(changing).toEqual([...MSYS, ...FOUR])
+    const fn = at('function Copy-MsysRuntime([string]$gitRoot, [string]$target) {')
+    const fnEnd = src.indexOf('\n}', fn)
+    for (const line of [...MSYS, ROBOCOPY]) {
+      expect(at(line), line).toBeGreaterThan(fn)
+      expect(at(line), line).toBeLessThan(fnEnd)
+    }
+  })
+
+  it('changes nothing without -Apply, and nothing past a blocking STOP', () => {
+    const noApply = at('if (-not $Apply) {')
+    const blocked = at("if ($script:blocking -gt 0) { Say 'STOP' 'nothing was changed: clear the STOP lines above first.'; exit 1 }")
+    expect(noApply).toBeLessThan(blocked)
+    for (const line of FOUR) expect(blocked, line).toBeLessThan(at(line))
+    // The copy step's function is called once, after both gates, and only for a target section 3c set.
+    const calls = src.split(/\r?\n/).filter(l => /Copy-MsysRuntime \$/.test(l))
+    expect(calls).toEqual(['  $lines = @(Copy-MsysRuntime $msysGit $msysTarget)'])
+    expect(blocked).toBeLessThan(at('  $lines = @(Copy-MsysRuntime $msysGit $msysTarget)'))
+    expect(src.match(/\$msysTarget = Get-Full \$MsysDir/g)).toHaveLength(1)
+    expect(src.slice(at('$msysTarget = Get-Full $MsysDir') - 200, at('$msysTarget = Get-Full $MsysDir'))).toContain('elseif ($MsysCopy)')
+    const between = src.slice(noApply, blocked)
+    expect(between).toContain('exit 0')
+    expect(between).toContain('exit 1')
+  })
+
+  it('has no command that deletes, copies (but Git\'s runtime into its copy), recurses, changes an access list or evaluates text', () => {
+    expect(src).not.toMatch(/^\s*&?\s*(del|erase|rd|rmdir|xcopy|takeown|setx|reg|mklink)\b/mi)
+    // B1 (wave 19), changed on purpose: one robocopy, which never deletes or follows a link.
+    expect(src.split(/\r?\n/).filter(l => /\brobocopy\b/i.test(l) && !/^\s*#/.test(l) && !/STOP robocopy/.test(l)).map(l => l.trim())).toEqual([ROBOCOPY])
+    expect(src.split(/\r?\n/).filter(l => !/^\s*#/.test(l)).join('\n')).not.toMatch(/\/(MIR|PURGE|MOV|MOVE)\b/i)
+    expect(src).not.toMatch(/-Recurse\b/i)
+    expect(src).not.toMatch(/\bicacls\b[^\n]*\s\/[A-Za-z]/)
+    expect(src).not.toMatch(/Invoke-Expression|\biex\b/i)
+  })
+
+  it('names no drive but C:, and on C: only the containment folders', () => {
+    expect(src).not.toMatch(/\b[ABD-Zabd-z]:\\/)
+    // B1 (wave 19): the copy of Git's tools, C:\cynco-msys, added on purpose.
+    const allowed = ['C:\\cynco-sandbox', 'C:\\cynco-guard', 'C:\\cynco-audit', 'C:\\cynco-models', 'C:\\cynco-msys']
+    for (const m of src.match(/C:\\[\w-]+/g) ?? []) expect(allowed, m).toContain(m)
+    // The models folder is named only in the help text's example.
+    const models = src.split(/\r?\n/).filter(l => l.includes('C:\\cynco-models'))
+    expect(models).toHaveLength(1)
+    expect(models[0]).toMatch(/^\s*scripts\\cynco-containment-setup\.ps1 -ModelsDir C:\\cynco-models -Apply/)
+  })
+
+  it('is ASCII only, so Windows PowerShell 5.1 reads it the same in every code page', () => {
+    expect(src).toMatch(/^[\x09\x0A\x0D\x20-\x7E]*$/)
+  })
+
+  it('a daemon STOP makes the exit 1 but does not forbid -Apply', () => {
+    const body = /function Stop-Daemon\([^)]*\) \{([^\n]*)\}/.exec(src)?.[1] ?? ''
+    expect(body).toContain('$script:stops++')
+    expect(body).not.toContain('$script:blocking')
+    const here = /function Stop-Here\([^)]*\) \{([^\n]*)\}/.exec(src)?.[1] ?? ''
+    expect(here).toContain('$script:blocking++')
+  })
+
+  it('writes the audit writer\'s marker name', () => {
+    expect(src).toContain(`Join-Path $path '${AUDIT_MARKER}'`)
+  })
+
+  it('fails closed where the review of 2026-11-23 found it open', () => {
+    // an elevated shell is a blocking STOP, before anything else is judged
+    const elevated = at('[Security.Principal.WindowsBuiltInRole]::Administrator')
+    expect(src.slice(elevated, elevated + 200)).toContain('Stop-Here')
+    expect(elevated).toBeLessThan(at('# -- 1. The switch'))
+    // an access list that cannot be read is a problem, and a missing leaf is judged by its parent's inheritable label
+    // Changed on purpose (round one of P2, NOW.md:98, handed to the lead then; this file is package B's now): both
+    // access-list reads are Get-LowLabel (SDDL through GetNamedSecurityInfoW), which answers $null when it cannot
+    // read, not icacls and $LASTEXITCODE; and the parent's inheritable Low label is read from SDDL, not icacls' words.
+    expect(src.match(/if \(\$null -eq \$p?label\) \{/g)?.length).toBe(2)
+    at("} elseif ($plabel -eq 'low-inheritable') {")
+    // the folders may not overlap
+    at('overlap: each must be a folder of its own')
+    // CYNCO_HOME, CYNCO_MISSIONS_DIR and the models folder as the logon tasks see them, not this terminal
+    at("$homeSet = Get-SetVar 'CYNCO_HOME'")
+    at("$missionsSet = Get-SetVar 'CYNCO_MISSIONS_DIR'")
+    at("$modelsMachine = Get-MachineVar 'LOCALCODE_MODELS_DIR'")
+    expect(src).not.toMatch(/\$env:CYNCO_(HOME|MISSIONS_DIR)/)
+    // the value -Apply stores is the full form
+    at('$ModelsDir = Get-Full $ModelsDir')
+  })
+
+  it('creates only the leaf folder, and never with -Force (which would hide an existing file)', () => {
+    expect(src).not.toMatch(/New-Item[^\n]*-Force/)
+    at("Create the parent yourself; this script creates one folder, never a tree.")
+  })
+})

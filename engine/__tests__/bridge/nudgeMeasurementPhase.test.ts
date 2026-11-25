@@ -165,7 +165,11 @@ describe('nudge backstop during a measurement phase', () => {
     // narrating its way through a measurement phase was read as one that had
     // finished. Measured: 3 without the fix, 5 with it.
     expect(countNudges(lastMessages)).toBe(5)
-  })
+    // Thirteen scripted turns on a real loop, which starts real git processes (the workspace
+    // snapshot, the index listing, and since F242 the harness-git checks, one more `git config` per
+    // call given a repository: about 0.27 s of this test's 2.2 s alone, measured 2026-11-23). Under
+    // the full suite on half the processors it passed 5 s twice; the budget is the work, not a hang.
+  }, 20_000)
 
   it('prose with no tool call still exhausts the budget and ends the run', async () => {
     // The other half: the backstop must survive. A model that answers three

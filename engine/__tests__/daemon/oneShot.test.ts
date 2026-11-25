@@ -1,13 +1,17 @@
 // engine/__tests__/daemon/oneShot.test.ts
-import { describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { extractOutcome, buildOneShotPrompt, makeHaltCapture, runOneShotTask, countAssistantTurns } from '../../daemon/oneShot.js'
+import { extractOutcome, buildOneShotPrompt, buildResumePrompt, makeHaltCapture, runOneShotTask, runGovernedLoop, countAssistantTurns } from '../../daemon/oneShot.js'
+import { MISSION_FIXED_RULE, MISSION_FIXED_RULE_SHORT, scratchSentence } from '../../missionRule.js'
+import { setRunContainment, testContainment } from '../../containment.js'
 import type { Message } from '../../types.js'
 import type { Provider, CompletionRequest, ModelCapabilities } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { TaskFileInput } from '../../daemon/types.js'
+import { AUDIT_NOT_WRITTEN, setContainmentFaultSink } from '../../audit/toolAudit.js'
+import { auditWorld, blockDayFile } from '../audit/auditWorld.js'
 
 // runOneShotTask drives a real ConversationLoop (filesystem, JSONL sessions,
 // index DBs) under the suite's temporary home; it needs no live service and
@@ -159,6 +163,105 @@ describe('buildOneShotPrompt', () => {
     expect(p).toContain('```json')
     expect(p).toContain('recommendations')
   })
+
+  // F242: every one-shot prompt carries the fixed rule; a resumed run gets the short form.
+  it('carries the fixed rule, and the resume prompt its short form', () => {
+    expect(buildOneShotPrompt('goal: win the league', 'Review the waiver wire')).toContain(MISSION_FIXED_RULE)
+    expect(buildResumePrompt()).toContain(MISSION_FIXED_RULE_SHORT)
+  })
+})
+
+describe('runGovernedLoop: the first message of a contained run (F242)', () => {
+  afterEach(() => { setRunContainment(null) })
+
+  function makeConfig() {
+    return {
+      baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto' as const,
+      temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
+      contextLength: undefined, tools: undefined,
+    }
+  }
+  function capturingProvider(captured: CompletionRequest[]): Provider {
+    return {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities(): Promise<ModelCapabilities> {
+        return { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true }
+      },
+      async complete() { throw new Error('not implemented') },
+      async *stream(request: CompletionRequest): AsyncGenerator<StreamEvent> {
+        captured.push(request)
+        const text = '```json\n{"summary": "ok", "recommendations": []}\n```'
+        yield { type: 'message_start', message: { id: 'msg1', model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+        yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+        yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
+        yield { type: 'content_block_stop', index: 0 } as any
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } as any
+        yield { type: 'message_stop' } as any
+      },
+    }
+  }
+  /** The text of the first user message the model was sent. */
+  function firstUserText(captured: CompletionRequest[]): string {
+    expect(captured.length).toBeGreaterThan(0)
+    const first = (captured[0].messages ?? []).find((m: any) => m.role === 'user') as any
+    expect(first).toBeDefined()
+    const c = first.content
+    return typeof c === 'string' ? c : (c ?? []).map((b: any) => (typeof b?.text === 'string' ? b.text : '')).join('')
+  }
+
+  it('a contained run is told the literal path of its scratch folder; an uncontained one is not', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-osrule-'))
+    try {
+      const scratch = join(dir, 'run', 'scratch')
+      setRunContainment(testContainment({
+        missionCwd: dir,
+        sandbox: { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch },
+        home: join(dir, 'home'),
+        folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+      }))
+      const captured: CompletionRequest[] = []
+      const outcome = await runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(captured), config: makeConfig() as any, cwd: dir,
+      })
+      expect(outcome.ok).toBe(true)
+      const text = firstUserText(captured)
+      expect(text).toContain('Review the waiver wire')
+      expect(text).toContain(MISSION_FIXED_RULE)
+      expect(text.trimEnd().endsWith(scratchSentence(scratch))).toBe(true)
+
+      setRunContainment(null)
+      const plain: CompletionRequest[] = []
+      await runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(plain), config: makeConfig() as any, cwd: dir,
+      })
+      const plainText = firstUserText(plain)
+      expect(plainText).toContain(MISSION_FIXED_RULE)
+      expect(plainText).not.toContain('SCRATCH FOLDER')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
+
+  it('a context with no absolute scratch path is a REFUSED: containment outcome, and no model call is made (review 2026-11-23)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-osrule-'))
+    try {
+      const ctx = testContainment({
+        missionCwd: dir,
+        sandbox: { root: join(dir, 'run'), home: join(dir, 'run', 'home'), tmp: join(dir, 'run', 'tmp'), scratch: join(dir, 'run', 'scratch') },
+        home: join(dir, 'home'),
+        folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+      })
+      setRunContainment({ ...ctx, sandbox: { ...ctx.sandbox, scratch: 'relative-scratch' } })
+      const captured: CompletionRequest[] = []
+      await expect(runGovernedLoop({
+        prompt: 'Review the waiver wire', context: 'Mission goal: win', allowedTools: ['Read'], timeoutMs: 30000,
+        provider: capturingProvider(captured), config: makeConfig() as any, cwd: dir,
+      })).rejects.toThrow(/^REFUSED: containment: withFixedRule: /)
+      expect(captured).toEqual([])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
 })
 
 describe('runOneShotTask trade-scan dispatch', () => {
@@ -375,4 +478,88 @@ describe('runOneShotTask (governed conversation loop)', () => {
       expect(toolsSection).not.toContain('- Write:')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   }, 30000)
+})
+
+// F242, entry 3.M5: a containment, audit or integrity refusal ends a one-shot as refused, whatever the model then says.
+describe('makeHaltCapture: refused (S5)', () => {
+  it('a critical alert from the audit layer makes refused() name it; another source does not; the first one wins', () => {
+    const cap = makeHaltCapture()
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'stuck', source: 'algedonic' } as any)
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'warning', message: 'w', source: 'audit' } as any)
+    expect(cap.refused()).toBeNull()
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'the record could not be written', source: 'audit' } as any)
+    cap.emit({ type: 'governance.alert', severity: 'critical', message: 'later', source: 'containment' } as any)
+    expect(cap.refused()).toBe('REFUSED: audit: the record could not be written')
+    const two = makeHaltCapture()
+    two.emit({ type: 'governance.alert', severity: 'critical', message: 'a folder changed', source: 'integrity' } as any)
+    expect(two.refused()).toBe('REFUSED: integrity: a folder changed')
+  })
+})
+
+describe('runGovernedLoop: a refused call ends the run as refused (S5, entry 3.M5)', () => {
+  afterEach(() => { setRunContainment(null); setContainmentFaultSink(null) })
+
+  function makeConfig() {
+    return {
+      baseUrl: 'http://localhost:11434', model: 'test', tier: 'auto' as const,
+      temperature: 0.7, maxOutputTokens: 8192, timeout: 120000,
+      contextLength: undefined, tools: undefined,
+    }
+  }
+  /** First call: one Read. Every later call: plain text with an outcome, then stop. */
+  function toolThenTextProvider(): Provider {
+    let calls = 0
+    return {
+      name: 'mock',
+      async healthCheck() { return true },
+      async listModels() { return [] },
+      async probeCapabilities(): Promise<ModelCapabilities> {
+        return { tier: 'advanced', toolUse: 'native', thinking: 'none', vision: false, jsonMode: true, contextLength: 32768, streaming: true }
+      },
+      async complete() { throw new Error('not implemented') },
+      async *stream(): AsyncGenerator<StreamEvent> {
+        calls++
+        yield { type: 'message_start', message: { id: `m${calls}`, model: 'test', usage: { input_tokens: 10, output_tokens: 0 } } } as any
+        if (calls === 1) {
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu1', name: 'Read', input: {} } } as any
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: JSON.stringify({ file_path: 'notes.txt' }) } } as any
+          yield { type: 'content_block_stop', index: 0 } as any
+          yield { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } } as any
+        } else {
+          const text = 'The run stopped because the record could not be written.\n```json\n{"summary": "stopped", "recommendations": []}\n```'
+          yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } as any
+          yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as any
+          yield { type: 'content_block_stop', index: 0 } as any
+          yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } } as any
+        }
+        yield { type: 'message_stop' } as any
+      },
+    }
+  }
+
+  it('one refused call, then the model replies and stops: the outcome is not ok and names the audit layer', async () => {
+    const w = auditWorld()
+    try {
+      writeFileSync(join(w.mission, 'notes.txt'), 'x')
+      blockDayFile(w)
+      setRunContainment(w.ctx)
+      const errs: string[] = []
+      const err = console.error
+      console.error = (...a: unknown[]) => { errs.push(a.map(String).join(' ')) }
+      let outcome
+      try {
+        outcome = await runGovernedLoop({
+          prompt: 'Read notes.txt', context: 'Mission goal: test', allowedTools: ['Read'], timeoutMs: 30000,
+          provider: toolThenTextProvider(), config: makeConfig() as any, cwd: w.mission,
+        })
+      } finally {
+        console.error = err
+      }
+      expect(outcome.ok).toBe(false)
+      expect(outcome.error).toBe(`REFUSED: audit: ${AUDIT_NOT_WRITTEN('audit-dir-unwritable')}`)
+      expect(errs.some(l => l.startsWith('[containment] fault: audit: '))).toBe(true)
+    } finally { w.cleanup() }
+  }, 60000)
 })

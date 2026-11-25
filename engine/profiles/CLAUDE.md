@@ -11,7 +11,7 @@ Defines and resolves the YAML profile schema LocalCode reads from `.cynco/profil
 | `resolver.ts` | Follows a profile's `extends:` chain and merges ancestor-to-child into a flat `ResolvedProfile`. |
 
 ## Important types & functions
-- **`ProfileRuntime`** (`types.ts:32`) — snake_case launch-parameter block (`cache_ram`, `ctx_checkpoints`, `chat_template_file`, etc.); each key is "the design source for a ServerConfig field in engine/llama/processManager.ts" per its own doc comment. Read by `config.ts`'s `loadConfig()`.
+- **`ProfileRuntime`** (`types.ts:32`) — snake_case launch-parameter block (`cache_ram`, `ctx_checkpoints`, `chat_template_file`, etc.); each key is "the design source for a ServerConfig field in engine/llama/processManager.ts" per its own doc comment. Read by `config.ts`'s `loadConfig()`. `chat_template_file` is a file name looked up beside the model's GGUF, or an absolute path used as written; `resolveChatTemplateFile` (`engine/llama/modelResolver.ts`) resolves it and refuses a file that is not there.
 - **`Profile`** (`types.ts:54`) — raw shape parsed straight from YAML, including `extends` and `provider`. `provider` follows env > profile > built-in (`llama-cpp`), same as every other field.
 - **`ResolvedProfile`** (`types.ts:91`) — post-inheritance profile with `extends` stripped; this is what `resolveProfile()` returns and what `config.ts` consumes.
 - **`loadProfile(name)`** (`loader.ts:131`) — returns one `Profile | null` by searching `.cynco/profiles/`, `~/.cynco/profiles/`, then `engine/profiles/templates/`, in that priority order. Called by `resolver.ts`'s default loader and by `configHandlers.ts` (via `listProfiles`).

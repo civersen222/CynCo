@@ -45,6 +45,7 @@ import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer, countUserTurns } from './dashboard/server.js'
+import { deskIntegrity } from './integrity.js'
 import { isLoopbackAddress } from './dashboard/access.js'
 import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
@@ -115,6 +116,9 @@ try {
 // of llama-server startup — and only then does runOneShotTask() read the file
 // and throw `Task file missing required field: triggerId`. Validate before the
 // model, so a typo fails in milliseconds instead of after a full load.
+let oneShotTask: import('./daemon/types.js').TaskFileInput | null = null
+// F242: the in-run tripwire aborts the active turn through this, once the loop below exists.
+let abortActiveTurn: ((why: string) => void) | null = null
 {
   const idx = process.argv.indexOf('--run-task')
   if (idx !== -1) {
@@ -125,7 +129,7 @@ try {
     }
     const { readTaskFile } = await import('./daemon/taskFile.js')
     try {
-      readTaskFile(p)
+      oneShotTask = readTaskFile(p)
     } catch (err: any) {
       console.error(`[one-shot] ${err?.message ?? err}`)
       process.exit(1)
@@ -142,6 +146,97 @@ import { bootstrapProvider } from './bootstrapProvider.js'
   const { installKillOnCloseJob } = await import('./security/jobObject.js')
   const job = await installKillOnCloseJob()
   console.log(`[process] job object: ${job.installed ? 'installed' : 'not installed'} — ${job.reason}`)
+}
+// ─── Containment (F242) ──────────────────────────────────────
+// An unattended run adopts the sandbox its starter made, or does not start. Nothing below this block
+// can observe "declared unattended but not contained": a refusal exits here, before the model loads.
+{
+  const { isContainedRun, missionRunId } = await import('./missionEnv.js')
+  if (isContainedRun()) {
+    const c = await import('./containment.js')
+    const { writeOutcome } = await import('./daemon/taskFile.js')
+    const refuseBoot = (layer: import('./containment.js').RefusalLayer, reason: string): never => {
+      console.log(`[containment] refused: ${layer}: ${reason}`)
+      console.error(c.operatorRefusal(oneShotTask ? '[one-shot]' : '[engine]', layer, reason, 'run'))
+      if (oneShotTask) {
+        try {
+          writeOutcome(oneShotTask.outcomePath, { ok: false, summary: '', recommendations: [], error: `REFUSED: ${layer}: ${reason}` })
+        } catch (e) {
+          console.error(`[one-shot] outcome file not written: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      process.exit(1)
+    }
+    // step 1: the switch is never honoured for a run
+    if (c.containmentSwitch().raw !== null) refuseBoot('containment', c.SWITCH_IN_UNATTENDED)
+    {
+      // step 2 (F242): under the integrity latch, or with no usable guard folder, no unattended engine boots.
+      const { haltRefusal } = await import('./integrity.js')
+      const latch = haltRefusal()
+      if (latch) refuseBoot('integrity', latch)
+    }
+    // step 3: adopt
+    if (oneShotTask && !oneShotTask.cwd) {
+      refuseBoot('containment', `this task names no cwd, so it would work in the engine's own checkout ${c.engineCheckout()}; give the mission a cwd`)
+    }
+    const adopted = oneShotTask
+      ? c.adoptContainment({ runId: oneShotTask.runId ?? null, missionCwd: oneShotTask.cwd!, who: 'one-shot' })
+      : c.adoptContainment({ runId: missionRunId(), missionCwd: process.env.LOCALCODE_MISSION_CWD ?? '', who: 'engine' })
+    if (!adopted.ok) refuseBoot('containment', adopted.reason)
+    else {
+      c.setRunContainment(adopted.containment)
+      const k = adopted.containment
+      console.log(`[containment] run ${k.runId}: ${k.isolation === 'verified' ? 'verified' : 'overlay only'}, sandbox ${k.sandbox.root}, mission folder ${k.missionCwd}`)
+    }
+    {
+      // Step 4 (F242, layer 2): the path check must answer correctly for THIS run before any model call.
+      const { pathGuardFault } = await import('./tools/protectedPaths.js')
+      const fault = pathGuardFault()
+      if (fault) refuseBoot('containment', fault)
+    }
+    {
+      // Step 5: this run's tool calls can be recorded, or it does not start (F242).
+      const { toolAudit } = await import('./audit/toolAudit.js')
+      const audit = toolAudit()
+      if (!audit) refuseBoot('containment', c.NO_CONTAINMENT)
+      else {
+        const why = audit.probe('preflight')
+        if (why) refuseBoot('audit', why)
+      }
+    }
+    {
+      // step 6 (F242): the models record, then the in-run tripwire. The baseline was taken by the starter.
+      const { checkModelsRecord, startPresenceTripwire, tripHalt, TRIPWIRE_INTERVAL_MS, TRIPWIRE_MIN_GAP_MS, TRIPWIRE_CONFIRM_MS } = await import('./integrity.js')
+      const { containmentFault } = await import('./audit/toolAudit.js')
+      const { NtfyChannel, ntfyOptionsFromEnv } = await import('./daemon/ntfyChannel.js')
+      const ctx = c.runContainment()
+      if (!ctx) refuseBoot('containment', c.NO_CONTAINMENT)
+      else {
+        const modelsWhy = checkModelsRecord({ root: ctx.folders.models, guard: ctx.folders.guard })
+        if (modelsWhy) refuseBoot('integrity', modelsWhy)
+        // A mission engine normally has no ntfy settings (the starters strip them); the page is then kept in
+        // <guard>/unsent and sent by the next process that has a sender.
+        const ntfy = ntfyOptionsFromEnv(process.env)
+        const page = ntfy
+          ? (p: { title: string; message: string; priority: number }) => new NtfyChannel(ntfy).publish(p, { queueOnFailure: false })
+          : async () => false
+        const tripwire = startPresenceTripwire({
+          ctx,
+          onLoss: (loss) => {
+            console.error(`[integrity] ${loss.publicSummary}: this run is stopped`)
+            // The latch is on disk when this call returns (tripHalt's first two steps are synchronous).
+            if (loss.kind === 'presence') {
+              void tripHalt({ by: 'engine-tripwire', run: ctx.runId, reason: 'presence-lost', compare: loss.compare ?? undefined, detail: loss.summary, guard: ctx.folders.guard, cwd: ctx.missionCwd, page })
+            }
+            abortActiveTurn?.('a protected folder was lost during this run (integrity)')
+            containmentFault('integrity', loss.publicSummary)
+          },
+        })
+        if (!tripwire.ok) refuseBoot('integrity', tripwire.reason)
+        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every ${TRIPWIRE_INTERVAL_MS / 1000} s and before a tool call (at most once in ${TRIPWIRE_MIN_GAP_MS / 1000} s); a loss counts when a second look ${TRIPWIRE_CONFIRM_MS / 1000} s later sees it too`)
+      }
+    }
+  }
 }
 // Wakefulness: one GPU, two engines. A desk engine (eager, interactive) stops
 // the headless phone engine before loading its own model and restarts it on
@@ -476,6 +571,8 @@ const loop = new ConversationLoop({
   } : null,
   images: imageService,
 })
+// F242: the in-run tripwire aborts the turn that is running when a protected folder is lost.
+abortActiveTurn = (why) => loop.abort(why)
 
 // Projects mode deps: the embedding client, model name and emit sink every
 // /api/projects route (Task 8) and the `project.open` command below share.
@@ -540,6 +637,8 @@ try {
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
       // A chat that shows nothing while the model is waited for can say so, and for how long (D4f).
       getModelSilence: () => modelSilence(),
+      // Wave 15 (NOW.md:57): the integrity latch on the Missions tab, the desk's and the phone's; no path in it.
+      getIntegrity: () => deskIntegrity(),
       // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
       getAwayRuns: () => {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')
@@ -861,10 +960,21 @@ async function handleCommand(command: TUICommand): Promise<void> {
           wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
 
-        case '/compact':
-          wsServer.emit({ type: 'stream.token', text: '[System] Compacting context — summarizing conversation history...\n' })
-          await loop.handleUserMessage('[System] Summarize our conversation so far in bullet points. Preserve key decisions, file paths, and current goals.')
+        case '/compact': {
+          // Wave 15 (NOW.md:249): the loop's one compaction path (runCompaction), not a message asking the
+          // model for a summary, which compacted nothing. Wave 15b (check P1-C1): through the loop's public
+          // compactOnRequest, never its private members, which refuses while a turn runs and holds the loop's busy state
+          // for the whole compaction, so a message sent meanwhile meets the busy guard instead of being thrown
+          // away by the compaction.
+          const answer = await loop.compactOnRequest('/compact')
+          wsServer.emit({ type: 'stream.token', text: answer.refused !== null
+            ? `[System] Nothing was compacted: ${answer.refused}.\n`
+            : answer.compacted
+              ? `[System] Compacted: about ${answer.tokensBefore} -> ${answer.tokensAfter} tokens, ${answer.messagesBefore} -> ${answer.messagesAfter} messages.\n`
+              : `[System] Nothing was compacted (${answer.messagesBefore} messages: too few to compact, or the summary could not be made; the engine log says which).\n` })
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
+        }
 
         case '/tools': {
           const { ALL_TOOLS } = await import('./tools/registry.js')

@@ -7,7 +7,7 @@ The code index: a SQLite-backed store (`sqlite-vec` when available) plus an embe
 | File | Role |
 |---|---|
 | `chunker.ts` | Regex-based chunker (Python/TS/generic) plus tree-sitter-first `chunkFileAsync`; also extracts import/extends relationships. |
-| `embedClient.ts` | Dual-dialect (ollama `/api/embed` / openai `/v1/embeddings`) embedding HTTP client with model fallback, deadline racing, and endpoint resolution. |
+| `embedClient.ts` | Dual-dialect (ollama `/api/embed` / openai `/v1/embeddings`) embedding HTTP client with model fallback, deadline racing, and endpoint resolution. In a contained run (`runContainment()` set) a missing model is served by the fallback and never pulled in the background: a pull writes the local model store, which is FROZEN during the run (F242, slice S7). |
 | `hybridRank.ts` | Fuses vector and keyword `IndexResult` lists via BM25 + Reciprocal Rank Fusion. |
 | `indexer.ts` | `ProjectIndexer`: build/incremental-reindex/query/searchFormatted/repo-map, plus the open-indexer registry. |
 | `repoMapBuilder.ts` | Resolves import specifiers to indexed files and builds the PageRank `RepoGraph` for the repo map. |
@@ -17,8 +17,8 @@ The code index: a SQLite-backed store (`sqlite-vec` when available) plus an embe
 | `types.ts` | Shared `Chunk`, `IndexResult`, `IndexQuery`, `Relationship` types. |
 
 ## Important types & functions
-- **`ProjectIndexer`** (`indexer.ts:148`) — owns the store + embed client for one project; `index()`, `query()`, `searchFormatted()`, `buildRepoMap()`, `reindexFile()`, `refreshFromGitStatus()`. Constructed by `codeIndex.ts`, `vibe/controller.ts`, `conversationLoop.ts`, `main.ts`.
-- **`closeAllIndexers`** (`indexer.ts:142`) — closes every `ProjectIndexer` registered in the module-level `openIndexers` set; called from `main.ts` shutdown and test teardown.
+- **`ProjectIndexer`** (`indexer.ts:155`) — owns the store + embed client for one project; `index()`, `query()`, `searchFormatted()`, `buildRepoMap()`, `reindexFile()`, `refreshFromGitStatus()`. Constructed by `codeIndex.ts`, `vibe/controller.ts`, `conversationLoop.ts`, `main.ts`.
+- **`closeAllIndexers`** (`indexer.ts:149`) — closes every `ProjectIndexer` registered in the module-level `openIndexers` set; called from `main.ts` shutdown and test teardown.
 - **`IndexStore`** (`store.ts:48`) — SQLite store: schema init, `search`/`keywordSearch`/`findByName`/`filesContaining`, `insertChunk`/`insertRelationship`, `purgeWhere`, meta get/set.
 - **`lookupSymbol`** (`symbolLookup.ts:154`) — resolves query identifiers to definition chunks plus file-diverse references; falls back to `coverageLookup` (`symbolLookup.ts:120`) when no name resolves. Called by `ProjectIndexer.searchFormatted`.
 - **`hybridRank`** (`hybridRank.ts:14`) — fuses vector-ordered and BM25-ranked candidates via RRF; called by `ProjectIndexer.query`.
@@ -30,23 +30,23 @@ The code index: a SQLite-backed store (`sqlite-vec` when available) plus an embe
 
 ## Data flow
 Query path:
-1. `codeIndexTool`, `vibe/controller.ts`, or `conversationLoop.ts` call `ProjectIndexer.searchFormatted` (`indexer.ts:319`).
+1. `codeIndexTool`, `vibe/controller.ts`, or `conversationLoop.ts` call `ProjectIndexer.searchFormatted` (`indexer.ts:326`).
 2. `searchFormatted` calls `lookupSymbol` (`symbolLookup.ts:154`); a resolving identifier returns `formatDefinitionCard` (`symbolLookup.ts:176`) — full definition body plus reference sites.
-3. If no symbol resolves, `ProjectIndexer.query` (`indexer.ts:283`) embeds the query via `EmbedClient.embedQuery` (`embedClient.ts:170`), then calls `IndexStore.search` (`store.ts:170`, vector) and `IndexStore.keywordSearch` (`store.ts:225`, lexical).
-4. Results fuse through `hybridRank` (`hybridRank.ts:14`); output is rendered by `ProjectIndexer.formatResults` (`indexer.ts:380`) and confidence-tagged by `annotateByScore` (`indexer.ts:28`).
+3. If no symbol resolves, `ProjectIndexer.query` (`indexer.ts:290`) embeds the query via `EmbedClient.embedQuery` (`embedClient.ts:170`), then calls `IndexStore.search` (`store.ts:170`, vector) and `IndexStore.keywordSearch` (`store.ts:225`, lexical).
+4. Results fuse through `hybridRank` (`hybridRank.ts:14`); output is rendered by `ProjectIndexer.formatResults` (`indexer.ts:387`) and confidence-tagged by `annotateByScore` (`indexer.ts:28`).
 
 Build path:
-5. `ProjectIndexer.index` (`indexer.ts:184`) calls `listProjectFiles` (`indexer.ts:107`), hashing each file and skipping ones whose hash matches `IndexStore.getFileHash` (`store.ts:164`).
+5. `ProjectIndexer.index` (`indexer.ts:188`) calls `listProjectFiles` (`indexer.ts:108`), hashing each file and skipping ones whose hash matches `IndexStore.getFileHash` (`store.ts:164`).
 6. Changed files run through `chunkFileAsync` (`chunker.ts:195`) → `EmbedClient.embedBatch` (`embedClient.ts:222`) → `IndexStore.insertChunk`/`insertRelationship` (`store.ts:141`, `store.ts:157`).
-7. `refreshFromGitStatus` (`indexer.ts:396`) reruns steps 5-6 at query time for anything `git status` shows dirty or that changed between the recorded `indexed_head` and current `HEAD`.
+7. `refreshFromGitStatus` (`indexer.ts:403`) reruns steps 5-6 at query time for anything `git status` shows dirty or that changed between the recorded `indexed_head` and current `HEAD`.
 
 ## Gotchas
-- An open `ProjectIndexer` pins its project directory on Windows via the live SQLite handle (`rmSync` throws `EPERM`); `closeAllIndexers()` (`indexer.ts:142`) exists to release every registered instance — pinned by `engine/__tests__/index/indexerClose.test.ts`.
+- An open `ProjectIndexer` pins its project directory on Windows via the live SQLite handle (`rmSync` throws `EPERM`); `closeAllIndexers()` (`indexer.ts:149`) exists to release every registered instance — pinned by `engine/__tests__/index/indexerClose.test.ts`.
 - `symbolLookup.ts` only `import type`s `store.ts` (`symbolLookup.ts:12`) — no runtime cycle. A prior `require('./symbolLookup.js')` from `store.ts` resolved under Bun but not vitest, which "kept 21 index tests permanently red" (`store.ts:4-8`).
-- The `ProjectIndexer` constructor purges non-indexable rows via `IndexStore.purgeWhere(isIndexableSource)` (`indexer.ts:169`) on every open — stale markdown and out-of-tree paths (e.g. `SESSION_HANDOFF.md`) used to be served as answers; pinned by `engine/__tests__/index/hygienePurge.test.ts`.
+- The `ProjectIndexer` constructor purges non-indexable rows via `IndexStore.purgeWhere(isIndexableSource)` (`indexer.ts:176`) on every open — stale markdown and out-of-tree paths (e.g. `SESSION_HANDOFF.md`) used to be served as answers; pinned by `engine/__tests__/index/hygienePurge.test.ts`.
 - `IndexStore.keywordSearch` (`store.ts:225`) ANDs identifier-like terms and drops query-filler words — the un-demoted OR version served a `Spy` class for a query that merely contained the word "function"; pinned by `engine/__tests__/index/keywordSearchDemoted.test.ts`.
 - Stored file paths are always forward-slash; `migrateMixedSeparators` (`store.ts:94`) collapses "separator twin" duplicate rows on open — pinned by `engine/__tests__/index/pathNormalization.test.ts`.
 - `SCORE_FLOOR = 0.35` (`indexer.ts:24`) is calibrated against a measured eval score dump, not arbitrary — do not change it without rerunning `benchmark/codeindex-eval`.
 - Resolve the embedding endpoint with `embedBaseUrlFor` (`embedClient.ts:46`), never `config.baseUrl` directly — under the llama.cpp provider the chat URL has no embedding route.
-- `ChunkType` (`types.ts:1`) carries three prose kinds alongside the code ones — `knowledge`/`artifact`/`chat` — the chunk types a project's own `.cynco/index/project.db` holds (plus `research`, used elsewhere). `ProjectIndexer` must never open one of those: its constructor purges every row `isIndexableSource` rejects (`indexer.ts:169`), and none of the three is a source file, so the next open would silently empty a project's whole prose index. Projects mode opens that store only through `engine/projects/ingest.ts`'s `openProjectStore`/`openForModel` — see R2 in `engine/projects/CLAUDE.md`.
+- `ChunkType` (`types.ts:1`) carries three prose kinds alongside the code ones — `knowledge`/`artifact`/`chat` — the chunk types a project's own `.cynco/index/project.db` holds (plus `research`, used elsewhere). `ProjectIndexer` must never open one of those: its constructor purges every row `isIndexableSource` rejects (`indexer.ts:176`), and none of the three is a source file, so the next open would silently empty a project's whole prose index. Projects mode opens that store only through `engine/projects/ingest.ts`'s `openProjectStore`/`openForModel` — see R2 in `engine/projects/CLAUDE.md`.
 - An embedding outage is a state, not a log line (F215): `warnEmbedUnavailable` opens `embedOutage()` and still logs once per process; the first embedding that answers closes it; a cancelled request opens nothing. `ConversationLoop.noteEmbedOutage` (`engine/bridge/conversationLoop.ts`) says it in the chat once per chat, with `embedOutageNotice` (what is off, where, that keywords still work, and for a local address the command that starts the service), and says `EMBED_BACK_NOTICE` once when it is over. The embedding service on this PC is CynCo's own llama-server (`scripts/run-embed-server.cmd`, port 9165); a mission dispatch must not kill it, which is what `scripts/cynco-llama-sweep.mjs` is for. Pinned by `engine/__tests__/index/embedOutage.test.ts` and `scripts/__tests__/cynco-llama-sweep.test.mjs`.

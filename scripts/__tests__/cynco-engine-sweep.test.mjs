@@ -54,7 +54,8 @@ describe('sweptEnginePids', () => {
 describe('dispatch-mission.sh', () => {
   const sh = readFileSync('scripts/dispatch-mission.sh', 'utf-8')
   it('sweeps through the selector, refuses when it cannot list, and no longer matches the forward slash alone', () => {
-    expect(sh).toMatch(/bun scripts\/cynco-engine-sweep\.mjs/)
+    // Changed on purpose in wave 19b: every Bun start of the dispatch passes --no-install.
+    expect(sh).toMatch(/bun --no-install scripts\/cynco-engine-sweep\.mjs/)
     expect(sh).toMatch(/could not list the live engines — refusing to dispatch blind/)
     expect(sh).not.toMatch(/CommandLine -like '\*engine\/main\.ts\*'/)
   })
@@ -76,7 +77,9 @@ describe('dispatch-mission.sh', () => {
     expect(sh).toMatch(/MISSION_CWD=\$\{3:\?missing cwd/)
     expect(sh).not.toMatch(/civkings\}/)
     // The env prefix of the driver's own launch line carries it.
-    const before = sh.slice(0, sh.indexOf('  bun scripts/cynco-mission-driver.mjs'))
+    // Changed on purpose in wave 19b: the driver's start passes --no-install; the needle must be found.
+    expect(sh.indexOf('  bun --no-install scripts/cynco-mission-driver.mjs')).toBeGreaterThan(0)
+    const before = sh.slice(0, sh.indexOf('  bun --no-install scripts/cynco-mission-driver.mjs'))
     expect(before.slice(before.lastIndexOf('CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS"'))).toMatch(/CYNCO_CAMPAIGN_ID="\$\{CYNCO_CAMPAIGN_ID:-\}" \\/)
   })
 })

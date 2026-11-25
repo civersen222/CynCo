@@ -56,6 +56,9 @@ export function main(argv, io = defaultIo) {
   const state = new CampaignState(dir).load()
   const r = adopt(state, missionId, row)
   console.log(`[adopt] ${spec.id}: wave ${r.waveCount + 1} will GRADE ${r.missionId} (base ${r.base.slice(0, 7)}, brief ${r.briefFile ?? 'unknown'}) instead of dispatching`)
+  // C5-7 (wave 19): the runner's ADOPT path skips DISPATCH and WAIT, where it takes its integrity reading, and a
+  // ledger row carries no run id to look a settle up by; `--adopt-inflight` says the same for a record with none.
+  console.log('[adopt] the runner takes no integrity reading for a wave adopted by hand: check that the run\'s baseline was settled (bun scripts/cynco-guard.mjs status) before you rely on the grade')
   return 0
 }
 

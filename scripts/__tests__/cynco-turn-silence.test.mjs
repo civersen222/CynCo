@@ -144,7 +144,9 @@ describe('the driver is wired to it', () => {
   })
   it('dispatch-mission.sh hands the driver the Bash cap it hands the engine', () => {
     const sh = readFileSync('scripts/dispatch-mission.sh', 'utf-8')
-    const driverLaunch = sh.slice(sh.lastIndexOf('CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS"'), sh.indexOf('  bun scripts/cynco-mission-driver.mjs'))
+    // Changed on purpose in wave 19b: the driver's start passes --no-install; the needle must be found.
+    expect(sh.indexOf('  bun --no-install scripts/cynco-mission-driver.mjs')).toBeGreaterThan(0)
+    const driverLaunch = sh.slice(sh.lastIndexOf('CYNCO_CHECK_TIMEOUT_MS="$CYNCO_CHECK_TIMEOUT_MS"'), sh.indexOf('  bun --no-install scripts/cynco-mission-driver.mjs'))
     expect(driverLaunch).toContain('CYNCO_BASH_TIMEOUT_MS="$CYNCO_BASH_TIMEOUT_MS" \\')
   })
 })

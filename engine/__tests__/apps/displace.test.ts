@@ -54,6 +54,8 @@ describe('displaceApp', () => {
     listProcesses: async () => procs, kill: async (pid: number) => { killed.push(pid) }, say: (m: string) => said.push(m), now: () => new Date('2026-11-11T18:00:00Z'),
     // The launcher's embeddings server is taken to be still running here; what is said when it went down with the chat server is alsoLost.test.ts.
     exists: () => true, sleep: async () => {},
+    // The port read again just before the stop finds the same listener (F255; what else it can find is the describe below).
+    runPowerShell: async () => JSON.stringify([listener]),
   })
 
   it('an app in use: its server is stopped, the owner is told what happens next, and the debt is written down', async () => {
@@ -90,6 +92,110 @@ describe('displaceApp', () => {
     const c = ctx([...serverTree, webApp], [], [])
     await displaceApp({ app, listener, launcherPid: 4000 }, c); await displaceApp({ app, listener, launcherPid: 4000 }, c)
     expect(readDisplaced(record).length).toBe(1)
+  })
+})
+
+// F255: the listener was read seconds before the stop (the owner told, the app's processes listed, the debt written).
+// The port is read again immediately before it, and the server is stopped only when the same process (same pid, same
+// creation time) still listens. Otherwise nothing is stopped, nothing is owed, and what is true of the port decides
+// what the caller does next: free goes on as after a stop, held as after a stop that could not be done.
+describe('displaceApp reads the port again just before the stop (F255)', () => {
+  const later = { ...listener, pid: 2_000_000_204, name: 'python.exe', created: 9 }
+  function rig(reading: () => Promise<string>, procs: ListedProc[] = [...serverTree, webApp]) {
+    const said: string[] = [], killed: number[] = [], order: string[] = [], refused: string[] = [], logs: string[] = []
+    let owedAtRead = -1
+    const c = {
+      port: 8081, by: 'the chat engine (pid 77)', file: record, now: () => new Date('2026-11-11T18:00:00Z'), exists: () => true, sleep: async () => {},
+      listProcesses: async () => { order.push('list'); return procs },
+      kill: async (pid: number) => { order.push('kill'); killed.push(pid) },
+      say: (m: string) => said.push(m),
+      refused: (why: string) => refused.push(why),
+      log: (line: string) => logs.push(line),
+      runPowerShell: async (script: string) => { order.push('read'); owedAtRead = readDisplaced(record).length; expect(script).toContain('-LocalPort 8081 '); return reading() },
+    }
+    return { c, said, killed, order, refused, logs, owedAt: () => owedAtRead }
+  }
+  const stoppedAsSaid = 'dndai\'s model server held port 8081 (pid 4242). CynCo stopped it to load its own model: dndai is answered by CynCo\'s server on the same port meanwhile, and its own server is started again when CynCo is done.'
+
+  it('the same process still listens: it is stopped, and the reading came after the debt was written, right before the kill', async () => {
+    const r = rig(async () => JSON.stringify([listener]))
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('displaced')
+    expect(r.order).toEqual(['list', 'read', 'kill'])
+    expect(r.owedAt()).toBe(1)
+    expect(r.killed).toEqual([4242])
+    expect(r.refused).toEqual([])
+  })
+
+  it('nothing listens any more: nothing is stopped, nothing is owed, it is said, and the caller goes on as after a stop (leftover)', async () => {
+    const r = rig(async () => '')
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('leftover')
+    expect(r.killed).toEqual([])
+    expect(readDisplaced(record)).toEqual([])
+    expect(r.refused).toEqual([])
+    expect(r.said).toEqual(['dndai\'s model server on port 8081 (pid 4242) let go of the port by itself before CynCo stopped it, and nothing listens there now: CynCo stopped nothing, and owes dndai nothing.'])
+  })
+
+  it('another process listens now: nothing is stopped, nothing is owed, and the caller goes on as after a stop that could not be done (refused)', async () => {
+    const r = rig(async () => JSON.stringify([later]))
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('refused')
+    expect(r.killed).toEqual([])
+    expect(readDisplaced(record)).toEqual([])
+    const why = 'it let go of the port by itself before CynCo stopped it, and pid 2000000204 (python.exe) listens there now, which CynCo has not identified and did not stop'
+    expect(r.refused).toEqual([why])
+    expect(r.said).toEqual([`dndai's model server on port 8081 (pid 4242): ${why}. CynCo's model is not loaded.`])
+  })
+
+  it('the same pid created at another time is another process: nothing is stopped', async () => {
+    const r = rig(async () => JSON.stringify([{ ...listener, created: 3 }]))
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('refused')
+    expect(r.killed).toEqual([])
+    expect(r.refused[0]).toBe('it let go of the port by itself before CynCo stopped it, and pid 4242 (llama-server.exe, a later process with the same number) listens there now, which CynCo has not identified and did not stop')
+  })
+
+  // Changed on purpose in wave 24 round three (check X-4): round two refused here. A look that could not be made decides
+  // nothing, the rule `killProcessOnPort` follows: refused, the lazy engine remembered the server as one it could not stop
+  // (`unstoppable`) and answered every later request with PortHeldError until its next load, for one PowerShell that
+  // failed once. The stop goes ahead by the pid read earlier, as before the second look, with one log line.
+  it('a port that cannot be read again: the look decided nothing, so the server is stopped as it was read, logged, and said as an ordinary stop', async () => {
+    const r = rig(async () => { throw new Error('powershell is gone') })
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('displaced')
+    expect(r.order).toEqual(['list', 'read', 'kill'])
+    expect(r.killed).toEqual([4242])
+    expect(readDisplaced(record)).toHaveLength(1)
+    expect(r.refused).toEqual([])
+    expect(r.said).toEqual([stoppedAsSaid])
+    expect(r.logs).toEqual([
+      '[apps] could not read who holds port 8081 again before stopping pid 4242: powershell is gone',
+      '[apps] port 8081 could not be read again just before the stop (the reading failed): pid 4242 is stopped as it was read',
+    ])
+  })
+
+  it('the same pid read again with no creation time: the two readings cannot be compared, so it is stopped as it was read, as before the second look', async () => {
+    const r = rig(async () => JSON.stringify([{ ...listener, created: undefined }]))
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('displaced')
+    expect(r.killed).toEqual([4242])
+    expect(r.refused).toEqual([])
+    expect(r.said).toEqual([stoppedAsSaid])
+    expect(r.logs).toEqual(['[apps] port 8081 could not be read again just before the stop (a creation time is missing on one side, so the two readings cannot be compared): pid 4242 is stopped as it was read'])
+  })
+
+  it('the listener now listed is younger than its socket: that IS a finding about the port, so nothing is stopped (refused), and why is said', async () => {
+    const S = 13_440_039_258_000
+    const r = rig(async () => JSON.stringify([{ ...listener, socketCreatedMs: S, listenerCreatedMs: S + 3_600_000 }]))
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, r.c)).toBe('refused')
+    expect(r.killed).toEqual([])
+    expect(readDisplaced(record)).toEqual([])
+    const why = 'the process that made the socket on the port has ended and its number is another process\'s now (the process listed for the socket was created after it), so CynCo could not tell what holds the port, and stopped nothing'
+    expect(r.refused).toEqual([why])
+    expect(r.said).toEqual([`dndai's model server on port 8081 (pid 4242): ${why}. CynCo's model is not loaded.`])
+    expect(r.logs.some(l => /stopped as it was read/.test(l))).toBe(false)
+  })
+
+  it('a stop that Windows refuses still tells the caller why, through the same channel', async () => {
+    const r = rig(async () => JSON.stringify([listener]))
+    const c = { ...r.c, kill: async () => ({ stopped: false as const, why: 'Windows refused (Access is denied): it was started as administrator and CynCo was not' }) }
+    expect(await displaceApp({ app, listener, launcherPid: 4000 }, c)).toBe('refused')
+    expect(r.refused).toEqual(['Windows refused (Access is denied): it was started as administrator and CynCo was not'])
   })
 })
 

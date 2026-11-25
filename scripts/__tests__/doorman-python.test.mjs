@@ -23,7 +23,7 @@ if (!python) console.warn('[doorman-python] SKIPPED: no Python 3 with pytest on 
 
 describe.skipIf(!python)('scripts/doorman (pytest)', () => {
   it('every pytest file beside the doorman passes', () => {
-    const r = spawnSync(python, ['-m', 'pytest', join(process.cwd(), 'scripts', 'doorman'), '-q', '-p', 'no:cacheprovider'], { encoding: 'utf-8', windowsHide: true, timeout: 110_000 })
+    const r = spawnSync(python, ['-m', 'pytest', join(process.cwd(), 'scripts', 'doorman'), '-q', '-p', 'no:cacheprovider'], { encoding: 'utf-8', windowsHide: true, timeout: 110_000, stdio: ['ignore', 'pipe', 'pipe'] })
     const out = `${r.stdout ?? ''}\n${r.stderr ?? ''}`
     expect(r.status, out.slice(-4000)).toBe(0)
     expect(out).toMatch(/\d+ passed/)

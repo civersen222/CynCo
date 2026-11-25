@@ -12,10 +12,9 @@
 // form, exactly as calibrate reads the BASE), never on the live repo the
 // mission is editing; the gate spawn is capped and NEVER retried (a 215 s gate
 // re-run is not free; a stale ETIMEDOUT mid-wave is a fault reading, F155).
-import { rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { archiveBase, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
+import { archiveBase, removeNoFollow, defaultIo as calibrateIo } from './cynco-campaign-calibrate.mjs'
 import { runGate, GATE_TIMEOUT_MS, defaultIo as gradeIo } from './cynco-campaign-grade.mjs'
 import { NO_PROGRESS_AT, NO_PROGRESS_RULE, STALLED_AT, STALLED_RULE, STALLED_WINDOW, runnerRowsFrom } from './cynco-runner-rows.mjs'
 
@@ -115,15 +114,18 @@ export function probeGateTimeoutMs(gateMs) {
  * The probe's io. `archive` is calibrate's archiveBase (a fresh dir, `git
  * archive <sha> | tar -x` through bashExe(), F160); `runGate` is the grade
  * module's own runGate pointed at the ARCHIVE with `retry: false` — the one
- * place a spawn of the sealed gate is deliberately not retried; `removeDir`
- * cleans the archive after the reading. The two module ios are parameters so a
+ * place a spawn of the sealed gate is deliberately not retried — and
+ * `labelOwn: false` (F242: the archive is not labelled writable for the gate); `removeDir`
+ * cleans the archive after the reading, by calibrate's removeNoFollow (a link in it is removed as an
+ * entry, never followed). The two module ios are parameters so a
  * test can prove the flags without spawning a gate.
  */
 export function probeIo({ calibrate = calibrateIo, grade = gradeIo } = {}) {
   return {
     archive: (repo, sha, dest, { onStaleRetry } = {}) => archiveProbe(repo, sha, dest, calibrate, onStaleRetry),
-    runGate: (spec, dest, { timeoutMs } = {}) => runGate(spec, grade, { repo: dest, timeoutMs: timeoutMs ?? probeGateTimeoutMs(null), retry: false }),
-    removeDir: (p) => rmSync(p, { recursive: true, force: true }),
+    runGate: (spec, dest, { timeoutMs } = {}) => runGate(spec, grade, { repo: dest, timeoutMs: timeoutMs ?? probeGateTimeoutMs(null), retry: false, labelOwn: false }),
+    // Wave 19b: the gate ran in the archive, so it goes by the walk that never follows a link.
+    removeDir: (p) => removeNoFollow(p),
   }
 }
 export const defaultProbeIo = probeIo()

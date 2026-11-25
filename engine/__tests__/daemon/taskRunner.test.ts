@@ -6,6 +6,8 @@ import { join } from 'path'
 import { TaskRunner, isGpuBusy } from '../../daemon/taskRunner.js'
 import type { TaskFileInput } from '../../daemon/types.js'
 import { ActivityRegistry } from '../../power/activity.js'
+import { testContainment } from '../../containment.js'
+import { RUN_ID_RE } from '../../missionEnv.js'
 
 const STUB = join(import.meta.dirname, 'fixtures', 'stubEngine.mjs')
 
@@ -239,6 +241,398 @@ describe('TaskRunner activity (hold-awake)', () => {
       expect(registry.snapshot()[0]).toMatchObject({ kind: 'oneshot', label: 't1' })
       await running
       expect(registry.count()).toBe(0)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// F242 (01-isolation 6.2, tests 9.6): a daemon one-shot is a contained run. `refuse` is asked before the
+// GPU is taken, `contain` after the busy check, and `release` once the child is gone, on every exit path.
+describe('TaskRunner containment (refuse, contain, release)', () => {
+  const { existsSync, readFileSync, readdirSync } = require('fs') as typeof import('fs')
+
+  function fakeContainment(dir: string, runId: string) {
+    const sb = join(dir, 'sb')
+    return testContainment({
+      runId, kind: 'daemon-task', missionCwd: join(dir, 'mission'),
+      sandbox: { root: sb, home: join(sb, 'home'), tmp: join(sb, 'tmp'), scratch: join(sb, 'scratch') },
+      home: join(dir, 'home'), folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+    })
+  }
+  /** Each call is recorded in `calls`, in order; `release` answers `relabelled`. */
+  function wired(dir: string, o: { refusal?: string | null; containRefusal?: string; busy?: boolean; relabelled?: boolean; note?: string } = {}) {
+    const calls: string[] = []
+    const released: string[] = []
+    const opts = {
+      takeGpu: async () => { calls.push('take') },
+      giveGpuBack: async () => { calls.push('give back') },
+      isGpuBusyImpl: async () => { calls.push('busy?'); return o.busy === true },
+      refuse: () => { calls.push('refuse?'); return o.refusal ?? null },
+      contain: () => {
+        calls.push('contain')
+        return o.containRefusal !== undefined
+          ? { ok: false as const, reason: o.containRefusal }
+          : { ok: true as const, containment: fakeContainment(dir, 'daemon-m1-t1-20261123T120000-abcd') }
+      },
+      release: (c: { runId: string }) => {
+        calls.push('release'); released.push(c.runId)
+        return { relabelled: o.relabelled ?? true, note: o.note ?? '' }
+      },
+    }
+    return { calls, released, opts }
+  }
+  const taskFiles = (dir: string) => readdirSync(dir).filter((n) => n.startsWith('task-'))
+
+  it('a refusal from `refuse` reports REFUSED and takes nothing, spawns nothing, writes no task file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { refusal: 'containment: the sandbox root X:/nowhere is not an existing folder' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: ['definitely-not-a-real-binary-cynco'], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome).toEqual({ ok: false, summary: '', recommendations: [], error: 'REFUSED: containment: the sandbox root X:/nowhere is not an existing folder' })
+      expect(w.calls).toEqual(['refuse?'])
+      expect(readdirSync(dir)).toEqual([])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a containment refusal is a failed run: nothing spawned, the GPU given back once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { containRefusal: 'this task names no cwd' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome).toEqual({ ok: false, summary: '', recommendations: [], error: 'REFUSED: containment: this task names no cwd' })
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'contain', 'give back'])
+      expect(taskFiles(dir)).toEqual([])
+      expect(existsSync(join(dir, 'out.json'))).toBe(false)
+      expect(existsSync(join(dir, 'gpu-busy.json'))).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a deferral (GPU busy) builds no sandbox', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { busy: true })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      await expect(runner.run(makeInput(dir, 'x'))).rejects.toThrow(/gpu busy/i)
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('the child gets the run id in its task file, and the sandbox is released once after a normal exit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      const files = taskFiles(dir)
+      expect(files.length).toBe(1)
+      expect(JSON.parse(readFileSync(join(dir, files[0]), 'utf-8')).runId).toBe('daemon-m1-t1-20261123T120000-abcd')
+      expect(w.released).toEqual(['daemon-m1-t1-20261123T120000-abcd'])
+      // Released after the child had gone, and before the GPU was given back.
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'contain', 'release', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('released once after a timeout kill', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run({ ...makeInput(dir, 'HANG please'), timeoutMs: 1500 })
+      expect(outcome.error).toMatch(/timeout/i)
+      expect(w.released.length).toBe(1)
+      expect(w.calls.slice(-2)).toEqual(['release', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('released once after a pause kill', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      let paused = false
+      const w = wired(dir)
+      const runner = new TaskRunner({
+        workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'),
+        shouldPause: () => paused, pausePollMs: 100, ...w.opts,
+      })
+      setTimeout(() => { paused = true }, 700)
+      const outcome = await runner.run({ ...makeInput(dir, 'PAUSEME now'), timeoutMs: 20000 })
+      expect(outcome.error).toBe('PAUSED')
+      expect(w.released.length).toBe(1)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('released once when the spawn throws, and the throw still reaches the caller', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      // An empty program name makes spawn throw synchronously (ERR_INVALID_ARG_VALUE).
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [''], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      await expect(runner.run(makeInput(dir, 'do the thing'))).rejects.toThrow()
+      expect(w.released.length).toBe(1)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  // Review finding of slice S2: a throw after the spawn (here the activity registry) used to give
+  // the sandbox back with the one-shot still running in the folder.
+  //
+  // Changed on purpose in wave 24 (A4, F255): the child was `node -e "<code>" --run-task <file>`, which Node refuses at
+  // once (`bad option: --run-task`, exit 9, 18 ms: measured), so it was never alive, the case proved nothing, and its
+  // kill logged `taskkill /T <pid>: ... not found` in every run. The stub engine accepts --run-task and, for WRITE_LATE,
+  // writes `outlived.txt` 2.5 s later; the control below shows it does when nothing ends it, so the case cannot be
+  // empty again.
+  it('a throw after the child started ends the child before the sandbox is released, and still reaches the caller', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    const said: string[] = []
+    const log = console.log
+    console.log = (...a: unknown[]) => { said.push(a.map(String).join(' ')); log(...a) }
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({
+        workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts,
+        activity: { begin: () => { throw new Error('activity registry broken') } } as unknown as ActivityRegistry,
+      })
+      await expect(runner.run(makeInput(dir, 'WRITE_LATE please'))).rejects.toThrow('activity registry broken')
+      expect(w.calls.slice(-2)).toEqual(['give back', 'release'])
+      expect(w.released.length).toBe(1)
+      await new Promise(r => setTimeout(r, 4000))
+      expect(existsSync(join(dir, 'outlived.txt')), 'the one-shot outlived the failed setup').toBe(false)
+      expect(existsSync(join(dir, 'gpu-busy.json'))).toBe(false)
+      // The child was alive when it was ended: no "not found" from a kill of a child that had already gone, and no
+      // refusal of a walk whose root had ended.
+      expect(said.filter(l => /not found|was not killed/.test(l)), said.join('\n')).toEqual([])
+    } finally { console.log = log; rmSync(dir, { recursive: true, force: true }) }
+    // The control: the same child, with nothing thrown and nothing ended, does write its file.
+    const control = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const runner = new TaskRunner({ workDir: control, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: join(control, 'gpu-busy.json') })
+      const outcome = await runner.run({ ...makeInput(control, 'WRITE_LATE please'), timeoutMs: 15_000 })
+      expect(outcome.ok).toBe(false)
+      expect(existsSync(join(control, 'outlived.txt')), 'the stand-in did not write its file even when nothing ended it').toBe(true)
+    } finally { rmSync(control, { recursive: true, force: true }) }
+  }, 40000)
+
+  it('released once when the program cannot be found (the spawn reports an error instead of throwing)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: ['definitely-not-a-real-binary-cynco'], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(false)
+      expect(w.released.length).toBe(1)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a release that did not set the folder back has its note logged', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    const said: string[] = []
+    const log = console.log
+    console.log = (...a: unknown[]) => { said.push(a.map(String).join(' ')) }
+    try {
+      const w = wired(dir, { relabelled: false, note: 'C:/m stays labelled low: run other-1 still holds it' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      await runner.run(makeInput(dir, 'do the thing'))
+      expect(said).toContain('[task:t1] C:/m stays labelled low: run other-1 still holds it')
+    } finally {
+      console.log = log
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('with none of the three options the run is as before: no run id in the task file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: join(dir, 'gpu-busy.json') })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      const files = taskFiles(dir)
+      expect(files.length).toBe(1)
+      expect('runId' in JSON.parse(readFileSync(join(dir, files[0]), 'utf-8'))).toBe(false)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// ─── The integrity pair and the latch (F242, slice S7) ──────────────────────────────────────────
+describe('TaskRunner integrity (before, after, halted)', () => {
+  const { readFileSync, readdirSync } = require('fs') as typeof import('fs')
+
+  function fake(dir: string, runId: string) {
+    const sb = join(dir, 'sb')
+    return testContainment({
+      runId, kind: 'daemon-task', missionCwd: join(dir, 'mission'),
+      sandbox: { root: sb, home: join(sb, 'home'), tmp: join(sb, 'tmp'), scratch: join(sb, 'scratch') },
+      home: join(dir, 'home'), folders: { state: join(dir, 'state'), models: join(dir, 'models'), guard: join(dir, 'guard'), audit: null },
+    })
+  }
+  /** Every call in order, with the run id each integrity or containment call was given. */
+  function wired(dir: string, o: { beforeThrows?: string; after?: string | null; containRefusal?: string; busy?: boolean; halted?: () => string | null; takeThrows?: boolean } = {}) {
+    const calls: string[] = []
+    const ids: Record<string, string[]> = { before: [], contain: [], after: [] }
+    const reasons: Array<string | undefined> = []
+    const opts = {
+      takeGpu: async () => { calls.push('take'); if (o.takeThrows) throw new Error('take failed') },
+      giveGpuBack: async () => { calls.push('give back') },
+      isGpuBusyImpl: async () => { calls.push('busy?'); return o.busy === true },
+      refuse: () => { calls.push('refuse?'); return null },
+      contain: (_input: TaskFileInput, runId: string) => {
+        calls.push('contain'); ids.contain.push(runId)
+        return o.containRefusal !== undefined ? { ok: false as const, reason: o.containRefusal } : { ok: true as const, containment: fake(dir, runId) }
+      },
+      release: () => { calls.push('release'); return { relabelled: true, note: '' } },
+      integrity: {
+        before: (runId: string) => { calls.push('before'); ids.before.push(runId); if (o.beforeThrows) throw new Error(o.beforeThrows) },
+        after: async (runId: string, notDead?: string) => { calls.push('after'); ids.after.push(runId); reasons.push(notDead); return o.after ?? null },
+      },
+      ...(o.halted ? { halted: o.halted } : {}),
+    }
+    return { calls, ids, opts, reasons }
+  }
+  const taskRunId = (dir: string) => {
+    const f = readdirSync(dir).filter((n) => n.startsWith('task-'))
+    return f.length === 1 ? JSON.parse(readFileSync(join(dir, f[0]!), 'utf-8')).runId as string : null
+  }
+  const oneId = (ids: Record<string, string[]>, dir: string) => {
+    expect(ids.before.length).toBe(1)
+    expect(ids.contain.length).toBe(1)
+    expect(ids.after.length).toBe(1)
+    const id = ids.before[0]!
+    expect(id).toMatch(RUN_ID_RE)
+    expect(ids.contain[0]).toBe(id)
+    expect(ids.after[0]).toBe(id)
+    expect(taskRunId(dir)).toBe(id)
+  }
+
+  it('a baseline that cannot be taken: not spawned, the GPU given back once, REFUSED: integrity', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { beforeThrows: 'the guard folder G:/x does not exist' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: ['definitely-not-a-real-binary-cynco'], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.error).toBe('REFUSED: integrity: no integrity baseline could be taken (the guard folder G:/x does not exist)')
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'before', 'give back'])
+      expect(readdirSync(dir)).toEqual([])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a change after a child that wrote ok: the outcome is INTEGRITY: <sentence>', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { after: '1 change(s) in protected folders (first: PRESENCE)' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome).toEqual({ ok: false, summary: '', recommendations: [], error: 'INTEGRITY: 1 change(s) in protected folders (first: PRESENCE)' })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a normal exit: before, contain, after once each with one run id; after the child, before release and giving back', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      oneId(w.ids, dir)
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'before', 'contain', 'after', 'release', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  // Review of wave 5: releasing a Job Object kills nothing, and a tree with no Job Object (vitest runs on Node,
+  // which has no bun:ffi) is not known to be dead after its root exits; the settle is told, so it latches.
+  it('the settle is told why the one-shot tree is not known to be dead, and is told nothing when it is', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      expect(w.reasons).toHaveLength(1)
+      if (process.platform === 'win32' && typeof (globalThis as { Bun?: unknown }).Bun === 'undefined') {
+        expect(w.reasons[0]).toBe("the one-shot's tree had no Job Object, so a process it started may still run")
+      } else if (process.platform !== 'win32') {
+        expect(w.reasons[0]).toBeUndefined()
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a timeout: the pair once, after the kill', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir)
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run({ ...makeInput(dir, 'HANG please'), timeoutMs: 1500 })
+      expect(outcome.error).toMatch(/timeout/i)
+      oneId(w.ids, dir)
+      expect(w.calls.slice(-3)).toEqual(['after', 'release', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('a pause still parks the run (PAUSED with paused), and the pair runs once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      let paused = false
+      const w = wired(dir, { halted: () => null })
+      const runner = new TaskRunner({
+        workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'),
+        shouldPause: () => paused, pausePollMs: 100, ...w.opts,
+      })
+      setTimeout(() => { paused = true }, 700)
+      const outcome = await runner.run({ ...makeInput(dir, 'PAUSEME now'), timeoutMs: 20000 })
+      expect(outcome.error).toBe('PAUSED')
+      expect(outcome.paused).toBeDefined()
+      oneId(w.ids, dir)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('the latch mid-run kills the tree within one poll: STOPPED: integrity, not parked, the pair once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      let latched: string | null = null
+      const w = wired(dir, { halted: () => latched })
+      const runner = new TaskRunner({
+        workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'),
+        shouldPause: () => false, pausePollMs: 100, ...w.opts,
+      })
+      setTimeout(() => { latched = 'the integrity latch is present at G:/guard/HALT.json (x)' }, 700)
+      const started = Date.now()
+      const outcome = await runner.run({ ...makeInput(dir, 'HANG please'), timeoutMs: 20000 })
+      expect(Date.now() - started).toBeLessThan(10000)
+      expect(outcome).toEqual({ ok: false, summary: '', recommendations: [], error: 'STOPPED: integrity: the integrity latch is present at G:/guard/HALT.json (x)' })
+      expect('paused' in outcome).toBe(false)
+      oneId(w.ids, dir)
+      expect(w.calls.slice(-3)).toEqual(['after', 'release', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  }, 15000)
+
+  it('a containment that refuses is followed by exactly one after, before the GPU is given back', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { containRefusal: 'this task names no cwd' })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.error).toBe('REFUSED: containment: this task names no cwd')
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'before', 'contain', 'after', 'give back'])
+      expect(w.ids.after).toEqual(w.ids.before)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a GPU-busy deferral calls neither before nor contain', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { busy: true })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      await expect(runner.run(makeInput(dir, 'x'))).rejects.toThrow(/gpu busy/i)
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'give back'])
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('a takeGpu hook that throws still lets the run start: the integrity calls are not hooks', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const w = wired(dir, { takeThrows: true })
+      const runner = new TaskRunner({ workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts })
+      const outcome = await runner.run(makeInput(dir, 'do the thing'))
+      expect(outcome.ok).toBe(true)
+      expect(w.calls).toEqual(['refuse?', 'take', 'busy?', 'before', 'contain', 'after', 'release', 'give back'])
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

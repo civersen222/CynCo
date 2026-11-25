@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -12,15 +12,24 @@ import { join, resolve } from 'node:path'
 
 const SCRIPT = resolve(import.meta.dirname, '..', 'cynco-mutation-sweep.py')
 
-let python = 'python'
-let havePython = false
-
-beforeAll(() => {
+// Found once, when the file loads, so that a machine without Python marks every test below as
+// skipped and says why. Until 2026-11-24 each test began with `if (!havePython) return` and so
+// reported a pass that had checked nothing.
+function findPython() {
   for (const cmd of ['python', 'python3', 'py']) {
-    const r = spawnSync(cmd, ['-c', 'import ast,sys;print(sys.version_info[:2])'], { encoding: 'utf-8' })
-    if (r.status === 0) { python = cmd; havePython = true; break }
+    const r = spawnSync(cmd, ['-c', 'import ast,sys;print(sys.version_info[:2])'], { encoding: 'utf-8', windowsHide: true })
+    if (r.status === 0) return cmd
   }
-})
+  return null
+}
+
+const python = findPython()
+// Until 2026-11-24 these were skipped whenever CI was set (35285d08, no reason recorded). The CI job has
+// Python, pytest and a git identity, so they run there as everywhere: only a machine without Python skips.
+const skipWhy = python === null
+  ? 'no python, python3 or py on PATH that runs `import ast`; the sweep script is Python, so nothing here can be checked'
+  : null
+if (skipWhy) console.warn(`[cynco-mutation-sweep] SKIPPED: ${skipWhy}`)
 
 /** A git repo with one base commit and one "mission" commit on top. */
 function makeRepo({ source, test: testSrc, baseSource = null, baseTest = null }) {
@@ -67,9 +76,8 @@ function parseJson(out) {
   return line ? JSON.parse(line) : null
 }
 
-describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
+describe.skipIf(skipWhy !== null)('cynco-mutation-sweep', () => {
   it('kills every mutation when the delivered test owns the rule', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
       test: [
@@ -93,7 +101,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('names the survivor when the test only checks the happy path', () => {
-    if (!havePython) return
     // The boundary is never asserted, so `>` vs `>=` is invisible to this test.
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
@@ -111,7 +118,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('only mutates lines the mission added, not the whole file', () => {
-    if (!havePython) return
     // `old_toll` is untouched by the mission and its assertion is weak. If the
     // sweep mutated it, it would report a survivor that belongs to nobody.
     const untouched = 'def old_toll(n):\n    if n > 5:\n        return 2\n    return 0\n'
@@ -142,7 +148,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('refuses to report a sweep when the unmutated tree is already red', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
       test: 'from pkg.rules import fee\ndef test_wrong():\n    assert fee(500) == 999\n',
@@ -157,7 +162,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('calls a mission that delivered no tests UNMEASURED, not passing', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
       test: 'def test_placeholder():\n    assert True\n',   // identical to base
@@ -170,7 +174,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('is deterministic — the same commit yields the same ids twice', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100 and gold < 500:\n        return 10\n    return 1\n',
       test: 'from pkg.rules import fee\ndef test_high():\n    assert fee(200) == 10\n',
@@ -191,7 +194,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
   }, 180_000)
 
   it('prints a ledger-sweep command whose counts match its own JSON', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
       test: 'from pkg.rules import fee\ndef test_high():\n    assert fee(500) == 10\n',
@@ -219,7 +221,7 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep', () => {
  * --mutate names the source the delivered tests CLAIM to own and mutates all of
  * it. The claim is a human's, so the result is recorded as `authored`.
  */
-describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missions)', () => {
+describe.skipIf(skipWhy !== null)('cynco-mutation-sweep --mutate (tests-only missions)', () => {
   const RULES = [
     'def fee(gold):',
     '    if gold > 100:',
@@ -255,7 +257,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   ].join('\n')
 
   it('without --mutate a tests-only mission is UNMEASURED, and says how to fix that', () => {
-    if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { status, out } = sweep(repo)
@@ -269,7 +270,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('with --mutate it measures the mission the diff could not', () => {
-    if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { status, out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
@@ -282,7 +282,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('--mutate covers the whole file, not just the (empty) added lines', () => {
-    if (!havePython) return
     // Only `fee` is pinned. `toll`'s boundary is never asserted, so if the
     // sweep is really reading the whole file, `toll` must produce a survivor.
     const repo = testsOnly([
@@ -307,7 +306,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('records as derived-full, never authored — naming a file is not naming a rule', () => {
-    if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { out } = sweep(repo, ['--mutate', 'pkg/rules.py'])
@@ -330,7 +328,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('a diff-derived run is still recorded as derived', () => {
-    if (!havePython) return
     const repo = makeRepo({
       source: 'def fee(gold):\n    if gold > 100:\n        return 10\n    return 1\n',
       test: 'from pkg.rules import fee\ndef test_band():\n    assert fee(101) == 10\n    assert fee(100) == 1\n',
@@ -348,7 +345,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('refuses to mutate a test file', () => {
-    if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { status, out } = sweep(repo, ['--mutate', 'pkg/tests/test_rules.py'])
@@ -361,7 +357,6 @@ describe.runIf(!process.env.CI)('cynco-mutation-sweep --mutate (tests-only missi
   }, 180_000)
 
   it('refuses a --mutate path that does not exist rather than sweeping what is left', () => {
-    if (!havePython) return
     const repo = testsOnly(OWNS_BOTH)
     try {
       const { status, out } = sweep(repo, ['--mutate', 'pkg/rules.py pkg/typo.py'])

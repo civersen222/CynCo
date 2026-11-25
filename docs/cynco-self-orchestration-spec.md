@@ -124,8 +124,13 @@ repo root (`node` cannot load it — the grade module imports
 `engine/cybernetics-core/src/index.ts`).
 
 **States.** CALIBRATE runs once per invocation, before the wave loop, and only
-when the gate or perturb sha256 moved or the campaign was never calibrated (Rule
-11 — a refused calibration stops the run with exit 3 and an ntfy). Then, per
+when the gate, perturb or positive shim sha256 moved or the campaign was never
+calibrated (Rule 11 — a refused calibration stops the run with exit 3 and an
+ntfy; `calibrateIfMoved` in `scripts/cynco-campaign.mjs`). The calibration it
+stores, `state.calibration`, holds `gateSha256`, `perturbSha256`,
+`positiveSha256`, `baseFails`, `basePasses`, `perturbFails`, `positive` (the
+positive shim's terminator, or null with no shim, which a later reading is
+compared with; R3-F3, wave 12), `baseGateMs` and `calibratedAt`. Then, per
 wave: GENERATE (brief + sidecar from the
 previous wave's verbatim FAIL lines) → DISPATCH (`scripts/dispatch-mission.sh`
 with the wave's mission invariants, `DRIVER_PID_FILE`, `DRIVER_LOG`,
@@ -138,6 +143,23 @@ algedonic ntfy) → DECIDE (`pass` / `pass-with-survivors` / `next` / `budget` /
 `no-progress` / `fault` / `stop`).
 A harness fault anywhere past dispatch records the fault, spends the wave, and
 stops the loop deliberately rather than by exception.
+
+The dispatch refuses a run whose engine or driver log already exists (an
+earlier run's log is evidence), so the runner names a wave's logs per attempt
+(`waveLogNames` in `scripts/cynco-campaign.mjs`, wave 19b): the first dispatch
+of `<id>-wave<N>` keeps `engine_<stem>.log`, `driver_<stem>.log` and
+`driver_<stem>.pid` in `C:/tmp`; one dispatched again under the same stem, when
+any of the three is there, uses `<stem>-attempt<n>` (the first free n up to
+99) and prints one `[campaign]` line saying so. Either way the runner hands
+the engine log's name to the dispatch as `ENGINE_LOG` and records it in
+`state.inFlight` (`engineLog`). With all 99 taken the wave stops by name before
+its brief is written, and nothing is dispatched. A later attempt's logs are not
+kept by the mission-log prune's cited-word rule, because the mission id does
+not carry the attempt, so they go after the prune's 90 days. A wave whose
+mission driver stopped under the integrity latch, or because the guard folder
+could not be used (the row's `exitReason` `integrity-latch` or
+`integrity-guard-unusable`), is a fault and is never graded, on the dispatched
+path and on the adopted one (wave 19c).
 
 `pass` needs the sealed gate PASS, the suite gate green, and no mutation-sweep
 survivor **inside a file the campaign claimed** (`allow.edit` / `allow.newFiles`
@@ -170,7 +192,11 @@ records the wave as a fault.
 `bun scripts/cynco-campaign.mjs <id>.campaign.json [--waves N] [--resume]
 [--dry-run] [--sync] [--approve-proposal NAME] [--reject-proposal NAME]`.
 `--resume` is the default (the state directory IS the resume point); `--dry-run`
-prints the brief the next wave would dispatch and exits.
+prints the brief the next wave would dispatch and exits. When the instruments
+moved, it calibrates first and prints the reading and the reseal it would
+record, and saves nothing: no state, no reseal, no suite baseline (R3-F2,
+wave 12: before that the only way to take a reading overwrote the reading it
+was to be compared with).
 
 **State dir.** `~/.cynco/campaigns/<id>/` — the campaign state, every wave
 record, pending notifications and pending proposals. It is the only thing a
@@ -357,7 +383,23 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   author reads real exemplars without being handed the heldout directory
   itself. The game at the line's pinned BASE is archived read-only to
   `C:/tmp/<id>_author_base`; the gate under test reads it through
-  `CYNCO_GATE_REPO` and never its own directory.
+  `CYNCO_GATE_REPO` and never its own directory. That folder, and
+  calibration's own `C:/tmp/<id>_base`, is emptied before each archive by a
+  listing walk that never enters a link (`removeNoFollow` in
+  `scripts/cynco-campaign-calibrate.mjs`, since wave 15), because a contained
+  grader ran in it at low integrity and may have left a junction there; a link
+  it cannot remove as an entry is a named calibration problem (`the BASE folder
+  <dest> could not be emptied, so nothing was archived: ...`), not a crash, and
+  nothing is archived over what is left. A grader runs with the sandbox's home
+  as `HOME` and `USERPROFILE` (`toolEnv`, F242), so whatever a gate writes
+  under `~` lands there, not in the owner's home: a real gate's kept screens
+  (`~/.cynco/screens/heldout/<id>`) are in
+  `<sandbox root>\grade-<id>_base-<time>-<hex>\home\.cynco\screens` (the run id
+  `mintRunId` makes from `grade-<folder>`, `scripts/cynco-spawn.mjs`), and go when the
+  sweep removes that sandbox, seven days after it was made at the earliest (a
+  sweep pass whose set-back budget is spent leaves it to the next pass, and a
+  release that kept an access-list grant keeps it until `restore-acl`). Copy
+  them out within seven days if they are wanted.
 - **The acceptance test** (`checkStaged`) is Rule 11 and Rule 14 run
   mechanically, plus lint. Lint: ids shaped `C<N>.<k>[a-z].<slug>`, unique, and
   at least one of them (the lint has no count minimum — it refuses a gate that
@@ -367,11 +409,17 @@ in `docs/civkings-redesign-briefs/campaign-log.md` and F156 in
   `CYNCO_GATE_REPO`, a
   `C<N>.9` prior-campaign regression line that honours `CYNCO_GATE_SKIP_PRIOR`,
   both shims `runpy.run_path` the real gate and set skip-prior, the perturb
-  header names only real line ids and declares a non-empty MUST-FAIL set, no
+  header names only real line ids and declares a non-empty MUST-FAIL set (a
+  header line starts with `#` or `//`: `perturbHeaderKeyLine` in
+  `scripts/cynco-gate-parse.mjs` is the one shape, read by the parser and by
+  the gate lint, which names the header line of each problem in either form;
+  R3-F5, wave 12, and wave 15), no
   network import anywhere, and a `GATE: PASS` / `GATE: MISS (n fails)`
   terminator. Calibration: the gate must MISS on the BASE **by absence** with
   zero errors, every base fail classified, the perturb's flips a subset of
-  EXPECT-FLIP with every MUST-FAIL still failing, and the positive shim must
+  EXPECT-FLIP with every MUST-FAIL still failing, no EXPECT-FLIP entry whose
+  every line already PASSes at BASE (the cheat stub could not flip it; a named
+  calibration problem since wave 15), and the positive shim must
   reach `GATE: PASS` — a bar nothing can pass is not a bar. The runner re-runs
   all of it from its own side after the mission returns: the driver ran the
   check too, but it ran it in a process the mission could have reached, so only

@@ -26,6 +26,7 @@ import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { readFileSync, existsSync, readdirSync } from 'fs'
 import { execFile } from 'child_process'
+import { harnessGitEnv } from '../harnessGit.js'
 import type { Server, ServerWebSocket } from 'bun'
 import type { EngineEvent } from '../bridge/protocol.js'
 import type { PendingDecision } from '../bridge/conversationLoop.js'
@@ -132,6 +133,8 @@ export interface DashboardDeps {
   getRunState?: () => { processing: boolean; toolCalls?: number }
   /** The model request in flight and how long its server has been silent (`providers/streamWatchdog.ts`), or null. */
   getModelSilence?: () => { phase: 'first-byte' | 'mid-stream'; silentMs: number; limitMs: number; server: string } | null
+  /** The integrity latch in words a phone may show (`deskIntegrity`, engine/integrity.ts; wave 15). Absent: `/api/session` sends no `integrity`. */
+  getIntegrity?: () => { state: 'clear' | 'latched' | 'unusable'; summary: string; at?: string | null }
   /** Test seam: run one git command asynchronously and resolve its stdout. Default: child_process.execFile. */
   missionGit?: (args: string[]) => Promise<string>
   /**
@@ -221,6 +224,8 @@ export type SessionSnapshot = {
   modelState?: 'cold' | 'loading' | 'warm' | 'waiting' | null
   /** The one-shot that owns the GPU right now (gpu-busy.json), or null. */
   busy?: { triggerId: string; task: string; remainingMs: number } | null
+  /** The integrity latch (wave 15): `{ state, summary }`, no path in it; absent when the engine did not wire it. */
+  integrity?: { state: 'clear' | 'latched' | 'unusable'; summary: string; at?: string | null }
   /** Wakefulness slice 4: `LOCALCODE_BRAIN` / `LOCALCODE_JLENS` as this engine read them (`brain/brainSwitch.ts`); the Brain tab's off-notice. */
   brain?: boolean
   lens?: boolean
@@ -1715,6 +1720,8 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
       project: this.deps.currentProject?.() ?? null,
       pending: this.deps.getPendingDecisions?.() ?? null,
       ...(this.deps.getModelSilence ? { modelSilence: this.deps.getModelSilence() } : {}),
+      // Wave 15 (NOW.md:57): the latch reaches the Missions tab, on the desk and on the phone.
+      ...(this.deps.getIntegrity ? { integrity: this.deps.getIntegrity() } : {}),
     }
   }
 
@@ -1745,7 +1752,8 @@ window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
   private runMissionGit(args: string[]): Promise<string> {
     if (this.deps.missionGit) return this.deps.missionGit(args)
     return new Promise((resolve, reject) => {
-      execFile('git', args, { encoding: 'utf-8', timeout: MISSION_GIT_TIMEOUT_MS, windowsHide: true },
+      // Harness git in a mission folder (F242): the folder is named with -C; no hooks, monitor or pager.
+      execFile('git', args, { encoding: 'utf-8', timeout: MISSION_GIT_TIMEOUT_MS, windowsHide: true, env: harnessGitEnv(process.env) },
         (err, stdout) => (err ? reject(err) : resolve(String(stdout))))
     })
   }

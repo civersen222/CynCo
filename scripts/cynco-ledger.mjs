@@ -405,6 +405,16 @@ export function createMissionCollector(now = () => Date.now()) {
     },
 
     /**
+     * A turn that ended on an abort (wave 13b): the mission driver keeps the `message.complete` that closed an
+     * aborted turn away from `ingest` (it is a turn end, not the model's answer) and calls this instead. What the
+     * aborted turn had streamed is dropped unjudged, so it is never read as the opening of the next answer (the
+     * same false-refusal shape as the F235 stall above).
+     */
+    endAbortedTurn() {
+      this._answerText = ''
+    },
+
+    /**
      * One tool call, accounted once.
      *
      * This exists as a named method so the accounting can be tested without
@@ -697,7 +707,10 @@ export function waitExitReason(
  * worst of them, because it says "raise the budget" about a mission that no
  * budget could have helped.
  */
-export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineError, neverDispatched }) {
+export function missionOutcome({ landed, zeroToolCompletion, wentQuiet, engineError, neverDispatched, integrityStop = false }) {
+  // Wave 19 (plan P6 item 6): the driver stopped the mission under the integrity latch, or with a guard folder
+  // that could not be used. Whatever had landed, the run is the harness's stop, never a delivery.
+  if (integrityStop) return 'engine_error'
   if (landed) return 'landed'
   if (engineError) return 'engine_error'
   if (zeroToolCompletion) return 'zero_tool_fail'
@@ -1037,7 +1050,9 @@ export function buildMissionRecord(collector, meta) {
     // F57: how the driver came to believe the run was over, and whether it was.
     //
     // `exitReason` is one of 'engine_error' | 'engine_closed_the_turn' |
-    // 'quiet_heuristic' | 'timeout' | 'never_dispatched'. The distinction the
+    // 'quiet_heuristic' | 'timeout' | 'never_dispatched' | 'integrity-latch' (F242: the driver's poll met
+    // the integrity latch and tore the mission down) | 'integrity-guard-unusable' (wave 19: the guard folder
+    // could not be used, so the latch could not be asked; the mission was torn down the same way). The distinction the
     // ledger needs is between the second and the third: one is the engine
     // saying it closed the turn, the other is this script inferring it from
     // silence. Every row before this field was written was the third kind and

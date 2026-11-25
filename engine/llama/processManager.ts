@@ -6,7 +6,7 @@ import { readGgufMeta } from './gguf.js'
 import { checkpointCostFromMeta, derivedCacheRamMib, MEASURED_DEFAULT_COST, type CheckpointCostModel } from './checkpointCost.js'
 import { CheckpointCalibrator } from './checkpointCalibration.js'
 import { checkSpawn, readGpuMemory, readHostMemory, spawnRequirementFor, topCommitConsumers, type SpawnCheck } from './hostResources.js'
-import { portOwner } from './portOwner.js'
+import { listenerVerdictFor, portOwner, readListenerAges, type ListenerAge } from './portOwner.js'
 import { existsSync, statSync } from 'fs'
 import { cyncoHome } from '../paths.js'
 
@@ -689,8 +689,8 @@ export class ProcessManager {
     try {
       child.kill()
     } catch {
-      // Force kill on Windows if normal kill fails
-      if (process.platform === 'win32') {
+      // Force kill on Windows if normal kill fails, only while the child's exit is unhandled: after that its number is free (F255)
+      if (process.platform === 'win32' && child.exitCode === null && child.signalCode === null) {
         try {
           const { execSync } = require('child_process')
           execSync(`taskkill /F /PID ${child.pid}`, { timeout: 5000 })
@@ -924,9 +924,24 @@ export class ProcessManager {
     }
   }
 
-  /** Kill whatever listens on the port. Resolves to why a kill was refused when it said so (F223), else nothing: the caller looks at the port. */
+  /** Test seam: how `killProcessOnPort` reads the port and ends a pid. Production leaves it unset. */
+  portKill?: PortKillDeps
+
+  /**
+   * Kill whatever listens on the port. Resolves to why a kill was refused when it said so (F223), or why a listed pid
+   * was left (F255), else nothing: the caller looks at the port.
+   *
+   * F255: netstat names as a socket's owner the pid of the process that made it, also after that process has ended
+   * and a process it started inherited the socket; the number may be another process's by then. So the port is read
+   * first for when each socket and its named process were created (`readListenerAges`), and a pid created after its
+   * socket is not killed. A reading that fails is `unknown` and the pid is killed as before: a model start must not
+   * become harder to recover because a listing could not be read. The reading comes before netstat, so the kill
+   * follows netstat by milliseconds, as it always did.
+   */
   private async killProcessOnPort(port: number): Promise<string | void> {
-    if (process.platform !== 'win32') {
+    const deps = this.portKill ?? {}
+    const log = deps.log ?? ((line: string) => console.log(line))
+    if ((deps.platform ?? process.platform) !== 'win32') {
       try {
         const { execSync } = require('child_process')
         execSync(`fuser -k ${port}/tcp`, { timeout: 5000 })
@@ -938,24 +953,64 @@ export class ProcessManager {
     // Windows: find PID listening on port, then kill it
     try {
       const { execSync } = require('child_process')
-      const result = execSync('netstat -ano', { timeout: 5000, encoding: 'utf-8' })
-      for (const line of result.split('\n')) {
-        if (line.includes(`:${port}`) && line.includes('LISTENING')) {
-          const parts = line.trim().split(/\s+/)
-          const pid = parts[parts.length - 1]
-          if (pid && /^\d+$/.test(pid)) {
-            try {
-              execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
-              console.log(`[llama-cpp] Killed stale process PID ${pid} on port ${port}`)
-            } catch (e) {
-              const said = String((e as { stderr?: unknown }).stderr ?? (e instanceof Error ? e.message : e)).trim()
-              console.log(`[llama-cpp] taskkill ${pid} on port ${port}: ${said.split(/\r?\n/).filter(Boolean).pop() ?? 'failed'}`)
-              if (/access is denied/i.test(said)) refusedBecause = 'Windows refused (Access is denied): it was started as administrator and CynCo was not'
-            }
-          }
+      let ages: ListenerAge[] | null
+      try {
+        ages = await (deps.listenerAges ?? ((p: number) => readListenerAges(p)))(port)
+      } catch (e) {
+        log(`[llama-cpp] could not read when the socket on port ${port} and its process were created: ${e instanceof Error ? e.message : String(e)}`)
+        ages = null
+      }
+      const result: string = deps.netstat ? deps.netstat() : execSync('netstat -ano', { timeout: 5000, encoding: 'utf-8' })
+      const taskkill = deps.taskkill ?? ((pid: number) => { execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }) })
+      for (const pid of listeningPidsOnPort(result, port)) {
+        if (listenerVerdictFor(pid, ages) === 'younger') {
+          log(`[llama-cpp] not killing PID ${pid} on port ${port}: the socket on the port outlived the process that made it, and the number is another process's now (created after the socket)`)
+          refusedBecause = refusedBecause ?? `the socket on port ${port} outlived the process that made it, and its pid ${pid} now belongs to another process, which CynCo did not kill`
+          continue
+        }
+        try {
+          taskkill(pid)
+          log(`[llama-cpp] Killed stale process PID ${pid} on port ${port}`)
+        } catch (e) {
+          const said = String((e as { stderr?: unknown }).stderr ?? (e instanceof Error ? e.message : e)).trim()
+          log(`[llama-cpp] taskkill ${pid} on port ${port}: ${said.split(/\r?\n/).filter(Boolean).pop() ?? 'failed'}`)
+          if (/access is denied/i.test(said)) refusedBecause = 'Windows refused (Access is denied): it was started as administrator and CynCo was not'
         }
       }
     } catch {}
     return refusedBecause
   }
+}
+
+/** What `killProcessOnPort` reads and runs; each default is the real one. */
+export type PortKillDeps = {
+  platform?: string
+  /** The text of `netstat -ano`. */
+  netstat?: () => string
+  /** The port's listening sockets with when each socket and its named process were created (`portOwner.ts`). */
+  listenerAges?: (port: number) => Promise<ListenerAge[] | null>
+  /** `taskkill /F /PID <pid>`; throws as execSync does, with what it wrote on `stderr`. */
+  taskkill?: (pid: number) => void
+  log?: (line: string) => void
+}
+
+/**
+ * The pids `netstat -ano` names as listening on exactly `port`, each once, in the order listed. The port is the one
+ * of the local address (`0.0.0.0:8081`, `[::]:8081`), so port 1 is not :135 or :11434 and 8081 is not an IPv6
+ * address holding 8081 as a group; a pid with an IPv4 and an IPv6 socket is one kill, not a second one of a number
+ * the first just freed (F255).
+ */
+export function listeningPidsOnPort(netstat: string, port: number): number[] {
+  const pids: number[] = []
+  for (const line of netstat.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 5 || !/^TCP/i.test(parts[0]) || parts[3] !== 'LISTENING') continue
+    const local = parts[1]
+    if (local.slice(local.lastIndexOf(':') + 1) !== String(port)) continue
+    const pid = parts[parts.length - 1]
+    if (!/^\d+$/.test(pid)) continue
+    const n = Number(pid)
+    if (n > 0 && !pids.includes(n)) pids.push(n)
+  }
+  return pids
 }

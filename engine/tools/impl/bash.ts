@@ -1,7 +1,9 @@
-import { exec } from 'child_process'
+import { ContainmentRefusal, toolExec, toolSpawnRefusal, containmentHint } from '../../containment.js'
 import type { ToolImpl } from '../types.js'
-import { ownProcessTree } from '../../processTree.js'
+import { overranBuffer, ownProcessTree } from '../../processTree.js'
 import { checkBashSafety } from '../bashSafety.js'
+import { bashJudgedAlready, checkProtectedPaths } from '../protectedPaths.js'
+import { endsInNativeProgram, nativeTailStart } from '../shellPaths.js'
 import { diagnoseError } from '../errorDiagnosis.js'
 import { parseTestSummary } from '../../bridge/testSummary.js'
 import { getShellInfo, autoTranslateEnvPrefix, checkShellDialect, shellPreamble, stripTrailingStderrMerge } from '../shellInfo.js'
@@ -52,6 +54,60 @@ export function formatBashFailure(command: string, rawOutput: string): string {
  */
 /** How long a killed command's pipes get to close before the call returns without them. */
 const STOP_GRACE_MS = 2000
+
+/**
+ * Appended on a line of its own (so a comment at the end of the command cannot swallow it) to a PowerShell
+ * command whose last element is a native program. A success stays 0. A failure is the program's own code
+ * when it set one; otherwise 1, as before: a bare `; exit $LASTEXITCODE` answered 0 for a program that does
+ * not exist (measured 2026-11-24). A program that exits 0 while `$?` is false (Windows PowerShell 5.1 with its
+ * stderr redirected) reads 1, as before.
+ */
+export const NATIVE_EXIT_SUFFIX = '\nif ($?) { exit 0 } elseif ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 }'
+
+/**
+ * Put in front of the command's last statement when it stands after a `;` or a line break (`nativeTailStart`), so
+ * a last program that cannot start reads 1, never a code an earlier program of the same command left (wave 15b;
+ * until then `cmd /c exit 3; no-such-program` read 3). Where the start cannot be placed, that limit remains.
+ */
+export const NATIVE_EXIT_RESET = '$global:LASTEXITCODE = 0; '
+
+/**
+ * The longest text the tool hands a Windows shell on one command line. Measured 2026-11-25 with the real tool
+ * (phase3\w19\scratch\c\out\longcmd-before.out): a 32,041-character command ran whole, and from 32,741 characters on
+ * the spawn threw `ENAMETOOLONG` (the call threw instead of answering). The launcher of a contained run gets a long
+ * command by file but starts the shell with it on one command line too.
+ */
+export const MAX_WINDOWS_COMMAND_CHARS = 32_000
+
+/**
+ * The longest command that may start one of Git's POSIX shells. Measured 2026-11-25 (longcmd2/3-before.out): Git's
+ * `bin\bash.exe`, `usr\bin\bash.exe` and `usr\bin\sh.exe` ran a `-c` text of 8,150 characters whole and one of 8,200
+ * with its end cut off, exiting 0 with no error (a one-line `echo START; : ...; echo END` printed START alone); the
+ * same text run from a file ran whole, and an msys program that is not a shell got an argument of 16,001 whole.
+ */
+export const MAX_POSIX_SHELL_COMMAND_CHARS = 8_000
+
+/** A POSIX shell named as a program word: `bash`, `sh` (with `.exe`, a path, quoted), never `.sh`, `ssh`, `--shell`. */
+const POSIX_SHELL_WORD = /(?:^|[\s;|&(){}'"`\\/=])(?:bash|sh|zsh|dash|ksh)(?:\.exe)?(?=$|[\s'";|&)])/i
+
+/**
+ * Why a command must not be started because Windows would cut it or cannot carry it, or null (wave 19). `runnable`
+ * is what reaches the shell (the preamble and the exit-code lines included). Nothing is refused off Windows.
+ */
+export function longCommandRefusal(command: string, runnable: string, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'win32') return null
+  if (runnable.length > MAX_WINDOWS_COMMAND_CHARS) {
+    return `Error: the command is ${command.length} characters long, longer than one Windows command line carries ` +
+      `(about ${MAX_WINDOWS_COMMAND_CHARS.toLocaleString('en-US')} characters with the shell's own words), so nothing was started. ` +
+      'Write long content to a file with the Write tool, and run a long program from a file.'
+  }
+  if (command.length > MAX_POSIX_SHELL_COMMAND_CHARS && POSIX_SHELL_WORD.test(command)) {
+    return `Error: this command starts a POSIX shell (bash or sh) and is ${command.length} characters long. Git's bash and sh run only ` +
+      `the first 8,190 or so characters of a -c text and exit 0 without an error, so nothing was started. ` +
+      'Write the script to a file with the Write tool and run it as bash <file>.'
+  }
+  return null
+}
 
 export function failedOutput(
   stderr: string,
@@ -166,6 +222,12 @@ export const bashTool: ToolImpl = {
       return { output: `Blocked: ${safety.reason}`, isError: true }
     }
 
+    // F242, layer 2: asked here as well as in ToolExecutor.execute, so a refused command is never run
+    // whoever called the tool. Judged on the model's own text, before any translation.
+    // The executor's own reading of this very input is not repeated (`bashJudgedAlready`).
+    const guard = bashJudgedAlready(input, cwd) ? null : checkProtectedPaths('Bash', input, cwd)
+    if (guard?.kind === 'refuse') return { output: guard.text, isError: true }
+
     const shellInfo = getShellInfo()
 
     // `NAME=value command` is a parse error in every PowerShell, and the engine
@@ -177,6 +239,14 @@ export const bashTool: ToolImpl = {
     // would widen the variable's scope autoTranslateEnvPrefix returns null and
     // checkShellDialect still refuses with the instructive message.
     const dialected = autoTranslateEnvPrefix(command, shellInfo) ?? command
+    // The translation turned an inert single-quoted value into code (`X='$(...)' cmd` became
+    // `$env:X="$(...)"; cmd`) until 2026-11-24, when it began keeping a single-quoted value a literal
+    // (`shellInfo.ts`, `psValue`). A translated command is still judged as the shell will run it, whatever the
+    // executor already said about the model's text (review 2026-11-23, fourth).
+    if (dialected !== command) {
+      const again = checkProtectedPaths('Bash', { command: dialected }, cwd)
+      if (again.kind === 'refuse') return { output: again.text, isError: true }
+    }
     const dialectError = checkShellDialect(dialected, shellInfo)
     if (dialectError) {
       return { output: dialectError, isError: true }
@@ -193,7 +263,24 @@ export const bashTool: ToolImpl = {
 
     // The command is reported, diagnosed and hinted on as the model wrote it;
     // only what reaches the shell carries the preamble. See shellPreamble.
-    const runnable = shellPreamble(shellInfo) + merged.command
+    // N130: under `powershell -Command` a native program's failing code reached the model as 1 (pytest's 5,
+    // git's 128 and `cmd /c exit 3` alike, measured 2026-11-24). When the command ends in a native program
+    // (`endsInNativeProgram`, the scan's reading), its own code is carried; a cmdlet last is left as it was.
+    // `$LASTEXITCODE` is set to 0 where the last statement starts (`nativeTailStart`), so a last program that cannot
+    // start reads 1, not a code an earlier program of the command left (wave 15b).
+    const native = shellInfo.isPowerShell && endsInNativeProgram(merged.command)
+    const tailAt = native ? nativeTailStart(merged.command) : null
+    const body = tailAt === null ? merged.command
+      : merged.command.slice(0, tailAt) + NATIVE_EXIT_RESET + merged.command.slice(tailAt)
+    const runnable = shellPreamble(shellInfo) + body + (native ? NATIVE_EXIT_SUFFIX : '')
+
+    // Wave 19: a command Windows cannot carry on one command line threw here, and one that starts Git's bash or sh
+    // with more than about 8,190 characters ran cut short, exit 0. Neither is started; nothing ran, so no exit code.
+    const tooLong = longCommandRefusal(dialected, runnable)
+    if (tooLong) return { output: tooLong, isError: true }
+
+    const refusal = toolSpawnRefusal()
+    if (refusal) return { output: refusal, isError: true }
 
     return new Promise((resolve) => {
       // Stop (F201) and the timeout (F210). The loop used to give up on a
@@ -210,6 +297,7 @@ export const bashTool: ToolImpl = {
         output: `Error: command stopped after ${Date.now() - startedAt}ms — the turn was stopped, and the ` +
           `command and the processes it started were killed. Output collected before the kill:\n${partial}`,
         isError: true,
+        exitCode: null,
       })
       // A bare "timeout after 60000ms" leaves the model unable to tell
       // "my command hangs" from "my budget was too small" — opposite
@@ -219,8 +307,9 @@ export const bashTool: ToolImpl = {
       const timeoutResult = (partial: string) => ({
         output: `Error: command timeout after ${timeout}ms. If the command was ` +
           `making progress rather than hanging, retry it with a larger ` +
-          `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}`,
+          `timeout (max ${MAX_BASH_TIMEOUT_MS}ms). Output collected before the kill:\n${partial}${containmentHint('timeout', partial)}`,
         isError: true,
+        exitCode: null,
       })
       const killFor = (why: 'stopped' | 'timeout') => {
         if (ended || answered) return
@@ -233,12 +322,15 @@ export const bashTool: ToolImpl = {
         })
       }
       const onAbort = () => killFor('stopped')
-      const child = exec(runnable, {
+      // A spawn that fails before any process exists throws here (`ENAMETOOLONG` past the limit above, measured):
+      // it is an answer, never a throw out of the tool. Nothing ran, so there is no exit code.
+      let child: ReturnType<typeof toolExec>
+      try {
+        child = toolExec(runnable, {
         cwd,
         encoding: 'utf-8',
         // No `timeout` here: exec's kills the shell alone. `deadline` below is the timeout.
-        // UTF-8 forced for Python, harness-only keys dropped: see bashToolEnv.
-        env: bashToolEnv(process.env),
+        // UTF-8 forced for Python, harness-only keys dropped, sandbox overlay in a contained run: see toolEnv (engine/containment.ts).
         maxBuffer: 2 * 1024 * 1024, // 2MB
         shell,
       }, (err, stdout, stderr) => {
@@ -246,8 +338,13 @@ export const bashTool: ToolImpl = {
         clearTimeout(deadline)
         answered = true
         if (grace) clearTimeout(grace)
-        // A command that ended on its own gives its handle back; one that was killed has none left.
-        tree.release()
+        // A command that ended on its own gives its handle back; one that was killed has none left. On an output
+        // overrun exec has ended the shell alone (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, `killed` unset: measured),
+        // so what the shell started is ended with it (wave 19, from the harness-children builder). Only a Job Object
+        // can: a walked tree is found from its root, which exec has already ended and reaped, so the walk finds nothing
+        // and its signal could reach a pid that was reused meanwhile; that tree is released (C19-8, wave 19b).
+        if (overranBuffer(err) && tree.kind === 'job') void tree.kill()
+        else tree.release()
         // Before the plain-failure branch: a killed child reports an error
         // too. A command that finished cleanly as the kill landed keeps its
         // real result.
@@ -257,48 +354,64 @@ export const bashTool: ToolImpl = {
           return
         }
         if (err) {
-          const rawOutput = failedOutput(stderr, stdout, (err as any).code,
+          // A launcher fault (engine/containment.ts). Only the launcher's own sealed 197 means the
+          // shell never started; that one carries no exit code, so it is read as a refusal made
+          // before a process ran. Its sealed 198, and Bun's EPERM line under a shell that ran, came
+          // from a command that did run: they carry the status, so the command cannot end its own
+          // run as a harness fault (review of slice S5).
+          const fault: unknown = err
+          if (fault instanceof ContainmentRefusal) {
+            if (!fault.ran) { resolve({ output: fault.message, isError: true }); return }
+            if (fault.code === 'ECHILDGONE') { resolve({ output: fault.message, isError: true, exitCode: null }); return }
+            const base = failedOutput(stderr, stdout, fault.exitCode ?? 1, `shell=${shell}`)
+            resolve({ output: formatBashFailure(command, base + containmentHint('failure', base)), isError: true, exitCode: fault.exitCode })
+            return
+          }
+          const base = failedOutput(stderr, stdout, (err as any).code,
             `shell=${shell}, signal=${(err as any).signal ?? 'none'}`)
-          resolve({ output: formatBashFailure(command, rawOutput), isError: true })
+          const rawOutput = base + containmentHint('failure', base)
+          resolve({
+            output: formatBashFailure(command, rawOutput), isError: true,
+            // The shell's status; a string code (ERR_CHILD_PROCESS_STDIO_MAXBUFFER) is no status.
+            exitCode: typeof (err as any).code === 'number' ? (err as any).code : null,
+          })
           return
         }
         // F60. Only when a merge was stripped, so the model gets exactly what it
         // asked for and no other run gains SDL/pygame stderr noise it did not.
+        // A silent success says `(no output)`, as it does without the merge: it
+        // is passed as `whenSilent`, because failedOutput's own silent text says
+        // the shell failed (F66), and a `.replace` of the bare line it returned
+        // before F66 let that text through on every quiet `git add -A 2>&1`.
         const succeeded = merged.stripped
-          ? (failedOutput(stderr, stdout, 0).replace(/^Command exited with code 0$/, '(no output)'))
+          ? failedOutput(stderr, stdout, 0, undefined, '(no output)')
           : (stdout || stderr || '(no output)')
         // Hint on success only. A failing command already has the model's full
         // attention on its own error; adding tool advice there buries the reason
         // it failed under advice it did not ask for.
-        resolve({ output: withToolHint(command, succeeded), isError: false })
+        resolve({ output: withToolHint(command, succeeded) + containmentHint('success', String(stderr ?? '')), isError: false, exitCode: 0 })
       })
-      const tree = ownProcessTree(child.pid)
+      } catch (e) {
+        // The containment's own refusal before anything started (`refuseBeforeSpawn`): its own text, so the executor
+        // raises it as the fault it is, as in the callback above (C19-4).
+        if (e instanceof ContainmentRefusal) { resolve({ output: e.message, isError: true }); return }
+        const code = (e as NodeJS.ErrnoException)?.code
+        resolve({
+          output: code === 'ENAMETOOLONG' || code === 'E2BIG'
+            ? `Error: the command is ${command.length} characters long, longer than one command line carries (${code}), so nothing was started. ` +
+              'Write long content to a file with the Write tool, and run a long program from a file.'
+            : `Error: the shell could not be started (${(e as Error)?.message ?? String(e)}), so nothing was run.`,
+          isError: true,
+        })
+        return
+      }
+      // The process, not its pid: a walked tree is never killed by the number once the shell's exit was handled (F255).
+      const tree = ownProcessTree(child)
       const deadline = setTimeout(() => killFor('timeout'), timeout)
       signal?.addEventListener('abort', onAbort, { once: true })
     })
   },
 }
 
-/**
- * Keys the HARNESS reads and the model's shell must never hold (Phase 7 final
- * review I1, closing T6 N2). `LOCALCODE_MISSION_*` names the mission's check
- * command (the dashboard reads them in-process); `CYNCO_MARKER_CHECK*` is the
- * driver's marker check — the whole-suite gate with its sealed baseline on a
- * campaign. The engine process keeps both (it seals the marker check's
- * instruments); a command the model runs inherits neither.
- */
-const HARNESS_ONLY_ENV = [/^LOCALCODE_MISSION_/, /^CYNCO_MARKER_CHECK/]
-
-/**
- * The environment the Bash tool's shell runs with: `base` minus the
- * harness-only keys, with UTF-8 forced for Python subprocesses on Windows (the
- * default cp1252 codec crashes any script that prints non-ASCII).
- */
-export function bashToolEnv(base: Record<string, string | undefined> = process.env): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {}
-  for (const [k, v] of Object.entries(base)) {
-    if (HARNESS_ONLY_ENV.some(re => re.test(k))) continue
-    out[k] = v
-  }
-  return { ...out, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }
-}
+/** The environment a tool child runs with is built in one place: `toolEnv` (engine/containment.ts). */
+export { toolEnv as bashToolEnv } from '../../containment.js'

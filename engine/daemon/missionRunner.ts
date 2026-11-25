@@ -44,6 +44,9 @@ export function sanitizePrecheckLine(line: string): string {
     .slice(0, PRECHECK_LINE_MAX)
 }
 
+/** A refusal whose reason is the integrity latch itself (`haltState`'s summary), which has already paged. */
+const LATCH_REFUSAL = /^REFUSED: integrity: the integrity latch is present /
+
 export interface MissionRunnerDeps {
   runTask: (input: TaskFileInput) => Promise<TaskOutcome>
   publish: (p: { title: string; message: string; priority?: number }) => Promise<boolean>
@@ -54,9 +57,13 @@ export interface MissionRunnerDeps {
   fetchRosterSnapshot: (leagueId: string, year: number, franchiseId: string) => Promise<string>
   now: () => Date
   /** Runs a trigger's precheckCommand (precheck 'command'); stdout decides, a throw lets the run proceed. */
-  runPrecheck?: (command: string, cwd?: string) => Promise<{ code: number | null; stdout: string }>
+  runPrecheck?: (command: string, cwd?: string, id?: string) => Promise<{ code: number | null; stdout: string }>
   /** The control file says pause: fire nothing, resume nothing (control.ts). */
   isPaused?: () => boolean
+  /** Why the daemon fires nothing, for the one log line; null = not paused (F242: the integrity latch or the control file). */
+  pauseReason?: () => string | null
+  /** Why no unattended run may start now ('<layer>: <reason>'), or null. Asked before a trigger's precheck. */
+  refuse?: () => string | null
 }
 
 export class MissionRunner {
@@ -189,7 +196,7 @@ export class MissionRunner {
   async tick(): Promise<void> {
     const now = this.deps.now()
     if (this.deps.isPaused?.()) {
-      if (!this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] paused by the control file — firing nothing until it clears`)
+      if (!this.pauseLogged) console.log(`[mission:${this.ledger.config.id}] ${this.deps.pauseReason?.() ?? 'paused by the control file'} — firing nothing until it clears`)
       this.pauseLogged = true
       return
     }
@@ -317,6 +324,14 @@ export class MissionRunner {
   }
 
   private async fire(trigger: TriggerSpec, now: Date): Promise<FireResult> {
+    // Entry 3.M3: a failing or throwing precheck lets the pass run (below), so a run that may
+    // not start is stopped HERE, before the trigger's own gate is asked and before any spawn.
+    const refusedWhy = this.deps.refuse?.() ?? null
+    if (refusedWhy) {
+      console.log(`[mission:${this.ledger.config.id}] "${trigger.id}" refused before its precheck: ${refusedWhy}`)
+      await this.complete(trigger, null, { ok: false, summary: '', recommendations: [], error: `REFUSED: ${refusedWhy}` }, now)
+      return { status: 'ran' }
+    }
     // Cheap pre-check (precheck 'command'): the trigger's own gate decides whether the model is worth
     // loading. stdout starting with "skip" records a skipped run and spawns nothing; a failing or
     // throwing precheck lets the run proceed, so a broken gate cannot silence a mission.
@@ -324,7 +339,7 @@ export class MissionRunner {
       let verdict: { code: number | null; stdout: string } | null = null
       try {
         verdict = this.deps.runPrecheck
-          ? await this.deps.runPrecheck(trigger.precheckCommand, trigger.cwd ?? this.ledger.config.cwd)
+          ? await this.deps.runPrecheck(trigger.precheckCommand, trigger.cwd ?? this.ledger.config.cwd, trigger.id)
           : null
       } catch (err) {
         console.log(`[mission:${this.ledger.config.id}] precheck for "${trigger.id}" threw (${err instanceof Error ? err.message : err}) — running the pass anyway`)
@@ -431,7 +446,7 @@ export class MissionRunner {
   }
 
   /** Record a finished run, keep the failure streak, hand recommendations to the phone. */
-  private async complete(trigger: TriggerSpec, _input: TaskFileInput, outcome: TaskOutcome, now: Date): Promise<void> {
+  private async complete(trigger: TriggerSpec, _input: TaskFileInput | null, outcome: TaskOutcome, now: Date): Promise<void> {
     this.ledger.recordRun({
       ts: now.toISOString(),
       triggerId: trigger.id,
@@ -448,6 +463,7 @@ export class MissionRunner {
       // Persist before notifying: crash between saveState and publish is safe —
       // the streak survives and no notification is pending.
       this.ledger.saveState()
+      const refusedLayer = /^REFUSED: ([a-z ]+):/.exec(outcome.error ?? '')?.[1] ?? null
       const isHalt = outcome.error?.startsWith('HALTED:') ?? false
       if (isHalt) {
         // Algedonic Critical: page immediately, do not wait for a streak (P1.1)
@@ -456,7 +472,15 @@ export class MissionRunner {
           message: outcome.error ?? 'halted',
           priority: 5,
         })
-      } else if (this.ledger.state.failureStreak >= FAILURE_ALERT_THRESHOLD) {
+      } else if (refusedLayer && !LATCH_REFUSAL.test(outcome.error ?? '')) {
+        // A refused run is told at once, at normal priority. Not when the integrity latch refused it: the latch
+        // paged at top priority. Every other integrity refusal (no models record, an unusable guard folder, a
+        // baseline that could not be taken) writes no latch, so this page is the only word the owner gets.
+        await this.deps.publish({
+          title: `CynCo refused a run of mission ${this.ledger.config.id}`,
+          message: outcome.error ?? 'refused',
+        })
+      } else if (!refusedLayer && this.ledger.state.failureStreak >= FAILURE_ALERT_THRESHOLD) {
         await this.deps.publish({
           title: `CynCo stuck on mission ${this.ledger.config.id}`,
           message: `${this.ledger.state.failureStreak} consecutive failures. Last error: ${outcome.error ?? 'unknown'}`,

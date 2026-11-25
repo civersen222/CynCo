@@ -57,7 +57,33 @@ export function classifyShell(platform: string, hasPwsh: boolean): ShellInfo {
  * that way. Anchored to the start of a command (string start or after `;`) so an
  * ordinary argument that happens to contain `=` is left alone.
  */
-const ENV_PREFIX = /(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+)(?=\S)/
+// A value never holds a `;`: `X=v; cmd` is an assignment that ends its own statement, not a prefix of `cmd`
+// (until the ninth review of the path check it became `$env:X="v;"; cmd`, and the path check refused that).
+// A quoted value (`'a b'`, `"a;b"`) is one value: it is not cut at the space or the `;` inside it (until 2026-11-24
+// `X='a b' cmd` became `$env:X="a"; b' cmd`).
+const ENV_VALUE = String.raw`(?:'[^']*'|"[^"]*"|[^\s;'"])*`
+const ENV_PREFIX = new RegExp(String.raw`(?:^|;)\s*((?:[A-Za-z_][A-Za-z0-9_]*=${ENV_VALUE}\s+)+)(?=\S)`)
+const ENV_PAIR = new RegExp(String.raw`([A-Za-z_][A-Za-z0-9_]*)=(${ENV_VALUE})`, 'g')
+
+/**
+ * One POSIX value in PowerShell. A single-quoted value is a literal in a POSIX shell, so it is a single-quoted
+ * PowerShell literal (`'` doubled): as a double-quoted string its `$x` and `$(...)` would run (until 2026-11-24).
+ * Any other value keeps the double quotes it was always given.
+ */
+function psValue(value: string): string | null {
+  // Several single-quoted pieces (`'a''b'`) are one literal in a POSIX shell: their contents joined (wave 15b).
+  if (/^(?:'[^']*')+$/.test(value)) return `'${value.slice(1, -1).split("''").join('').replace(/'/g, "''")}'`
+  if (/^"[^"]*"$/.test(value) || !/["']/.test(value)) return `"${value.replace(/^"|"$/g, '')}"`
+  // A value that mixes quoting (`'a'"$(x)"`, `a'b'`, `"a"b`) has no faithful double-quoted form: given one, a
+  // single-quoted piece's `$(...)` would run (wave 15b, P3-F5). It is not translated.
+  return null
+}
+
+/** The name of the first prefix variable whose value `psValue` cannot carry over, or null. */
+function untranslatableName(prefix: string): string | null {
+  for (const m of prefix.matchAll(ENV_PAIR)) if (psValue(m[2]) === null) return m[1]
+  return null
+}
 
 /**
  * Rewrite a POSIX env prefix into this shell's dialect, or return the command
@@ -80,15 +106,8 @@ export function translateEnvPrefix(command: string, info: ShellInfo): string {
   // mangled form back as the fix — so a valid commit message with a semicolon in
   // it was blocked, with advice that would have broken it.
   if (endsInsideQuote(command.slice(0, prefix.index))) return command
-  const sets = prefix[1]
-    .trim()
-    .split(/\s+/)
-    .map(pair => {
-      const eq = pair.indexOf('=')
-      const name = pair.slice(0, eq)
-      const value = pair.slice(eq + 1).replace(/^["']|["']$/g, '')
-      return `$env:${name}="${value}"`
-    })
+  if (untranslatableName(prefix[1]) !== null) return command
+  const sets = [...prefix[1].matchAll(ENV_PAIR)].map(m => `$env:${m[1]}=${psValue(m[2])}`)
   // ENV_PREFIX anchors on `^` OR `;`, so in `cd proj; FOO=1 pytest` the match
   // begins at the semicolon — and slicing from the match's start threw the `cd`
   // away. Keep the head. This is a silent wrong answer if left in:
@@ -154,7 +173,9 @@ export function autoTranslateEnvPrefix(command: string, info: ShellInfo): string
   // "RATE=0 python" and tested the wrong text for a following command.
   const tail = command.slice(prefix.index + prefix[0].length)
   if (/;|&&|\|\|/.test(tail)) return null
-  return translateEnvPrefix(command, info)
+  const translated = translateEnvPrefix(command, info)
+  // A value of mixed quoting is not translated (wave 15b): no rewrite, and the dialect check explains.
+  return translated === command ? null : translated
 }
 
 /**
@@ -233,6 +254,12 @@ export function checkShellDialect(command: string, info: ShellInfo): string | nu
     const translated = translateEnvPrefix(command, info)
     if (translated !== command) {
       return `Error: this system's shell is ${info.displayName}, where 'NAME=value command' is a parse error. Set each variable first, then run the command: '${translated}'`
+    }
+    // A prefix whose value mixes quoting is left untranslated (wave 15b, P3-F5): say how to write it.
+    const prefix = ENV_PREFIX.exec(command)
+    const name = prefix && !endsInsideQuote(command.slice(0, prefix.index)) ? untranslatableName(prefix[1]) : null
+    if (name !== null) {
+      return `Error: this system's shell is ${info.displayName}, where 'NAME=value command' is a parse error, and the value of ${name} mixes quoting this translation cannot carry over. Set it first with one PowerShell string, then run the command: '$env:${name} = '...'; <command>' (a single-quoted string is a literal; double the ' inside it).`
     }
   }
   if (info.supportsAndAnd) return null

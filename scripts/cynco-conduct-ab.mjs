@@ -20,7 +20,7 @@ import { cpSync, mkdirSync, readFileSync, appendFileSync, existsSync, readdirSyn
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
-import { runDispatch, dispatchEnv } from './cynco-campaign.mjs'
+import { runDispatch, dispatchEnv, dispatchLeftNothingRunning, defaultIo as campaignIo } from './cynco-campaign.mjs'
 import { readLedger } from './cynco-ledger-shards.mjs'
 import { wilson } from './cynco-signal-validation.mjs'
 import { CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
@@ -165,6 +165,15 @@ const defaultIo = {
   seed: (cwd) => seedRepo(cwd),
   dispatch: (args, env) => runDispatch(args, env),
   wait: (driverLog) => waitForRun(driverLog),
+  // F242, rule 8: a mission engine that may still be running is the integrity latch (the campaign runner's).
+  halt: (what) => campaignIo.integrity.halt(what),
+}
+
+/** Why the run's mission engine is not known to be dead, or null. A dispatch that failed with its trap armed left nothing running. */
+export function notDeadOf(ending) {
+  if (ending?.outcome === 'dispatch-failed') return dispatchLeftNothingRunning({ message: ending.lastLine }) ? null : `dispatch or wait failed: ${ending.lastLine}`
+  if (ending?.outcome === 'no-row') return 'no ledger row within the wall clock; the driver may still be running'
+  return null
 }
 
 const nonEmpty = (dir) => existsSync(dir) && readdirSync(dir).length > 0
@@ -196,6 +205,14 @@ export async function runSet({ env = process.env, io = defaultIo, runs = planRun
         ending = await io.wait(logsFor(r.task, r.arm).driver)
       } catch (e) {
         ending = { outcome: 'dispatch-failed', lastLine: e?.message ?? String(e), missionId: null }
+      }
+      const notDead = notDeadOf(ending)
+      if (notDead && io.halt) {
+        try {
+          await io.halt({ by: 'conduct-ab', run: `conduct-ab-${r.task}-${r.arm}`, reason: 'engine-not-confirmed-dead', detail: notDead, cwd: r.cwd })
+        } catch (e) {
+          console.error(`[conduct-ab] the integrity latch step failed: ${e?.message ?? e}`)
+        }
       }
     }
     const rec = { task: r.task, arm: r.arm, cwd: r.cwd, baseSha, ...ending, startedAt, endedAt: new Date().toISOString(), driverLog: logsFor(r.task, r.arm).driver }

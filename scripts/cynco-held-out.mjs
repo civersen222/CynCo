@@ -66,9 +66,12 @@ export function driverInstrumentAssertions(missionAssertions, env = process.env)
  * records one as unsnapshottable rather than dying on it (that is the reason
  * the fix gets a second chance to be wrong safely). Either way it is in the
  * record, never swallowed.
+ *
+ * The vault is made for the first file copied into it, not before (R2-7): a
+ * dispatch with nothing to snapshot leaves no empty folder behind.
  */
 export function snapshotHeldOut(paths, vault) {
-  mkdirSync(vault, { recursive: true })
+  let made = false
   return paths.map(path => {
     if (!existsSync(path)) return { path, snapshot: null, missing: true }
     if (!statSync(path).isFile()) {
@@ -77,6 +80,7 @@ export function snapshotHeldOut(paths, vault) {
     }
     const key = createHash('sha256').update(path).digest('hex').slice(0, 16)
     const snapshot = join(vault, `${key}.heldout`)
+    if (!made) { mkdirSync(vault, { recursive: true }); made = true }
     copyFileSync(path, snapshot)
     return { path, snapshot, missing: false }
   })

@@ -1,5 +1,6 @@
 import { writeFileSync, mkdirSync, statSync } from 'fs'
 import { execFileSync } from 'child_process'
+import { harnessGitEnv } from '../../harnessGit.js'
 import { resolve, dirname } from 'path'
 import type { ToolImpl } from '../types.js'
 
@@ -32,7 +33,9 @@ const SHRINK_FLOOR = 0.5
  */
 function gitKnowsFile(path: string): boolean | null {
   try {
+    // Harness git (F242): the folder is named with -C, the engine's own folder is the working folder.
     const out = execFileSync('git', ['-C', dirname(path), 'ls-files', '--', path], {
+      env: harnessGitEnv(process.env),
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
     })

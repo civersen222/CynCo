@@ -21,6 +21,27 @@
  */
 export const KEPT_HOST_ENV: readonly string[] = ['LOCALCODE_INTEGRATION_TESTS']
 
+/** The models folder an environment names (`LOCALCODE_MODELS_DIR`), or null when it names none. */
+export function hostModelsDirOf(env: Record<string, string | undefined>): string | null {
+  const v = env.LOCALCODE_MODELS_DIR
+  return typeof v === 'string' && v.trim() !== '' ? v : null
+}
+
+/**
+ * The host's models folder, read once per process before the prefix is cleared and kept aside, never put back into
+ * the environment (no engine code under test sees it). One test measures a real model file (`llama/gguf.test.ts`),
+ * and since the models can live outside the home folder (F242) only the launching shell's variable says where: on
+ * 2026-11-24 the models moved and that test went from running to skipped without a word. Kept on a global, so that
+ * a second evaluation of this module, after the clear, still answers the first reading.
+ */
+const HOST_MODELS_KEY = Symbol.for('cynco.test.hostModelsDir')
+const kept = globalThis as unknown as Record<symbol, string | null | undefined>
+if (kept[HOST_MODELS_KEY] === undefined) kept[HOST_MODELS_KEY] = hostModelsDirOf(process.env)
+
+export function hostModelsDir(): string | null {
+  return kept[HOST_MODELS_KEY] ?? null
+}
+
 export function clearHostEnv(env: Record<string, string | undefined> = process.env): void {
   for (const k of Object.keys(env)) {
     if (k.startsWith('LOCALCODE_') && !KEPT_HOST_ENV.includes(k)) delete env[k]

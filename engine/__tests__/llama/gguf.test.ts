@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir, homedir } from 'os'
 import { join } from 'path'
 import { readGgufMeta, GGUF_TYPE } from '../../llama/gguf.js'
+import { hostModelsDir } from '../setup/hostEnv.js'
 
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 }) })
@@ -94,7 +95,11 @@ describe('readGgufMeta', () => {
     expect(() => readGgufMeta(p)).toThrow(/magic/)
   })
 
-  const real = join(homedir(), '.cynco', 'models', 'qwen3.8-27b-nvfp4', 'Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf')
+  // Where this machine keeps its models: the folder the launching shell names (the suite's setup reads it before it
+  // clears the shell's variables), else the default under the home folder. A skip says which file it looked for.
+  const modelsRoot = hostModelsDir() ?? join(homedir(), '.cynco', 'models')
+  const real = join(modelsRoot, 'qwen3.8-27b-nvfp4', 'Qwen3.8-27B-NVFP4-MTP-VERY-HIGH.gguf')
+  if (!existsSync(real)) console.log(`[test] the real GGUF header case is skipped: ${real} does not exist`)
   it.skipIf(!existsSync(real))('reads the real Qwen3.8 header (measured 2026-09-03)', () => {
     const m = readGgufMeta(real)
     expect(m.architecture).toBe('qwen35')

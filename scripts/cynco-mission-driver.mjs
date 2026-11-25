@@ -81,13 +81,12 @@ import { spawnSync } from 'node:child_process'
 import { createMissionCollector, buildMissionRecord, missionCommitted, missionOutcome, waitExitReason, gateDisposition, historyRewrite, gradedHeadSuspect, QUIET_MS, createProgressClock, turnSilenceLimitMs } from './cynco-ledger.mjs'
 import { bashMaxTimeoutMs } from '../engine/tools/impl/bash.js'
 import { countGraderProbes } from './cynco-grader-probes.mjs'
-import { chatModelServerPids } from './cynco-llama-sweep.mjs'
 import { runCheck, runCheckAsync, markerCheckNote, markerRetryMinSFrom, markerCheckFrom, verifyOverrunS, markerFeedbackRefusal, failReport, failingLines } from './cynco-verify.mjs'
 import { markerCheckRound, canReuseMarkerVerdict, openSocket, withKeepalive, noteAcknowledged } from './cynco-marker-check.mjs'
 import { probeConfigError, shouldProbe, overrideDecision, probeMessage } from './cynco-probe.mjs'
 import { createStallRecovery, stallRepromptRound } from './cynco-stall.mjs'
 import { purgeBytecodeCaches, purgeStaleAgentState } from './cynco-workspace.mjs'
-import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT } from './cynco-contract.mjs'
+import { loadMissionAssertions, sidecarPath, sealedDispatchRefusal, s5DispatchRefusal, workspaceError, CAP_HOUSE_CONDUCT, containmentDispatchRefusal } from './cynco-contract.mjs'
 import { invariantsFromEnv } from './cynco-invariants.mjs'
 import { engineEndpoints } from './cynco-endpoints.mjs'
 import { snapshotHeldOut, restoreHeldOut, withHeldOutRestored, driverInstrumentAssertions } from './cynco-held-out.mjs'
@@ -96,6 +95,115 @@ import { activeShardPath, ledgerCount, ensureLedgerDir } from './cynco-ledger-sh
 import { cyncoHome } from '../engine/paths.js'
 import { withheldGatePaths, sealedGatePaths } from '../engine/bridge/contractAutoCreate.js'
 import { loadOrCreateTokens } from '../engine/security/localToken.js'
+import { adoptContainment, setRunContainment, runContainment, operatorRefusal, NO_CONTAINMENT } from '../engine/containment.js'
+import { toolAudit } from '../engine/audit/toolAudit.js'
+import { missionRunId } from '../engine/missionEnv.js'
+import { harnessGitBin, harnessGitEnv, isHarnessRefused } from '../engine/harnessGit.js'
+import { withFixedRule } from '../engine/missionRule.js'
+import { haltRefusal, haltState } from '../engine/integrity.js'
+import { authorCheckPlan, runAuthorCheck, AUTHOR_CHECK_MARK, latchPoll, latchCutWords, guardWords } from './cynco-gate-author.mjs'
+
+// Decision sheet item 25: the authoring dispatch's mark is read once, here, and taken out of this process's
+// environment before anything is started, so no child of the driver (the check, a probe, git, the apps)
+// ever holds it. What the driver does with it is authorCheckPlan's (scripts/cynco-gate-author.mjs).
+const authorMark = process.env[AUTHOR_CHECK_MARK]
+delete process.env[AUTHOR_CHECK_MARK]
+
+// Four small decisions of this script, each a self-contained function (it reads nothing outside its
+// arguments) so a test can lift it out of this file's text and run it: the script itself cannot be
+// imported, it runs a mission when loaded. Wave 13 (rehearsal R2).
+
+/** The line that says the driver adopted the run (R2-8): its id, the isolation in the engine boot line's words, the probe's time. */
+function adoptLine(adopted) {
+  const c = adopted.containment
+  return `[driver] adopted run ${c.runId}: ${c.isolation === 'verified' ? 'verified' : 'overlay only'}, probe ${adopted.probeMs} ms`
+}
+
+/**
+ * What the latch poll leaves as the run's error and its layer (R2-1). The first error stands with its own
+ * layer; when the latch is what ended the run, the layer is `integrity`, so the closing advice names the latch.
+ */
+function afterLatch(state, latch) {
+  if (state.engineError) return { engineError: state.engineError, engineFaultLayer: state.engineFaultLayer }
+  return { engineError: `integrity: ${latch}`, engineFaultLayer: 'integrity' }
+}
+
+/** The latch line says what will happen to the engine (R2-2): it is torn down only under CYNCO_TEARDOWN_ENGINE=1. */
+function latchLine(latch, teardownEngine) {
+  return `[driver] INTEGRITY LATCH: ${latch}. The mission ends here: an open turn is aborted and `
+    + (teardownEngine
+      ? 'the engine is torn down (CYNCO_TEARDOWN_ENGINE=1).'
+      : 'the engine is left running (CYNCO_TEARDOWN_ENGINE is not 1: this driver does not own the engine).')
+}
+
+/**
+ * What a guard state that is not clear ends the mission as (plan P6 item 6, wave 19): a latch prints the
+ * latch line and is `integrity-latch`; a guard folder that cannot be used prints its own words and is
+ * `integrity-guard-unusable`, never called a latch. Null for a clear guard.
+ */
+function integrityStop(state, teardownEngine) {
+  if (!state || state.state === 'clear') return null
+  if (state.state === 'unusable') {
+    return { exitReason: 'integrity-guard-unusable', why: state.summary,
+      line: `[driver] INTEGRITY GUARD UNUSABLE: ${state.summary}. The mission ends here: an open turn is aborted and `
+        + (teardownEngine ? 'the engine is torn down (CYNCO_TEARDOWN_ENGINE=1).' : 'the engine is left running (CYNCO_TEARDOWN_ENGINE is not 1: this driver does not own the engine).') }
+  }
+  return { exitReason: 'integrity-latch', why: state.summary, line: latchLine(state.summary, teardownEngine) }
+}
+
+/**
+ * Which tree the F131 escalation may end (plan P6 item 5): the mission engine's Windows pid and its creation
+ * time, as the dispatch confirmed them (CYNCO_ENGINE_WINPID, CYNCO_ENGINE_STARTED in .NET ticks, UTC), or why
+ * there is none. Digits only: anything else is no pid, and nothing is killed.
+ */
+function engineTeardownTarget(env) {
+  const pid = String(env.CYNCO_ENGINE_WINPID ?? '')
+  const started = String(env.CYNCO_ENGINE_STARTED ?? '')
+  if (!/^[1-9][0-9]*$/.test(pid)) return { why: 'no confirmed Windows pid of the mission engine was handed to this driver (CYNCO_ENGINE_WINPID)' }
+  if (!/^[0-9]+$/.test(started)) return { why: `pid ${pid} came with no creation time (CYNCO_ENGINE_STARTED), so it cannot be told from another process on that pid` }
+  return { pid, started }
+}
+
+/**
+ * Whether the F131 escalation may end the target's tree (wave 19b, check A-R2): only when the creation time
+ * read now (`startedNow`, .NET ticks; '' when the pid is not running or could not be read) is the one the
+ * dispatch confirmed. Anything else, an empty reading included, kills nothing.
+ */
+function teardownDecision(target, startedNow) {
+  if (startedNow === target.started) return { kill: true }
+  return { kill: false, why: `pid ${target.pid} is not the mission engine now (${startedNow ? `created ${startedNow}` : 'not running, or its start time could not be read'}; the engine was created ${target.started})` }
+}
+
+/** The driver's exit code (plan P6 item 6): 0 only for a landed mission that no integrity stop ended. */
+function exitCodeOf(landed, exitReason) {
+  return landed && exitReason !== 'integrity-latch' && exitReason !== 'integrity-guard-unusable' ? 0 : 1
+}
+
+/** A check that was not started, in runCheckAsync's shape: "did not run", never failed or passed. */
+function notRunResult(why) {
+  const output = `[check] HARNESS FAULT: ${why}`
+  return { verified: null, exitCode: null, timedOut: false, spawnFailed: true, harnessFault: why, durationMs: 0, outputTail: output, output }
+}
+
+/**
+ * A `message.complete` that closed an aborted turn (R2-3): the engine marks it `stopReason: 'aborted'`
+ * (engine/bridge/conversationLoop.ts, after the model loop), and once this driver has sent its own abort any
+ * completion is the answer to it. Neither is judged as the model's answer: not as an F7 zero-tool completion,
+ * not by the refusal count.
+ */
+function isAbortedCompletion(m, abortSent) {
+  return m?.type === 'message.complete' && (m.stopReason === 'aborted' || abortSent === true)
+}
+
+/** The closing advice for an engine error (R2-1): where to look, by the layer that set the error. */
+function faultNextStep(layer) {
+  const steps = {
+    audit: 'Run `bun scripts/cynco-audit.mjs check` and read the engine log\'s [tool-audit] lines: the tool-call audit could not be written',
+    containment: 'Read the engine log\'s [containment] lines (the launcher, the sandbox, the run\'s record) and `bun scripts/cynco-sandbox.mjs status`',
+    integrity: 'Read the integrity latch (HALT.json in the guard folder) and its page before anything else is dispatched',
+  }
+  return Object.hasOwn(steps, layer ?? '') ? steps[layer] : 'Check the engine log for the llama-server exit code'
+}
 
 const [taskFile, marker, cwdArg, timeoutArg, checkCmd, probeCmd] = process.argv.slice(2)
 // The repository is named, never assumed: a default of the CivKings repo sent
@@ -115,6 +223,26 @@ if (cwdError) {
   console.error('[driver] spell the path with forward slashes, e.g. C:/Users/civer/casino')
   process.exit(2)
 }
+// F242: under the integrity latch nothing is dispatched.
+const latchAtStart = haltRefusal()
+if (latchAtStart) {
+  console.error(operatorRefusal('[driver]', 'integrity', latchAtStart, 'dispatched'))
+  process.exit(2)
+}
+// F242: the driver runs the mission's check and probe commands, so it adopts the same sandbox the
+// engine adopted. Run by hand against an engine it did not start, it has no run id and stops here.
+const adopted = adoptContainment({ runId: missionRunId(), missionCwd: CWD, who: 'driver' })
+if (!adopted.ok) {
+  console.error(operatorRefusal('[driver]', 'containment', adopted.reason, 'dispatched'))
+  process.exit(2)
+}
+setRunContainment(adopted.containment)
+// Wave 13 (rehearsal R2-8): said in the mission's log, in the engine's own boot-line words for the isolation.
+console.log(adoptLine(adopted))
+// F242: the mission folder is the run's to write, so every git the driver runs there runs with its hooks,
+// monitor and repository-defined filters off, and names git by its full path (a git.exe, git.cmd or git.bat
+// planted in the folder is never the one started).
+const GIT = harnessGitBin()
 const TIMEOUT_S = parseInt(timeoutArg ?? '600', 10)
 // One engine per wave: the bridge takes one client at a time, on purpose. So
 // two waves in parallel means a second daemon on its own port with its own
@@ -137,6 +265,12 @@ const RUN_URL = ENDPOINTS.run
 // 100 MB file ceiling mid-wave.
 
 const task = await Bun.file(taskFile).text()
+// F242: the first message of the mission, built once and here: the fixed rule (when the brief does not
+// already carry it) and the literal path of the run's scratch folder. Inside the socket handler a throw is
+// swallowed by its catch and the run would read as "never dispatched"; here it is a refusal.
+let firstMessage
+try { firstMessage = withFixedRule(task, runContainment().sandbox.scratch) }
+catch (e) { console.error(operatorRefusal('[driver]', 'containment', String(e?.message ?? e), 'dispatched')); process.exit(2) }
 console.log(`[driver] mission from ${taskFile} (${task.length} chars), marker="${marker}", cwd=${CWD}`)
 // Said out loud, because two waves running at once is the case where driving
 // the WRONG engine still connects, still runs, and lands its commits in a
@@ -204,6 +338,15 @@ if (probeError) {
   console.error(`[driver] ${probeError} — nothing was dispatched`)
   process.exit(2)
 }
+// Decision sheet item 25: with the authoring dispatch's mark, the check is this checkout's gate-authoring
+// script for this mission folder, run here outside the box (a Bun at low integrity cannot load it); anything
+// else under the mark is refused before anything is dispatched. Without the mark the check runs in the box.
+const AUTHOR = authorCheckPlan({ mark: authorMark, checkCmd, markerCheck: process.env.CYNCO_MARKER_CHECK, probeCmd, cwd: CWD })
+if (AUTHOR.kind === 'refused') {
+  console.error(`[driver] REFUSED: ${AUTHOR.why} — nothing was dispatched`)
+  process.exit(2)
+}
+if (AUTHOR.kind === 'run') console.log(`[driver] the authoring dispatch's mark: the acceptance check runs in this driver, outside the box (decision sheet item 25), for ${AUTHOR.stagingDir} against ${AUTHOR.baseDir}`)
 const PROBE_TIMEOUT_MS = probeCmd ? parseInt(process.env.CYNCO_PROBE_TIMEOUT_MS, 10) : 0
 const MAX_PROBE_OVERRIDES = parseInt(process.env.CYNCO_MAX_PROBE_OVERRIDES ?? '3', 10)
 const probeState = probeCmd
@@ -252,6 +395,15 @@ const SEALED_COUNT = instrumentAssertions.length
   : 0
 if (SEALED_COUNT > 0) console.log(`[driver] this mission seals ${SEALED_COUNT} held-out instrument(s)`)
 
+// F242: the driver's own check and probe commands are recorded, or nothing is dispatched. Before the
+// purges, which are the driver's first change on disk; the socket is not open yet, hence exit 2.
+const audit = toolAudit()
+const auditWhy = audit ? audit.probe('driver') : NO_CONTAINMENT
+if (auditWhy) {
+  console.error(operatorRefusal('[driver]', 'audit', auditWhy, 'dispatched'))
+  process.exit(2)
+}
+
 for (const line of purgeBytecodeCaches(CWD)) console.log(`[driver] ${line}`)
 for (const line of purgeStaleAgentState(CWD)) console.log(`[driver] ${line}`)
 
@@ -295,6 +447,8 @@ const inferenceToken = localTokens.tokenFor('inference')
 let ws = new WebSocket(WS_URL, { headers: { Authorization: `Bearer ${bridgeToken}` } })
 let toolCount = 0
 let zeroToolCompletion = false
+// Set when this driver sends its own abort: the completion that answers it is not the model's answer (R2-3).
+let abortSent = false
 // F57: every `tool.start` frame, kept so the run can be asked afterwards how
 // often it reached for the thing that grades it. Wave 10 walked a stale .pyc
 // with `marshal.loads` for eighteen minutes and the row said nothing, because
@@ -318,6 +472,7 @@ const toolStartFrames = []
 let sawMessageComplete = false
 // Final review M7: every completed message, so the row can say whether the
 // engine closed a further turn after a marker-check note (`noteAcknowledged`).
+// Wave 13b: a completion that closed an aborted turn is not counted (isAbortedCompletion).
 let messageCompletes = 0
 let lastActivityAt = Date.now()
 // F19: the engine said it was dead and nobody was listening. Wave 7h run 2 lost
@@ -327,6 +482,9 @@ let lastActivityAt = Date.now()
 // next 3351 seconds. Null until the engine says otherwise; the string it says is
 // kept, because "a crash happened" and "which crash" are different facts.
 let engineError = null
+// The layer of a containment, audit or integrity fault that set `engineError` (F242), so the last
+// line names where to look; null when it was a session.error or anything else.
+let engineFaultLayer = null
 // F235, the re-prompt (owner's decision 2026-11-17, row 11): a stalled model
 // stream no longer ends the mission the first time. The engine marks that
 // `session.error` with a `stall` field; the first one is held here instead of
@@ -379,6 +537,7 @@ const readyGateTimer = setTimeout(() => {
   // than reporting a timeout and leaving the operator to guess which.
   const refusal = s5DispatchRefusal({ capabilities: null })
     ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: null }) : null)
+    ?? containmentDispatchRefusal({ capabilities: null })
   console.error(`[driver] REFUSED: no session.ready in ${process.env.CYNCO_READY_S ?? '30'}s — ${refusal}`)
   process.exit(4)
 }, parseInt(process.env.CYNCO_READY_S ?? '30', 10) * 1000)
@@ -412,7 +571,7 @@ function dispatchMission() {
       }
     : undefined
   ws.send(JSON.stringify({
-    type: 'user.message', text: task, cwd: CWD, readOnlyPaths,
+    type: 'user.message', text: firstMessage, cwd: CWD, readOnlyPaths,
     // This driver is a script, not a person. An AskUser raised here is broadcast
     // to an empty room and "answered" only by the AskBroker's 300s timeout —
     // measured on Gilded UI Wave 6, five minutes spent learning nothing.
@@ -431,7 +590,15 @@ ws.onmessage = onMissionMessage
 function onMissionMessage(ev) {
   try {
     const m = JSON.parse(ev.data)
-    collector.ingest(m)
+    // Wave 13 (R2-3): a completion that closed an aborted turn is a turn end, not an answer, so the
+    // collector's refusal count never judges it; the progress clock and the turn-end flags still see it.
+    // Wave 13b: the collector is told so, and drops what that turn streamed unjudged (it would otherwise stay
+    // pending and be judged as the opening of the next answer).
+    const aborted = isAbortedCompletion(m, abortSent)
+    if (aborted) {
+      console.log(`[driver] the turn closed on an abort (message.complete, stopReason ${m.stopReason ?? 'unset'}${abortSent ? ', after this driver sent abort' : ''}) — not judged as the model's answer`)
+      collector.endAbortedTurn()
+    } else collector.ingest(m)
     progress.observe(m)
     if (m.type === 'session.ready' && !dispatched) {
       // F59 first: it applies to every mission, and an engine that cannot say
@@ -439,6 +606,7 @@ function onMissionMessage(ev) {
       // anything is sealed.
       const refusal = s5DispatchRefusal({ capabilities: m.capabilities })
         ?? (SEALED_COUNT > 0 ? sealedDispatchRefusal({ sealedCount: SEALED_COUNT, capabilities: m.capabilities }) : null)
+        ?? containmentDispatchRefusal({ capabilities: m.capabilities })
       if (refusal) {
         console.error(`[driver] REFUSED: ${refusal}`)
         process.exit(4)
@@ -464,7 +632,9 @@ function onMissionMessage(ev) {
       sawMessageComplete = false
       lastActivityAt = Date.now()
     }
-    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now(); messageCompletes++ }
+    // Every completion ends the turn; only one the engine closed by itself counts for `noteAcknowledged` (wave
+    // 13b): the completion that answers this driver's own abort, or anyone's, is not the engine acting on a note.
+    if (m.type === 'message.complete') { sawMessageComplete = true; lastActivityAt = Date.now(); if (!aborted) messageCompletes++ }
     if (m.type === 'session.error' && /^busy:/.test(String(m.error ?? ''))) {
       // F180: the engine now answers a message sent while another turn runs,
       // instead of dropping it. Not a crash — the dispatch met an interactive
@@ -488,8 +658,16 @@ function onMissionMessage(ev) {
       }
     }
     if (m.type === 'tool.complete' && m.isError) console.log(`[cynco] TOOL ERROR (${m.toolName}): ${String(m.result).slice(0, 200)}`)
+    // Entry 3.M5: a containment, audit or integrity refusal in the engine ends the mission as the
+    // harness's fault, whatever the model then says (F242).
+    if (m.type === 'governance.alert' && m.severity === 'critical' && !engineError
+        && (m.source === 'containment' || m.source === 'audit' || m.source === 'integrity')) {
+      engineError = `${m.source}: ${String(m.message ?? '')}`
+      engineFaultLayer = m.source
+      console.log(`[driver] ${String(m.source).toUpperCase()} FAULT — the engine refused a tool call, so the run is over: ${engineError}`)
+    }
     if (m.type === 'approval.request') console.log(`[cynco] APPROVAL REQUESTED (${m.toolName ?? '?'}) — engine not in APPROVE_ALL mode? (F2)`)
-    if (m.type === 'message.complete' && toolCount === 0) {
+    if (m.type === 'message.complete' && toolCount === 0 && !aborted) {
       // F7: conversation ended without a single tool call — mission cannot have
       // landed. Likely S5 crisis-mode tool restriction on a stale engine session.
       console.log('[driver] FAIL-FAST: message.complete with ZERO tool calls (F7 — check engine log for S5 ENFORCE; restart engine fresh)')
@@ -551,7 +729,7 @@ if (!baselineSha) {
 
 async function gitLog() {
   const range = baselineSha ? [`${baselineSha}..HEAD`] : ['-3']
-  const p = Bun.spawn(['git', 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe' })
+  const p = Bun.spawn([GIT, 'log', '--oneline', ...range], { cwd: CWD, stdout: 'pipe', env: harnessGitEnv(process.env) })
   return await new Response(p.stdout).text()
 }
 
@@ -622,6 +800,19 @@ let checkOrdinal = 0
 const remainingS = () => TIMEOUT_S - (Date.now() - start) / 1000
 while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - start) / 1000 < TIMEOUT_S) {
   await Bun.sleep(30000)
+  // F242, entry 4.M2: a latch written while this mission runs (by its own engine's tripwire, by another
+  // run's compare, by the daemon) ends it. The existing code below aborts the open turn, records the row
+  // and tears the engine down.
+  // Wave 19 (plan P6 item 6): a guard folder that cannot be used says so in its own words (integrityStop).
+  const stopNow = integrityStop(haltState(runContainment().folders.guard), process.env.CYNCO_TEARDOWN_ENGINE === '1')
+  if (stopNow) {
+    console.log(stopNow.line)
+    const latched = afterLatch({ engineError, engineFaultLayer }, stopNow.why)
+    engineError = latched.engineError
+    engineFaultLayer = latched.engineFaultLayer
+    exitReason = stopNow.exitReason
+    break
+  }
   if (!workBegun && (Date.now() - start) / 1000 >= SILENCE_S) {
     // Not a stall — a non-event. Nothing was ever accepted, so there is no run
     // to wait for and no budget that would have helped (F32).
@@ -697,7 +888,7 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
     if (probeState && shouldProbe({ probeCmd, landed, exitReason })) {
       const probedSha = gitHead(CWD)
       console.log(`[probe] running in ${CWD}: ${probeCmd} (cap ${PROBE_TIMEOUT_MS}ms, run ${probeState.runs + 1})`)
-      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS)
+      const pr = runCheck(probeCmd, CWD, PROBE_TIMEOUT_MS, { contained: runContainment(), audit: { handle: audit, src: 'driver-probe' } })
       probeState.runs++
       probeState.lastExit = pr.exitCode
       probeState.lastVerified = pr.verified
@@ -742,6 +933,17 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
         refusal: markerFeedbackRefusal({ source: MARKER.source, sealedCount: SEALED_COUNT }),
       })
       const attempt = round.attempt
+      // Wave 19 (plan P6 item 6): a check the latch, or a guard that became unusable, cut ends the mission here.
+      const cut = integrityStop(attempt.r.integrity ?? null, process.env.CYNCO_TEARDOWN_ENGINE === '1')
+      if (cut) {
+        console.log(cut.line)
+        const latched = afterLatch({ engineError, engineFaultLayer }, cut.why)
+        engineError = latched.engineError
+        engineFaultLayer = latched.engineFaultLayer
+        exitReason = cut.exitReason
+        markerVerdict = attempt
+        break
+      }
       // Final review M9: the loop's bound is read only at its top, so a check
       // admitted with an hour left can end past the wave clock. Said, and kept.
       const over = verifyOverrunS({ startMs: start, nowMs: Date.now(), timeoutS: TIMEOUT_S })
@@ -751,6 +953,9 @@ while (!quiet && !zeroToolCompletion && !silentAfterDispatch && (Date.now() - st
       }
       if (attempt.r.verified === true) console.log('[verify] marker check PASSED')
       if (attempt.r.verified === false) console.log(failReport(attempt.r.output, attempt.r.outputTail))
+      // Wave 19b (check A-F1): a correct triple whose only problem is the frozen suite baseline is no failure; null
+      // sends no note (markerCheckRound retries only on false), and the line says what is still owed.
+      if (attempt.r.baselineOwed) console.log(`[verify] marker check: ${attempt.r.harnessFault} — no note is sent`)
       if (round.retried) {
         verifyRetries = 1
         completesAtNote = messageCompletes
@@ -790,6 +995,7 @@ if (!engineError && stallRecovery.standing()) engineError = stallRecovery.standi
 if (!silentAfterDispatch) {
   if (await engineRunState() === true) {
     console.log('[driver] engine still has the turn OPEN — sending abort')
+    abortSent = true
     try { ws.send(JSON.stringify({ type: 'abort' })) } catch (e) { console.log(`[driver] abort send failed: ${e?.message ?? e}`) }
     const abortDeadline = Date.now() + parseInt(process.env.CYNCO_ABORT_S ?? '60', 10) * 1000
     while (Date.now() < abortDeadline) {
@@ -808,7 +1014,7 @@ if (!silentAfterDispatch) {
 // still reach the collector, and the delta below turns them into a number on the
 // record rather than a thing that happened to a repo nobody was looking at.
 const toolCountAtExit = toolCount
-if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  Check the engine log for the llama-server exit code before re-dispatching; the mission budget was not the problem.`)
+if (engineError) console.log(`[driver] ENGINE ERROR outcome — the harness died, not the model: ${engineError}\n  ${faultNextStep(engineFaultLayer)} before re-dispatching; the mission budget was not the problem.`)
 else if (silentAfterDispatch) console.log('[driver] NEVER DISPATCHED — no turn ran. This says nothing about the model or the brief; ' +
   'it says this script and the engine did not agree on the wire. Log a failure entry (docs/cynco-failure-log.md).')
 else if (!landed && quiet) console.log('[driver] STOPPED WITHOUT COMMIT — the run went quiet with an uncommitted tree; log a failure entry (docs/cynco-failure-log.md)')
@@ -828,14 +1034,14 @@ else if (!quiet) console.log('[driver] WARNING: commit landed but the run never 
  */
 function gitHead(cwd) {
   if (!cwd) throw new Error('gitHead: cwd is required — an unqualified HEAD reads the driver\'s own repo, not the mission workspace')
-  const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8' })
+  const r = spawnSync(GIT, ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
   if (r.error || r.status !== 0) return null
   const sha = (r.stdout ?? '').trim()
   return sha || null
 }
 
 try {
-  const p = Bun.spawn(['git', 'status', '--short'], { cwd: CWD, stdout: 'pipe' })
+  const p = Bun.spawn([GIT, 'status', '--short'], { cwd: CWD, stdout: 'pipe', env: harnessGitEnv(process.env, { repo: CWD }) })
   console.log('[git status]\n' + await new Response(p.stdout).text())
 } catch (e) { console.log(`[driver] git status failed: ${e?.message ?? e}`) }
 
@@ -878,7 +1084,7 @@ async function gradeAtCheck({ quarantine }) {
       + `is the dispatched one. Something in this run wrote to a file it was `
       + `never shown — look for an unsealed script that generates it.`)
   }
-  console.log(`[verify] running check in ${CWD}: ${MARKER.command} (cap ${MARKER.timeoutMs}ms, ordinal ${ordinal}${MARKER.source === 'env' ? ', from CYNCO_MARKER_CHECK' : ''})`)
+  console.log(`[verify] running check in ${CWD}: ${MARKER.command} (cap ${MARKER.timeoutMs}ms, ordinal ${ordinal}${MARKER.source === 'env' ? ', from CYNCO_MARKER_CHECK' : ''}${AUTHOR.kind === 'run' ? ', run by this driver outside the box: decision sheet item 25' : ''})`)
   // F56: which commit did the gate actually read? The check can run for the
   // better part of an hour, and the mission is not necessarily
   // finished when it starts — Gilded Wave 10 committed `ea9ac06` while its gate
@@ -899,9 +1105,10 @@ async function gradeAtCheck({ quarantine }) {
   let dirtyAtVerify = 0
   let resetFiles = 0
   let patchPath = null
+  let resetRefused = null
   if (quarantine) {
     try {
-      const st = spawnSync('git', ['status', '--porcelain', '-uno'], { cwd: CWD, encoding: 'utf8' })
+      const st = spawnSync(GIT, ['status', '--porcelain', '-uno'], { cwd: CWD, encoding: 'utf8', env: harnessGitEnv(process.env, { repo: CWD }) })
       const lines = (st.status === 0 ? st.stdout.trim() : '') ? st.stdout.trim().split('\n') : []
       dirtyAtVerify = lines.length
       if (dirtyAtVerify > 0) {
@@ -910,8 +1117,17 @@ async function gradeAtCheck({ quarantine }) {
         const snap = snapshotUncommittedWork(CWD, 'C:/tmp', missionId, { ordinal })
         if (snap.written) {
           console.log(`[verify] tree dirty at gate time: ${dirtyAtVerify} tracked file(s) — preserved → ${snap.patchPath}; resetting so the gate grades the commit, not the tree (F132)`)
-          spawnSync('git', ['checkout', '--', '.'], { cwd: CWD })
-          resetFiles = dirtyAtVerify
+          // Wave 19 (A3): the reset writes the work tree, so a link in it that leads outside it, or a tree that
+          // cannot be read, refuses it; a refused reset runs no git and no check ("did not run", never a pass).
+          // Wave 19b (check A-R6): the one test, isHarnessRefused, and the reset runs with the environment it judged.
+          const resetEnv = harnessGitEnv(process.env, { repo: CWD, worktreeLinks: true })
+          if (isHarnessRefused(resetEnv)) {
+            resetRefused = `the F132 reset was refused by harness git in ${CWD} (the [harness-git] line says why), so the check was not run`
+            console.log(`[verify] REFUSED: ${resetRefused}`)
+          } else {
+            spawnSync(GIT, ['checkout', '--', '.'], { cwd: CWD, env: resetEnv })
+            resetFiles = dirtyAtVerify
+          }
           patchPath = snap.patchPath
           verifyPatches.push(snap.patchPath)
         } else {
@@ -929,9 +1145,38 @@ async function gradeAtCheck({ quarantine }) {
   // CYNCO_CHECK_ORDINAL (final review I1): which of this driver's checks this
   // is, so an instrument can tell the driver's call from anyone else's — the
   // smoke's fail-once fixture fails only for ordinal 1.
-  const r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) } })
+  // Decision sheet item 25: under the authoring dispatch's mark the check is this checkout's script for this
+  // mission folder, started here at the driver's own integrity (runAuthorCheck: argv, --no-install, its tree
+  // owned, the latch asked while it runs); every other check runs in the box, as before.
+  const r = resetRefused ? notRunResult(resetRefused)
+    : AUTHOR.kind === 'run'
+      ? await runAuthorCheck({ stagingDir: AUTHOR.stagingDir, baseDir: AUTHOR.baseDir, timeoutMs: MARKER.timeoutMs, ordinal,
+          latch: () => haltState(runContainment().folders.guard), audit: { handle: audit, src: 'driver-marker' } })
+      : await inBoxCheck(ordinal)
   const headAfter = gitHead(CWD)
   return { r, tampered, dirtyAtVerify, resetFiles, patchPath, headBefore, headAfter }
+}
+
+/**
+ * The marker check in the box, with the latch asked while it runs (plan P6 item 6's in-box half, wave 19b): the
+ * same poll as the driver's own run of the authoring check (latchPoll, every 30 s); a latch, or a guard that became
+ * unusable, aborts runCheckAsync's signal, which ends the check's tree. The result then carries `integrity`, and the
+ * in-loop and final cuts end the mission on it as they do for the driver-run check. A latch before the start starts
+ * nothing. `pollMs` is for the wiring guard's run of this function.
+ */
+async function inBoxCheck(ordinal, pollMs) {
+  const poll = latchPoll(() => haltState(runContainment().folders.guard), pollMs)
+  const before = poll.ask()
+  if (before) return { ...notRunResult(`${guardWords(before)} before the check started; nothing was run`), integrity: before }
+  poll.start()
+  let r
+  try {
+    r = await runCheckAsync(MARKER.command, CWD, MARKER.timeoutMs, { env: { CYNCO_CHECK_ORDINAL: String(ordinal) }, contained: runContainment(), audit: { handle: audit, src: 'driver-marker' }, signal: poll.signal })
+  } finally { poll.stop() }
+  const cutBy = poll.cutBy()
+  // Wave 19c (check CB-A-2): a latch the poll saw is carried even when the check ended by itself in the same window
+  // (not stopped): no later poll comes after the final verify, so the cut there must see it. Its own reading is kept.
+  return cutBy ? { ...r, integrity: cutBy, ...(r.stopped ? { harnessFault: latchCutWords(cutBy) } : {}) } : r
 }
 
 // Final review M5: every exit of this routine — the skipped gate, a throw, the
@@ -956,6 +1201,16 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
       ? markerVerdict
       : await withKeepalive(() => ws, () => gradeAtCheck({ quarantine: !runStillOpen }))
     verified = gate.label ? r.verified : undefined
+    // Wave 19 (plan P6 item 6): a latch, or a guard that became unusable, during the final verify ends the
+    // mission as an integrity stop too: the row is engine_error and the driver exits 1, landed or not.
+    const cutAtVerify = integrityStop(r.integrity ?? null, process.env.CYNCO_TEARDOWN_ENGINE === '1')
+    if (cutAtVerify && exitReason !== cutAtVerify.exitReason) {
+      console.log(cutAtVerify.line)
+      const latched = afterLatch({ engineError, engineFaultLayer }, cutAtVerify.why)
+      engineError = latched.engineError
+      engineFaultLayer = latched.engineFaultLayer
+      exitReason = cutAtVerify.exitReason
+    }
     // `heldOutRestored` is a count, never the paths: the paths are the withheld
     // thing, and the ledger is read by everything. Zero is the ordinary case and
     // is recorded rather than omitted — an absent field cannot tell "nothing was
@@ -972,9 +1227,13 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
       retried: verifyRetries > 0, firstAttempt: markerFirstAttempt, noteFailed, patches: [...verifyPatches], noteAcknowledged: acknowledged, overrunS: markerOverrunS,
       // F237: what failed, from the whole output — `outputTail` alone can hold none of it.
       failLines: failingLines(r.output).lines }
-    if (acknowledged === false) console.log('[verify] the note was delivered but no turn closed after it — the engine never acted on it (verify.noteAcknowledged: false)')
+    // Wave 13c (C6): what `noteAcknowledged` measures, said as such. An engine still working on the note when the
+    // wait ended, whose turn the driver's own abort closed, reads false too (that completion is not counted, B1-1).
+    if (acknowledged === false) console.log('[verify] the note was delivered, and no turn closed by the engine after it; a turn the driver aborted is not counted (verify.noteAcknowledged: false)')
     if (verifyRetries > 0 && r.verified === true) console.log('[verify] marker check PASSED (on the retry)')
-    if (r.harnessFault) {
+    // Wave 19b (check A-F1): the frozen suite baseline is said as owed to the runner's check, not as a fault.
+    if (r.baselineOwed) console.log(`[verify] verified stays null, ${r.harnessFault}`)
+    else if (r.harnessFault) {
       console.log(`[verify] HARNESS FAULT — verified stays null: ${r.harnessFault}`)
     }
     if (headBefore && headAfter && headBefore !== headAfter) {
@@ -990,7 +1249,7 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
     console.log(`[verify] ${gate.label ? verdict : `${verdict} (advisory — verified stays null)`} ` +
       `(exit=${r.exitCode ?? 'none'}${r.timedOut ? ', TIMED OUT' : ''}${r.spawnFailed ? ', SPAWN FAILED' : ''}, ${r.durationMs}ms)`)
     if (r.verified !== true) console.log(failReport(r.output, r.outputTail))
-    if (gate.label && r.verified === null) {
+    if (gate.label && r.verified === null && !r.baselineOwed) {
       console.log(`[verify] verified stays null — the check did not finish. ` +
         `Re-run it by hand, or raise ${MARKER.source === 'env' ? 'CYNCO_MARKER_CHECK_TIMEOUT_MS' : 'CYNCO_CHECK_TIMEOUT_MS'}, then patch the record.`)
     }
@@ -1003,7 +1262,7 @@ await withHeldOutRestored(heldOutSnapshots, async () => {
 // that is. `null` on any failure: unknown is a truthful answer and "clean" is not.
 async function readHistoryRewrite() {
   const git = async (args) => {
-    const p = Bun.spawn(['git', ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore' })
+    const p = Bun.spawn([GIT, ...args], { cwd: CWD, stdout: 'pipe', stderr: 'ignore', env: harnessGitEnv(process.env) })
     const text = await new Response(p.stdout).text()
     return (await p.exited) === 0 ? text : null
   }
@@ -1087,7 +1346,9 @@ try {
 // Append the labeled mission record to the outcome ledger
 // F235: a turn that went silent and committed nothing is the harness's failure
 // (`engine_error`), not a model that chose to stop (`stopped_without_commit`).
-const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError: engineError ?? (exitReason === 'turn_silent' ? exitReason : null), neverDispatched: silentAfterDispatch })
+// Wave 19 (plan P6 item 6): an integrity stop is engine_error even when a commit had landed.
+const outcome = missionOutcome({ landed, zeroToolCompletion, wentQuiet: quiet, engineError: engineError ?? (exitReason === 'turn_silent' ? exitReason : null), neverDispatched: silentAfterDispatch,
+  integrityStop: exitReason === 'integrity-latch' || exitReason === 'integrity-guard-unusable' })
 // Read HEAD one last time, AFTER the snapshot above and after the check script
 // has run, so `baselineSha..finalSha` is exactly the commits this mission made.
 // Not taken from the 30s poll: the poll can miss a commit made in its last
@@ -1214,26 +1475,29 @@ try {
 // the driver exits on ITS timeout, so the engine can still be mid-iteration
 // with the command parked behind the busy loop, and the polite 20s wait loses.
 // When any teardown path ends in "kill the tree by hand", the driver now IS
-// the hand: same match rules as dispatch-mission.sh (engines by command line,
-// the chat model's llama-server by cynco-llama-sweep.mjs, so Ollama's copy and
-// the embedding service are never touched, F215).
+// the hand, for the mission engine alone (wave 19, plan P6 item 5; comment
+// wave 19b, check A-R7): the pid and creation time the dispatch confirmed
+// (CYNCO_ENGINE_WINPID, CYNCO_ENGINE_STARTED) and that pid's descendants, the
+// engine's own llama-server among them; never another engine or model server,
+// so Ollama's copy and the embedding service are never touched (F215).
 function killEngineTree(reason) {
-  const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-Command', q], { encoding: 'utf-8' }).stdout ?? '')
+  // Wave 19 (plan P6 item 5, R2-6): the mission engine's own tree, by the pid the dispatch confirmed and its
+  // creation time, never every engine/main.ts or chat llama-server on the box (the engine's own llama-server is
+  // in its tree). The dispatch's start sweep stays the broad one. A pid read capped at 20 s.
+  const ps = (q) => (spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', q], { encoding: 'utf-8', timeout: 20_000 }).stdout ?? '')
     .split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-  let llamaRoots = []
-  try {
-    llamaRoots = chatModelServerPids().map(String)
-  } catch (e) {
-    console.log(`[driver] F131 escalation (${reason}): could not list llama-servers (${e instanceof Error ? e.message : String(e)}); killing the engine tree only`)
-  }
-  const roots = [
-    ...ps("Get-CimInstance Win32_Process -Filter \"Name='bun.exe'\" | Where-Object { $_.CommandLine -like '*engine/main.ts*' } | Select-Object -ExpandProperty ProcessId"),
-    ...llamaRoots,
-  ]
-  if (roots.length === 0) {
-    console.log(`[driver] F131 escalation (${reason}): no engine tree found — already gone`)
+  const target = engineTeardownTarget(process.env)
+  if (target.why) {
+    console.log(`[driver] F131 escalation (${reason}): ${target.why} — nothing was killed by pid (the dispatch's watcher stops the engine by its own confirmed pid)`)
     return
   }
+  const startedNow = ps(`(Get-Process -Id ${target.pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`)[0] ?? ''
+  const decided = teardownDecision(target, startedNow)
+  if (!decided.kill) {
+    console.log(`[driver] F131 escalation (${reason}): ${decided.why} — nothing was killed`)
+    return
+  }
+  const roots = [target.pid]
   // F131 residual 3: taskkill /T walks the LIVE parent chain, so once any
   // intermediate process dies its children are orphans /T never reaches. One
   // such orphan — a mission-spawned python stuck in an infinite loop — kept the
@@ -1263,7 +1527,7 @@ function killEngineTree(reason) {
   for (const pid of doomed) spawnSync('taskkill', ['/PID', pid, '/T', '/F'], { encoding: 'utf-8' })
   console.log(`[driver] F131 escalation (${reason}): tree-killed PID(s) ${[...doomed].join(', ')} (${roots.length} root(s), ${doomed.size - roots.length} descendant(s))`)
   // An engine that exits by /quit gives the GPU back to an app on its way out; one killed by hand could not (F219).
-  const back = spawnSync('bun', ['scripts/cynco-apps.mjs', 'give-back'], { encoding: 'utf-8', timeout: 60_000 })
+  const back = spawnSync('bun', ['--no-install', 'scripts/cynco-apps.mjs', 'give-back'], { encoding: 'utf-8', timeout: 60_000 })
   if (back.stdout?.trim()) console.log(back.stdout.trim())
   if (back.status !== 0) console.log(`[driver] giving the GPU back to the owner's apps did not run (exit ${back.status}${back.error ? `, ${back.error.message}` : ''})`)
 }
@@ -1319,4 +1583,4 @@ if (process.env.CYNCO_TEARDOWN_ENGINE === '1' && wsClosed) {
   })
 }
 
-process.exit(landed ? 0 : 1)
+process.exit(exitCodeOf(landed, exitReason))

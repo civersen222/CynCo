@@ -16,10 +16,14 @@ import { readTaskFile, writeOutcome } from './taskFile.js'
 import { fileRunDraft } from '../projects/inbox.js'
 import { projectsHome } from '../projects/layout.js'
 import type { Recommendation, TaskFileInput, TaskOutcome } from './types.js'
+import { MISSION_FIXED_RULE, MISSION_FIXED_RULE_SHORT, withFixedRule } from '../missionRule.js'
+import { runContainment } from '../containment.js'
 
 export function buildOneShotPrompt(context: string, prompt: string): string {
   return [
     'You are running an unattended scheduled mission task. There is no user to ask — work autonomously with the tools provided, then stop.',
+    '',
+    MISSION_FIXED_RULE,
     '',
     'Mission context:',
     context,
@@ -42,6 +46,7 @@ export function buildResumePrompt(): string {
     'The daemon paused this task to free the GPU and has now resumed it. Everything above is your own work so far.',
     'Continue from the last tool result: do not repeat steps that already completed, re-issue only the tool call that was interrupted if you still need it,',
     'and finish exactly as the original task asked, ending your FINAL message with the ```json outcome block.',
+    MISSION_FIXED_RULE_SHORT,
   ].join(' ')
 }
 
@@ -121,7 +126,10 @@ export function makeHaltCapture(): {
   /** An engine error the loop swallowed, or the iteration limit (where the stuck-15 halt also lands): the run did
    *  not finish, whatever text it left. Before 2026-10-28 both fell through to extractOutcome's ok:true fallback. */
   endedEarly: () => string | null
+  /** A containment, audit or integrity refusal happened: the run did not finish, whatever the model then said. */
+  refused: () => string | null
 } {
+  let refused: string | null = null
   let lastCriticalMsg: string | null = null
   let halted = false
   let engineError: string | null = null
@@ -130,6 +138,11 @@ export function makeHaltCapture(): {
     emit: (e: EngineEvent) => {
       if (e.type === 'governance.alert' && e.severity === 'critical' && e.message) {
         lastCriticalMsg = e.message
+      }
+      // Entry 3.M5: the first refusal of these layers wins and ends the run as refused (F242).
+      if (e.type === 'governance.alert' && e.severity === 'critical' && !refused
+          && (e.source === 'containment' || e.source === 'audit' || e.source === 'integrity')) {
+        refused = `REFUSED: ${e.source}: ${e.message}`
       }
       if (e.type === 'message.complete' && e.stopReason === 'halted') {
         halted = true
@@ -144,6 +157,7 @@ export function makeHaltCapture(): {
     haltReason: () => (halted ? (lastCriticalMsg ?? 'algedonic kill switch halted the loop') : null),
     endedEarly: () => engineError ? `Engine error: ${engineError}`
       : iterationLimit ? 'Iteration limit reached before the run finished' : null,
+    refused: () => refused,
   }
 }
 
@@ -204,7 +218,21 @@ export async function runGovernedLoop(opts: {
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; loop.abort() }, opts.timeoutMs)
   try {
-    await loop.handleUserMessage(resumed ? buildResumePrompt() : buildOneShotPrompt(opts.context, opts.prompt))
+    const first = resumed ? buildResumePrompt() : buildOneShotPrompt(opts.context, opts.prompt)
+    const contained = runContainment()
+    // A contained run is told the literal path of its scratch folder (F242, entry 4.M3). With no
+    // context (a test calling this function directly) the prompt still carries the two rule lines.
+    let message = first
+    if (contained) {
+      try {
+        message = withFixedRule(first, contained.sandbox.scratch)
+      } catch (e) {
+        // A context with no absolute scratch path is a broken adopt: the outcome says REFUSED like every
+        // other containment refusal (00 section 1.4), so the daemon's page for it fires (review 2026-11-23).
+        throw new Error(`REFUSED: containment: ${(e as Error)?.message ?? String(e)}`)
+      }
+    }
+    await loop.handleUserMessage(message)
   } finally {
     clearTimeout(timer)
   }
@@ -220,11 +248,13 @@ export async function runGovernedLoop(opts: {
   // fallback returned ok:true, so a run where every model call timed out —
   // no turns, no files written — reported success to the daemon ledger.
   const haltReason = haltCapture.haltReason()
+  // A refusal first: it is the most specific cause, and the word must be REFUSED:, never HALTED: (entry 3.M5).
   const failure =
-    timedOut ? 'Internal deadline exceeded'
-    : haltReason ? `HALTED: ${haltReason}`
-    : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
-    : haltCapture.endedEarly() ?? null
+    haltCapture.refused() ?? (
+      timedOut ? 'Internal deadline exceeded'
+      : haltReason ? `HALTED: ${haltReason}`
+      : countAssistantTurns(messages) === 0 ? 'No model turns completed — the run did no work'
+      : haltCapture.endedEarly() ?? null)
   if (failure) {
     return { ok: false, summary: collectedText.slice(-1000), recommendations: [], error: failure, ...meta }
   }

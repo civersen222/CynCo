@@ -99,6 +99,15 @@ describe('loadCampaignSpec', () => {
     expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: '' }))).toThrow(/must be a non-empty string/)
     expect(() => loadCampaignSpec(write({ LOCALCODE_MODEL_PATH: 3 }))).toThrow(/must be a non-empty string/)
   })
+  // F242: no containment variable, the models folder included, can ride on a spec. The runner hands
+  // a spec's env to the engine, so a spec that could carry one could move a folder or switch a layer off.
+  it('refuses every containment variable in env, the models folder included', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spec-env-containment-'))
+    const write = (env) => { const p = join(dir, `${Math.random().toString(36).slice(2)}.campaign.json`); writeFileSync(p, JSON.stringify({ ...good(), env })); return p }
+    for (const k of ['LOCALCODE_MODELS_DIR', 'LOCALCODE_SANDBOX_ROOT', 'LOCALCODE_GUARD_DIR', 'LOCALCODE_AUDIT_DIR', 'LOCALCODE_CONTAINMENT_OFF', 'LOCALCODE_UNPROTECTED_VOLUMES_OK', 'LOCALCODE_MISSION_RUN_ID']) {
+      expect(() => loadCampaignSpec(write({ [k]: 'C:/x' })), k).toThrow(new RegExp(`env\\.${k}: a spec may set only LOCALCODE_LLAMA_SERVER and LOCALCODE_MODEL_PATH`))
+    }
+  })
 
   it('defaults author to human and authorMissionId to null, and leaves positive unset', () => {
     const loaded = loadCampaignSpec(write(good()))

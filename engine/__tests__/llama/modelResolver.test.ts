@@ -1,6 +1,6 @@
 // engine/__tests__/llama/modelResolver.test.ts
 import { describe, expect, it, beforeEach, afterEach } from 'bun:test'
-import { resolveModel, resolveAdapter } from '../../llama/modelResolver.js'
+import { resolveModel, resolveAdapter, resolveChatTemplateFile } from '../../llama/modelResolver.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
@@ -109,5 +109,54 @@ describe('resolveAdapter', () => {
   it('throws AdapterNotFoundError when missing', () => {
     expect(() => resolveAdapter('nonexistent', tmpDir))
       .toThrow("LoRA adapter 'nonexistent' not found")
+  })
+})
+
+describe('resolveChatTemplateFile', () => {
+  let tmpDir: string
+  let model: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cynco-template-'))
+    fs.mkdirSync(path.join(tmpDir, 'm'))
+    model = path.join(tmpDir, 'm', 'model.gguf')
+    fs.writeFileSync(model, 'fake-gguf')
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('nothing set: no template argument', () => {
+    expect(resolveChatTemplateFile(undefined, model)).toBeUndefined()
+    expect(resolveChatTemplateFile('', model)).toBeUndefined()
+  })
+
+  it('an absolute path that exists is used as written', () => {
+    const abs = path.join(tmpDir, 'elsewhere.jinja')
+    fs.writeFileSync(abs, '{{ x }}')
+    expect(resolveChatTemplateFile(abs, model)).toBe(abs)
+  })
+
+  it('a bare file name is looked up beside the model', () => {
+    fs.writeFileSync(path.join(tmpDir, 'm', 'chat_template.jinja'), '{{ x }}')
+    expect(resolveChatTemplateFile('chat_template.jinja', model)).toBe(path.join(tmpDir, 'm', 'chat_template.jinja'))
+  })
+
+  it('a bare file name that is not there names the value, the path looked for and the model folder', () => {
+    let message = ''
+    try { resolveChatTemplateFile('chat_template.jinja', model) } catch (e) { message = (e as Error).message }
+    expect(message).toContain("chat_template_file 'chat_template.jinja'")
+    expect(message).toContain(path.join(tmpDir, 'm', 'chat_template.jinja'))
+    expect(message).toContain(`in ${path.join(tmpDir, 'm')}.`)
+  })
+
+  it('an absolute path into a folder that is gone (the old models folder) names that path', () => {
+    const stale = path.join(tmpDir, 'gone', 'chat_template.jinja')
+    expect(() => resolveChatTemplateFile(stale, model)).toThrow(stale)
+  })
+
+  it('a leading ~ is not expanded, and the message says so', () => {
+    expect(() => resolveChatTemplateFile('~/.cynco/models/m/chat_template.jinja', model)).toThrow('a leading ~ is not expanded')
   })
 })

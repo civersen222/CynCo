@@ -3,10 +3,13 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 
-// Skip these integration tests in CI — they create real ConversationLoop
-// instances that hit the filesystem, create JSONL sessions, index DBs, etc.
-// Run manually with: CYNCO_INTEGRATION=1 bun test
-const SKIP = !process.env.CYNCO_INTEGRATION
+// These tests drive a real ConversationLoop with a scripted model and run in
+// the ordinary suite. They need no service: what they write goes to a temp
+// folder (TEST_CWD below, where the loop's snapshot runs git) and to the
+// suite's temp CYNCO_HOME (session journal, governance database), and the
+// suite's setup refuses fetch to this machine's service ports. They were behind
+// CYNCO_INTEGRATION until 2026-11-24, and the one that failed there (compactNow,
+// a product defect in the compressor) had failed unseen since 2026-07-15.
 import { ConversationLoop } from '../../bridge/conversationLoop.js'
 import { globalContract } from '../../tools/contract.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
@@ -78,7 +81,7 @@ function* textResponse(text: string): Generator<StreamEvent> {
 }
 
 describe('ConversationLoop with tools', () => {
-  it.skipIf(SKIP)('streams text responses and emits events', async () => {
+  it('streams text responses and emits events', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('Hello!')])
 
@@ -94,7 +97,7 @@ describe('ConversationLoop with tools', () => {
     expect(events.some(e => e.type === 'message.complete')).toBe(true)
   })
 
-  it.skipIf(SKIP)('sets processing flag during message handling', async () => {
+  it('sets processing flag during message handling', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('test')])
 
@@ -128,7 +131,7 @@ describe('ConversationLoop with tools', () => {
     expect(() => loop.setApproveAll(false)).not.toThrow()
   })
 
-  it.skipIf(SKIP)('ignores messages while already processing', async () => {
+  it('ignores messages while already processing', async () => {
     const events: any[] = []
     // Create a provider that takes a bit to respond
     const provider = mockProvider([() => textResponse('first'), () => textResponse('second')])
@@ -151,7 +154,7 @@ describe('ConversationLoop with tools', () => {
     expect(completes.length).toBe(1)
   })
 
-  it.skipIf(SKIP)('allowedTools option restricts the tool set offered to the model', async () => {
+  it('allowedTools option restricts the tool set offered to the model', async () => {
     const captured: CompletionRequest[] = []
     const provider: Provider = {
       name: 'mock',
@@ -183,7 +186,7 @@ describe('ConversationLoop with tools', () => {
     expect(toolsSection).not.toContain('- Write:')
   })
 
-  it.skipIf(SKIP)('allowedTools blocks disallowed tool calls at execution time', async () => {
+  it('allowedTools blocks disallowed tool calls at execution time', async () => {
     // Simulated-mode models can hallucinate tools that were never offered in
     // the prompt — the pin must also be enforced when the call comes back.
     function* bashToolUse(): Generator<StreamEvent> {
@@ -211,7 +214,7 @@ describe('ConversationLoop with tools', () => {
     expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
   })
 
-  it.skipIf(SKIP)('S5 restriction that would empty the tool set is skipped, and S5 sees activeToolNames', async () => {
+  it('S5 restriction that would empty the tool set is skipped, and S5 sees activeToolNames', async () => {
     // Real incident (2026-06-12): C7 restricted a mission run to coding tools
     // outside the pinned set — intersection left ZERO tools. The loop must
     // never apply a restriction that removes every available tool.
@@ -258,7 +261,7 @@ describe('ConversationLoop with tools', () => {
     expect(toolsSection).toContain('- Read:')
   })
 
-  it.skipIf(SKIP)('S5 tool restriction is enforced at execution time in one-shot runs', async () => {
+  it('S5 tool restriction is enforced at execution time in one-shot runs', async () => {
     // Replay incident (2026-06-12): at stuck=5 S5 restricted the prompt to
     // [Read, WebFetch], but the model kept calling WebSearch (seen earlier in
     // history) and the calls EXECUTED — the gate only checked the run-level
@@ -299,7 +302,7 @@ describe('ConversationLoop with tools', () => {
     expect(String(complete.result)).not.toContain('SHOULD_NOT_RUN')
   })
 
-  it.skipIf(SKIP)('one-shot runs skip contract auto-creation so the model can finish', async () => {
+  it('one-shot runs skip contract auto-creation so the model can finish', async () => {
     // 2026-06-12 weekly-digest incident: the auto-created contract demanded
     // "Run the test suite NOW with Bash" in a read-only mission, re-prompting
     // the model every time it tried to produce its final outcome.
@@ -327,7 +330,7 @@ describe('ConversationLoop with tools', () => {
     expect(captured.length).toBe(1)
   })
 
-  it.skipIf(SKIP)('one-shot nudge asks for the structured outcome instead of coding tools', async () => {
+  it('one-shot nudge asks for the structured outcome instead of coding tools', async () => {
     // 2026-06-12 weekly-digest incident: S2 nudged "Call Read, Write, Edit,
     // Grep, or Bash RIGHT NOW" at the model mid-answer, pushing it back into
     // a tool loop. In one-shot runs the nudge must offer finishing as an
@@ -395,7 +398,7 @@ describe('ConversationLoop with tools', () => {
   const READ_FILES = ['package.json', 'README.md', 'CONVENTIONS.md', '.gitignore', 'engine/main.ts']
   const OUTCOME = '```json\n{"ok": true, "summary": "digest", "recommendations": []}\n```'
 
-  it.skipIf(SKIP)('varied narration across tool turns never accumulates stuck', async () => {
+  it('varied narration across tool turns never accumulates stuck', async () => {
     const responses = [
       ...READ_FILES.map((f, i) => () => narratedToolUse(`Checking source ${i} for a different part of the digest.`, f)),
       () => textResponse(OUTCOME),
@@ -409,9 +412,9 @@ describe('ConversationLoop with tools', () => {
     })
     await loop.handleUserMessage('compile the weekly digest from league data')
     expect((loop as any).governance.getStuckCount()).toBe(0)
-  })
+  }, 20_000) // load-sensitive under the full suite (about 1.6 to 1.9 s alone, against the 5 s default; F207's pattern)
 
-  it.skipIf(SKIP)('repeated identical narration reaches governance and counts as stuck', async () => {
+  it('repeated identical narration reaches governance and counts as stuck', async () => {
     // Guards the response wiring itself: if the loop passes '' (or anything
     // uniform-but-ignored) instead of the streamed text, a genuinely looping
     // model would never be detected.
@@ -428,9 +431,9 @@ describe('ConversationLoop with tools', () => {
     })
     await loop.handleUserMessage('compile the weekly digest from league data')
     expect((loop as any).governance.getStuckCount()).toBeGreaterThan(0)
-  })
+  }, 20_000) // load-sensitive under the full suite (about 1.6 to 1.9 s alone, against the 5 s default; F207's pattern)
 
-  it.skipIf(SKIP)('context estimate includes system prompt + tool schema overhead', async () => {
+  it('context estimate includes system prompt + tool schema overhead', async () => {
     // 2026-06-12 incident #3: llama-server evaluates system prompt + tool
     // schemas on EVERY request (15.1k tokens of a 32.8k n_ctx), but the
     // in-loop monitor estimated only this.messages — it read 54% while the
@@ -451,14 +454,21 @@ describe('ConversationLoop with tools', () => {
     expect(status.estimatedTokens).toBeGreaterThan(300)
   })
 
-  it.skipIf(SKIP)('compactNow compresses older messages into a summary', async () => {
+  it('compactNow compresses older messages into a summary', async () => {
     // In-loop compaction must actually shrink this.messages — a "finish now"
     // warning alone cannot stop overflow when each tool result adds
     // thousands of tokens.
-    vi.stubGlobal('fetch', async () => new Response(
-      JSON.stringify({ message: { content: 'summary of earlier turns' } }),
-      { status: 200 },
-    ))
+    // The side query's request is kept so the test can read the summary prompt:
+    // a message that is neither summarized nor kept would pass every check on
+    // the compacted list alone.
+    const sideQueryBodies: any[] = []
+    vi.stubGlobal('fetch', async (url: unknown, init?: { body?: unknown }) => {
+      if (String(url).endsWith('/api/chat')) sideQueryBodies.push(JSON.parse(String(init?.body)))
+      return new Response(
+        JSON.stringify({ message: { content: 'summary of earlier turns' } }),
+        { status: 200 },
+      )
+    })
     try {
       const loop = new ConversationLoop({
         cwd: TEST_CWD,
@@ -473,16 +483,43 @@ describe('ConversationLoop with tools', () => {
           content: [{ type: 'text', text: `turn ${i}: ${'x'.repeat(400)}` }],
         })
       }
+      const before = msgs.slice()
+      const tokensBefore: number = (loop as any).estimateMessageTokens()
       const compacted = await (loop as any).compactNow('test')
       expect(compacted).toBe(true)
-      expect((loop as any).messages.length).toBeLessThan(12)
-      expect(JSON.stringify((loop as any).messages)).toContain('Context Summary')
+      const after = (loop as any).messages as any[]
+      // What compaction is for: the context the model is sent shrinks. The
+      // count alone cannot say so, because the original task and the recent
+      // user requests are pinned back in verbatim by design (F129); with a
+      // summarized part also kept in the tail, this case grew from about 1,230
+      // to 1,478 estimated tokens.
+      expect((loop as any).estimateMessageTokens()).toBeLessThan(tokensBefore)
+      expect(after.length).toBeLessThan(12)
+      expect(after[0].content[0].text).toContain('[Context Summary]')
+      // compactNow asks for the last two pairs. Apart from the summary and the
+      // pinned anchors, exactly those four messages are kept, as they were, so
+      // nothing the summary covers is also kept in the tail.
+      const verbatim = after.filter(m => !/^\[(Context Summary|Pinned |Committed so far)/.test(String(m.content[0]?.text ?? '')))
+      expect(verbatim).toEqual(before.slice(-4))
+      // The assistant turns the summary covers appear nowhere else.
+      const text = JSON.stringify(after)
+      for (const i of [1, 3, 5, 7]) expect(text).not.toContain(`turn ${i}:`)
+      // The summary was asked for once, over turns 0 to 7 and none of the four
+      // kept turns: together with the tail, every turn is either summarized or
+      // kept, and none is both.
+      expect(sideQueryBodies.length).toBe(1)
+      const prompt: string = sideQueryBodies[0].messages.at(-1).content
+      const lines = prompt.split('\n')
+      before.forEach((m, i) => {
+        const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content[0].text}`
+        expect(lines.includes(line), `turn ${i} in the summary prompt`).toBe(i < 8)
+      })
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it.skipIf(SKIP)('emits message.complete with correct stopReason', async () => {
+  it('emits message.complete with correct stopReason', async () => {
     const events: any[] = []
     const provider = mockProvider([() => textResponse('done')])
 
@@ -499,7 +536,7 @@ describe('ConversationLoop with tools', () => {
     expect(complete.stopReason).toBe('end_turn')
   })
 
-  it.skipIf(SKIP)('applies a harness-supplied contract before auto-create (P4.2)', async () => {
+  it('applies a harness-supplied contract before auto-create (P4.2)', async () => {
     globalContract.clear()
     // Enough scripted responses to exhaust contract enforcement rounds (cap 5).
     const provider = mockProvider(Array.from({ length: 7 }, () => () => textResponse('done')))
@@ -520,8 +557,7 @@ describe('ConversationLoop with tools', () => {
 })
 
 // ─── P1.8: malformed tool-call retry ladder ───────────────────────────────────
-// These tests use CYNCO_INTEGRATION because they create real ConversationLoop
-// instances that hit the filesystem and create JSONL sessions.
+// Real ConversationLoop instances, scripted model, same temp folders as above.
 describe('malformed tool-call retry ladder (P1.8)', () => {
   // Emit a tool_use block with broken JSON arguments so callModel marks input
   // as { __malformed: true, raw, error }.
@@ -534,7 +570,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
     yield { type: 'message_stop' } as any
   }
 
-  it.skipIf(SKIP)('answers a malformed tool_use with an error tool_result containing the parse error and raw text', async () => {
+  it('answers a malformed tool_use with an error tool_result containing the parse error and raw text', async () => {
     const events: any[] = []
     // jsonrepair salvages JSON-ish garbage (e.g. {"file_path": <<<) — only XML-like text genuinely throws
     const RAW = '<tool_call>blah</tool_call>'
@@ -568,7 +604,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
     expect(transport.toolName).toBe('Read')
   })
 
-  it.skipIf(SKIP)('emits stage:discarded to the ledger after the bounded retry is exhausted', async () => {
+  it('emits stage:discarded to the ledger after the bounded retry is exhausted', async () => {
     const RAW = '<tool_call>blah</tool_call>'
     const events: any[] = []
     // TWO consecutive malformed calls, then recovery text
@@ -601,7 +637,7 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
     expect(discardedResult).toMatch(/proceed|different approach|dropped/i)
   })
 
-  it.skipIf(SKIP)('a well-formed tool call resets the malformed counter', async () => {
+  it('a well-formed tool call resets the malformed counter', async () => {
     const RAW = '<tool_call>blah</tool_call>'
     const events: any[] = []
 
@@ -637,9 +673,9 @@ describe('malformed tool-call retry ladder (P1.8)', () => {
     const discarded = transports.filter(e => e.stage === 'discarded')
     expect(retried.length).toBe(2)
     expect(discarded.length).toBe(0)
-  })
+  }, 20_000) // load-sensitive under the full suite (about 1.6 to 1.9 s alone, against the 5 s default; F207's pattern)
 
-  it.skipIf(SKIP)('regex XML fallback extraction emits stage:regex_fallback', async () => {
+  it('regex XML fallback extraction emits stage:regex_fallback', async () => {
     // Model returns stop_reason 'tool_use' but emits <tool_call> XML text instead
     // of native tool_use blocks — triggers the XML regex fallback path.
     function* xmlFallbackResponse(): Generator<StreamEvent> {

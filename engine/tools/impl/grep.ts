@@ -79,6 +79,21 @@ export function grepFailure(
     + `judged. Suspect the environment, and reproduce by hand: ${argv.join(' ')}`
 }
 
+/**
+ * The ripgrep argv for one Grep call. The pattern is model-authored and travels after `-e`, so it is
+ * always a pattern and never an option: as a bare positional, a pattern such as `--pre=<program>`
+ * made ripgrep run that program on every file it searched, uncontained, at the engine's integrity
+ * and with the real home (F242). ripgrep starts with no working folder; the folder is its argument.
+ */
+export function grepArgv(rgBin: string, pattern: string, dir: string, fileGlob?: string, ctx = 0): string[] {
+  const args = [rgBin, '--no-heading', '--line-number', '--color', 'never', '--max-count', '250']
+  if (ctx > 0) args.push('-C', String(ctx))
+  // Joined to its option for the same reason: a glob is never read as an option of its own.
+  if (fileGlob) args.push(`--glob=${fileGlob}`)
+  args.push('-e', pattern, '--', dir)
+  return args
+}
+
 export const grepTool: ToolImpl = {
   name: 'Grep',
   description: 'Search file contents using regex patterns. Returns matching lines with file paths and line numbers. Use ONLY when you need an exact string or regex match; for conceptual questions ("where is combat resolved") call CodeIndex first.',
@@ -101,11 +116,7 @@ export const grepTool: ToolImpl = {
     const ctx = (input.context as number) ?? 0
 
     try {
-      const rgBin = findRg()
-      const args = [rgBin, '--no-heading', '--line-number', '--color', 'never', '--max-count', '250']
-      if (ctx > 0) args.push('-C', String(ctx))
-      if (fileGlob) args.push('--glob', fileGlob)
-      args.push(pattern, dir)
+      const args = grepArgv(findRg(), pattern, dir, fileGlob, ctx)
 
       const proc = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' })
       const stdout = await new Response(proc.stdout).text()

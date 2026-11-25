@@ -18,6 +18,7 @@ import {
   type RepoProbe,
 } from './contractVerify.js'
 import { getShellInfo } from './shellInfo.js'
+import { endMarked, goneWithin, isMarked, newMark, watchMarked, type MarkWatch } from '../__tests__/helpers/markedProcesses.js'
 
 describe('assertionCheck — recovering the claim from engine-generated text', () => {
   test('reads back the templates contractAutoCreate emits', () => {
@@ -782,6 +783,60 @@ describe('runCommandDetailed — the same run, with the output tail kept', () =>
     expect(r.tail).toContain('line 199')
     expect(r.tail).not.toContain('line 0\n')
   })
+})
+
+/**
+ * NOW.md, 2026-11-24: a check killed at its cap left what it had started running. exec's own
+ * timeout ends the shell alone (F201, F210), and each run of the suite left two
+ * `python -c "... time.sleep(4000)"` of contract.test.ts alive for over an hour. The check now owns
+ * its tree from the start and kills it on its own timer, as the Bash tool does. Asked by the pid the
+ * grandchild printed: it must be gone, not merely the shell.
+ */
+describe('runCommandDetailed — a check cut at its cap ends what it started', () => {
+  // The program carries a mark in its command line and is asked about and ended by it, never by the pid it
+  // printed (F255, wave 24: a number read from output names whatever process has it now).
+  const marks: string[] = []
+  const watches: MarkWatch[] = []
+  const newCaseMark = (label: string) => { const m = newMark(label); marks.push(m); return m }
+  afterEach(async () => {
+    for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+    // A survivor (the defect), or the program left running on purpose, is ended here by its mark.
+    for (const m of marks.splice(0)) endMarked(m)
+  })
+
+  test('the program the shell started is gone after a timeout', async () => {
+    const mark = newCaseMark('contractCut')
+    // Wave 24, round two: a watcher lists for the mark from before the check starts (the program lives until the 3 s
+    // cap, several listings) and must have seen the printed pid carrying it: "gone" is also the answer of a mark that
+    // never named the program.
+    const w = watchMarked(mark)
+    watches.push(w)
+    await w.ready
+    // It waits two minutes, longer than the case needs; the cap must end it long before.
+    const r = await runCommandDetailed(process.cwd(), `node -e "console.log('pid=' + process.pid); setTimeout(() => {}, 120000) // ${mark}"`, 3000)
+    expect(r.outcome).toBe('timeout')
+    const m = /pid=(\d+)/.exec(r.tail)
+    expect(m, `the grandchild printed no pid: ${r.tail}`).not.toBeNull()
+    const pid = Number(m![1])
+    expect(await w.stop(), `node ${pid} was never seen carrying its mark while the check ran`).toContain(pid)
+    expect(await goneWithin(pid, mark), `node ${pid}, started by the check, outlived the check's cap`).toBe(true)
+  }, 30_000)
+
+  test('a check that ends on its own leaves a process it started on purpose running', async () => {
+    // Releasing kills nothing (engine/processTree.ts): a background program the command left
+    // running is not ended because the check finished.
+    const mark = newCaseMark('contractNatural')
+    const ps = getShellInfo().isPowerShell
+    const cmd = ps
+      ? `Start-Process -WindowStyle Hidden -PassThru node -ArgumentList '-e','setTimeout(()=>{},20000)/*${mark}*/' | ForEach-Object { 'pid=' + $_.Id }`
+      : `node -e "setTimeout(()=>{},20000)/*${mark}*/" > /dev/null 2>&1 & echo pid=$!`
+    const r = await runCommandDetailed(process.cwd(), cmd, 20_000)
+    expect(r.outcome, r.tail).toBe('passed')
+    const pid = Number(/pid=(\d+)/.exec(r.tail)?.[1])
+    expect(Number.isInteger(pid) && pid > 0, r.tail).toBe(true)
+    await new Promise(res => setTimeout(res, 500))
+    expect(isMarked(pid, mark), `the background node ${pid} was killed when the check ended`).toBe(true)
+  }, 30_000)
 })
 
 /**

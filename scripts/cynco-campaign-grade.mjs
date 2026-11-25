@@ -5,6 +5,8 @@ import { cyncoHome } from '../engine/paths.js'
 import { parseGateOutput, gateInterpreter } from './cynco-gate-parse.mjs'
 import { runSync, faultSummary } from './cynco-spawn.mjs'
 import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
+import { harnessGitEnv } from '../engine/harnessGit.js'
+import { harnessAudit } from '../engine/audit/toolAudit.js'
 import { constraints } from '../engine/cybernetics-core/src/index.js'
 
 export const GATE_TIMEOUT_MS = 7_200_000
@@ -24,7 +26,9 @@ export const defaultIo = {
   // gate run of a wave follows a long idle gap, and a bare spawnSync would
   // report that stale deadline as a two-hour timeout. `runSync` measures.
   run(cmd, args, opts = {}) {
-    return runSync(cmd, args, opts)
+    // F242: a contained run of workspace code is recorded before it starts; hashes only (src 'gate').
+    // R3-F1: the records carry the run id of the grader's own containment (`forRun`, scripts/cynco-spawn.mjs).
+    return runSync(cmd, args, opts.contained ? { ...opts, audit: { forRun: (run) => harnessAudit({ run }), src: 'gate' } } : opts)
   },
   // I4: a failed `git diff` used to come back as an empty list, and an empty
   // list is the exact signal sweepTestsFor reads as "the diff shipped no test
@@ -40,7 +44,7 @@ export const defaultIo = {
   // is not "the diff shipped its own test", so it must not switch off the
   // keep-green `--tests`. Renames keep their new path.
   changedFiles(repo, base, head) {
-    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', '--diff-filter=d', `${base}..${head}`], { encoding: 'utf8', windowsHide: true })
+    const r = spawnSync('git', ['-C', repo, 'diff', '--name-only', '--diff-filter=d', `${base}..${head}`], { encoding: 'utf8', windowsHide: true, env: harnessGitEnv(process.env) })
     if (r.error || r.status !== 0) {
       console.error(`[grade] git diff --name-only --diff-filter=d ${base}..${head} failed: ${r.error?.message ?? r.stderr ?? `exit ${r.status}`}`)
       return null
@@ -90,8 +94,11 @@ export function sweepSourcesFor(spec, changedFiles) {
  * whether an impossible ETIMEDOUT is retried (default true — the verdict's
  * reading; the probe passes false, because a 215 s gate re-run is not free
  * and a stale ETIMEDOUT mid-wave is a fault reading, not a reason to spend it).
+ * The gate runs contained in a grader sandbox around `repo` (F242); `labelOwn`
+ * (default true) says whether `repo` is labelled writable for it: the probe
+ * passes false, so the mission being measured cannot write the instrument's tree.
  */
-export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_MS, retry = true } = {}) {
+export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_MS, retry = true, labelOwn = true } = {}) {
   const t0 = Date.now()
   // The gates read CYNCO_GATE_REPO for the tree they grade and fall back to
   // cwd. Both are the same tree here (spec.repo for a verdict, the archive for
@@ -102,7 +109,7 @@ export function runGate(spec, io, { repo = spec.repo, timeoutMs = GATE_TIMEOUT_M
   // a read of the tree, so it is retried once on an impossible ETIMEDOUT like
   // calibrate's reads are; and a spawn that still did not run is named as the
   // fault it is — never parsed as an empty gate, which would read as 0 lines.
-  const r = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry })
+  const r = io.run(gateInterpreter(spec.gate), [spec.gate], { cwd: repo, env: { CYNCO_GATE_REPO: repo }, timeoutMs, retryImpossibleTimeout: retry, contained: { own: repo, labelOwn } })
   const parsed = parseGateOutput((r.stdout ?? '') + '\n' + (r.stderr ?? ''))
   let harnessFault = null
   if (r.fault) harnessFault = `gate did not run (${faultSummary(r.fault)})`
@@ -128,7 +135,7 @@ export function runSuiteGate(spec, io) {
   const target = suiteTarget === CIVKINGS_HOME.suiteTarget ? {} : { CHK_SUITE_TARGET: suiteTarget }
   // Review I2: a read, like the gate — retried once on an impossible timeout,
   // and a spawn that did not run is a fault, not a suite reading.
-  const r = io.run('python', [SUITE_GATE()], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo, ...target }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true })
+  const r = io.run('python', [SUITE_GATE()], { cwd: spec.repo, env: { CHK_SUITE_BASELINE: spec.suiteBaseline, CYNCO_GATE_REPO: spec.repo, ...target }, timeoutMs: SUITE_TIMEOUT_MS, retryImpossibleTimeout: true, contained: { own: spec.repo } })
   const out = (r.stdout ?? '') + (r.stderr ?? '')
   const pick = (label) => { const m = new RegExp(`${label} \\d+ [^\\n]*\\n((?:\\s+[-+] \\S+\\n?)+)`).exec(out); return m ? m[1].split('\n').map(s => s.trim().replace(/^[-+] /, '')).filter(Boolean) : [] }
   let harnessFault = null
@@ -155,8 +162,13 @@ export function sweepRefusalRetryable(why) {
 
 // One sweep spawn, read into { sweep, sweepFault } (sweep without kind/retried —
 // runSweep stamps those, because only it knows which call this was).
-function sweepOnce(args, io) {
-  const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS })
+function sweepOnce(args, io, repo) {
+  // Not labelled (F242): the sweep never writes the repository; it unpacks `git archive <head>`
+  // into a temp folder, which under containment is the sandbox's own.
+  const r = io.run('python', args, { cwd: process.cwd(), env: {}, timeoutMs: SWEEP_TIMEOUT_MS, contained: { own: repo, labelOwn: false } })
+  // A sweep that could not be started contained (ECONTAINMENT, ECHILDGONE) or faulted otherwise
+  // did not run: its empty output is no "unparseable" reading.
+  if (r.fault) return { sweep: null, sweepFault: `sweep did not run (${faultSummary(r.fault)})` }
   if (r.timedOut) return { sweep: null, sweepFault: `timed out after ${SWEEP_TIMEOUT_MS} ms` }
   // F166 follow-up: the refusal's own first line travels with the fault. Two
   // refusals that read identically on the row — "nothing to mutate" and "the
@@ -204,7 +216,7 @@ function runSweep(spec, row, io) {
   const testsArg = changed === null ? null : sweepTestsFor(spec, changed)
   const args = [resolve('scripts', 'cynco-mutation-sweep.py'), '--repo', spec.repo, '--base', base, '--head', head, '--max', String(max), '--json']
   if (testsArg) args.push('--tests', testsArg)
-  const first = sweepOnce(args, io)
+  const first = sweepOnce(args, io, spec.repo)
   if (first.sweep) return { sweep: { kind: 'derived', ...first.sweep, retried: false }, sweepFault: null, sweepWhy: null, kind: 'derived', retried: false }
   const refused = first.sweepFault === 'sweep refused (exit 2)'
   // F166 follow-up: a sweep that refused because the delivered tests already
@@ -213,7 +225,7 @@ function runSweep(spec, row, io) {
   // the refusal the retry exists for.
   const sources = refused && sweepRefusalRetryable(first.sweepWhy) ? sweepSourcesFor(spec, changed) : []
   if (!sources.length) return { sweepWhy: null, ...first, kind: null, retried: false }
-  const second = sweepOnce([...args, '--mutate', sources.join(' ')], io)
+  const second = sweepOnce([...args, '--mutate', sources.join(' ')], io, spec.repo)
   if (second.sweep) return { sweep: { kind: 'derived-full', ...second.sweep, retried: true }, sweepFault: null, sweepWhy: null, kind: 'derived-full', retried: true }
   return { sweepWhy: null, ...second, kind: null, retried: true }
 }

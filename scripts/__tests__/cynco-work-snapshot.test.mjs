@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync, symlinkSync, rmdirSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { snapshotUncommittedWork } from '../cynco-work-snapshot.mjs'
+import { harnessGitBin } from '../../engine/harnessGit.js'
 
 let repo, out
 
@@ -177,5 +178,52 @@ describe('snapshotUncommittedWork', () => {
     const imported = driver.includes("from './cynco-work-snapshot.mjs'")
     const called = /snapshotUncommittedWork\(\s*CWD\s*,/.test(driver)
     expect({ imported, called }).toEqual({ imported: true, called: true })
+  })
+})
+
+// F242 (01-isolation 7.6, tests 9.7): the workspace is a contained run's to write, so both git calls run
+// with the harness-git environment, git is named by its full path, and the patch-producing diff carries
+// --no-ext-diff --no-textconv. Read against a planted repository by harnessGit.test.ts; here, the call.
+describe('snapshotUncommittedWork runs git as the harness', () => {
+  it('both calls receive the harness-git environment; the diff carries the two diff flags and the work tree pin', () => {
+    const calls = []
+    const spawn = (file, args, opts) => { calls.push({ file, args, opts }); return { status: 0, stdout: '' } }
+    snapshotUncommittedWork(repo, out, 'm1', { spawn })
+    expect(calls).toHaveLength(2)
+    for (const c of calls) {
+      expect(c.file).toBe(harnessGitBin())
+      expect(Number(c.opts.env.GIT_CONFIG_COUNT)).toBeGreaterThan(0)
+      expect(c.opts.cwd).toBe(repo)
+    }
+    expect(calls[0].args.slice(0, 3)).toEqual(['diff', '--no-ext-diff', '--no-textconv'])
+    expect(calls[0].opts.env.GIT_WORK_TREE).toBeDefined()
+    expect(calls[1].args[0]).toBe('ls-files')
+    expect(calls[1].opts.env.GIT_WORK_TREE).toBeUndefined()
+  })
+
+  // Wave 19b (from package A, A3): the diff reads the mission tree into a patch, so a link in it that
+  // leads out would copy what is behind it. The work tree is walked first (worktreeLinks); when harness
+  // git refuses, no git is started at all, and the result says why nothing was saved.
+  // On Linux the 'junction' type is ignored and a directory symlink is made, which the walk reads the same way.
+  it('a work tree holding a link that leads out: no git is started, nothing is written, and the error says harness git refused', () => {
+    const outside = mkdtempSync(join(tmpdir(), 'snap-outside-'))
+    const link = join(repo, 'vendor')
+    writeFileSync(join(outside, 'secret.txt'), 'the owner\'s file\n')
+    writeFileSync(join(repo, 'a.py'), 'x = 5\n')
+    symlinkSync(outside, link, 'junction')
+    try {
+      const calls = []
+      const spawn = (file, args, opts) => { calls.push({ file, args, opts }); return { status: 0, stdout: 'diff --git a/a.py b/a.py\n' } }
+      const r = snapshotUncommittedWork(repo, out, 'm-link', { spawn })
+      expect(calls.map(c => c.args[0])).toEqual([])
+      expect(r.written).toBe(false)
+      expect(r.error).toMatch(/^harness git refused the work tree .+: no git was started, so nothing was saved/)
+      expect(existsSync(join(out, 'm-link.uncommitted.patch'))).toBe(false)
+    } finally {
+      // The link itself, never what it points at: a junction is a folder entry on Windows, a symlink elsewhere.
+      if (process.platform === 'win32') rmdirSync(link)
+      else unlinkSync(link)
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 })

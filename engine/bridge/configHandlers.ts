@@ -9,6 +9,7 @@
 
 import type { LocalCodeConfig } from '../config.js'
 import { cyncoHome } from '../paths.js'
+import { frozenWriteRefusal } from '../integrity.js'
 import type {
   ConfigCurrentEvent,
   ConfigUpdatedEvent,
@@ -210,6 +211,11 @@ export function handleProfileWrite(
   // Validate first
   const validation = handleProfileValidate(yaml)
   if (!validation.ok) return validation
+
+  // The profiles folder is FROZEN while a mission or a daemon task runs (F242, entry 4.M5): saving
+  // now would write the integrity latch and stop that run.
+  const frozen = frozenWriteRefusal()
+  if (frozen) return { type: 'profile.validation', ok: false, errors: [frozen] }
 
   // Write to user profiles directory
   try {

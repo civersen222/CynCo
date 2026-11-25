@@ -58,7 +58,8 @@ export function runChild(launch: AppLaunch, step: AppStep, logFile: string): Pro
         close()
         if (step.keep) child.unref()
         // Owned when it is started, not found when it is stopped (F210): a shell that is still starting its command would be missed.
-        const tree = step.keep ? null : ownProcessTree(child.pid, () => {})
+        // The process, not its pid: a walked tree is never killed by the number once the child's exit was handled (F255).
+        const tree = step.keep ? null : ownProcessTree(child, () => {})
         const exited = new Promise<void>(done => child.once('exit', c => { ended = true; code = c; tree?.release(); done() }))
         resolve({
           step: step.name, pid: child.pid ?? null, keep: !!step.keep, alive: () => !ended, exitCode: () => code, log: logFile,

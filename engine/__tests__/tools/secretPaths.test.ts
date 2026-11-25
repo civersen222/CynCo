@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { secretPathOf, SECRET_REFUSAL } from '../../tools/secretPaths.js'
@@ -110,5 +110,64 @@ describe('ToolExecutor and secret paths', () => {
     const r = await ex.execute('Read', { file_path: 'src/ok.txt' })
     expect(asked).toEqual([])
     expect(r.isError).toBe(false)
+  })
+})
+
+/** A directory link (a junction on Windows), or false when this system cannot make one. */
+function linkDir(target: string, link: string): boolean {
+  try {
+    symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir')
+    return true
+  } catch (e) {
+    console.log(`[test] no directory link could be made here: ${(e as Error).message}`)
+    return false
+  }
+}
+const CAN_LINK_DIRS = (() => {
+  const d = mkdtempSync(join(tmpdir(), 'linkprobe-'))
+  const ok = linkDir(d, join(d, 'l'))
+  if (ok) unlinkSync(join(d, 'l'))
+  rmSync(d, { recursive: true, force: true })
+  return ok
+})()
+
+describe('secretPathOf, second arm: nested keys, patch headers and real paths (F242)', () => {
+  it('a MultiEdit whose edits are a .env and the token file is refused, not asked', () => {
+    const hit = secretPathOf('MultiEdit', {
+      edits: [
+        { file_path: '.env', old_string: 'a', new_string: 'b' },
+        { file_path: join(cyncoHome(), 'tokens.json'), old_string: 'a', new_string: 'b' },
+      ],
+    }, cwd)
+    expect(hit?.action).toBe('refuse')
+  })
+
+  it('an ApplyPatch whose header names a .env asks for approval', () => {
+    const patch = '--- a/.env\n+++ b/.env\n@@ -1 +1 @@\n-A=1\n+A=2\n'
+    expect(secretPathOf('ApplyPatch', { patch }, cwd)?.action).toBe('approve')
+  })
+
+  it('Bash and the Git tool are still not judged here', () => {
+    expect(secretPathOf('Bash', { command: `cat ${join(cyncoHome(), 'tokens.json')}` }, cwd)).toBeNull()
+    expect(secretPathOf('Git', { subcommand: 'add', args: '.env' }, cwd)).toBeNull()
+  })
+
+  it.skipIf(!CAN_LINK_DIRS)('a Read of the token file through a directory link is refused', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cynco-secret-link-'))
+    const home = join(root, 'state')
+    mkdirSync(home)
+    writeFileSync(join(home, 'tokens.json'), '{}')
+    const alias = join(root, 'alias')
+    const before = process.env.CYNCO_HOME
+    process.env.CYNCO_HOME = home
+    try {
+      expect(linkDir(home, alias)).toBe(true)
+      expect(secretPathOf('Read', { file_path: join(alias, 'tokens.json') }, root)?.action).toBe('refuse')
+      expect(secretPathOf('Read', { file_path: join(alias, 'notes.txt') }, root)).toBeNull()
+    } finally {
+      process.env.CYNCO_HOME = before
+      try { unlinkSync(alias) } catch (e) { console.log(`[test] link not removed: ${(e as Error).message}`) }
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

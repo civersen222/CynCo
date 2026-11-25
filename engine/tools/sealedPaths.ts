@@ -54,6 +54,8 @@
  */
 
 import { readdirSync, readFileSync } from 'node:fs'
+import { namePaths } from './toolPaths.js'
+import { realPathOf } from '../realPath.js'
 
 /** Scoped to ONE task, like the immutable set. A later task inherits nothing. */
 let taskSealedPaths: string[] = []
@@ -61,6 +63,10 @@ let taskSealedPaths: string[] = []
 let sealedDirs: string[] = []
 /** Layer 4: the sealed files' own lines, so content can be recognized. */
 let sealedLines = new Set<string>()
+/** The sealed files as they really lie on disk, so a link or a short name cannot spell around the seal. */
+let sealedReal: string[] = []
+/** The gates directories as they really lie on disk: a junction alias of one is the directory itself. */
+let sealedDirReal: string[] = []
 
 /**
  * Layer 4 thresholds.
@@ -105,6 +111,7 @@ export function setTaskSealedPaths(
   contentExempt: string[] = [],
 ): void {
   taskSealedPaths = paths.map(p => p.replace(/\\/g, '/')).filter(Boolean)
+  sealedReal = taskSealedPaths.map(p => norm(realPathOf(p, { quiet: true })))
 
   // Layer 4. Read each sealed file once, now, and remember what is IN it.
   // Layers 1-3 all judge the spelling of a request; this one judges the answer,
@@ -157,6 +164,7 @@ export function setTaskSealedPaths(
     if (entries.every(e => sealedSet.has(`${parent}/${norm(e)}`))) dirs.add(parent)
   }
   sealedDirs = [...dirs]
+  sealedDirReal = sealedDirs.map(d => norm(realPathOf(d, { quiet: true })))
 }
 
 export function getTaskSealedPaths(): string[] {
@@ -196,13 +204,20 @@ export function callTouchesSealed(
 
   if (toolName === 'Bash') {
     const command = norm(String(input.command ?? ''))
-    return tokens.some(t => command.includes(t))
+    if (tokens.some(t => command.includes(t))) return true      // an `if`, not a `return`: the arm below must run
   }
 
+  // Every text a shell would read: a decoded -EncodedCommand, a nested cmd /c or -Command payload,
+  // a here-document body, the Git tool's composed command.
+  const named = namePaths(toolName, input, cwd)
+  for (const t of named.texts) {
+    const text = norm(t)
+    if (tokens.some(tok => text.includes(tok))) return true
+  }
+  if (toolName === 'Bash') return false                           // Bash stays judged on text alone
+
   const root = norm(cwd)
-  for (const key of PATH_INPUT_KEYS) {
-    const raw = input[key]
-    if (typeof raw !== 'string' || !raw) continue
+  const spellingTouches = (raw: string): boolean => {
     const spelled = norm(raw)
     const abs = /^([a-z]:\/|\/)/.test(spelled) ? spelled : `${root}/${spelled}`
     for (const p of taskSealedPaths) {
@@ -212,6 +227,31 @@ export function callTouchesSealed(
       // `Glob **/verify_s9.py` never resolves to an absolute path here.
       if (spelled.includes(basenameOf(p))) return true
     }
+    return false
+  }
+  for (const key of PATH_INPUT_KEYS) {
+    const raw = input[key]
+    if (typeof raw === 'string' && raw && spellingTouches(raw)) return true
+  }
+  for (const n of named.paths) if (n.source === 'field' && spellingTouches(n.raw)) return true
+  for (const s of named.spellings) if (spellingTouches(s)) return true
+  const underSeal = (real: string) => sealedReal.some(s => real === s || real.startsWith(s + '/'))
+    || sealedDirReal.some(d => real === d || real.startsWith(d + '/'))
+  for (const n of named.paths) {
+    if (n.source !== 'field') continue
+    if (underSeal(norm(n.real()))) return true
+  }
+  // A pattern relative to the working folder (a Grep `glob`, a Glob `pattern`): its fixed folder, read
+  // where it really lies, so `g/*` through a junction `g` to the gates directory is the directory itself
+  // (review 2026-11-23). Bash stays judged on text alone (above); layer 4 still reads its output.
+  for (const s of named.spellings) {
+    const w = s.search(/[*?[{]/)
+    const head = w < 0 ? s : s.slice(0, w)
+    const cut = Math.max(head.lastIndexOf('/'), head.lastIndexOf('\\'))
+    if (cut < 0 || /^[\\/]{2}/.test(head)) continue      // never ask a share (F225)
+    const folder = head.slice(0, cut + 1)
+    const abs = /^([a-z]:[\\/]|[\\/])/i.test(folder) ? folder : `${cwd.replace(/[\\/]+$/, '')}/${folder}`
+    if (underSeal(norm(realPathOf(abs, { quiet: true })))) return true
   }
   return false
 }

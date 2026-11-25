@@ -36,13 +36,18 @@
 #   -MissionsDir  where the missions live (tests point it at a copy)
 #   -ControlFile  the daemon control file (tests point it at a temp path)
 #   -StateFile    the window position file (tests point it at a temp path)
+#   -GuardDir     the integrity guard folder (default LOCALCODE_GUARD_DIR, else C:\cynco-guard; tests point it at a temp path)
+#
+#   Integrity     = the integrity latch (HALT.json in the guard folder, wave 15): the note line turns red and
+#                   names it; -Probe ends with "integrity|clear|-", "integrity|latched|<text>" or "integrity|unusable|<text>"
 #
 # Keep every string literal ASCII: PS 5.1 reads this file as ANSI.
 param(
   [switch] $Probe,
   [string] $MissionsDir = (Join-Path $env:USERPROFILE '.cynco\missions'),
   [string] $ControlFile = (Join-Path $env:USERPROFILE '.cynco\daemon-control.json'),
-  [string] $StateFile   = (Join-Path $env:USERPROFILE '.cynco\widget.json')
+  [string] $StateFile   = (Join-Path $env:USERPROFILE '.cynco\widget.json'),
+  [string] $GuardDir    = $(if ($env:LOCALCODE_GUARD_DIR) { $env:LOCALCODE_GUARD_DIR } else { 'C:\cynco-guard' })
 )
 $ErrorActionPreference = 'Continue'
 
@@ -85,6 +90,20 @@ function Get-ModelState {
     if ($s.busy -and $s.busy.triggerId) { return "$($s.modelState) ($($s.busy.triggerId), ~$([math]::Ceiling($s.busy.remainingMs / 60000)) min)" }
     return $s.modelState
   } catch { return $null }
+}
+
+# The integrity latch, read from the guard folder itself (no engine needed): the latch's public summary, when and by
+# whom, and what it stops, the words /api/session sends (engine/integrity.ts deskIntegrity); never a path from it.
+function Get-IntegrityState {
+  $stops = 'No unattended run starts and no queued command runs until it is cleared at the desk: bun scripts/cynco-guard.mjs clear'
+  if (-not (Test-Path -LiteralPath $GuardDir -PathType Container)) {
+    return @{ State = 'unusable'; Text = 'INTEGRITY: the guard folder cannot be used, so no unattended run starts; bun scripts/cynco-guard.mjs status says why' }
+  }
+  $latchFile = Join-Path $GuardDir 'HALT.json'
+  if (-not (Test-Path -LiteralPath $latchFile)) { return @{ State = 'clear'; Text = $null } }
+  $l = Read-Json $latchFile
+  if (-not $l -or -not $l.publicSummary) { return @{ State = 'latched'; Text = "INTEGRITY LATCH: the integrity latch is set, and its record cannot be read. $stops" } }
+  return @{ State = 'latched'; Text = "INTEGRITY LATCH: $($l.publicSummary); set $($l.at) by $($l.by) ($($l.reason)). $stops" }
 }
 
 function Get-TailscaleUp {
@@ -311,6 +330,9 @@ if ($Probe) {
     $ls = if ($g.Last) { $g.Last } else { '-' }
     Write-Output "mission|$($m.Id)|$nx|$ls"
   }
+  $ig = Get-IntegrityState
+  $it = if ($ig.Text) { $ig.Text } else { '-' }
+  Write-Output "integrity|$($ig.State)|$it"
   exit 0
 }
 
@@ -416,6 +438,9 @@ function Refresh {
     $m = [regex]::Match($script:state.oneShot.CommandLine, 'task-(.+)-\d[^\\/]*\.json'); $name = if ($m.Success) { $m.Groups[1].Value } else { 'a task' }
     $note = "daemon is running $name on the GPU - $note"
   }
+  # Wave 15: the integrity latch first, in red; nothing unattended runs under it.
+  $ig = Get-IntegrityState
+  if ($ig.Text) { $note = "$($ig.Text) - $note"; $ui.txtNote.Foreground = '#f85149' } else { $ui.txtNote.Foreground = '#8a8' }
   $ui.txtNote.Text = $note
 
   $ms = @(Get-Missions)

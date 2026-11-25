@@ -11,7 +11,7 @@
 // the shape the runner and the parser expect.
 import { readFileSync } from 'node:fs'
 import { basename } from 'node:path'
-import { parsePerturbHeader } from './cynco-gate-parse.mjs'
+import { parsePerturbHeader, perturbHeaderKeyLine } from './cynco-gate-parse.mjs'
 
 // `C8.1a.tiers-differ`, `C8.5.palette.Atlas`, `C8.9` — the id grammar the
 // sealed gates already print and cynco-gate-parse.mjs already reads.
@@ -183,7 +183,7 @@ export function lintGate({ campaignId, gatePath, perturbPath, positivePath, io =
     if (header) {
       const rawLines = String(headerSource.perturb).split(/\r?\n/)
       // The header line a key lives on — the same shape parsePerturbHeader reads.
-      const headerLine = (key) => rawLines.findIndex(l => new RegExp(`^#[^\\S\\r\\n]*${key}:`).test(l)) + 1 || null
+      const headerLine = (key) => rawLines.findIndex(l => perturbHeaderKeyLine(key).test(l)) + 1 || null
       if (header.mustFail.length === 0) push('lint: the perturb declares no MUST-FAIL discriminator — a stub that nothing must survive proves nothing', perturbPath, headerLine('MUST-FAIL'))
       const known = (short) => lineIds.some(id => id === short || id.startsWith(short + '.'))
       for (const [key, shorts] of [['EXPECT-FLIP', header.expectFlip], ['MUST-FAIL', header.mustFail]]) {

@@ -35,6 +35,9 @@ export type EngineRow = {
   open: Array<{ kind: string; label?: string; sinceS: number }> | null
 }
 
+/** The integrity latch as the desk shows it: `clear`, `latched` (nothing unattended runs) or `unusable` (the guard folder). */
+export type IntegrityRow = { state: 'clear' | 'latched' | 'unusable'; summary: string }
+
 /** `wanted`: something on this box depends on the service right now; `by` says what. */
 export type ServiceRow = { name: string; up: boolean; wanted: boolean; by: string }
 
@@ -48,6 +51,8 @@ export type Sample = {
   holder: HolderRow | null
   engine: EngineRow | null
   services: ServiceRow[]
+  /** The integrity latch (wave 15, `deskIntegrity` in engine/integrity.ts: no path in it), or null when it could not be read. */
+  integrity: IntegrityRow | null
 }
 
 export type WatchEvent = { t: 'event'; at: string; kind: string; key: string; data: Record<string, unknown> }

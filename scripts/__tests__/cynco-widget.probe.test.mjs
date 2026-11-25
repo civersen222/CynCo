@@ -17,7 +17,8 @@ const w = (p, o) => writeFileSync(p, typeof o === 'string' ? o : JSON.stringify(
 
 function probe(extra = []) {
   const r = spawnSync('powershell', ['-STA', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Probe',
-    '-MissionsDir', missions, '-ControlFile', control, '-StateFile', stateFile, ...extra], { encoding: 'utf8', timeout: 60000 })
+    // Wave 15: -GuardDir names a folder of this test's own (the probe now reads the guard folder for its integrity line).
+    '-MissionsDir', missions, '-ControlFile', control, '-StateFile', stateFile, '-GuardDir', join(root, 'guard'), ...extra], { encoding: 'utf8', timeout: 60000 })
   expect(r.status).toBe(0)
   return r.stdout.split(/\r?\n/).filter(Boolean)
 }

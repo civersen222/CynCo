@@ -6,6 +6,7 @@
 import { IDEATION_MAX_AUTHORITY } from './cynco-ideation.mjs'
 import { complied, KINDS } from './cynco-triples.mjs'
 import { campaignHome, CIVKINGS_HOME } from './cynco-campaign-home.mjs'
+import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../engine/missionRule.js'
 
 const wrap = (s) => String(s).replace(/\s+$/, '')
 
@@ -166,14 +167,16 @@ function pacing(spec, ctx) {
   until you make one. Write the hypothesis into a commit message on the smallest edit that tests it.
 - ${inv.commitGapCap} calls without a commit and the same narrowing applies until you commit.
 - Reverting is refused: git checkout --, git restore, git stash, git reset --hard, git clean. A
-  targeted Edit on top of the last commit is the only way back. Salvage lives under C:\\tmp.
+  targeted Edit on top of the last commit is the only way back. What an earlier run left uncommitted is a
+  patch file the harness keeps; STEP 0 names it when there is one.
 - An identifier-shaped Grep returns CodeIndex's definition card first; use it.
-- Probes live under C:\\tmp, never in the repo. No scratch snapshots.${digest}`)
+- Probes live in ${SCRATCH_PHRASE}, never in the repo. No scratch snapshots.${digest}`)
 }
 
 function rules(spec) {
   const allow = `- NO downloads. New files inside the repo ONLY: ${spec.allow.newFiles.join(', ')}.\n- You may change: ${spec.allow.edit.join(', ')}. NOT ${spec.deny.join(', NOT ')}.`
-  return wrap(`RULES\n${allow}\n${spec.rules.map(r => `- ${r}`).join('\n')}`)
+  // F242: the fixed rule comes first and is the same in every brief (engine/missionRule.ts).
+  return wrap(`RULES\n${MISSION_FIXED_RULE_LINES.map(l => `- ${l}`).join('\n')}\n${allow}\n${spec.rules.map(r => `- ${r}`).join('\n')}`)
 }
 
 function doneWhen(spec) {

@@ -26,6 +26,8 @@ const webApp: ListedProc = { pid: 5000, ppid: 1, exe: 'C:\\node.exe', commandLin
 const DENIED: Stopped = { stopped: false, why: 'Windows refused (Access is denied): it was started as administrator and CynCo was not' }
 const appHolder: Holder = { owner: 'app', app, detail: 'dndai\'s model server (pid 29720 (llama-server.exe), started by bash.exe)', listener, discovered: false, launcherPid: 29000 }
 const foreign: Holder = { owner: 'foreign', detail: 'pid 29720 (llama-server.exe), started by bash.exe', listener }
+// The port read again just before a stop finds the same listener (F255: displace.test.ts and gpu.test.ts show the rest).
+const still = async () => JSON.stringify([listener])
 
 describe('stopProcess says whether the process is gone', () => {
   const run = (answer: string | null, existsFor = 0) => {
@@ -54,7 +56,7 @@ describe('displaceApp and a server that cannot be stopped', () => {
   it('says it could not, why, and what the owner can do; nothing is owed and nothing is called stopped', async () => {
     const said: string[] = []
     const outcome = await displaceApp({ app: { ...app, start: { steps: [], open: 'http://localhost:3000' } }, listener, launcherPid: 29000 }, {
-      port: 8081, by: 'the chat engine (pid 77)', file: record, listProcesses: async () => [webApp], kill: async () => DENIED, say: m => said.push(m),
+      port: 8081, by: 'the chat engine (pid 77)', file: record, listProcesses: async () => [webApp], kill: async () => DENIED, say: m => said.push(m), runPowerShell: still,
     })
     expect(outcome).toBe('refused')
     expect(said).toEqual([
@@ -66,13 +68,13 @@ describe('displaceApp and a server that cannot be stopped', () => {
 
   it('names no icon for an app that has none', async () => {
     const said: string[] = []
-    await displaceApp({ app, listener, launcherPid: 29000 }, { port: 8081, by: 'x', file: record, listProcesses: async () => [webApp], kill: async () => DENIED, say: m => said.push(m) })
+    await displaceApp({ app, listener, launcherPid: 29000 }, { port: 8081, by: 'x', file: record, listProcesses: async () => [webApp], kill: async () => DENIED, say: m => said.push(m), runPowerShell: still })
     expect(said[0]).toMatch(/Close the window dndai was started from, or start dndai again from a window that is not run as administrator\.$/)
   })
 
   it('a kill that answers nothing is taken at its word, as before', async () => {
     const said: string[] = []
-    expect(await displaceApp({ app, listener, launcherPid: 29000 }, { port: 8081, by: 'x', file: record, listProcesses: async () => [webApp], kill: async () => {}, say: m => said.push(m) })).toBe('displaced')
+    expect(await displaceApp({ app, listener, launcherPid: 29000 }, { port: 8081, by: 'x', file: record, listProcesses: async () => [webApp], kill: async () => {}, say: m => said.push(m), runPowerShell: still })).toBe('displaced')
     expect(said[0]).toMatch(/CynCo stopped it to load its own model/)
     expect(readDisplaced(record)).toHaveLength(1)
   })
@@ -81,7 +83,7 @@ describe('displaceApp and a server that cannot be stopped', () => {
 describe('the chat engine and the one-shot hear the outcome', () => {
   it('lazyAppDeps.takeFromApp answers refused, so the engine does not wait for a port that will not be freed', async () => {
     const said: string[] = []
-    const deps = lazyAppDeps(8081, { identify: async () => appHolder, kill: async () => DENIED, listProcesses: async () => [webApp], file: record })
+    const deps = lazyAppDeps(8081, { identify: async () => appHolder, kill: async () => DENIED, listProcesses: async () => [webApp], file: record, runPowerShell: still })
     expect((await deps.portOwner()).owner).toBe('app')
     expect(await deps.takeFromApp(m => said.push(m))).toEqual({ refused: 'Windows refused (Access is denied): it was started as administrator and CynCo was not' })
     expect(said[0]).toMatch(/CynCo could not stop it/)
@@ -90,7 +92,7 @@ describe('the chat engine and the one-shot hear the outcome', () => {
   it('a one-shot behind an app\'s server it cannot stop leaves it, having said so once', async () => {
     const said: string[] = []
     let waited = 0
-    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => said.push(m), portAnswers: async () => true, identify: async () => appHolder, kill: async () => DENIED, listProcesses: async () => [webApp], waitFree: async () => { waited++; return false }, file: record })
+    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => said.push(m), portAnswers: async () => true, identify: async () => appHolder, kill: async () => DENIED, listProcesses: async () => [webApp], waitFree: async () => { waited++; return false }, file: record, runPowerShell: still })
     expect(r).toBe('left')
     expect(said).toHaveLength(1)
     expect(said[0]).toMatch(/CynCo could not stop it/)
@@ -100,7 +102,7 @@ describe('the chat engine and the one-shot hear the outcome', () => {
   it('a one-shot says a server that is not CynCo\'s was stopped only once the port is free', async () => {
     const said: string[] = []
     const order: string[] = []
-    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => { order.push('said'); said.push(m) }, portAnswers: async () => true, identify: async () => foreign, kill: async () => { order.push('kill'); return { stopped: true } }, waitFree: async () => { order.push('free'); return true } })
+    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => { order.push('said'); said.push(m) }, portAnswers: async () => true, identify: async () => foreign, kill: async () => { order.push('kill'); return { stopped: true } }, waitFree: async () => { order.push('free'); return true }, runPowerShell: still })
     expect(r).toBe('taken')
     expect(order).toEqual(['kill', 'free', 'said'])
     expect(said).toEqual(['port 8081 was held by a server that is not CynCo\'s: pid 29720 (llama-server.exe), started by bash.exe. Stopped it for the one-shot digest-espn.'])
@@ -108,7 +110,7 @@ describe('the chat engine and the one-shot hear the outcome', () => {
 
   it('a one-shot that could not stop it says that, and never "stopped"', async () => {
     const said: string[] = []
-    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => said.push(m), portAnswers: async () => true, identify: async () => foreign, kill: async () => DENIED, waitFree: async () => false })
+    const r = await takeGpuForOneShot({ port: 8081, by: 'the one-shot digest-espn', say: m => said.push(m), portAnswers: async () => true, identify: async () => foreign, kill: async () => DENIED, waitFree: async () => false, runPowerShell: still })
     expect(r).toBe('left')
     expect(said).toEqual(['port 8081 is held by a server that is not CynCo\'s: pid 29720 (llama-server.exe), started by bash.exe. CynCo could not stop it: Windows refused (Access is denied): it was started as administrator and CynCo was not. Close the window it was started from; the one-shot digest-espn waits for the port.'])
   })

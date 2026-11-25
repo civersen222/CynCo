@@ -80,6 +80,75 @@ export async function readPortListener(port: number, run: (script: string) => Pr
   }
 }
 
+// ---- Is the pid a listing names as a socket's owner the process that made it? (F255) ----
+//
+// Windows names as a listening socket's owner the pid of the process that MADE the socket. When that process has
+// ended and a process it started inherited the socket, the listing keeps naming the dead pid ("orphaned listening
+// socket", "netstat kept reporting the DEAD engine PID" in docs/cynco-failure-log.md), and Windows may have given that
+// number to any process since. A kill of "whatever listens on the port" then lands on a stranger. A process created
+// after the socket cannot have made it: that is the one thing a listing can show, and it is what is read here.
+
+/** One listening socket on a port: the pid the listing names, and when the socket and that process were created (ms since 1601, UTC; null when unread). */
+export type ListenerAge = { pid: number; socketCreatedMs: number | null; processCreatedMs: number | null }
+
+/** `owner`: not younger than the socket. `younger`: created after it, so the number has changed hands. `unknown`: a time could not be read. */
+export type ListenerVerdict = 'owner' | 'younger' | 'unknown'
+
+/**
+ * `Get-NetTCPConnection` gives a socket's creation time in whole seconds (measured 2026-11-25: every listener's
+ * CreationTime ends in .0000000, while the process that made it was created up to 0.97 s later than that time says).
+ * So a process is younger than its socket only when it was created a whole second or more after the time given.
+ */
+export const SOCKET_TIME_RESOLUTION_MS = 1_000
+
+/** The comparison, pure. A number that changed hands within the second the socket was made reads as `owner`, as every pid did before. */
+export function listenerVerdict(socketCreatedMs: number | null, processCreatedMs: number | null): ListenerVerdict {
+  if (socketCreatedMs === null || processCreatedMs === null || !Number.isFinite(socketCreatedMs) || !Number.isFinite(processCreatedMs)) return 'unknown'
+  return processCreatedMs >= socketCreatedMs + SOCKET_TIME_RESOLUTION_MS ? 'younger' : 'owner'
+}
+
+/** The verdict for one pid among a port's rows: `younger` when it is younger than any socket it is named for (IPv4 and IPv6 are two). */
+export function listenerVerdictFor(pid: number, ages: ListenerAge[] | null): ListenerVerdict {
+  const verdicts = (ages ?? []).filter(a => a.pid === pid).map(a => listenerVerdict(a.socketCreatedMs, a.processCreatedMs))
+  if (verdicts.includes('younger')) return 'younger'
+  return verdicts.includes('owner') ? 'owner' : 'unknown'
+}
+
+// No double quotes anywhere: the script travels as one argv element. Milliseconds, so the numbers stay exact in JSON.
+function listenerAgesScript(port: number): string {
+  return [
+    `$out = New-Object System.Collections.ArrayList`,
+    `foreach ($c in @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue)) { $o = [ordered]@{ pid = [int]$c.OwningProcess; socketCreatedMs = $null; processCreatedMs = $null }`,
+    `if ($c.CreationTime) { $o.socketCreatedMs = [long][math]::Floor($c.CreationTime.ToFileTimeUtc() / 10000) }`,
+    `$p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $c.OwningProcess)`,
+    `if ($p -and $p.CreationDate) { $o.processCreatedMs = [long][math]::Floor($p.CreationDate.ToFileTimeUtc() / 10000) }`,
+    `[void]$out.Add($o) }`,
+    `ConvertTo-Json -Compress -InputObject @($out)`,
+    // Nothing listening is an empty list, not a failed command.
+    `exit 0`,
+  ].join('; ')
+}
+
+const timeOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+/**
+ * Every listening socket on `port` with the two creation times, or null when the reading failed (said in one line).
+ * Windows only (PowerShell + CIM), async and bounded like `readPortListener`; an empty list is nothing listening.
+ */
+export async function readListenerAges(port: number, run: (script: string) => Promise<string> = runPowerShell, log: (line: string) => void = console.log): Promise<ListenerAge[] | null> {
+  try {
+    const out = (await run(listenerAgesScript(port))).trim()
+    if (!out) return []
+    const parsed = JSON.parse(out) as unknown
+    const rows = (Array.isArray(parsed) ? parsed : [parsed]) as Array<Record<string, unknown> | null>
+    return rows.filter((r): r is Record<string, unknown> => !!r && typeof r.pid === 'number' && Number.isInteger(r.pid) && r.pid > 0)
+      .map(r => ({ pid: r.pid as number, socketCreatedMs: timeOrNull(r.socketCreatedMs), processCreatedMs: timeOrNull(r.processCreatedMs) }))
+  } catch (err) {
+    log(`[llama-cpp] could not read when the socket on port ${port} and its process were created: ${err instanceof Error ? err.message : String(err)}`)
+    return null
+  }
+}
+
 export async function portOwner(port: number, platform: string = process.platform): Promise<PortOwner> {
   // Off Windows there is nothing to read, and the lazy wait asks again on every poll: answer without a log line.
   if (platform !== 'win32') return { owner: 'unknown', detail: 'port ownership is read on Windows only' }

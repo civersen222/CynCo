@@ -10,6 +10,7 @@
 import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { harnessGitBin, harnessGitEnv } from '../engine/harnessGit.js'
 
 /**
  * Remove compiled-bytecode caches from the workspace, and say what was done.
@@ -36,6 +37,9 @@ import { spawnSync } from 'node:child_process'
  * asked, a tracked path aborts the purge, and a git that cannot answer aborts
  * it too. Deleting a tracked file here would silently edit the delivery this
  * mission is about to be graded on — a cure worse than the disease.
+ *
+ * F242: the workspace is a contained run's to write, so git is named by its full
+ * path and runs with the harness-git environment (no hooks, monitor or filters).
  */
 export function purgeBytecodeCaches(cwd, io = { readdirSync, rmSync, spawnSync }) {
   const found = []
@@ -58,7 +62,7 @@ export function purgeBytecodeCaches(cwd, io = { readdirSync, rmSync, spawnSync }
 
   const base = cwd.replace(/\\/g, '/').replace(/\/$/, '')
   const rel = found.map(p => p.replace(/\\/g, '/').slice(base.length + 1))
-  const r = io.spawnSync('git', ['ls-files', '--', ...rel], { cwd, encoding: 'utf-8' })
+  const r = io.spawnSync(harnessGitBin(), ['ls-files', '--', ...rel], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
   if (r.error || r.status !== 0) {
     return [`BYTECODE PURGE SKIPPED — git could not say whether these are tracked: ${rel.join(', ')}`]
   }
@@ -102,7 +106,7 @@ export function purgeStaleAgentState(cwd, io = { existsSync, rmSync, spawnSync }
   const present = AGENT_STATE_FILES.filter(f => io.existsSync(join(cwd, f)))
   if (present.length === 0) return []
 
-  const r = io.spawnSync('git', ['ls-files', '--', ...present], { cwd, encoding: 'utf-8' })
+  const r = io.spawnSync(harnessGitBin(), ['ls-files', '--', ...present], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
   if (r.error || r.status !== 0) {
     return [`AGENT STATE PURGE SKIPPED — git could not say whether these are tracked: ${present.join(', ')}`]
   }

@@ -1,5 +1,6 @@
 
 import { execFileSync } from 'child_process'
+import { harnessGitBin, harnessGitEnv } from '../harnessGit.js'
 import { readFileSync, readdirSync, statSync, mkdirSync } from 'fs'
 import { join, relative, extname, sep } from 'path'
 import { createHash } from 'crypto'
@@ -107,8 +108,14 @@ function walkFromDisk(projectRoot: string): string[] {
 export function listProjectFiles(projectRoot: string): string[] {
   let candidates: string[]
   try {
-    const out = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
+    // Harness git in a folder a run may have written (F242): the real git, never one planted in
+    // the folder, with no hooks, monitor or pager. `{ repo }` because `--others` walks the work
+    // tree: a `core.worktree` planted in the repository's config would otherwise list another
+    // folder (measured, harnessGit.test.ts). `nested`: an index may be built for a subfolder of a
+    // repository, so the repository above it is found and checked rather than refused.
+    const out = execFileSync(harnessGitBin(), ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
       cwd: projectRoot,
+      env: harnessGitEnv(process.env, { repo: projectRoot, nested: true }),
       encoding: 'utf-8',
       maxBuffer: 32 * 1024 * 1024,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -396,8 +403,8 @@ export class ProjectIndexer {
   async refreshFromGitStatus(): Promise<void> {
     let out: string
     try {
-      out = execFileSync('git', ['status', '--porcelain'], {
-        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      out = execFileSync(harnessGitBin(), ['status', '--porcelain'], {
+        cwd: this.projectRoot, env: harnessGitEnv(process.env, { repo: this.projectRoot, nested: true }), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
       })
     } catch {
       return
@@ -430,8 +437,8 @@ export class ProjectIndexer {
       let drifted: string[] | null = null
       if (last) {
         try {
-          drifted = execFileSync('git', ['diff', '--name-only', `${last}..${head}`], {
-            cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
+          drifted = execFileSync(harnessGitBin(), ['diff', '--name-only', `${last}..${head}`], {
+            cwd: this.projectRoot, env: harnessGitEnv(process.env), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000,
           }).split('\n').filter(Boolean)
         } catch (e) {
           // Recorded head unreachable (rebase, gc, fresh clone) — sweep instead.
@@ -466,8 +473,8 @@ export class ProjectIndexer {
   /** Current commit hash, or null outside a git repo / before the first commit. */
   private gitHead(): string | null {
     try {
-      return execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: this.projectRoot, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+      return execFileSync(harnessGitBin(), ['rev-parse', 'HEAD'], {
+        cwd: this.projectRoot, env: harnessGitEnv(process.env), encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
       }).trim()
     } catch (e) {
       console.log(`[index] git rev-parse HEAD failed in ${this.projectRoot}: ${e instanceof Error ? e.message.split('\n')[0] : e}`)

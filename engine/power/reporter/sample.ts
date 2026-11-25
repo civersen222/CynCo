@@ -6,7 +6,7 @@
  * and saying so is the point. Nothing is reported as a made-up 0.
  */
 import { modelRows, type ModelPortFacts } from './engineFacts.js'
-import type { EngineRow, GpuRow, HolderRow, ModelRow, Sample, ServiceRow } from './types.js'
+import type { EngineRow, GpuRow, HolderRow, IntegrityRow, ModelRow, Sample, ServiceRow } from './types.js'
 
 export type Sources = {
   idleS: () => Promise<number | null>
@@ -16,6 +16,8 @@ export type Sources = {
   holder: (modelUp: boolean) => Promise<HolderRow | null>
   services: (engine: EngineRow | null) => Promise<ServiceRow[]>
   ollama: () => Promise<ModelRow[]>
+  /** The integrity latch (wave 15); a reporter that does not read it sends null. */
+  integrity?: () => Promise<IntegrityRow | null>
 }
 
 export type GatherOpts = { modelPort: number; timeoutMs?: number; log?: (line: string) => void }
@@ -48,6 +50,7 @@ export async function gatherSample(sources: Sources, now: Date, opts: GatherOpts
   ])
   const holder = await within('who holds the GPU', () => sources.holder(model?.up === true), null, timeoutMs, log)
   const services = await within('the services', () => sources.services(engine), [] as ServiceRow[], timeoutMs, log)
+  const integrity = sources.integrity ? await within('the integrity latch', sources.integrity, null, timeoutMs, log) : null
   return {
     t: 'sample',
     at: now.toISOString(),
@@ -57,6 +60,7 @@ export async function gatherSample(sources: Sources, now: Date, opts: GatherOpts
     holder,
     engine,
     services,
+    integrity,
   }
 }
 
@@ -71,5 +75,7 @@ export function fingerprint(s: Sample): string {
     models: (s.models ?? []).map(m => [m.server, m.name, m.busy]),
     holder: s.holder?.unit ?? null,
     engine: s.engine ? [s.engine.up, s.engine.modelState] : null,
+    // Wave 15: a latch set or cleared is told at once.
+    integrity: s.integrity?.state ?? null,
   })
 }

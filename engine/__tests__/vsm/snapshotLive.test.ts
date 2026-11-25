@@ -10,7 +10,7 @@ import { createMissionCollector } from '../../../scripts/cynco-ledger.mjs'
 import type { StreamEvent } from '../../types.js'
 import { defaultConfig, mockProvider, textResponse, toolCall } from '../harness/liveHarness.js'
 
-// ── Gated proving test: after-batch snapshot fires organically ──────────────
+// ── Proving test: after-batch snapshot fires organically ──────────────
 
 describe('snapshot surfacing — loop level', () => {
   let tempDir = ''
@@ -21,9 +21,15 @@ describe('snapshot surfacing — loop level', () => {
     delete process.env._ABLATION_VSM_DISABLED
     // Fresh event bus per test — the singleton accumulates otherwise.
     resetEventBus()
-    // Reset the global contract singleton: auto-created "pending" assertions
-    // can never be satisfied by the mock provider and would block end_turn.
+    // Contract enforcement off for the session: auto-created "pending"
+    // assertions can never be satisfied by the mock provider, and enforcement
+    // would answer each done-text with another model call. Switching it off on
+    // an empty contract does not hold: the loop auto-creates a contract from the
+    // user message and ContractState.create() switches enforcement back on
+    // (193299fe). The loop keeps a live, incomplete contract instead, so one is
+    // made first and enforcement is switched off after it.
     globalContract.clear()
+    globalContract.create('snapshotLive', '', ['never checked by this test'])
     globalContract.setEnforcementEnabled(false)
 
     // The snapshot attaches to THIS temp dir — never the repo root, where
@@ -59,7 +65,6 @@ describe('snapshot surfacing — loop level', () => {
   })
 
   it('scripted Write batch fires the after-batch snapshot, lands in the ledger turn record, and undoLastBatch reverts the file', async () => {
-    // Dynamically import to avoid blowing up the un-gated suite.
     const { ConversationLoop } = await import('../../bridge/conversationLoop.js')
 
     const filePath = targetFile.replace(/\\/g, '/')

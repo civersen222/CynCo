@@ -27,7 +27,7 @@ export class ModelNotFoundError extends Error {
 
   constructor(model: string, searchDir: string) {
     super(
-      `No GGUF found for '${model}'. Download one to ${searchDir}/ or set LOCALCODE_MODEL_PATH.`
+      `No GGUF found for '${model}' at ${searchDir}. The models folder is the one LOCALCODE_MODELS_DIR names, or models under the CynCo home when that is unset. If this machine keeps its models somewhere else, the variable did not reach this process: open a new terminal, or sign out and in. Otherwise put the model there, or set LOCALCODE_MODEL_PATH.`
     )
     this.model = model
   }

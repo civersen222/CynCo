@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test'
-import { bashDefaultTimeoutMs, bashMaxTimeoutMs, bashTool, bashToolEnv, failedOutput, formatBashFailure } from '../../tools/impl/bash.js'
+import { bashDefaultTimeoutMs, bashMaxTimeoutMs, bashTool, bashToolEnv, failedOutput, formatBashFailure, longCommandRefusal } from '../../tools/impl/bash.js'
 import { getShellInfo } from '../../tools/shellInfo.js'
 import { tmpdir } from 'os'
-import { mkdtempSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
 // A realistic red pytest run: the traceback legitimately contains the word
@@ -445,4 +445,216 @@ describe('bashToolEnv — what the model\'s shell inherits', () => {
       if (prev === undefined) delete process.env.CYNCO_MARKER_CHECK; else process.env.CYNCO_MARKER_CHECK = prev
     }
   }, 20000)
+})
+
+// F242, slice S5: the exit code of the one process the call ran rides on the result (types.ts).
+describe('Bash exitCode', () => {
+  it('is 0 on success and the shell status on failure', async () => {
+    const ok = await bashTool.execute({ command: 'echo hello' }, tmpdir())
+    expect(ok.exitCode).toBe(0)
+    const bad = await bashTool.execute({ command: 'exit 3' }, tmpdir())
+    expect(bad.isError).toBe(true)
+    expect(bad.exitCode).toBe(3)
+  })
+
+  it('is null when Stop or the timeout ended the command', async () => {
+    const timedOut = await bashTool.execute({ command: 'sleep 30', timeout: 1000 }, tmpdir())
+    expect(timedOut.isError).toBe(true)
+    expect(timedOut.exitCode).toBeNull()
+    const ac = new AbortController()
+    const running = bashTool.execute({ command: 'sleep 30' }, tmpdir(), ac.signal)
+    setTimeout(() => ac.abort(), 500)
+    const stopped = await running
+    expect(stopped.output).toContain('stopped')
+    expect(stopped.exitCode).toBeNull()
+  }, 20000)
+
+  /**
+   * N130 (docs/NOW.md backlog): under `powershell -Command` a native program's failing exit code reached the
+   * model as 1 whatever the program returned (measured 2026-11-24 with this tool: `cmd /c exit 3`, git's 129
+   * and pytest's 4 all answered 1; `; exit $LASTEXITCODE` carried each, but also answered 0 for a failed cmdlet
+   * and for a program that does not exist, so that is not what the tool appends). A command whose last element
+   * is a native program now carries the program's code; a cmdlet last is as before (1).
+   */
+  it.skipIf(!getShellInfo().isPowerShell)('a native program last carries its own exit code; a cmdlet or a missing program last still reads 1 (PowerShell only)', async () => {
+    const codes: Array<[string, number | null, boolean]> = []
+    for (const command of [
+      'cmd /c exit 3', 'git --no-such-option', 'cmd /c exit 5 > $null', 'Write-Output a; cmd /c exit 4',
+      'Get-Item C:\\no-such-item-of-this-test', 'cmd /c exit 3; Get-Item C:\\no-such-item-of-this-test',
+      'no-such-program-of-this-test', 'cmd /c exit 0', 'cmd /c exit 3 | Out-Null',
+    ]) {
+      const r = await bashTool.execute({ command }, tmpdir())
+      codes.push([command, r.exitCode ?? null, r.isError])
+    }
+    expect(codes).toEqual([
+      ['cmd /c exit 3', 3, true], ['git --no-such-option', 129, true], ['cmd /c exit 5 > $null', 5, true], ['Write-Output a; cmd /c exit 4', 4, true],
+      ['Get-Item C:\\no-such-item-of-this-test', 1, true], ['cmd /c exit 3; Get-Item C:\\no-such-item-of-this-test', 1, true],
+      ['no-such-program-of-this-test', 1, true], ['cmd /c exit 0', 0, false], ['cmd /c exit 3 | Out-Null', 1, true],
+    ])
+  }, 60000)
+
+  // Wave 15b. P3-F7: a native program that exits 0 while `$?` is false (Windows PowerShell 5.1 with the program's
+  // stderr redirected; measured `q=False l=0`) reads 1, as before wave 15. And a missing program last reads 1 even
+  // when an earlier program of the same command left a code (the first build reported the earlier 3).
+  it.skipIf(!getShellInfo().isPowerShell)('a zero exit with $? false reads 1, and a missing program last never reports an earlier program\'s code (PowerShell only)', async () => {
+    const codes: Array<[string, number | null, boolean]> = []
+    for (const command of [
+      'cmd /c "echo x 1>&2" 2> $null', 'cmd /c exit 3; no-such-program-of-this-test', 'cmd /c exit 3\nno-such-program-of-this-test',
+      'cmd /c exit 3; cmd /c exit 4', 'cmd /c exit 3; cmd /c exit 0',
+    ]) {
+      const r = await bashTool.execute({ command }, tmpdir())
+      codes.push([command, r.exitCode ?? null, r.isError])
+    }
+    expect(codes).toEqual([
+      ['cmd /c "echo x 1>&2" 2> $null', 1, true], ['cmd /c exit 3; no-such-program-of-this-test', 1, true], ['cmd /c exit 3\nno-such-program-of-this-test', 1, true],
+      ['cmd /c exit 3; cmd /c exit 4', 4, true], ['cmd /c exit 3; cmd /c exit 0', 0, false],
+    ])
+  }, 60000)
+
+  // Wave 15c (N6): the reset is not placed in front of a last statement that reads `$LASTEXITCODE` or `$?`, so the
+  // model's own command sees the status the statement before it left, as written.
+  it.skipIf(!getShellInfo().isPowerShell)('a last statement that reads $LASTEXITCODE sees the earlier program\'s code (PowerShell only)', async () => {
+    const r = await bashTool.execute({ command: 'cmd /c exit 3; cmd /c echo code=$LASTEXITCODE' }, tmpdir())
+    expect(r.output).toContain('code=3')
+    expect(r.exitCode).toBe(0)
+  }, 30000)
+
+  it('is absent when the call was refused before a process started', async () => {
+    const blocked = await bashTool.execute({ command: 'rm -rf /' }, tmpdir())
+    expect(blocked.output.startsWith('Blocked:')).toBe(true)
+    expect('exitCode' in blocked).toBe(false)
+    const ac = new AbortController()
+    ac.abort()
+    const late = await bashTool.execute({ command: 'echo x' }, tmpdir(), ac.signal)
+    expect('exitCode' in late).toBe(false)
+  })
+})
+
+/**
+ * F60's success path, after a trailing `2>&1` was stripped (PowerShell only: a POSIX shell merges the
+ * streams itself and the tool strips nothing there).
+ *
+ * Measured 2026-11-24 with this tool and no run context: `cmd /c rem` answered `(no output)`, and
+ * `cmd /c rem 2>&1` answered "Command exited with code 0, no output on either stream. Nothing printed at
+ * all usually means the shell or environment failed to run it, ...". The stripped success path asked
+ * `failedOutput` for its silent text and replaced a bare `Command exited with code 0` with `(no output)`,
+ * but `failedOutput` has not returned that bare line since its silent-case text was written (F66, a few
+ * days after F60). So every silent success a model wrote with a trailing merge (`git add -A 2>&1`) told
+ * it that its shell had failed, the very misreading F66's text exists to prevent on a real failure.
+ */
+const MERGE_STRIPPED = getShellInfo().isPowerShell
+describe('Bash tool — a trailing 2>&1 on a success (F60)', () => {
+  it.skipIf(!MERGE_STRIPPED)(
+    'a silent success answers (no output) with the merge exactly as without it (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      // One native program and one PowerShell statement, both silent and both exit 0.
+      for (const command of ['cmd /c rem', '$null = 1']) {
+        const plain = await bashTool.execute({ command }, tmpdir())
+        const merged = await bashTool.execute({ command: `${command} 2>&1` }, tmpdir())
+        expect(plain).toMatchObject({ isError: false, exitCode: 0, output: '(no output)' })
+        expect(merged).toMatchObject({ isError: false, exitCode: 0, output: '(no output)' })
+        expect(merged.output).not.toContain('failed to run it')
+      }
+    },
+    30000,
+  )
+
+  it.skipIf(!MERGE_STRIPPED)(
+    'a merged success that prints still answers with both streams, stdout first (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      const both = await bashTool.execute({ command: 'cmd /c "echo OUT-LINE & echo ERR-LINE 1>&2" 2>&1' }, tmpdir())
+      expect(both).toMatchObject({ isError: false, exitCode: 0 })
+      expect(both.output).toContain('OUT-LINE')
+      expect(both.output).toContain('ERR-LINE')
+      expect(both.output.indexOf('OUT-LINE')).toBeLessThan(both.output.indexOf('ERR-LINE'))
+      // Only stderr printed: it is the answer, not "(no output)".
+      const errOnly = await bashTool.execute({ command: 'cmd /c "echo ERR-ONLY 1>&2" 2>&1' }, tmpdir())
+      expect(errOnly).toMatchObject({ isError: false, exitCode: 0 })
+      expect(errOnly.output).toContain('ERR-ONLY')
+      expect(errOnly.output).not.toContain('(no output)')
+    },
+    30000,
+  )
+
+  it.skipIf(!MERGE_STRIPPED)(
+    'a silent FAILURE with the merge keeps the shell-failure text: only the success path changed (skipped where the shell is not PowerShell: nothing is stripped there)',
+    async () => {
+      // PowerShell's own `exit 3`. (A native program's code is carried too since 2026-11-24, when the
+      // command ends in one: the "Bash exitCode" block above; under `-Command` alone it read 1.)
+      const failed = await bashTool.execute({ command: 'exit 3 2>&1' }, tmpdir())
+      expect(failed).toMatchObject({ isError: true, exitCode: 3 })
+      expect(failed.output).toContain('no output on either stream')
+    },
+    30000,
+  )
+})
+
+// Wave 19 (measured 2026-11-25 with the real tool, phase3\w19\scratch\c\out\longcmd*.out): a command over about
+// 32,700 characters made the tool throw (spawn: ENAMETOOLONG) instead of answering, and Git's bash and sh run only
+// the first 8,190 or so characters of a `-c` text and exit 0 (a payload of 8,200 characters lost its last line,
+// with no error). The tool now refuses both by name before anything starts, and names the file form, which runs whole.
+describe('longCommandRefusal: which commands Windows would cut or cannot carry (any host)', () => {
+  const long = (head: string) => `${head} '# ${'x'.repeat(8_100)}'`
+  it('refuses a POSIX shell given more than 8,000 characters, and anything over 32,000, on win32 only', () => {
+    for (const c of [long('bash -c'), long('sh -c'), long("& 'C:\\Program Files\\Git\\bin\\bash.exe' -c"), long('bash.exe -lc'), long('wsl bash -c'),
+      long('/usr/bin/sh -c'), long('cd x; zsh -c')]) {
+      expect(longCommandRefusal(c, c, 'win32'), c.slice(0, 30)).toContain("Git's bash and sh run only the first")
+      expect(longCommandRefusal(c, c, 'linux'), c.slice(0, 30)).toBeNull()
+    }
+    // Not a shell word: a script name, ssh, an option; and a POSIX shell with a short text.
+    for (const c of [long('python run.sh'), long('ssh host'), long('mytool --shell'), long('Write-Output bashful'), "bash -c 'make test'"]) {
+      expect(longCommandRefusal(c, c, 'win32'), c.slice(0, 30)).toBeNull()
+    }
+    const huge = `# ${'x'.repeat(32_001)}`
+    expect(longCommandRefusal(huge, huge, 'win32')).toContain('longer than one Windows command line carries')
+    expect(longCommandRefusal(huge, huge, 'linux')).toBeNull()
+    // What reaches the shell counts: the preamble and the exit-code lines too.
+    expect(longCommandRefusal('x', huge, 'win32')).toContain('longer than one Windows command line carries')
+  })
+
+  // 19b, C19-6: the shell word in any case (Windows names are not case-sensitive), and the bound itself: a command of
+  // exactly 8,001 characters is refused and one of 8,000 is not (every row above was 8,110 or more).
+  it('reads the shell word in any case, and refuses from 8,001 characters on (19b)', () => {
+    const upper = `& 'C:\\Program Files\\Git\\bin\\BASH.EXE' -c '# ${'x'.repeat(8_050)}'`
+    expect(longCommandRefusal(upper, upper, 'win32')).toContain("Git's bash and sh run only the first")
+    const exactly = (n: number) => { const head = "bash -c '# "; return `${head}${'x'.repeat(n - head.length - 1)}'` }
+    expect(exactly(8_001).length).toBe(8_001)
+    expect(longCommandRefusal(exactly(8_001), exactly(8_001), 'win32')).toContain("Git's bash and sh run only the first")
+    expect(exactly(8_000).length).toBe(8_000)
+    expect(longCommandRefusal(exactly(8_000), exactly(8_000), 'win32')).toBeNull()
+  })
+})
+
+describe.skipIf(process.platform !== 'win32')('Bash tool — a command a Windows command line would cut or cannot carry', () => {
+  const GIT_BASH = 'C:\\Program Files\\Git\\usr\\bin\\bash.exe'
+  it('a command longer than one command line carries is refused by name, not thrown', async () => {
+    const r = await bashTool.execute({ command: `# ${'x'.repeat(40_000)}\nWrite-Output done` }, tmpdir())
+    expect(r.isError).toBe(true)
+    expect(r.output).toContain('longer than one Windows command line carries')
+    expect(r.output).toContain('Write tool')
+    expect('exitCode' in r).toBe(false)
+  }, 30000)
+  it('a POSIX shell handed a -c text Git\'s bash would cut is refused by name, and the same text from a file runs whole', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cynco-bash-long-'))
+    try {
+      const cut = await bashTool.execute({ command: `& '${GIT_BASH}' -c '# ${'x'.repeat(8_300)}\necho END-$((1+1))'` }, dir)
+      expect(cut.isError).toBe(true)
+      expect(cut.output).toContain("Git's bash and sh run only the first")
+      expect(cut.output).toContain('bash <file>')
+      expect('exitCode' in cut).toBe(false)
+      // By full path only: a bare `bash` can be the WSL launcher, which this test must never start.
+      for (const c of [`& 'C:\\Program Files\\Git\\usr\\bin\\sh.exe' -c '# ${'x'.repeat(8_300)}'`, `& 'C:\\Program Files\\Git\\bin\\bash.exe' --norc -c '# ${'x'.repeat(8_300)}'`]) {
+        expect((await bashTool.execute({ command: c }, dir)).output, c.slice(0, 20)).toContain("Git's bash and sh run only the first")
+      }
+      // A long PowerShell command that starts no POSIX shell runs, and so does the script from a file.
+      const ps = await bashTool.execute({ command: `# ${'x'.repeat(8_300)}\nWrite-Output ('END-' + 'PS')` }, dir)
+      expect(ps).toMatchObject({ isError: false, exitCode: 0 })
+      expect(ps.output).toContain('END-PS')
+      writeFileSync(join(dir, 'long.sh'), `# ${'x'.repeat(30_000)}\necho END-$((1+1))\n`)
+      const file = await bashTool.execute({ command: `& '${GIT_BASH}' long.sh` }, dir)
+      expect(file.output).toContain('END-2')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 60000)
 })

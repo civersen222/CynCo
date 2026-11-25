@@ -350,5 +350,28 @@ export function s5DispatchRefusal({ capabilities }) {
     + 'Restart the engine under dispatch-mission.sh (earned rules only) or with LOCALCODE_S5_ENFORCE=false (everything advisory) and re-dispatch.'
 }
 
+export const CAP_CONTAINED = 'contained-tools'
+export const CAP_CONTAINED_OVERLAY = 'contained-overlay'
+export const CAP_PATH_GUARD = 'path-guard'
+export const CAP_TOOL_AUDIT = 'tool-audit'
+
+/** F242: is this engine a contained mission engine? Null to dispatch, a sentence to print and refuse on. */
+export function containmentDispatchRefusal({ capabilities, platform = process.platform }) {
+  const has = (w) => Array.isArray(capabilities) && capabilities.includes(w)
+  const missing = []
+  if (platform === 'win32' ? !has(CAP_CONTAINED) : !(has(CAP_CONTAINED) || has(CAP_CONTAINED_OVERLAY))) {
+    missing.push(platform === 'win32' ? CAP_CONTAINED : `${CAP_CONTAINED} or ${CAP_CONTAINED_OVERLAY}`)
+  }
+  if (!has(CAP_PATH_GUARD)) missing.push(CAP_PATH_GUARD)
+  if (!has(CAP_TOOL_AUDIT)) missing.push(CAP_TOOL_AUDIT)
+  if (missing.length === 0) return null
+  const said = Array.isArray(capabilities)
+    ? `the engine advertised [${capabilities.join(', ')}]`
+    : 'the engine advertised no capabilities at all'
+  return `this engine is not a contained mission engine: ${said}, and ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} absent. `
+    + 'A mission is dispatched only to an engine started by scripts/dispatch-mission.sh, which creates the sandbox the engine adopts; '
+    + 'the engine log says why on its [containment] and [capability] lines. Nothing was dispatched.'
+}
+
 /** `commandAssertion` is re-exported so the visible form has one definition. */
 export { commandAssertion }

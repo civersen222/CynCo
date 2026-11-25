@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
-import { parseGateOutput, parsePerturbHeader, compareCalibration, GATE_MIN_LINES } from '../cynco-gate-parse.mjs'
+import { parseGateOutput, parsePerturbHeader, perturbHeaderKeyLine, compareCalibration, GATE_MIN_LINES } from '../cynco-gate-parse.mjs'
 
 const base = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
 
@@ -42,6 +42,27 @@ describe('parsePerturbHeader', () => {
     expect(h.mustFail).toEqual([])
     expect(h.expectFlip).toEqual(['C8.1'])
   })
+  // R3-F5 (wave 12): a perturb stub run under node (.mjs) cannot start a line with '#', so its header
+  // could only be declared inside a block comment. A '//' line is a header line too.
+  it('reads the header from // comment lines, as a JavaScript stub writes it', () => {
+    const h = parsePerturbHeader('// a node stub\n// EXPECT-FLIP: T1.2a T1.3\n//MUST-FAIL: T1.1 T1.4\nimport fs from "node:fs"\n')
+    expect(h).toEqual({ expectFlip: ['T1.2a', 'T1.3'], mustFail: ['T1.1', 'T1.4'] })
+  })
+  it('a // header line declared but empty is empty, and a // line that only mentions a key is not a header', () => {
+    const h = parsePerturbHeader('// EXPECT-FLIP:\n// MUST-FAIL: T1.1\n// the EXPECT-FLIP line above is empty\n')
+    expect(h).toEqual({ expectFlip: [], mustFail: ['T1.1'] })
+    expect(() => parsePerturbHeader('// see the EXPECT-FLIP: and MUST-FAIL: lines of the gate\n')).toThrow(/EXPECT-FLIP/)
+  })
+  // P5-C5 (wave 15): the gate lint numbered header lines with its own `^#` spelling, so a // header parsed and
+  // its lint problems carried line null. The one spelling is exported, and it is the parser's.
+  it('perturbHeaderKeyLine: the shape the parser reads, one line at a time', () => {
+    const re = perturbHeaderKeyLine('EXPECT-FLIP')
+    for (const l of ['# EXPECT-FLIP: C8.1a', '#EXPECT-FLIP:', '// EXPECT-FLIP: T1.2', '//\tEXPECT-FLIP: x']) expect(re.test(l), l).toBe(true)
+    for (const l of ['  # EXPECT-FLIP: x', 'x = 1  # EXPECT-FLIP: x', '/// EXPECT-FLIP: x', '# MUST-FAIL: x', '# the EXPECT-FLIP line']) expect(re.test(l), l).toBe(false)
+    const text = '// a node stub\n// EXPECT-FLIP: T1.2a\n// MUST-FAIL: T1.1\n'
+    expect(text.split('\n').findIndex(l => perturbHeaderKeyLine('MUST-FAIL').test(l)) + 1).toBe(3)
+    expect(parsePerturbHeader(text)).toEqual({ expectFlip: ['T1.2a'], mustFail: ['T1.1'] })
+  })
 })
 
 describe('compareCalibration', () => {
@@ -56,6 +77,20 @@ describe('compareCalibration', () => {
     const r = compareCalibration({ base: baseG, perturbed, header })
     expect(r.ok).toBe(false)
     expect(r.problems.join('\n')).toMatch(/C8.1b/)
+  })
+  // A later check of wave 14: a line that already PASSes at BASE cannot flip, so declaring it in EXPECT-FLIP
+  // says something false about the stub, and the comparison accepted it. The real c8 header declares
+  // C8.5.river-reserved, which passes at BASE in this very fixture.
+  it('refuses an EXPECT-FLIP that names a line already PASSing at BASE, by name', () => {
+    const perturbed = parseGateOutput(base.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS'))
+    const r = compareCalibration({ base: baseG, perturbed, header: { ...header, expectFlip: ['C8.5.palette.Atlas', 'C8.5.river-reserved'] } })
+    expect(r.problems).toEqual(['EXPECT-FLIP C8.5.river-reserved names only lines that already PASS at BASE (C8.5.river-reserved), so the cheat stub cannot flip it'])
+  })
+  it('an EXPECT-FLIP prefix that covers a BASE failure as well as a passing line stands', () => {
+    const perturbed = parseGateOutput(base.replace('C8.5.palette.Atlas: FAIL', 'C8.5.palette.Atlas: PASS').replace('C8.5.palette.House: FAIL', 'C8.5.palette.House: PASS')
+      .replace('C8.5.palette.Powers: FAIL', 'C8.5.palette.Powers: PASS'))
+    // `C8.5` covers the three palette fails and the passing river line.
+    expect(compareCalibration({ base: baseG, perturbed, header: { ...header, expectFlip: ['C8.5'] } })).toEqual({ ok: true, problems: [] })
   })
   it('refuses a base that is not a clean MISS', () => {
     const r = compareCalibration({ base: parseGateOutput('GATE: PASS\n'), perturbed: baseG, header })

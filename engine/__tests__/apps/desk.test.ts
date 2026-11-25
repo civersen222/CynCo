@@ -31,7 +31,11 @@ describe('startFromDesk', () => {
   let home = ''
   const started: Running[] = []
   afterEach(async () => {
-    for (const r of started.splice(0)) if (r.pid && r.alive()) { try { process.kill(r.pid) } catch { /* it ended between the check and the kill */ } }
+    // Wave 24 (F255): through what started it, never by its number. `alive()` follows the child's 'exit' event, so a
+    // kill by `r.pid` was safe only as long as Node happened to hold the child's handle until that event; `stop()` asks
+    // the owned tree, which looks at the child itself (it kills only while the child's exit has not been handled, and
+    // with what the child started) and does nothing once the child has ended.
+    for (const r of started.splice(0)) await r.stop()
     await sleep(200)
     if (home) rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   })

@@ -25,6 +25,14 @@ describe('llama errors', () => {
     expect(err.name).toBe('ModelNotFoundError')
   })
 
+  it('ModelNotFoundError says where it looked and that the models variable may not have reached the process, never to download into the home', () => {
+    const err = new ModelNotFoundError('qwen3.6', '/home/user/.cynco/models/qwen3.6')
+    expect(err.message.startsWith("No GGUF found for 'qwen3.6' at /home/user/.cynco/models/qwen3.6.")).toBe(true)
+    expect(err.message).toContain('LOCALCODE_MODELS_DIR')
+    expect(err.message).toContain('LOCALCODE_MODEL_PATH')
+    expect(err.message).not.toMatch(/Download one to/)
+  })
+
   it('ServerStartError includes port and reason', () => {
     const err = new ServerStartError(8081, 'CUDA not found')
     expect(err.message).toContain('8081')

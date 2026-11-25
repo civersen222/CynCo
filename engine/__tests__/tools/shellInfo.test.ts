@@ -198,6 +198,47 @@ describe('autoTranslateEnvPrefix (rewrite instead of refuse)', () => {
     expect(autoTranslateEnvPrefix('cd proj; FOO=1 pytest; git status', ps51)).toBeNull()
   })
 
+  // An assignment that ends its own statement is not a prefix: it became `$env:t="./build;"; rm -rf "$t"`, a
+  // different command, which the path check then refused as unreadable (ninth review of the path check).
+  it('leaves an assignment that ends its own statement alone', () => {
+    for (const c of ['t=./build; rm -rf "$t"', 'OUT=out/report.txt; python report.py > "$OUT"', 'cd proj; t=./build; rm -rf "$t"']) {
+      expect(autoTranslateEnvPrefix(c, ps51)).toBeNull()
+      expect(translateEnvPrefix(c, ps51)).toBe(c)
+    }
+    // A real prefix after such an assignment is still a prefix.
+    expect(translateEnvPrefix('t=1; FOO=1 pytest', ps51)).toBe('t=1; $env:FOO="1"; pytest')
+  })
+
+  // A single-quoted value is a literal in a POSIX shell; it became a double-quoted PowerShell string, where
+  // `$x` and `$(...)` run (docs/NOW.md backlog: "translateEnvPrefix should emit single quotes"). It is now a
+  // single-quoted PowerShell literal, and a quoted value holding a space or a `;` is one value, not cut at it.
+  it('keeps a single-quoted value a literal', () => {
+    expect(translateEnvPrefix("X='$(Remove-Item x)' python -V", ps51)).toBe("$env:X='$(Remove-Item x)'; python -V")
+    expect(translateEnvPrefix("MSG='a $b c' python run.py", ps51)).toBe("$env:MSG='a $b c'; python run.py")
+    expect(translateEnvPrefix("X='a;b' Y=1 pytest", ps51)).toBe("$env:X='a;b'; $env:Y=\"1\"; pytest")
+    expect(translateEnvPrefix('MSG="a b" python run.py', ps51)).toBe('$env:MSG="a b"; python run.py')
+    expect(autoTranslateEnvPrefix("cd proj; MSG='a b' python run.py", ps51)).toBe("cd proj; $env:MSG='a b'; python run.py")
+    // Unquoted and double-quoted values are as before.
+    expect(translateEnvPrefix('FOO=1 python -m pytest', ps51)).toBe('$env:FOO="1"; python -m pytest')
+    expect(translateEnvPrefix('FOO="1" python -m pytest', ps51)).toBe('$env:FOO="1"; python -m pytest')
+  })
+
+  // Wave 15b (P3-F5): a value of several single-quoted pieces is one literal; a value that mixes a single-quoted
+  // piece with anything else is not translated (its double-quoted form would run the code), and the dialect check
+  // says how to write it.
+  it('joins single-quoted pieces into one literal, and leaves a value of mixed quoting untranslated', () => {
+    expect(translateEnvPrefix("X='$(ri ~/.x)''' python -V", ps51)).toBe("$env:X='$(ri ~/.x)'; python -V")
+    expect(translateEnvPrefix("X='a b''c d' python -V", ps51)).toBe("$env:X='a bc d'; python -V")
+    for (const c of ["X='a'\"$(ri y)\" python -V", "X=a'$(ri y)' python -V", "X='a b'c python -V", 'X="a"b python -V']) {
+      expect(translateEnvPrefix(c, ps51), c).toBe(c)
+      expect(autoTranslateEnvPrefix(c, ps51), c).toBeNull()
+      expect(checkShellDialect(c, ps51), c).toMatch(/quoting this translation cannot carry over.*\$env:X =/)
+    }
+    // A plain value and one quoted string are unchanged.
+    expect(translateEnvPrefix('FOO=a.b python -V', ps51)).toBe('$env:FOO="a.b"; python -V')
+    expect(translateEnvPrefix("FOO='' python -V", ps51)).toBe("$env:FOO=''; python -V")
+  })
+
   it('returns null when there is nothing to translate', () => {
     expect(autoTranslateEnvPrefix('python -m pytest', ps51)).toBeNull()
     expect(autoTranslateEnvPrefix('python -m pytest -k test_x=1', ps51)).toBeNull()

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename, dirname, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,12 +14,15 @@ import {
   readPackageMap, packageMapText, AUTHOR_RESUME_TIMEOUT_S, authorTimeoutFor,
   CHECK_JSON_MARKER, SELF_SCRIPT, CHECK_SUBPROCESS_TIMEOUT_MS,
   checkRecord, staticRelativeImports, harnessClosure, harnessFileKey, harnessFingerprint, harnessDirtyFiles,
+  AUTHOR_CHECK_MARK, authorCheckPlan, runAuthorCheck, BASELINE_OWED,
 } from '../cynco-gate-author.mjs'
+import { markerCheckRound } from '../cynco-marker-check.mjs'
 import { CampaignState } from '../cynco-campaign-state.mjs'
 import { summarize } from '../cynco-gate-lines.mjs'
 import { applyProposalDecision } from '../cynco-campaign.mjs'
 import { readSeats, writeSeats } from '../cynco-proposals.mjs'
 import { GATE_AUTHOR_MIN_LINES as SV_MIN_LINES, GATE_AUTHOR_HELD_FLOOR as SV_HELD_FLOOR } from '../cynco-signal-validation.mjs'
+import { MISSION_FIXED_RULE_LINES, SCRATCH_PHRASE } from '../../engine/missionRule.js'
 
 // ── the world the fake io stands in for ─────────────────────────────────────
 //
@@ -114,7 +117,10 @@ function makeIo({ home, files = {}, baseLog = BASE_LOG, perturbLog = PERTURB_LOG
   const disk = { ...files }
   const dispatched = [], logs = [], ran = [], copied = [], renamed = []
   const io = {
-    mkdir: (p) => { disk[norm(p) + '/'] = '' },
+    // Wave 19 (A3), changed on purpose: the staging folder is made on disk as well (inside this test's own temp
+    // home), because a harness git that writes the work tree or reads it into a commit now walks it for links
+    // first (`{ worktreeLinks: true }`), and a folder that does not exist is refused, not committed.
+    mkdir: (p) => { disk[norm(p) + '/'] = ''; mkdirSync(p, { recursive: true }) },
     run: (cmd, args, opts) => {
       const k = [cmd, ...args].join(' ')
       ran.push(k)
@@ -343,6 +349,15 @@ describe('authoringBrief', () => {
     expect(t).toContain('gate c9 authored')
   })
 
+  it('names C:/tmp only as the BASE archive it reads, never as a place to write (F242, review 2026-11-23)', () => {
+    for (const baseDir of ['C:/tmp/c9_author_base', 'C:\\tmp\\c9_author_base']) {
+      const t = build({ baseDir })
+      const uses = [...t.matchAll(/C:(?:\\+|\/)tmp[^\s"'`)]*/gi)].map(m => m[0].replace(/\\+/g, '/').replace(/[.,;:]+$/, ''))
+      expect(uses.length).toBeGreaterThan(0)
+      for (const u of uses) expect(u.startsWith('C:/tmp/c9_author_base'), u).toBe(true)
+    }
+  })
+
   // Ruling: the exemplar is read from the sealed directory but the brief is a
   // file a model reads. The path never appears and neither does the word.
   it('never contains the string heldout, even when the exemplar does', () => {
@@ -405,10 +420,51 @@ describe('authoringBrief', () => {
     expect(build()).toMatch(/read-only/)
   })
 
-  it('tells a resume the list is the PREVIOUS run\'s and to re-run the check', () => {
+  // F242: the fixed rule leads THE RULES, before Rule 11, and says where the scratch folder is.
+  it('opens THE RULES with both fixed-rule paragraphs and the scratch phrase, before Rule 11', () => {
+    const t = build()
+    const rules = t.slice(t.indexOf('THE RULES'), t.indexOf('THE DRAFT'))
+    const rule11 = rules.indexOf('Rule 11')
+    expect(rule11).toBeGreaterThan(-1)
+    for (const l of MISSION_FIXED_RULE_LINES) {
+      const at = rules.indexOf(`Fixed rule — ${l}`)
+      expect(at, l).toBeGreaterThan(-1)
+      expect(at).toBeLessThan(rule11)
+    }
+    const phrase = rules.indexOf(`Where this brief says scratch folder it means ${SCRATCH_PHRASE}.`)
+    expect(phrase).toBeGreaterThan(-1)
+    expect(phrase).toBeLessThan(rule11)
+    expect(t).not.toContain('heldout')
+  })
+
+  it('tells a resume the list is the PREVIOUS run\'s and that the harness runs the check again', () => {
     const resumed = build({ previousCheck: 'lint: no graded lines' })
     expect(resumed).toContain('from the PREVIOUS run')
-    expect(resumed).toContain('it works from any directory')
+    // Wave 19 (decision sheet item 25), changed on purpose: the model no longer runs the check (it cannot start
+    // in the box); the harness runs it when the turn ends.
+    expect(resumed).not.toContain('it works from any directory')
+    expect(resumed).toMatch(/The harness runs the check again\s+when your turn ends \(DONE WHEN, below\)/)
+  })
+
+  // Decision sheet item 25: the model is told, in the brief that carries the fixed rule, that the harness runs
+  // the acceptance check when its turn ends and sends the failures back once, and that its own run is refused.
+  it('DONE WHEN says the harness runs the check when the turn ends, sends the failures back once, and refuses the model\'s own run', () => {
+    const t = build()
+    const done = t.slice(t.indexOf('\nDONE WHEN\n'))
+    expect(done).toContain(checkCommand(`${home}/authoring/c9`, 'C:/tmp/c9_author_base'))
+    expect(done).toMatch(/the harness runs it, not you: when your turn\s+ends it runs this exact command outside your mission and, if it fails, sends\s+you its failures once\. Running it from inside the mission is refused\./)
+    expect(done).toMatch(/commit it with this in the commit message/)
+    expect(t).not.toContain('Run this exact command from anywhere')
+    expect(t).not.toMatch(/run the check yourself/i)
+  })
+
+  // Specs step 5 (w14 specs.txt): the measures entry tells the author how to word the grader's own folders (F242).
+  it('THE DRAFT\'s measures entry says the grader makes and throws away its own folders, never a state for the worker to produce', () => {
+    const t = build()
+    const draft = t.slice(t.indexOf('THE DRAFT'), t.indexOf('EXEMPLAR'))
+    expect(draft).toContain('never word them as a state for the worker to produce')
+    expect(draft).toMatch(/say that the grader makes them and throws them away,\s+name the variable or call that points the program at each/)
+    expect(draft).toMatch(/new empty folders inside its\s+scratch folder, never an existing folder emptied \(F242\)\./)
   })
 })
 
@@ -522,6 +578,49 @@ describe('checkStaged', () => {
     expect(net.endsWith(' (gate_c9.py:2)')).toBe(true)
     expect(r.at).toEqual([{ file: 'gate_c9.py', line: 2, problem: net }])
     expect(r.problems.find(p => /BASE must MISS/.test(p))).toMatch(/ \(gate_c9\.py\)$/)
+  })
+})
+
+// Wave 19b (check A-F1): the driver runs the authoring check while the run's own integrity baseline is open, so the
+// calibration of a correct triple may not write its suite baseline (the held-out folder is frozen). A correct triple
+// must end as a correct triple: the driver does not read that as a failure and sends the model no note.
+describe('A-F1: a correct triple checked while its run\'s integrity baseline is open', () => {
+  let guard
+  beforeEach(() => {
+    guard = mkdtempSync(join(tmpdir(), 'cynco-w19b-guard-'))
+    mkdirSync(join(guard, 'manifests'))
+    writeFileSync(join(guard, 'manifests', 'm-w19b-open.before.json'), '{}')
+    process.env.LOCALCODE_GUARD_DIR = guard
+  })
+  // The suite's own setup points LOCALCODE_GUARD_DIR back at its never-made folder before the next test.
+  afterEach(() => { rmSync(guard, { recursive: true, force: true }) })
+
+  it('the check says only that its suite baseline was not written; the driver reads verified null, never false, and starts no feedback round', async () => {
+    const { stagingDir, files } = staged(home)
+    const { io, ran } = makeIo({ home, files })
+    // The check itself, by its CLI path in this process, with what it prints captured.
+    const out = { stdout: '', stderr: '' }
+    const log = vi.spyOn(console, 'log').mockImplementation((...a) => { out.stdout += `${a.join(' ')}\n` })
+    const err = vi.spyOn(console, 'error').mockImplementation((...a) => { out.stderr += `${a.join(' ')}\n` })
+    let code
+    try { code = await authorMain(['--check', stagingDir, 'C:/tmp/c9_author_base', '--json'], io) } finally { log.mockRestore(); err.mockRestore() }
+    expect(code).toBe(1)
+    expect(out.stderr).toMatch(/^\[check\] c9: REFUSED — 1 problem\(s\)\n {2}suite baseline not written: a mission or daemon task is running \(m-w19b-open\)/)
+    expect(ran.some(k => k.includes('pytest'))).toBe(false)
+    // The driver's reading of exactly that output (runAuthorCheck, its process a stand-in that prints it).
+    const r = await runAuthorCheck({ stagingDir, baseDir: 'C:/tmp/c9_author_base', timeoutMs: 60_000 }, {
+      bun: 'bun', graceMs: 50, own: () => ({ kind: 'job', kill: async () => {}, release: () => {} }),
+      execFile: (_f, _a, _o, cb) => { setTimeout(() => cb(Object.assign(new Error('exit'), { code }), out.stdout, out.stderr), 1); return { pid: 1 } },
+    })
+    expect(r).toMatchObject({ verified: null, exitCode: 1, baselineOwed: true, harnessFault: BASELINE_OWED })
+    // The marker-check round the driver runs with it: no note reaches the model.
+    const sent = []
+    const ws = { readyState: 1, bufferedAmount: 0, send: (f) => sent.push(f), ping: () => {} }
+    const round = await markerCheckRound({ getWs: () => ws, reconnect: async () => ws, check: async () => ({ r }), remainingS: () => 7200, minS: 60, retries: 0,
+      noteFor: () => 'the note', frameFor: (t) => t, pingEveryMs: 0, confirmMs: 10, log: () => {} })
+    expect(round.retried).toBe(false)
+    expect(round.noteFailed).toBeNull()
+    expect(sent).toEqual([])
   })
 })
 
@@ -646,6 +745,20 @@ describe('authorCampaign', () => {
     expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe('7200000')
     expect(d.env.CYNCO_CHECK_TIMEOUT_MS).toBe('7200000')
     expect(d.env.CYNCO_BASH_TIMEOUT_MS).toBe(d.env.CYNCO_CHECK_TIMEOUT_MS)
+    // F242, entry 1.B2 part 1: the check calibrates in the BASE archive, so the dispatch labels that
+    // folder for the run as well (dispatch-mission.sh passes it to cynco-sandbox.mjs create --also).
+    expect(d.env.CYNCO_MISSION_ALSO_LABEL).toBe('C:/tmp/c9_author_base')
+    // Decision sheet item 25: the one mark of the authoring dispatch, so its driver runs the check outside the box.
+    expect(d.env[AUTHOR_CHECK_MARK]).toBe('1')
+    // Wave 19b (check A-F2): the BASE archive is C:/tmp/... (baseDirFor), an absolute path only on Windows, where the
+    // authoring runs; on another host the driver's parse reads it as a relative folder and refuses the dispatch.
+    const plan = authorCheckPlan({ mark: d.env[AUTHOR_CHECK_MARK], checkCmd: d.checkCmd, cwd: d.cwd })
+    if (isAbsolute('C:/tmp/c9_author_base')) expect(plan).toEqual({ kind: 'run', stagingDir: `${home}/authoring/c9`, baseDir: 'C:/tmp/c9_author_base' })
+    else expect(plan).toMatchObject({ kind: 'refused', why: expect.stringContaining('not the one this checkout\'s cynco-gate-author.mjs builds') })
+    // Plan P6 item 4: every attempt names its own logs and pid file (the dispatch refuses a stem whose logs exist).
+    expect(d.env.DRIVER_PID_FILE).toBe('C:/tmp/driver_c9-author-1.pid')
+    expect(d.env.DRIVER_LOG).toBe('C:/tmp/driver_c9-author-1.log')
+    expect(d.env.ENGINE_LOG).toBe('C:/tmp/engine_c9-author-1.log')
     expect(r.ok).toBe(true)
     expect(r.proposal).toMatchObject({ type: 'Code', name: 'gate/c9', status: 'pending' })
     expect(r.proposal.evidence).toMatchObject({ lineCount: IDS.length, problems: [], missionId: 'c9-author-1', verified: true })
@@ -685,12 +798,67 @@ describe('authorCampaign', () => {
     await authorCampaign({ id: ID, roadmap, state, io })
     const call = spawned.find(s => s.cmd === 'bun' && s.args.includes('--check'))
     expect(call).toBeTruthy()
-    expect(call.args).toEqual([SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base', '--json'])
+    // Changed on purpose in wave 19b: --no-install first (Bun never fetches a package by itself).
+    expect(call.args).toEqual(['--no-install', SELF_SCRIPT, '--check', `${home}/authoring/c9`, 'C:/tmp/c9_author_base', '--json'])
     expect(call.opts.timeoutMs).toBe(CHECK_SUBPROCESS_TIMEOUT_MS)
+    // F242: the check starts in the checkout (no cwd: rule H1), and every git the runner runs in the
+    // staging folder, which the authoring mission writes, carries the harness-git environment.
+    expect(call.opts.cwd).toBeUndefined()
+    const gitCalls = spawned.filter(s => s.cmd === 'git')
+    expect(gitCalls.map(g => g.args.find(a => !a.startsWith('-') && !a.includes('/')))).toEqual(expect.arrayContaining(['config', 'add', 'commit']))
+    for (const g of gitCalls) expect(Number(g.opts.env?.GIT_CONFIG_COUNT), g.args.join(' ')).toBeGreaterThan(0)
     // And it is the check the RUNNER believes: the proposal's line count is the
     // subprocess's, not anything computed in this process.
     expect(state.state.authoring.c9.lastCheck.lineCount).toBe(IDS.length)
     expect(disk[`${home}/authoring/c9/brief-1.txt`]).toBeTruthy()
+  })
+
+  // Wave 19b (check A-F1): the re-check takes the suite baseline the driver's in-run check could not write, so it runs
+  // once the dispatch watcher has settled the run (bounded, as the wave runner waits), never with the baseline open.
+  const settleIo = (settledAfter, settleWaitMs) => {
+    const order = []
+    let polls = 0
+    const integrity = {
+      refusal: () => null,
+      settled: (runId) => { order.push(`settled? ${runId}`); return ++polls >= settledAfter },
+      settleWaitMs, sleep: async () => { order.push('sleep') },
+    }
+    const made = makeIo({ home, files: staged(home).files, over: { integrity } })
+    const { io } = made
+    io.dispatch = async (a) => { made.dispatched.push(a); return { driverLog: a.env.DRIVER_LOG, runId: 'm-w19b-1' } }
+    const inner = io.run
+    io.run = (cmd, args, opts) => { if (cmd === 'bun' && args.includes('--check')) order.push('re-check'); return inner(cmd, args, opts) }
+    return { io, order }
+  }
+  const author = async (io) => {
+    const dir = mkdtempSync(join(tmpdir(), 'camp-'))
+    try { return await authorCampaign({ id: ID, roadmap: ROADMAP(), state: new CampaignState(join(dir, ID)).load(), io }) } finally { rmSync(dir, { recursive: true, force: true }) }
+  }
+
+  it('A-F1: the re-check after the run waits for the run\'s settle first', async () => {
+    const { io, order } = settleIo(3, 60_000)
+    const r = await author(io)
+    expect(order).toEqual(['settled? m-w19b-1', 'sleep', 'settled? m-w19b-1', 'sleep', 'settled? m-w19b-1', 'settled? m-w19b-1', 're-check'])
+    expect(r.ok).toBe(true)
+  })
+
+  it('A-F1: a run not settled within the bound is said, and the re-check still runs (it names the frozen baseline itself)', async () => {
+    const { io, order } = settleIo(Infinity, 0)
+    const said = []
+    const err = vi.spyOn(console, 'error').mockImplementation((...a) => { said.push(a.join(' ')) })
+    try { await author(io) } finally { err.mockRestore() }
+    expect(order).toEqual(['settled? m-w19b-1', 'settled? m-w19b-1', 're-check'])
+    expect(said).toContain('[author] c9: run m-w19b-1 had not settled 0 s after the driver\'s exit, so the re-check runs with its integrity baseline open and may not write the suite baseline')
+  })
+
+  // Wave 19c (check CB-A-6): a driver that did not exit leaves nothing to grade, so the runner does not wait for a
+  // settle (it would wait out the whole bound for an ungraded result) and starts no re-check.
+  it('A-F1: a driver that did not exit is not waited for a settle, and nothing is re-checked', async () => {
+    const { io, order } = settleIo(3, 60_000)
+    io.waitForDriver = async () => ({ exited: false })
+    const r = await author(io)
+    expect(order).toEqual([])
+    expect(r.ok).toBe(false)
   })
 
   it('treats a subprocess that printed no verdict as a refusal, carrying its output', async () => {
@@ -1194,7 +1362,8 @@ describe('checkStagedViaSubprocess', () => {
     const calls = []
     await checkStagedViaSubprocess({ id: ID, stagingDir: 'C:/s/c9', baseDir: 'C:/b',
       io: { run: (cmd, args, opts) => { calls.push({ cmd, args }); return { status: 0, stdout: CHECK_JSON_MARKER + JSON.stringify({ ok: true, problems: [], lineIds: IDS }), stderr: '', fault: null, timedOut: false } } } })
-    expect(calls[0].args).toEqual([SELF_SCRIPT, '--check', 'C:/s/c9', 'C:/b', '--json'])
+    // Changed on purpose in wave 19b: --no-install first (Bun never fetches a package by itself).
+    expect(calls[0].args).toEqual(['--no-install', SELF_SCRIPT, '--check', 'C:/s/c9', 'C:/b', '--json'])
     expect(checkCommand('C:/s/c9', 'C:/b')).not.toContain('--json')
   })
 
@@ -1364,11 +1533,21 @@ describe('restoreUncommittedWork', () => {
     expect(restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: io({ exists: false }) })).toBeNull()
   })
 
+  // Wave 19 (A3), changed on purpose: a real staging folder (made here, removed after), because the harness git
+  // that applies a patch to it walks it for links first and refuses a folder that does not exist.
+  let root, sd
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'restore-'))
+    sd = norm(join(root, 'c9'))
+    mkdirSync(sd)
+  })
+  afterEach(() => { rmSync(root, { recursive: true, force: true }) })
+
   it('checks before it applies, applies, commits, and says so', () => {
     const fake = io()
-    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
-    expect(fake.ran[0]).toBe('git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch')
-    expect(fake.ran[1]).toBe('git -C C:/s/c9 apply C:/tmp/m1.uncommitted.patch')
+    const note = restoreUncommittedWork({ stagingDir: sd, missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    expect(fake.ran[0]).toBe(`git -C ${sd} apply --check C:/tmp/m1.uncommitted.patch`)
+    expect(fake.ran[1]).toBe(`git -C ${sd} apply C:/tmp/m1.uncommitted.patch`)
     expect(fake.ran.join('\n')).toMatch(/commit -m restore uncommitted work from m1/)
     expect(note).toMatch(/WAS restored/)
     expect(note).toMatch(/restore uncommitted work from m1/)
@@ -1378,17 +1557,38 @@ describe('restoreUncommittedWork', () => {
   // neither it nor the check has ever seen.
   it('leaves the tree alone and NAMES the reason when the patch does not apply', () => {
     const fake = io({ checkStatus: 1 })
-    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
-    expect(fake.ran).toEqual(['git -C C:/s/c9 apply --check C:/tmp/m1.uncommitted.patch'])
+    const note = restoreUncommittedWork({ stagingDir: sd, missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+    expect(fake.ran).toEqual([`git -C ${sd} apply --check C:/tmp/m1.uncommitted.patch`])
     expect(note).toMatch(/was NOT restored/)
     expect(note).toMatch(/patch does not apply/)
     expect(note).toMatch(/nothing is half-applied/)
   })
 
   it('names a git that could not run at all', () => {
-    const note = restoreUncommittedWork({ stagingDir: 'C:/s/c9', missionId: 'm1',
+    const note = restoreUncommittedWork({ stagingDir: sd, missionId: 'm1',
       io: io({ checkFault: { code: 'ENOENT', status: null, signal: null, elapsedMs: 2 } }), snapshotDir: 'C:/tmp' })
     expect(note).toMatch(/was NOT restored: git apply --check could not run \(code ENOENT/)
+  })
+
+  // Wave 19 (A3): a staging folder holding a link that leads out of it, or one that cannot be read, is refused
+  // by harness git before any git starts (git apply would apply through a refused GIT_DIR), and named.
+  it('runs no git at all, and says why, when the staging folder holds a link that leads outside it or does not exist', () => {
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    const link = join(sd, 'out')
+    symlinkSync(outside, link, 'junction')
+    try {
+      const fake = io()
+      const note = restoreUncommittedWork({ stagingDir: sd, missionId: 'm1', io: fake, snapshotDir: 'C:/tmp' })
+      expect(fake.ran).toEqual([])
+      expect(note).toMatch(/was NOT restored: harness git refused the staging folder .* so git apply was not run\. The tree is at its last commit\./)
+      // Wave 19b (check A-F3): a junction is a folder link on Windows and is removed as a folder there; on Linux the
+      // same call makes a symbolic link, which rmdir(2) refuses (ENOTDIR), so it is unlinked.
+    } finally { if (process.platform === 'win32') rmdirSync(link); else unlinkSync(link) }
+    const gone = io()
+    const note = restoreUncommittedWork({ stagingDir: norm(join(root, 'never-made')), missionId: 'm1', io: gone, snapshotDir: 'C:/tmp' })
+    expect(gone.ran).toEqual([])
+    expect(note).toMatch(/was NOT restored: harness git refused the staging folder/)
   })
 })
 
@@ -1937,5 +2137,92 @@ describe('authorCampaign at earned authority', () => {
     expect(r.proposal).toBeNull()
     expect(r.sealed).toBeNull()
     expect(disk[`${home}/heldout/civkings-redesign/c9/gate_c9.py`]).toBeUndefined()
+  })
+})
+
+// ─── The integrity layer (F242, slice S7) ───────────────────────────────────────────────────────
+describe('authorCampaign and sealGate under the integrity layer (S7)', () => {
+  const LATCH = 'the integrity latch is present at G:/guard/HALT.json (x)'
+
+  // Review of wave 5: the refusal comes first, before the staging, the roadmap change and the staged check's re-run.
+  it('authorCampaign: a refusal starts and spends nothing: no staging, no run, no roadmap change, no brief, no attempt', async () => {
+    const { files } = staged(home)
+    const { io, dispatched, disk } = makeIo({ home, files, over: { integrity: { refusal: () => LATCH } } })
+    const runs = []
+    const made = []
+    const saved = []
+    const run = io.run
+    io.run = (...a) => { runs.push(a); return run(...a) }
+    const mkdir = io.mkdir
+    io.mkdir = (p) => { made.push(p); return mkdir(p) }
+    const save = io.saveRoadmap
+    io.saveRoadmap = (...a) => { saved.push(a); return save?.(...a) }
+    const before = Object.keys(disk).length
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    const roadmap = ROADMAP()
+    const status = roadmap.lines?.find?.(l => l.id === ID)?.status
+    const r = await authorCampaign({ id: ID, roadmap, state, io })
+    expect(r.ok).toBe(false)
+    expect(r.why).toBe(`integrity: ${LATCH} — nothing was started`)
+    expect(dispatched).toEqual([])
+    expect(runs).toEqual([])
+    expect(made).toEqual([])
+    expect(saved).toEqual([])
+    expect(Object.keys(disk).length).toBe(before)
+    expect(roadmap.lines?.find?.(l => l.id === ID)?.status).toBe(status)
+    expect(state.state.authoring?.c9?.attempts ?? 0).toBe(0)
+  })
+
+  // Review of wave 5 (finding 10): an authoring mission engine that may still run is the latch, as in a wave.
+  it('authorCampaign: a driver that did not come back, or a dispatch that threw unarmed, writes the latch with the run id', async () => {
+    for (const [over, detail] of [
+      [{ waitForDriver: async () => ({ exited: false }) }, 'driver did not exit within the wall clock'],
+      [{ dispatch: async () => { throw new Error('dispatch timed out after 9 ms') } }, 'dispatch or wait failed: dispatch timed out after 9 ms'],
+    ]) {
+      const { files } = staged(home)
+      const halts = []
+      const dispatch = over.dispatch ?? (async (a) => ({ driverLog: a.env.DRIVER_LOG, runId: 'dispatch-20261124T010101-ab12' }))
+      const { io } = makeIo({ home, files, over: { ...over, dispatch, integrity: { refusal: () => null, halt: async (w) => { halts.push(w); return { latchPath: 'G:/guard/HALT.json' } } } } })
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+      expect(halts).toHaveLength(1)
+      expect(halts[0]).toMatchObject({ by: 'gate-author', reason: 'engine-not-confirmed-dead', detail })
+      expect(halts[0].run).toBe(over.dispatch ? `${ID}-author` : 'dispatch-20261124T010101-ab12')
+    }
+    // A dispatch that failed with its trap armed left nothing running: no latch.
+    const { files } = staged(home)
+    const halts = []
+    const { io } = makeIo({ home, files, over: { dispatch: async () => { throw new Error('dispatch failed (exit 1): boom') }, integrity: { refusal: () => null, halt: async (w) => { halts.push(w) } } } })
+    await authorCampaign({ id: ID, roadmap: ROADMAP(), state: new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load(), io })
+    expect(halts).toEqual([])
+  })
+
+  it('authorCampaign: an io with no integrity member, or one that answers null, dispatches as before', async () => {
+    for (const over of [{}, { integrity: { refusal: () => null } }]) {
+      const { files } = staged(home)
+      const { io, dispatched } = makeIo({ home, files, over })
+      const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+      await authorCampaign({ id: ID, roadmap: ROADMAP(), state, io })
+      expect(dispatched).toHaveLength(1)
+    }
+  })
+
+  it('sealGate: an open baseline refuses with its sentence; nothing is made, copied or renamed', async () => {
+    const { stagingDir, files } = staged(home)
+    const why = 'a mission or daemon task is running (r1); this would change a protected folder and stop it. Try again when it has ended.'
+    const made = []
+    const { io, copied, renamed } = makeIo({ home, files, over: { frozenWriteRefusal: () => why } })
+    const mkdir = io.mkdir
+    io.mkdir = (p) => { made.push(p); return mkdir(p) }
+    const roadmap = ROADMAP(); roadmap.lines.find(l => l.id === 'c9').status = 'proposed'
+    const state = new CampaignState(join(mkdtempSync(join(tmpdir(), 'camp-')), ID)).load()
+    state.state.authoring = { c9: { stagingDir, baseDir: 'C:/tmp/c9_author_base', missionId: 'c9-author-1', verified: true } }
+    const r = await sealGate({ id: ID, state, roadmap, io })
+    expect(r.ok).toBe(false)
+    expect(r.problems).toEqual([why])
+    expect(made).toEqual([])
+    expect(copied).toEqual([])
+    expect(renamed).toEqual([])
+    expect(roadmap.lines.find(l => l.id === 'c9').status).toBe('proposed')
   })
 })

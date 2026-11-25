@@ -196,6 +196,8 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   }
   if (ideationRecord) lines.push(`- S4 ideation (authority ${ideationRecord.authority}): ${ideationRecord.hypotheses.length} hypothesis/es; followed=${ideationRecord.followed}.`)
   lines.push(`- Ledger: verified ${grade.verified === null ? 'null (harness fault)' : grade.verified}; mutationSweep ${grade.sweep ? `recorded (${grade.sweep.kind ?? 'derived'})` : 'null'}.`)
+  // P5-C3: a wave adopted with no settled integrity baseline (--adopt-inflight wrote the note on its ledger row).
+  if (row.integrityNote) lines.push(`- Integrity: ${row.integrityNote}.`)
   const idLine = identityLine(identity)
   if (idLine) lines.push(idLine)
   // Phase 4 ruling 4: the campaign checklist (scripts/cynco-autopoiesis.mjs),
@@ -244,14 +246,14 @@ export function verdictEntry({ spec, wave, row, grade, decision, ideationRecord,
   return lines.join('\n') + '\n'
 }
 
-export async function notify(message, env = process.env, fetchImpl = globalThis.fetch) {
+export async function notify(message, env = process.env, fetchImpl = globalThis.fetch, opts = {}) {
   const base = env.CYNCO_NTFY_URL
   if (!base) return false
   try {
     const r = await fetchImpl(`${base.replace(/\/$/, '')}/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(env.CYNCO_NTFY_TOKEN ? { Authorization: `Bearer ${env.CYNCO_NTFY_TOKEN}` } : {}) },
-      body: JSON.stringify({ topic: env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts', title: 'CynCo campaign', message, priority: 3 }),
+      body: JSON.stringify({ topic: env.CYNCO_NTFY_ALERT_TOPIC ?? 'cynco-alerts', title: opts.title ?? 'CynCo campaign', message, priority: opts.priority ?? 3 }),
       signal: AbortSignal.timeout(10000),
     })
     return Boolean(r.ok)

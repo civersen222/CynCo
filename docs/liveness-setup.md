@@ -146,21 +146,31 @@ change the team on its own. This mission does not use the daemon's ntfy channel 
 listener owns the phone), but the daemon still requires `CYNCO_NTFY_URL` at startup for its own
 halt/failure alerts: point it at the same server (`http://100.101.192.101:8090`); no token is needed
 on a server without auth, and the daemon's topics (`cynco-alerts`, `cynco-commands`) do not collide
-with the runbook's `dynasty` topics. Autostart with the section 5 command minus `CYNCO_NTFY_TOKEN`.
+with the runbook's `dynasty` topics. Autostart as in section 5; no token variable is needed for a server without auth.
 
 ## 5. Daemon autostart (Windows Task Scheduler)
 
-```powershell
-schtasks /Create /TN "CynCo Liveness Daemon" /SC ONLOGON /RL LIMITED `
-  /TR "cmd /c set CYNCO_NTFY_URL=http://100.101.102.103:8090&& set CYNCO_NTFY_TOKEN=tk_yourtoken&& set LOCALCODE_PROVIDER=llama-cpp&& cd /d C:\Users\civer\localcode&& bun engine\daemon\main.ts >> %USERPROFILE%\.cynco\daemon.log 2>&1"
-```
+- `scripts\cynco-services.ps1 register daemon`, which creates the logon task that runs
+  `scripts\run-daemon.cmd` (the launcher rotates `daemon.log` when the daemon starts:
+  `scripts\rotate-log.cmd` keeps one previous file, `daemon.log.1`, once the log is over 50 MiB; F242;
+  a rotation that refuses or fails writes its line to `daemon.rotate.log`, which `scripts\cynco-services.ps1
+  status` shows; why it has a file of its own: `engine/daemon/CLAUDE.md`, the `housekeeping.ts` row).
+- The one-time step for a PC that still has the old task: delete the task named `CynCo liveness daemon`
+  in Task Scheduler first, then register (Task Scheduler compares task names without case, so
+  `register` would otherwise answer that the task is already registered). Set `CYNCO_NTFY_TOKEN` as a
+  user variable when the ntfy server needs one, and `CYNCO_NTFY_URL` when the daemon should use another
+  server than the launcher's default (the doorman's ntfy, `http://100.110.117.10:8090`).
+
+While it runs, the daemon looks once an hour at the `*.log` files directly in the CynCo home and pages
+once a day for each one over 1 GiB (`engine/daemon/housekeeping.ts`): a service log is rotated only when
+its service starts, so the page asks for a stop and start of that service.
 
 > The daemon no longer sets `LOCALCODE_MODEL`. With it unset, the engine auto-loads
 > `~/.cynco/profiles/default.yaml` (the canonical 27B-Q6_K / 64k / MTP config), so
 > the daemon and the interactive TUI provably run the same model.
 
 In Task Scheduler GUI, open the task → Settings → check "If the task fails, restart every 1 minute".
-The daemon never loads a model — it spawns `bun engine/main.ts --run-task <file>` per task,
+The daemon never loads a model — it spawns `bun --no-install engine/main.ts --run-task <file>` per task,
 which starts llama-server, runs, and stops it again. If you have an interactive CynCo session
 open (llama-server already running), scheduled tasks defer 10 minutes and retry.
 

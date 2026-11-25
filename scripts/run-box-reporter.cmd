@@ -8,4 +8,7 @@ rem The watcher's address: LOCALCODE_WATCHER_URL, the doorman's tailnet address 
 rem Registered/started/stopped by scripts\cynco-services.ps1 (service name: watch).
 if "%LOCALCODE_WATCHER_URL%"=="" set LOCALCODE_WATCHER_URL=http://100.110.117.10:9171
 cd /d C:\Users\civer\localcode
-bun engine\power\reporter\main.ts >> "%USERPROFILE%\.cynco\box-reporter.log" 2>&1
+rem Wave 15: the rotation's own refusal or failure line goes to box-reporter.rotate.log; Task Scheduler drops
+rem standard error, and redirecting it to the log itself would hold the log open so it is never rotated.
+call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\box-reporter.log" 2>> "%USERPROFILE%\.cynco\box-reporter.rotate.log"
+bun --no-install engine\power\reporter\main.ts >> "%USERPROFILE%\.cynco\box-reporter.log" 2>&1

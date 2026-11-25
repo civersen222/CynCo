@@ -18,13 +18,26 @@ export default defineConfig({
     // scripts/ is not merely unrun — `npx vitest run <that path>` answers "No
     // test files found, exiting with code 1", which is easy to read as a
     // toolchain hiccup rather than as a suite that never covered the driver.
+    // The last three globs are test folders that sit beside their package
+    // rather than under engine/__tests__: when bun test was replaced by vitest
+    // (8fc8bcea, 2026-05-02) nothing listed them, and their 160 tests went
+    // unrun by every suite run and every CI job until 2026-11-24.
     include: [
       'engine/__tests__/**/*.test.ts',
       'engine/vsm/**/*.test.ts',
       'engine/tools/**/*.test.ts',
       'benchmark/true/**/*.test.ts',
       'scripts/__tests__/**/*.test.mjs',
+      'engine/agents/__tests__/**/*.test.ts',
+      'engine/training/__tests__/**/*.test.ts',
+      'engine/cybernetics-core/tests/**/*.test.ts',
     ],
+    // Once per run, before any worker starts: one temp folder for the whole run
+    // (<temp>\cynco-suite-runs\cv-<6 hex>), TEMP/TMP/TMPDIR pointed at it, and
+    // removed by a walk that never enters a link when no test failed; a failed or
+    // interrupted run keeps it and prints its path (NOW.md, 2026-11-24: the suite
+    // had left about 290,000 folders in the user temp folder).
+    globalSetup: ['engine/__tests__/setup/suiteRunFolder.ts'],
     // cyncoHome first: it redirects ~/.cynco to a temp dir. F58 was the suite
     // writing 117 session journals into the directory the live engine resumes
     // from, so nothing that touches state may load before the redirect.
@@ -32,6 +45,8 @@ export default defineConfig({
     // hostEnv clears every LOCALCODE_* the launching shell exports, so the
     // suite runs on the engine's defaults on the owner's PC as it does on CI
     // and never reaches the owner's live services (F206).
+    // containment, after hostEnv (which would clear it): the sandbox, guard and audit folders default
+    // to live C:/cynco-* folders, so the suite names one that is never created and they refuse (F242).
     // noLiveServices makes fetch to this machine's own service ports (Ollama,
     // the model server, the engine, the embedding service) fail as a closed
     // port does, which is what a CI runner has there (F206).
@@ -40,6 +55,7 @@ export default defineConfig({
     setupFiles: [
       'engine/__tests__/setup/cyncoHome.ts',
       'engine/__tests__/setup/hostEnv.ts',
+      'engine/__tests__/setup/containment.ts',
       'engine/__tests__/setup/noLiveServices.ts',
       'engine/__tests__/setup/missionEnv.ts',
       'engine/__tests__/setup/bunShim.ts',

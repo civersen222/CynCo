@@ -125,8 +125,10 @@ The two measured numbers came from different harnesses: one is a live mission st
 
 ```yaml
 runtime:
-  chat_template_file: ~/.cynco/models/qwen3.6-27b-nvfp4/chat_template.jinja
+  chat_template_file: chat_template.jinja
 ```
+
+A file name is looked up beside the model's GGUF. An absolute path is used as written, and a leading `~` is not expanded. A template that is not there stops the engine at start with the path it looked for.
 
 The tool-call probe did not catch this, because it only sends system-first prompts. See [docs/cynco-failure-log.md](docs/cynco-failure-log.md).
 
@@ -232,7 +234,7 @@ temperature: 1.0                  # the Qwen3.8 card's thinking-mode sampler
 runtime:
   spec_type: ngram-mod,draft-mtp  # measured: 119.6 tok/s vs 113.9 for draft-mtp alone
   spec_draft_n: 3
-  chat_template_file: ~/.cynco/models/qwen3.8-27b-nvfp4/chat_template.jinja
+  chat_template_file: chat_template.jinja  # a file name is looked up beside the GGUF
   chat_template_kwargs:
     reasoning_effort: medium
     preserve_thinking: true
@@ -675,7 +677,7 @@ CynCo can run as a persistent agent. A tiny daemon (`engine/daemon/`) never load
 
   The changes live in `schedule.json` beside `mission.json`, re-read every tick (`docs/decisions/2026-11-08-mission-schedule-control.md`).
 - **The desk widget** (`scripts\cynco-widget.cmd`) is a small window. It shows whether CynCo is up, who holds the GPU, and one row per mission, with buttons to pause, resume or stop.
-- **The services script** reports on and manages every background task: `scripts\cynco-services.ps1 status | start | stop | register`. It covers `engine` (the headless phone engine), `embed`, `daemon`, `watch` (the box reporter) and `listener`, and also reports whether ntfy on the doorman answers.
+- **The services script** reports on and manages every background task: `scripts\cynco-services.ps1 status | start | stop | register`. It covers `engine` (the headless phone engine), `embed`, `daemon`, `watch` (the box reporter) and `listener`, and also reports whether ntfy on the doorman answers. A service's process is the one that runs as the service's own image (`bun.exe` for engine, daemon and watch, `llama-server.exe` for embed, `python.exe` or `pythonw.exe` for the listener) and whose command line holds the service's text, so an editor opened on `engine\main.ts` is not the engine. `stop` then ends that process itself only through a handle it opens, and only when the process's start time is within 5 ms of the creation time listed when the script started: watch's goodbye and the task stop before it may each have ended it, and its number may be another process's by then; it prints `stopped` also when it ended nothing (F255). `status` shows each service's log size (`[log 12.3 MiB]`, one decimal and a point on every Windows, or `[no log]`) beside its last line, and a `rotation:` line under it with the last line the launcher's log rotation wrote (its refusals and failures, appended, so it may be from an earlier start): each `scripts\run-*.cmd` writes those lines to `<service>.rotate.log` beside the log (`scripts\rotate-log.cmd`, `engine/daemon/CLAUDE.md`).
 
 ### Wakefulness and the household
 
@@ -716,7 +718,7 @@ Status: the hand-off was seen live on 2026-11-12 for an app started from a norma
 
 CynCo's proving ground is the unattended mission: one long-horizon brief, no user round-trips, graded at a sealed gate.
 
-`scripts/dispatch-mission.sh <brief> <marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]` boots a fresh engine in the repository `<cwd>` names (any repository; there is no default). `scripts/cynco-mission-driver.mjs` then drives the run until a marker commit lands, a timeout closes it, or the engine goes quiet. In a mission, S5 acts only on rules that have earned authority (see [Governance](#governance-vsm-s1s5)). A dispatch first stops every live engine; the always-on phone engine is stopped through its scheduled task. When the mission is over, a mission engine that outlived its driver is stopped and the dashboard goes back to the phone engine's task whenever it exists (a bare idle engine only on a PC without one), and an engine in the phone engine's seat never walks to another port (F234, F236). A model reply that stops arriving is cut by the engine (20 minutes before the first byte, 10 between bytes), and the driver ends a turn that shows no model output, tool activity or end for 30 minutes (F235). The first reply the engine cuts in a mission does not end it: once the engine has closed that turn the driver sends one message telling the model to carry on, the mission's clock keeps running, and the ledger row records it in `stalls`; a second cut ends the mission. Set `CYNCO_CAMPAIGN_ID=<name>` on a hand-run dispatch and its ledger row is recorded under that name, so a series of missions with no campaign runner behind it groups in the dashboard. Every mission in the ledger, newest first, is the **Missions** panel on the dashboard's Governance tab (the live one on top while it runs). The harness around it:
+`scripts/dispatch-mission.sh <brief> <marker> <cwd> [timeout-s] [check-cmd] [probe-cmd]` boots a fresh engine in the repository `<cwd>` names (any repository; there is no default). `scripts/cynco-mission-driver.mjs` then drives the run until a marker commit lands, a timeout closes it, or the engine goes quiet. In a mission, S5 acts only on rules that have earned authority (see [Governance](#governance-vsm-s1s5)). A dispatch first stops every live engine; the always-on phone engine is stopped through its scheduled task. When the mission is over, a mission engine that outlived its driver is stopped and the dashboard goes back to the phone engine's task whenever it exists (a bare idle engine only on a PC without one), and an engine in the phone engine's seat never walks to another port (F234, F236). A model reply that stops arriving is cut by the engine (20 minutes before the first byte, 10 between bytes), and the driver ends a turn that shows no model output, tool activity or end for 30 minutes (F235). The first reply the engine cuts in a mission does not end it: once the engine has closed that turn the driver sends one message telling the model to carry on, the mission's clock keeps running, and the ledger row records it in `stalls`; a second cut ends the mission. A dispatch never overwrites an earlier run's log: while `C:\tmp\engine_<stem>.log` or `driver_<stem>.log` of the same brief stem exists (or `engine_idle_after_<stem>.log`, when the dispatch may boot an idle engine afterwards) it is refused by name before anything starts (name another stem, or another `ENGINE_LOG`, `DRIVER_LOG` or `IDLE_LOG`, or move the old log first); the campaign runner names a repeated wave's logs per attempt (`docs/cynco-self-orchestration-spec.md`). Set `CYNCO_CAMPAIGN_ID=<name>` on a hand-run dispatch and its ledger row is recorded under that name, so a series of missions with no campaign runner behind it groups in the dashboard. Every mission in the ledger, newest first, is the **Missions** panel on the dashboard's Governance tab (the live one on top while it runs). The harness around it:
 
 - **Outcome ledger.** Every mission appends one labeled row to `benchmark/cynco-ledger/missions.NNNN.jsonl`. A row carries:
   - the outcome and the check-cmd verdict;
@@ -735,6 +737,10 @@ CynCo's proving ground is the unattended mission: one long-horizon brief, no use
   - That generation ran locally for ~$9.34 of electricity, ~349× cheaper than API pricing. Method, campaigns and failure modes: [docs/supervision-economics-paper.md](docs/supervision-economics-paper.md).
   - After C11 wave 2 the running figure is ~$1.98 per supervision dollar, with ~$5,920.56 displaced for ~$25.05 of power ([campaign log](docs/civkings-redesign-briefs/campaign-log.md)).
 - **Failure-log discipline.** Every harness failure gets an F-number, a root cause and a fix in [docs/cynco-failure-log.md](docs/cynco-failure-log.md). The rule: never fail the same way twice.
+
+#### Containment of unattended runs
+
+A dispatched mission, a daemon task and every grader run inside a box (F242: on 2026-11-22 one Bash call of a campaign mission deleted every dot-folder of the owner's home folder and then the application folders of `AppData\Local`, in alphabetical order up to `pip`). `scripts/dispatch-mission.sh`, the daemon and the campaign runner make a per-run sandbox before the engine starts; every process that runs workspace code gets a throwaway home, temp and scratch folder and, on Windows, a low-integrity token, so on NTFS the kernel refuses a write to any folder not labelled low. The sandbox, the mission folder and the folders the run's starter hands in are labelled low for the run; so are other runs' sandboxes and, by Windows' own doing, `AppData\LocalLow`, `AppData\Local\Temp\Low` and the `AC` folder of some Store packages, which a run can therefore write. Every path a tool call names is judged before the call runs: a file tool's target exactly, on its real path; a shell command by reading its text. A call is refused when its text shows it lands outside the run's folders, and a delete, move or write in shell text is refused when the text does not show its target; a script the run wrote and then runs, or code that computes its own path, is not read by the check (on NTFS the low-integrity token stands behind it, on a drive without integrity labels nothing does). The call's full input is written to `C:\cynco-audit` first. A manifest of the protected folders is compared after the run (and watched for a lost folder during it); a change writes a latch in `C:\cynco-guard` that stops every unattended starter and is cleared only at a terminal with `bun scripts/cynco-guard.mjs clear`. The latch pages the owner when the process that writes it holds `CYNCO_NTFY_URL`; otherwise the page waits in the guard folder until the daemon sends it, and the services script does not start the daemon while the latch is set. A run that cannot be given the box is refused by name, and so is a dispatch while a drive without integrity labels (such as an exFAT camera drive) is attached and not acknowledged in `LOCALCODE_UNPROTECTED_VOLUMES_OK`. While a mission or a daemon task is running, four folders are frozen and any change to them trips the latch: the models folder, `~/.cynco/profiles`, `~/.cynco/heldout` and `~/.ssh` (except `known_hosts` and `known_hosts.old`); so no profile edit and no new model file during a run. `~/.ollama/models` may gain entries during a run but must not lose any. It does not restrict reading or the network, does not protect a drive that is not NTFS or a network share beyond that refusal (a script a run writes and then runs there is stopped by nothing), and does not contain interactive sessions or project chats. Inside the box on Windows Git's Unix tools (`bash`, `grep`, a shell hook) do not start unless the owner switches on a copy of them; what each loss costs and how it is given back: [docs/containment-setup.md](docs/containment-setup.md), sections 14 and 15. Its acceptance on this PC (`bun --no-install scripts/cynco-containment-acceptance.mjs`) has been run without live fire, which the suite does on a temp folder of its own, and with live fire against a fake home four times on 2026-11-24 (the first run found a defect in the sandbox sweep, since fixed; the second could not read its own evidence, F246; the third and the fourth passed), and its real-profile stage passed on its second run the same day (the first refused itself before any probe, F248); those passes were on `00a2b0ec`, and the layers they proved changed in the fix rounds of 2026-11-24 and 25; the fake-home stage with live fire passed again on `32a1a632` on 2026-11-25, with the Git-tools switch off and on (the fifth to eleventh live-fire runs, all that day: the fifth and the ninth found faults in the stage itself, F253 and F254), and last on `71b82e85` the same day, off and on (the twelfth and thirteenth), because wave 24 (F255) changed how a process tree is ended in code the stage runs through; wave 24 changed nothing the box refuses, and no layer of the box is proved by it; the real-profile stage was run again at the owner's word on 2026-11-25, on `6e20a45c` (`71b82e85` plus comments and documents), with the Git-tools switch off, and passed: five create probes denied, 12 of its 14 calls refused before running and the other two, Git Bash forms started by the installed Git's full path, unable to start at low integrity and so never handed over, the manifest unchanged after each and no loss in the home census or the deep count; it executes no attack against the real profile, and it has not been run with the switch on (the decision record, "The real-profile stage's third run (2026-11-25)"); the calibration reading of campaign C21 with contained graders was taken at the owner's word on 2026-11-25, on `6e20a45c`, and agrees with the reading from before the containment; it is one campaign, its BASE and perturb sets are compared by line id only, and no model and no mission ran (the decision record, "The calibration reading with contained graders (2026-11-25)", says what it does not show); one supervised mission has not been run: it waits for its rehearsal and the owner's word, and it comes before any unattended run; and until the one-time machine setup has made the guard and audit folders every unattended run is refused. One-time machine setup: [docs/containment-setup.md](docs/containment-setup.md). What it covers, what it does not, and why: [docs/decisions/2026-11-23-mission-containment.md](docs/decisions/2026-11-23-mission-containment.md).
 
 #### Campaigns
 
@@ -923,6 +929,7 @@ Nothing has to be configured to start. With no environment and no profile of you
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | The Ollama (or OpenAI-compatible) server URL. |
 | `LOCALCODE_PROVIDER` | from profile (`ollama`) | Provider: `ollama` or `llama-cpp`; any other name is refused at start. With no profile at all, the built-in fallback is `llama-cpp`, which needs `LOCALCODE_MODEL_PATH`. |
 | `LOCALCODE_MODEL_PATH` | — | The GGUF for the llama-cpp provider (or a profile's `model_file`). |
+| `LOCALCODE_MODELS_DIR` | `models` under the CynCo home | The folder that holds one sub-folder per model, and the embedding GGUF. Set it, as an absolute path, to keep the models outside the home folder; `scripts/run-embed-server.cmd` reads it too. Windows setup: [docs/containment-setup.md](docs/containment-setup.md). |
 | `LOCALCODE_EMBED_MODEL` | `nomic-embed-text` | Model for code indexing. Another model that the server does not have falls back to this one. |
 | `LOCALCODE_TEMPERATURE` | `1.0` from the shipped profile (built-in `0.7`) | Sampling temperature. |
 | `LOCALCODE_CONTEXT_LENGTH` | `65536` from the shipped profile; with no profile value, `131072` on llama-cpp and auto-detected on Ollama | Override the context window. It wins over a profile's `context_length`. `LOCALCODE_CACHE_RAM` is derived from whichever value ends up in force. |
@@ -965,7 +972,7 @@ That table is a shortlist. The engine reads considerably more than it, and the c
 <!-- Generated by scripts/generate-env-docs.mjs. Do not edit by hand.
      Regenerate with: bun scripts/generate-env-docs.mjs -->
 
-Every `LOCALCODE_*` variable the engine reads — 101 of them — with the fallback
+Every `LOCALCODE_*` variable the engine reads — 109 of them — with the fallback
 each read site uses when it is unset, and the profile key (if any) that sits between the
 two. Read out of the source by `scripts/generate-env-docs.mjs`, so it cannot drift from
 the code the way a hand-written list does.
@@ -981,6 +988,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_ALL_TOOLS` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_API_KEY` | *not derived* | — | `engine/config.ts` |
 | `LOCALCODE_APPROVE_ALL` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_AUDIT_DIR` | *not derived* | — | `engine/paths.ts` |
 | `LOCALCODE_BASE_URL` | `http://localhost:11434` | `base_url` | `engine/config.ts`, `engine/engine/callModel.ts` |
 | `LOCALCODE_BATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_BEST_OF_N` | `false` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
@@ -1002,6 +1010,8 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_COMFYUI_WORKFLOW_EDIT` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_WORKFLOW_OUTLINE` | *not derived* | — | `engine/imagegen/config.ts` |
 | `LOCALCODE_COMFYUI_WORKFLOW_VARY` | *not derived* | — | `engine/imagegen/config.ts` |
+| `LOCALCODE_CONTAINMENT_MSYS` | *not derived* | — | `engine/containment.ts` |
+| `LOCALCODE_CONTAINMENT_OFF` | *not derived* | — | `engine/containment.ts` |
 | `LOCALCODE_CONTEXT_LENGTH` | *not derived* | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_CTX_CHECKPOINTS` | `32` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
 | `LOCALCODE_DASHBOARD_HOST` | `127.0.0.1` | — | `engine/dashboard/server.ts` |
@@ -1016,6 +1026,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_FLASH_ATTN` | `true` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_GPU_LAYERS` | `999` | — | `engine/bootstrapProvider.ts`, `engine/config.ts` |
 | `LOCALCODE_GRAMMAR_ENABLED` | `false` | — | `engine/dashboard/server.ts`, `engine/engine/callModel.ts` |
+| `LOCALCODE_GUARD_DIR` | *not derived* | — | `engine/paths.ts` |
 | `LOCALCODE_HOUSE_CONDUCT` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_HYBRID_SEARCH` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/index/indexer.ts` |
 | `LOCALCODE_IMMUTABLE_PATHS` | *not derived* | — | `engine/tools/executor.ts` |
@@ -1033,10 +1044,12 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_MAX_OUTPUT_TOKENS` | `16384` | `max_output_tokens` | `engine/config.ts` |
 | `LOCALCODE_MISSION_BASE` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
 | `LOCALCODE_MISSION_CHECK` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
-| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/bridge/contractAutoCreate.ts`, `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
+| `LOCALCODE_MISSION_CWD` | *not derived* | — | `engine/bridge/contractAutoCreate.ts`, `engine/dashboard/server.ts`, `engine/main.ts`, `engine/missionEnv.ts` |
 | `LOCALCODE_MISSION_MARKER` | *not derived* | — | `engine/dashboard/server.ts`, `engine/missionEnv.ts` |
+| `LOCALCODE_MISSION_RUN_ID` | *not derived* | — | `engine/missionEnv.ts` |
 | `LOCALCODE_MODEL` | *not derived* | `model` | `engine/config.ts` |
 | `LOCALCODE_MODEL_PATH` | *not derived* | — | `engine/config.ts` |
+| `LOCALCODE_MODELS_DIR` | *not derived* | — | `engine/paths.ts` |
 | `LOCALCODE_NATIVE_TOOLS` | `false` | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_NO_SCOUTS` | `false` | — | `engine/config.ts` |
 | `LOCALCODE_OPTIMIZED_PARAMS` | *not derived* | — | `engine/vsm/cyberneticsGovernance.ts` |
@@ -1058,8 +1071,9 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_S5_ENFORCE` | `true` | — | `engine/config.ts` |
 | `LOCALCODE_S5_MODEL` | *not derived* | — | `engine/daemon/oneShot.ts`, `engine/main.ts` |
 | `LOCALCODE_S5_PROACTIVE_TOOLS` | `false` | — | `engine/config.ts` |
+| `LOCALCODE_SANDBOX_ROOT` | `C:/cynco-sandbox` | — | `engine/paths.ts` |
 | `LOCALCODE_SEARXNG_URL` | *not derived* | — | `engine/research/engines/searxng.ts` |
-| `LOCALCODE_SESSION_ID` | *not derived* | — | `engine/bridge/conversationLoop.ts`, `engine/s5/orchestrator.ts`, `engine/tools/impl/saveLearning.ts` |
+| `LOCALCODE_SESSION_ID` | *not derived* | — | `engine/audit/toolAudit.ts`, `engine/bridge/conversationLoop.ts`, `engine/s5/orchestrator.ts`, `engine/tools/impl/saveLearning.ts` |
 | `LOCALCODE_SIMULATED_TOOLS` | `false` | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_SLOT_SNAPSHOT_MS` | *not derived* | — | `engine/llama/processManager.ts` |
 | `LOCALCODE_SPEC_DRAFT_N` | *not derived* | — | `engine/bootstrapProvider.ts` |
@@ -1072,6 +1086,7 @@ values separated by `/` mean two read sites disagree.
 | `LOCALCODE_TOOL_TEMPERATURE` | *not derived* | — | `engine/engine/callModel.ts` |
 | `LOCALCODE_TRAJECTORY_ENABLED` | `true` | — | `engine/dashboard/server.ts`, `engine/main.ts` |
 | `LOCALCODE_UBATCH_SIZE` | `2048` | — | `engine/bootstrapProvider.ts`, `engine/llama/processManager.ts` |
+| `LOCALCODE_UNPROTECTED_VOLUMES_OK` | *not derived* | — | `engine/containment.ts` |
 | `LOCALCODE_VARIETY_CONTROL` | `true` | — | `engine/bridge/conversationLoop.ts`, `engine/dashboard/server.ts` |
 | `LOCALCODE_VISION_MODEL` | *not derived* | — | `engine/vision/settings.ts` |
 | `LOCALCODE_VISION_URL` | *not derived* | — | `engine/vision/settings.ts` |

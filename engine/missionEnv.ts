@@ -25,6 +25,22 @@ export function isUnattendedMission(env: Record<string, string | undefined> = pr
   return MISSION_ENV_KEYS.some(k => typeof env[k] === 'string' && env[k]!.length > 0)
 }
 
+export const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}-\d{8}T\d{6}-[0-9a-f]{4}$/
+
+/** Is this process an unattended run that must establish containment before it does anything? */
+export function isContainedRun(
+  env: Record<string, string | undefined> = process.env,
+  argv: readonly string[] = process.argv,
+): boolean {
+  return isUnattendedMission(env) || argv.includes('--run-task')
+}
+
+/** The run id the starter handed this process, or null when it is absent or malformed. */
+export function missionRunId(env: Record<string, string | undefined> = process.env): string | null {
+  const v = env.LOCALCODE_MISSION_RUN_ID
+  return typeof v === 'string' && RUN_ID_RE.test(v) ? v : null
+}
+
 /**
  * Should the llama-cpp provider ask for per-token top-8 logprobs (the Brain's
  * tier-1 uncertainty trace)? Measured 2026-11-06 on the 5090 with the daemon's
@@ -41,6 +57,5 @@ export function uncertaintyTraceEnabled(
   const explicit = env.LOCALCODE_ENTROPY_TRACE
   if (explicit === '1' || explicit === 'true') return true
   if (explicit === '0' || explicit === 'false') return false
-  if (argv.includes('--run-task')) return false
-  return !isUnattendedMission(env)
+  return !isContainedRun(env, argv)
 }

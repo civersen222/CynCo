@@ -49,6 +49,21 @@ describe('held-out instrument snapshots', () => {
     expect(readFileSync(join(dir, 'app.py'), 'utf-8')).toBe('print("the game")\n')
   })
 
+  // R2-7 (wave 12): the vault was made before any path was looked at, so a dispatch whose check names no
+  // file that exists left an empty folder in ~/.cynco/held-out each time. It is made for the first copy.
+  it('makes no vault when there is nothing to copy, and makes it for the first file', () => {
+    const dir = join(root, 'base_archive')
+    mkdirSync(dir, { recursive: true })
+    const snaps = snapshotHeldOut([join(root, 'nope.py'), dir], vault)
+    expect(snaps.map((s: { missing: boolean }) => s.missing)).toEqual([true, true])
+    expect(existsSync(vault)).toBe(false)
+    expect(snapshotHeldOut([], vault)).toEqual([])
+    expect(existsSync(vault)).toBe(false)
+    const taken = snapshotHeldOut([join(root, 'nope.py'), gate], vault)
+    expect(taken[1].missing).toBe(false)
+    expect(existsSync(vault)).toBe(true)
+  })
+
   it('says nothing changed when nothing changed', () => {
     expect(restoreHeldOut(snapshotHeldOut([gate], vault))).toEqual([])
   })
@@ -169,7 +184,10 @@ describe('the marker-check path: snapshotted, restored on every exit', () => {
   it('the driver runs the marker check (with its ordinal) and wraps the check routine in the restore', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../scripts/cynco-mission-driver.mjs', import.meta.url)), 'utf-8')
     expect(src).toMatch(/const MARKER = markerCheckFrom\(process\.env, checkCmd, CHECK_TIMEOUT_MS\)/)
-    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \} \}\)/)
+    // F242: the check also runs inside the run's own containment.
+    // F242: contained (S2c) and recorded, hashes only (S5).
+    // Changed on purpose in wave 19b (plan P6 item 6, the in-box half): the latch poll's signal is handed over too.
+    expect(src).toMatch(/await runCheckAsync\(MARKER\.command, CWD, MARKER\.timeoutMs, \{ env: \{ CYNCO_CHECK_ORDINAL: String\(ordinal\) \}, contained: runContainment\(\), audit: \{ handle: audit, src: 'driver-marker' \}, signal: poll\.signal \}\)/)
     expect(src).not.toMatch(/runCheckAsync\(checkCmd/)
     expect(src).toMatch(/await withHeldOutRestored\(heldOutSnapshots, async \(\) => \{\s*\n\s*if \(MARKER\.command && !gate\.run\)/)
   })

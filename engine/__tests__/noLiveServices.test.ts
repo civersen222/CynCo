@@ -13,7 +13,8 @@ describe('what turns the guard off', () => {
   // Until 2026-11-17 CYNCO_INTEGRATION took the guard off for the whole run. The tests it enables
   // use a scripted model and need no server, so setting it on the owner's PC bought nothing and
   // put the owner's Ollama, model server and dashboard in reach of every test in the suite.
-  it('not CYNCO_INTEGRATION, which only asks for more tests to run', () => {
+  // Since 2026-11-24 it gates no test at all (F244); the guard must still ignore it.
+  it('not CYNCO_INTEGRATION, which no longer gates any test', () => {
     expect(guardIsOn({ CYNCO_INTEGRATION: '1' })).toBe(true)
     expect(guardIsOn({ CYNCO_INTEGRATION: '1', LOCALCODE_INTEGRATION_TESTS: '0' })).toBe(true)
   })

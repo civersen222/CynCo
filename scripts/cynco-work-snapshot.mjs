@@ -15,6 +15,7 @@
 import { spawnSync } from 'node:child_process'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { harnessGitBin, harnessGitEnv, isHarnessRefused, HARNESS_DIFF_FLAGS } from '../engine/harnessGit.js'
 
 /**
  * Write a patch of the workspace's uncommitted tracked changes to `outDir`.
@@ -23,8 +24,10 @@ import { join } from 'node:path'
  * failure comes back as `error` on the result so the caller can print it —
  * a swallowed failure here looks exactly like a clean tree, which is the one
  * answer this function must never give wrongly.
+ *
+ * `spawn` is a test seam (spawnSync's signature).
  */
-export function snapshotUncommittedWork(cwd, outDir, missionId, { ordinal = null } = {}) {
+export function snapshotUncommittedWork(cwd, outDir, missionId, { ordinal = null, spawn = spawnSync } = {}) {
   const result = { written: false, patchPath: '', untracked: [], error: null }
   try {
     // `--binary`: without it a change to any non-text file is recorded as the
@@ -45,10 +48,22 @@ export function snapshotUncommittedWork(cwd, outDir, missionId, { ordinal = null
     // level up: `.cynco` excludes only that directory, and live C9 attempt 8's
     // restore was refused on the ROOT-level `.cynco-debug.json`. The snapshots
     // dir is harness churn too. Both are named, so neither depends on the other.
-    const diff = spawnSync('git', ['diff', '--binary', 'HEAD', '--', '.',
+    //
+    // F242: the workspace is a contained run's to write, so the diff runs with the harness-git
+    // environment (no hooks, monitor or repository-defined filter, the work tree pinned), names git
+    // by its full path, and carries --no-ext-diff --no-textconv: a planted diff driver runs nothing.
+    // Wave 19b (A3): the diff reads the work tree into a patch, so the work tree is walked first
+    // (`worktreeLinks`): a link in it that leads out would copy what is behind it. When harness git
+    // refuses (that, or a .git it may not touch), no git is started at all and the error says so.
+    const diffEnv = harnessGitEnv(process.env, { repo: cwd, worktreeLinks: true })
+    if (isHarnessRefused(diffEnv)) {
+      result.error = `harness git refused the work tree ${cwd} (the [harness-git] line says why): no git was started, so nothing was saved`
+      return result
+    }
+    const diff = spawn(harnessGitBin(), ['diff', ...HARNESS_DIFF_FLAGS, '--binary', 'HEAD', '--', '.',
       ':(exclude).cynco', ':(exclude).cynco-*', ':(exclude).cynco-snapshots'],
-      { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 })
-    const untracked = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8' })
+      { cwd, encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024, env: diffEnv })
+    const untracked = spawn(harnessGitBin(), ['ls-files', '--others', '--exclude-standard'], { cwd, encoding: 'utf-8', env: harnessGitEnv(process.env) })
     result.untracked = (untracked.stdout ?? '').split('\n').map(s => s.trim()).filter(Boolean)
 
     const patch = diff.stdout ?? ''

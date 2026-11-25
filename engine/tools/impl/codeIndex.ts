@@ -21,7 +21,9 @@ function run(file: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv)
     execFile(
       file,
       args,
-      { cwd, encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024, env: env ?? process.env },
+      // No working folder (F242, rule H1): every fallback names the folder as an argument, so no
+      // program is started with the mission folder as its current directory.
+      { encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024, env: env ?? process.env },
       (err, stdout) => {
         // grep and rg exit 1 on "no matches", which is not an error worth logging.
         if (err && (err as { code?: number }).code !== 1) {

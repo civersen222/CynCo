@@ -13,9 +13,9 @@ import { execFile } from 'child_process'
 import { connect } from 'net'
 import { readGpuBusy } from '../daemon/gpuBusyFile.js'
 import type { PortOwner } from '../llama/portOwner.js'
-import { displaceApp, restoreDisplacedApps } from './displace.js'
+import { displaceApp, restoreDisplacedApps, type BeforeTheStop } from './displace.js'
 import { identifyPortHolder, type Holder } from './identify.js'
-import type { ListedProc } from './portTree.js'
+import { listenerNow, lookDecidedNothing, stoppedAsReadLine, type ListedProc, type ListenerNow } from './portTree.js'
 
 type Say = (message: string) => void
 
@@ -97,7 +97,7 @@ export type LazyAppOpts = {
   listProcesses?: () => Promise<ListedProc[]>
   file?: string
   by?: string
-}
+} & Pick<BeforeTheStop, 'runPowerShell'>
 
 /**
  * What `ensureRunningLazy` is given: `portOwner` that can answer `app`, and
@@ -118,8 +118,8 @@ export function lazyAppDeps(port: number, opts: LazyAppOpts = {}): { portOwner: 
       let why = 'it is still running'
       const outcome = await displaceApp(last, {
         port, by: opts.by ?? `the chat engine (pid ${process.pid})`, say,
-        kill: async pid => { const r = await stop(pid); if (r && !r.stopped) why = r.why; return r },
-        ...(opts.listProcesses ? { listProcesses: opts.listProcesses } : {}),
+        kill: stop, refused: (because) => { why = because },
+        ...(opts.listProcesses ? { listProcesses: opts.listProcesses } : {}), ...(opts.runPowerShell ? { runPowerShell: opts.runPowerShell } : {}),
         ...(opts.file ? { file: opts.file } : {}),
       })
       return outcome === 'refused' ? { refused: why } : outcome
@@ -138,7 +138,8 @@ export type OneShotTakeCtx = {
   listProcesses?: () => Promise<ListedProc[]>
   waitFree?: () => Promise<boolean>
   file?: string
-}
+  /** Where the port's second look and the app's stop log what they did; the console (the daemon's log) by default. */ log?: (line: string) => void
+} & Pick<BeforeTheStop, 'runPowerShell'>
 
 /**
  * Before a one-shot asks whether the GPU is busy: if the model port is held by
@@ -156,14 +157,17 @@ export async function takeGpuForOneShot(ctx: OneShotTakeCtx): Promise<'free' | '
   if (holder.owner === 'app') {
     const outcome = await displaceApp(holder, {
       port: ctx.port, by: ctx.by, say: ctx.say, kill,
-      ...(ctx.listProcesses ? { listProcesses: ctx.listProcesses } : {}),
-      ...(ctx.file ? { file: ctx.file } : {}),
+      ...(ctx.listProcesses ? { listProcesses: ctx.listProcesses } : {}), ...(ctx.runPowerShell ? { runPowerShell: ctx.runPowerShell } : {}),
+      ...(ctx.file ? { file: ctx.file } : {}), ...(ctx.log ? { log: ctx.log } : {}),
     })
     // The app module said why; there is no port to wait for.
     if (outcome === 'refused') return 'left'
     return (await waitFree()) ? 'taken' : 'left'
   }
   if (holder.owner !== 'foreign') return 'left'
+  const now = await listenerNow(ctx.port, holder.listener, ctx.runPowerShell, ctx.log)
+  if (lookDecidedNothing(now)) (ctx.log ?? console.log)(stoppedAsReadLine(ctx.port, holder.listener.pid, now.because))
+  else if (now.kind !== 'same') return foreignNotStopped(ctx, holder, now, waitFree)
   const result = await kill(holder.listener.pid)
   const free = !(result && !result.stopped) && await waitFree()
   if (free) {
@@ -187,4 +191,29 @@ export async function giveGpuBack(say: Say, opts: { file?: string } = {}): Promi
   } catch (e) {
     console.log(`[apps] giving the GPU back failed: ${e instanceof Error ? e.message : String(e)}`)
   }
+}
+
+/**
+ * F255: the port read again just before the stop of a server that is not CynCo's found something other than the same
+ * process (`listenerNow`), so nothing is stopped by a number read seconds earlier. What is true of the port decides the rest:
+ * nothing listening and the port still free is `taken`, as after a stop; anything else is `left`, as after a stop that
+ * could not be done, and the busy check that follows defers the run. Each is said once, never as "stopped".
+ */
+async function foreignNotStopped(ctx: OneShotTakeCtx, holder: Extract<Holder, { owner: 'foreign' }>, now: Exclude<ListenerNow, { kind: 'same' }>, waitFree: () => Promise<boolean>): Promise<'taken' | 'left'> {
+  const held = `port ${ctx.port} was held by a server that is not CynCo's: ${holder.detail}. It let go of the port by itself before CynCo stopped it`
+  if (now.kind === 'free') {
+    if (await waitFree()) {
+      ctx.say(`${held}, and nothing listens there now: CynCo stopped nothing.`)
+      return 'taken'
+    }
+    ctx.say(`${held}, and something listens there again, which CynCo did not stop; ${ctx.by} waits for the port.`)
+    return 'left'
+  }
+  if (now.kind === 'other') {
+    ctx.say(`${held}, and pid ${now.now.pid} (${now.now.name}${now.now.pid === holder.listener.pid ? ', a later process with the same number' : ''}) listens there now, which CynCo has not identified and did not stop; ${ctx.by} waits for the port.`)
+    return 'left'
+  }
+  // `unread` reaches here only as a listener younger than its socket (`lookDecidedNothing` stops on the other two).
+  ctx.say(`port ${ctx.port} is held by a server that is not CynCo's: ${holder.detail}. The process that made the socket on the port has ended and its number is another process's now (the process listed for the socket was created after it), so CynCo could not tell what holds the port, and stopped nothing; ${ctx.by} waits for the port.`)
+  return 'left'
 }

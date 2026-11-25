@@ -1,4 +1,5 @@
 import { execSync } from 'child_process'
+import { harnessGitEnv } from '../harnessGit.js'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
 import { join, isAbsolute } from 'path'
 import type { SnapshotHash, DiffResult, FileDiff, FileStatus } from './types.js'
@@ -76,7 +77,7 @@ export class WorkspaceSnapshot {
     let commonDir: string
     try {
       commonDir = execSync('git rev-parse --git-common-dir', {
-        cwd: this.workDir, env, stdio: ['pipe', 'pipe', 'pipe'],
+        cwd: this.workDir, env: harnessGitEnv(env), stdio: ['pipe', 'pipe', 'pipe'],
       }).toString().trim()
     } catch {
       return // not a git repository — nothing to protect
@@ -114,11 +115,19 @@ export class WorkspaceSnapshot {
     } as Record<string, string>
   }
 
-  /** Run a git command inside the snapshot repo context. */
+  /**
+   * Run a git command inside the snapshot repo context. The snapshot repository lives inside the
+   * work folder, so a run can write its config: harness git (F242) keeps its hooks, monitor and
+   * pager off. GIT_DIR is set, so no work-tree pin is added. The filter drivers that repository
+   * defines are listed and blanked only for the two commands that convert work-tree content
+   * (`add`, `checkout-index`); the rest read or write objects and the index only, and the
+   * listing costs one more git process per call (harnessGit.ts, the `{ repo }` rule).
+   */
   private git(args: string): string {
+    const convertsContent = /^(add|checkout-index)\b/.test(args)
     return execSync(`git ${args}`, {
       cwd: this.workDir,
-      env: this.env(),
+      env: harnessGitEnv(this.env(), convertsContent ? { repo: this.workDir } : {}),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
       .toString()
@@ -200,6 +209,7 @@ export class WorkspaceSnapshot {
       // --bare keeps things lightweight — no working tree inside the snapshot dir
       execSync(`git init --bare "${this.gitDir}"`, {
         cwd: this.workDir,
+        env: harnessGitEnv(process.env),
         stdio: ['pipe', 'pipe', 'pipe'],
       })
       // Exclude the snapshot repo itself from being tracked
@@ -256,6 +266,7 @@ export class WorkspaceSnapshot {
         try {
           execSync(`git init --bare "${this.gitDir}"`, {
             cwd: this.workDir,
+            env: harnessGitEnv(process.env),
             stdio: ['pipe', 'pipe', 'pipe'],
           })
           this.ensureExcludeEntry('.cynco-snapshots')

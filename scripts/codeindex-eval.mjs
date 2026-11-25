@@ -151,7 +151,8 @@ function replayGrep(pattern, path) {
 
 function replayCodeIndex(root, query) {
   try {
-    const out = execFileSync('bun', ['run', join(ROOT, 'scripts', 'codeindex-eval-worker.ts'), root, query, String(TOPK)],
+    // Wave 19b: --no-install, so this Bun never fetches a package by itself.
+    const out = execFileSync('bun', ['--no-install', 'run', join(ROOT, 'scripts', 'codeindex-eval-worker.ts'), root, query, String(TOPK)],
       { encoding: 'utf-8', timeout: 60000, maxBuffer: 8 * 1024 * 1024, cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] })
     const lastLine = out.trim().split('\n').pop()
     return JSON.parse(lastLine)

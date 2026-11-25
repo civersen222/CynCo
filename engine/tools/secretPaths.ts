@@ -28,6 +28,8 @@
 import { homedir } from 'node:os'
 import { basename, resolve } from 'node:path'
 import { cyncoHome } from '../paths.js'
+import { fieldPaths } from './toolPaths.js'
+import { realPathOf } from '../realPath.js'
 
 export type SecretAction = 'refuse' | 'approve'
 export type SecretHit = { path: string; action: SecretAction; why: string }
@@ -45,18 +47,41 @@ export function secretPathOf(toolName: string, input: Record<string, unknown>, c
   if (toolName === 'Bash') return null
   const tokenFile = norm(resolve(cyncoHome(), 'tokens.json'))
   const sshDir = norm(resolve(homedir(), '.ssh'))
-  for (const key of PATH_INPUT_KEYS) {
-    const raw = input[key]
-    if (typeof raw !== 'string' || !raw) continue
-    const spelled = norm(raw)
-    const abs = norm(resolve(cwd, raw))
+  const spelledHit = (spelled: string, abs: string): SecretHit | null => {
     if (abs === tokenFile) return { path: abs, action: 'refuse', why: "the engine's own token file" }
     if (abs === sshDir || abs.startsWith(sshDir + '/')) return { path: abs, action: 'approve', why: 'SSH keys' }
     const base = basename(abs)
     if (base === '.env' || base.startsWith('.env.')) return { path: abs, action: 'approve', why: 'a .env file, which may hold secrets' }
     if (/^\/etc\/(shadow|passwd|sudoers)$/.test(spelled)) return { path: abs, action: 'approve', why: 'a system credential file' }
+    return null
   }
-  return null
+  // A `refuse` returns at once; the first `approve` is remembered and the scan goes on, so a MultiEdit
+  // whose first edit is a .env and whose second is the token file answers refuse (F242).
+  let approve: SecretHit | null = null
+  for (const key of PATH_INPUT_KEYS) {
+    const raw = input[key]
+    if (typeof raw !== 'string' || !raw) continue
+    const hit = spelledHit(norm(raw), norm(resolve(cwd, raw)))
+    if (hit?.action === 'refuse') return hit
+    if (hit && approve === null) approve = hit
+  }
+  // Every field path the call names (nested edits, patch headers), and each one's real path, so a
+  // link or a short name cannot spell around the check.
+  const named = fieldPaths(toolName, input, cwd).paths
+  if (named.length > 0) {
+    const tokenReal = norm(realPathOf(resolve(cyncoHome(), 'tokens.json'), { quiet: true }))
+    const sshReal = norm(realPathOf(resolve(homedir(), '.ssh'), { quiet: true }))
+    for (const n of named) {
+      const abs = norm(resolve(cwd, n.raw))
+      const hit = spelledHit(norm(n.raw), abs)
+      if (hit?.action === 'refuse') return hit
+      if (hit && approve === null) approve = hit
+      const real = norm(n.real())
+      if (real === tokenReal) return { path: abs, action: 'refuse', why: "the engine's own token file" }
+      if ((real === sshReal || real.startsWith(sshReal + '/')) && approve === null) approve = { path: abs, action: 'approve', why: 'SSH keys' }
+    }
+  }
+  return approve
 }
 
 export const SECRET_REFUSAL =
