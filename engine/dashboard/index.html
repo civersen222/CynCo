@@ -1454,10 +1454,12 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
       <label for="knowledgeUpload">Upload a file</label>
       <input type="file" id="knowledgeUpload" onchange="uploadKnowledgeFiles(this.files)">
       <div class="proj-drop" id="knowledgeDrop">or drop files here</div>
+      <div style="margin:6px 0"><button class="btn btn-grey" onclick="rescanProjectFiles('knowledgeStatus')" title="Index again every file in this project's knowledge and artifacts">Rescan</button></div>
       <div class="proj-status" id="knowledgeStatus"></div>
       <div id="knowledgeList"></div>
     </div>
     <div class="panel proj-panel" id="artifactsPanel" data-ppanel="artifacts">
+      <div style="margin-bottom:6px"><button class="btn btn-grey" onclick="rescanProjectFiles('artifactsStatus')" title="Index again every file in this project's knowledge and artifacts">Rescan</button></div>
       <div class="proj-status" id="artifactsStatus"></div>
       <div id="artifactsList"></div>
     </div>
@@ -8205,18 +8207,22 @@ function promoteArtifact(name) {
 
 // ── History ───────────────────────────────────────────────
 
-function rescanProjectFiles() {
+// The button is on the Knowledge, Artifacts and History tabs: a file's "kept but not indexed" line shows in
+// the first two, and until 2026-11-25 the only button was on History, where the owner did not find it. The
+// answer is written where the button was pressed (`statusId`; History's when none is named).
+function rescanProjectFiles(statusId) {
   var slug = projectsState.slug;
-  projStatus('historyStatus', 'busy', 'rescanning…');
+  var where = statusId || 'historyStatus';
+  projStatus(where, 'busy', 'rescanning…');
   projFetch(projUrl(slug) + '/rescan', { method: 'POST' }).then(function(counts) {
     var parts = Object.keys(counts || {}).map(function(k) { return k + ' ' + (typeof counts[k] === 'object' ? JSON.stringify(counts[k]) : counts[k]); });
-    projStatus('historyStatus', 'ok', 'Rescanned: ' + (parts.join(', ') || 'nothing to do'));
+    projStatus(where, 'ok', 'Rescanned: ' + (parts.join(', ') || 'nothing to do'));
     loadProjectMeta(slug);
     loadKnowledge(slug);
     loadArtifacts(slug);
   }).catch(function(err) {
     console.warn('[projects] rescan: ' + err.message);
-    projStatus('historyStatus', 'err', 'Rescan failed: ' + err.message);
+    projStatus(where, 'err', 'Rescan failed: ' + err.message);
   });
 }
 
