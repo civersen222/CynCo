@@ -452,7 +452,7 @@ It printed:
 
 **What it does not show.** It is one small mission: about six minutes and 14 tool calls. No call was refused, so a refusal inside a run a model drives was not seen here (the acceptance shows the refusals). Neither the latch, the tripwire, the abandoned-dispatch trap nor a timeout ended anything. The Git-tools switch was off, the repository has no dependencies, and no campaign, no wave's grader and no daemon task ran. What the box costs a tool call in seconds was not measured. The rehearsal that was owed before it was not run, so this record cannot say what a rehearsal would have found first.
 
-**What is still owed.** The daemon: its missions' data-only folder and its new scheduled task, then one daemon task end to end, before its task is enabled (`docs/NOW.md`). `bun scripts/cynco-guard.mjs clear` has never run. The real-profile stage with the Git-tools switch on, if the owner turns the switch on. The result of the advisory Linux suite for the merge.
+**What is still owed.** The daemon: its missions' data-only folder and its new scheduled task, then one daemon task end to end, before its task is enabled (`docs/NOW.md`). (2026-11-25, later the same day: done in the daemon sitting, the proof task on a scratch folder included: `docs/NOW.md`, the owner's list.) `bun scripts/cynco-guard.mjs clear` has never run. The real-profile stage with the Git-tools switch on, if the owner turns the switch on. The result of the advisory Linux suite for the merge. (Read the same afternoon: it failed, 30 tests in 13 files, each a test that did something only Windows accepts; fixed in the tests: `docs/NOW.md`.)
 
 ## What it does not cover
 

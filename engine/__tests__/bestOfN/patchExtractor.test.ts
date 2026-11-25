@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'bun:test'
 import { execSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmdirSync, symlinkSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { extractPatch } from '../../bestOfN/patchExtractor.js'
+import { removeLinkEntry } from '../helpers/linkEntry.js'
 
 const tempRepos: string[] = []
 
@@ -64,8 +65,8 @@ describe('extractPatch: a candidate that made a link is not applied', () => {
     expect(said.some(l => l.startsWith('[bestOfN] candidate ') && l.includes('made a link') && l.includes('lead-out') && l.includes('it is not applied')), said.join('\n')).toBe(true)
     // Nothing was staged, so the worktree is as the candidate left it.
     expect(execSync('git diff --cached --name-only', { cwd: repo, stdio: 'pipe' }).toString().trim()).toBe('')
-    // The junction is removed by the test itself as an entry, never entered.
-    rmdirSync(join(repo, 'sub', 'lead-out'))
+    // The junction (a symbolic link off Windows) is removed by the test itself as an entry, never entered.
+    removeLinkEntry(join(repo, 'sub', 'lead-out'))
     expect(existsSync(join(victim, 'secret.txt'))).toBe(true)
   })
 
@@ -92,7 +93,7 @@ describe('extractPatch: a candidate that made a link is not applied', () => {
     junctionOut(repo, join('node_modules', 'pkg'))
     writeFileSync(join(repo, 'hello.txt'), 'hello world\nchanged\n')
     const patch = extractPatch(repo)
-    rmdirSync(join(repo, 'node_modules', 'pkg'))
+    removeLinkEntry(join(repo, 'node_modules', 'pkg'))
     expect(patch).toContain('+changed')
     expect(patch).not.toContain('secret.txt')
     expect(patch).not.toContain('node_modules')
@@ -104,7 +105,7 @@ describe('extractPatch: a candidate that made a link is not applied', () => {
     junctionOut(repo, 'cache-link')
     writeFileSync(join(repo, 'hello.txt'), 'hello world\nchanged\n')
     const patch = extractPatch(repo)
-    rmdirSync(join(repo, 'cache-link'))
+    removeLinkEntry(join(repo, 'cache-link'))
     expect(patch).toContain('+changed')
     expect(patch).not.toContain('secret.txt')
   })
@@ -116,7 +117,7 @@ describe('extractPatch: a candidate that made a link is not applied', () => {
     junctionOut(repo, join('vendor', 'lead-out'))
     writeFileSync(join(repo, 'hello.txt'), 'hello world\nchanged\n')
     const patch = extractPatch(repo)
-    rmdirSync(join(repo, 'vendor', 'lead-out'))
+    removeLinkEntry(join(repo, 'vendor', 'lead-out'))
     expect(patch).toBe('')
   })
 

@@ -14,6 +14,7 @@ import { basename, dirname, join } from 'node:path'
 import { listEntries } from '../../realPath.js'
 import { ownIntegrityLevel } from '../../containment.js'
 import setup, { KEEP_DAYS, makeRunFolder, pruneKeptRunFolders, removeRunFolder, runOutcome, RUN_NAME, RUNS_PARENT } from './suiteRunFolder.js'
+import { removeLinkEntry } from '../helpers/linkEntry.js'
 
 const ROOT = mkdtempSync(join(tmpdir(), 'cynco-runfolder-test-'))
 const links: string[] = []
@@ -34,7 +35,7 @@ afterAll(() => {
   }
   for (const l of [...links, ...linksUnder(ROOT)]) {
     if (!entryThere(l)) continue
-    try { rmdirSync(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${(e as Error).message}`) }
+    try { removeLinkEntry(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${(e as Error).message}`) }
   }
   const left = linksUnder(ROOT)
   if (left.length > 0) throw new Error(`links are left under ${ROOT}, so it is not removed: ${left.join(', ')}`)

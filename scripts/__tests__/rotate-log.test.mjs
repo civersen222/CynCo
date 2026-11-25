@@ -54,11 +54,19 @@ function sized(p, bytes, body) {
 }
 
 describe('rotate-log.cmd and run-daemon.cmd as text (everywhere)', () => {
-  it('both files are ASCII with CRLF line ends', () => {
+  // The CRLF is a Windows checkout's: the repository keeps these files with LF and no attribute pins
+  // them, so core.autocrlf gives cmd.exe its CRLF on Windows and a Linux checkout has LF. Windows, where
+  // cmd.exe reads this very copy, is held to CRLF on every line; any other checkout to one kind of line
+  // end throughout, never a mixture and never a bare CR.
+  it('both files are ASCII with CRLF line ends on a Windows checkout, and one kind of line end anywhere', () => {
     for (const p of [SCRIPT, DAEMON]) {
       const raw = readFileSync(p)
       expect([...raw].every(b => b < 0x80), p).toBe(true)
-      expect(raw.toString('latin1').replace(/\r\n/g, '').includes('\n'), p).toBe(false)
+      const s = raw.toString('latin1')
+      expect(s.replace(/\r\n/g, '').includes('\r'), p).toBe(false)
+      const crlf = s.replace(/\r\n/g, '').includes('\n') === false
+      if (process.platform === 'win32') expect(crlf, p).toBe(true)
+      else expect(crlf || !s.includes('\r'), p).toBe(true)
     }
   })
   it('the default cap is 50 MiB, below the 32-bit ceiling cmd compares at', () => {

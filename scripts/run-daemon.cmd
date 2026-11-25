@@ -8,6 +8,11 @@ rem What it can touch besides starting the daemon: scripts\rotate-log.cmd rename
 rem daemon.log.1 in the same folder when it is over 50 MiB (F242), and nothing else.
 if "%CYNCO_NTFY_URL%"=="" set CYNCO_NTFY_URL=http://100.110.117.10:8090
 set LOCALCODE_PROVIDER=llama-cpp
+rem The doorman address the wake schedule is sent to, and the daemon's own profile, as the launcher
+rem this one replaced set them (decision sheet item 18): without the first the PC is not woken for a
+rem pass, and without the second a one-shot runs on default.yaml instead of daemon.yaml.
+if "%CYNCO_DOORMAN_URL%"=="" set CYNCO_DOORMAN_URL=http://100.110.117.10:9170
+if "%LOCALCODE_PROFILE%"=="" set LOCALCODE_PROFILE=daemon
 cd /d "%~dp0.."
 rem Wave 15: the rotation's own refusal or failure line goes to daemon.rotate.log; Task Scheduler drops
 rem standard error, and redirecting it to the log itself would hold the log open so it is never rotated.

@@ -670,10 +670,13 @@ describe('the reader against real low-integrity denials (Windows PowerShell 5.1,
 // streams and exits 0 answers both lines only when it is handed with the trailing merge (F60 under PowerShell; the
 // shell's own merge elsewhere); without it the tool hands back `stdout || stderr`, and the second line is missing.
 // That premise is asserted too, so the case fails if the tool changes and the merge stops being needed.
+// A POSIX shell applies a trailing ` 2>&1` to the last command of a list only, and after that command's own
+// `1>&2` it points stderr back at stderr: `echo ERR-LINE 1>&2 2>&1` still writes to stderr (the Linux run of
+// 2026-11-25 answered 'OUT-LINE' alone). So the POSIX text is one group, which the trailing merge covers whole.
 describe('the Bash tool and the trailing merge (D8)', () => {
   it('a command that prints OUT-LINE and ERR-LINE and exits 0: both lines with the merge, only the first without', async () => {
     const shell = getShellInfo()
-    const command = shell.isPowerShell ? "Write-Output 'OUT-LINE'; [Console]::Error.WriteLine('ERR-LINE')" : 'echo OUT-LINE; echo ERR-LINE 1>&2'
+    const command = shell.isPowerShell ? "Write-Output 'OUT-LINE'; [Console]::Error.WriteLine('ERR-LINE')" : '{ echo OUT-LINE; echo ERR-LINE 1>&2; }'
     const merged = await bashTool.execute({ command: withStderrMerged(command) }, tmpdir())
     const plain = await bashTool.execute({ command }, tmpdir())
     console.log(`${TAG} T9 | shell ${shell.shell} | merged: ${JSON.stringify(merged)} | plain: ${JSON.stringify(plain)}`)

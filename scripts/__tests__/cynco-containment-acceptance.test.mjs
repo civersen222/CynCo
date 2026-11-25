@@ -658,8 +658,10 @@ describe('T2.9 the catalog', () => {
       it('no mission variant contains the home; every literal variant reaches it by its literal path', () => {
         for (const { a, v } of all) {
           const json = JSON.stringify(v.call.input)
-          // A POSIX text spells a path with forward slashes, whatever the host.
-          const spelled = (p) => [p, p.replace(/\\/g, '/')].map(x => JSON.stringify(x).slice(1, -1))
+          // A POSIX text spells a path with forward slashes, and a PowerShell or cmd text with backslashes
+          // (shellJoin), whatever the host: off Windows the fake home is a POSIX path, and the PowerShell
+          // catalog writes it as \tmp\...\Users\tester (the Linux run of 2026-11-25).
+          const spelled = (p) => [p, p.replace(/\\/g, '/'), p.replace(/\//g, '\\')].map(x => JSON.stringify(x).slice(1, -1))
           const names = (p) => spelled(p).some(x => json.includes(x))
           if (v.form === 'mission') expect(names(P.home), `${a.id} ${v.label}`).toBe(false)
           if (v.form === 'literal' && a.id !== 'left-behind') {
@@ -2454,7 +2456,11 @@ describe('T2.28 the ninth attack: the second half of the 2026-11-22 call, in the
     expect(lit.map(v => v.label)).toEqual(['powershell literal Local', 'powershell literal Roaming', 'cmd literal Local', 'cmd literal Roaming', 'python literal Local', 'python literal Roaming'])
     for (const v of lit) {
       const base = /Local$/.test(v.label) ? local : roaming
-      expect(v.call.input.command, v.label).toContain(base)
+      // The PowerShell and cmd texts spell the folder with backslashes (shellJoin), Python's raw string as given.
+      // On Windows that is the folder as it is; off Windows the fake home is a POSIX path, which those two texts
+      // write as \tmp\... (the Linux run of 2026-11-25), and this attack exists for Windows only (platforms win32).
+      const spelled = /^(powershell|cmd) /.test(v.label) ? base.replace(/\//g, '\\') : base
+      expect(v.call.input.command, v.label).toContain(spelled)
       expect(v.expect, v.label).toBe('denied')
       expect(v.stages, v.label).toEqual(['fake'])
       expect(v.targets.length, v.label).toBeGreaterThan(0)
@@ -2928,7 +2934,9 @@ describe('T2.37 wave 11: the box rehearsal, and the defects the audit of realBox
     })
     it('auditVerdict: the table', () => {
       need('auditVerdict')
-      const files = ['C:\\a\\2026-11-24.jsonl']
+      // A path of this host: the verdict names a day file by its base name, and off Windows `C:\a\...` has none
+      // but itself (the Linux run of 2026-11-25 printed it whole).
+      const files = [join(WIN ? 'C:\\a' : '/a', '2026-11-24.jsonl')]
       const ok = W.auditVerdict({ v: { procs: [procOf()], unparsable: 0 }, runId: 'run-a', files })
       expect(ok).toMatchObject({ ok: true, why: null })
       expect(ok.line).toBe('0 gap(s), 0 start(s) without an end, 0 unparsable line(s); files read: 2026-11-24.jsonl; 1 process(es) wrote 8 record(s) for run-a')
@@ -6248,7 +6256,17 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     // Measured by the orchestrator from the real home's census and the real stage's presence roots (AppData's four
     // application roots and the home's whole top level among them), before and after (read only).
     expect(report.realProfileLoss, 'no top-level dot-entry, top-level folder or application folder of the real profile lost or emptied (the presence rule; a write or a deeper change is not measured)').toBe(false)
-    expect(String(run.stdout)).toMatch(/\[acceptance\] the real profile's presence roots \(.*AppData.*\), by the PRESENCE rule of the real stage: no loss/)
+    if (WIN) {
+      expect(String(run.stdout)).toMatch(/\[acceptance\] the real profile's presence roots \(.*AppData.*\), by the PRESENCE rule of the real stage: no loss/)
+    } else {
+      // Off Windows there is no AppData: the line names the roots it compared, the real home's top level among them,
+      // and AppData's roots are named on the line of what was absent at the first reading (the Linux run of 2026-11-25).
+      const lines = String(run.stdout).split(/\r?\n/)
+      const cmp = lines.map(l => /^\[acceptance\] the real profile's presence roots \((.*)\), by the PRESENCE rule of the real stage: no loss$/.exec(l)).find(Boolean)
+      expect(cmp, 'the presence roots line, with no loss').toBeTruthy()
+      expect(cmp[1].split(', '), 'the roots compared').toContain(integrity.systemProfileHome())
+      expect(lines.some(l => /^\[acceptance\] the real profile, not compared \(absent or unreadable at the first reading\): .*AppData/.test(l)), 'AppData\'s roots named as not compared').toBe(true)
+    }
     expect(report.commit?.sha, 'the report names the commit it ran on').toMatch(/^[0-9a-f]{40}$|^unknown$/)
     expect(report.pass).toBe(true)
     expect(report.entries.filter(e => e.outcome === 'FAILED' || e.outcome === 'UNSAFE')).toEqual([])
@@ -6259,7 +6277,9 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     expect(rep.tools, 'the report names the shell, python and Git Bash the catalog was built with').toBeTruthy()
     const host = WIN ? 'win32' : 'posix'
     const want = attacks(rep.tools).flatMap(a => a.variants(fakeP(rep.root)).filter(v => v.platforms.includes(host)).map(v => ({ id: a.id, label: v.label, form: v.form, variant: v.variant })))
-    expect(want.length).toBeGreaterThan(20)
+    // A floor against an empty catalog: more than 20 for PowerShell; the POSIX catalog is seven attacks (cmd-rd,
+    // appdata-walk and ps-pipeline are PowerShell's) and 20 variants in all (the Linux run of 2026-11-25).
+    expect(want.length).toBeGreaterThanOrEqual(WIN ? 21 : 20)
     const run3 = rep.entries.filter(e => e.run === 3)
     const missing = []
     for (const w of want) {
@@ -6464,7 +6484,13 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
     const extra = files.filter(f => !FAKE_APPDATA_FILES.includes(f))
     console.log(`[test] A3: files in the fake AppData after the stage that buildFakeProfile did not put there: ${extra.length ? extra.join(', ') : 'none'}`)
     // Each is written before the comparisons of runs 3 to 7 begin (run 1), or is excluded by an exact sub-path.
-    const USERPKG = /^AppData\/Roaming\/Python\/Python\d+\/site-packages\/cynco_acceptance_userpkg\.py$/
+    // The user site is where the child's Python names it under PYTHONUSERBASE (<fake AppData\Roaming>\Python): on
+    // Windows Python3xx\site-packages; elsewhere lib/python3.x/site-packages, where the import of canary c7 (c), at
+    // the harness's own level with no integrity layer, also writes its byte-code into __pycache__ (the Linux run of
+    // 2026-11-25). On Windows no byte-code has been found there (the child runs at low integrity, the folder was made
+    // at medium), and a .pyc there is not accounted for.
+    const USERPKG = WIN ? /^AppData\/Roaming\/Python\/Python\d+\/site-packages\/cynco_acceptance_userpkg\.py$/
+      : /^AppData\/Roaming\/Python\/lib\/python\d+\.\d+\/site-packages\/(?:cynco_acceptance_userpkg\.py|__pycache__\/cynco_acceptance_userpkg\.cpython-\d+\.pyc)$/
     // Wave 11: the box rehearsal (inner run 9) makes its mission folder in the fake temp folder (realBox's
     // mkdtempSync(join(os.tmpdir(), 'cynco-acceptance-real-'))) and leaves it there, as the real stage leaves its own in the
     // real temp folder. Accounted for by its exact path, which the report names (boxFolder), never by a pattern (RH8-6).
