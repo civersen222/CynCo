@@ -105,7 +105,8 @@ export class LSPManager {
     }
     const program = 'shell' in cmd ? 'the shell' : cmd.file
     // The tree is owned from the moment the root exists and ended on the command's own cap, with a
-    // two-second grace, and on an output overrun (`ownedExec`, engine/processTree.ts): a spawn's own
+    // two-second grace, and, when a Job Object holds it, on an output overrun (`ownedExec`,
+    // engine/processTree.ts; a walked tree is released then, its root having ended: F255): a spawn's own
     // timeout ended the root alone and left what it had started running (NOW.md, 2026-11-24; F201,
     // F210). A command that ends on its own gives the handle back.
     let r: OwnedExecEnd

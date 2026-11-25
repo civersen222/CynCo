@@ -90,7 +90,8 @@ export async function runTests(
     return { passed: 0, total: 0, output: '', refused: message }
   }
   // The tree is owned from the moment the root exists and ended on the run's own cap, with a
-  // two-second grace, and on an output overrun (`ownedExec`, engine/processTree.ts).
+  // two-second grace, and, when a Job Object holds it, on an output overrun (`ownedExec`,
+  // engine/processTree.ts; a walked tree is released then, its root having ended: F255).
   let r: OwnedExecEnd
   try {
     r = await ownedExec(

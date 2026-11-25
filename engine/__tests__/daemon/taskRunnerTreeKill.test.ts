@@ -45,10 +45,10 @@ describe('TaskRunner: a one-shot ended mid-run is ended with what it started (F2
     const pidFile = join(dir, 'grandchild.pid')
     const stub = join(dir, 'standIn.mjs')
     // The mark is in the grandchild's program text only: not in the stand-in's command line, not in the folder's name.
-    // `detached`: Node on Windows puts every child it spawns otherwise into a kill-on-close job of its own, so ending a
-    // Node stand-in would end its grandchild with it whatever `killTree` did (measured: with `stdio` alone the case
-    // passed with the tree's kill taken out). The real one-shot runs under Bun; whether Bun does the same was not
-    // measured here, so the stand-in starts its grandchild detached, which a walk of the stand-in's tree still finds.
+    // `detached`: a grandchild this Node stand-in started without it ended with the stand-in whatever `killTree` did
+    // (measured: with `stdio` alone the case passed with the tree's kill taken out; why was not measured). The real
+    // one-shot runs under Bun; whether a Bun root's children end with it was not measured here either, so the
+    // stand-in starts its grandchild detached, which a walk of the stand-in's tree still finds.
     writeFileSync(stub, [
       `import { spawn } from 'node:child_process'`,
       `import { writeFileSync } from 'node:fs'`,

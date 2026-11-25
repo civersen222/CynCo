@@ -60,7 +60,8 @@ export async function runPrecheck(command: string, cwd?: string, id?: string, ca
     if (audit && started) audit.end(started.call, { ...r, ms: Date.now() - t0 })
   }
   // The tree is owned from the moment the launcher exists and ended on the precheck's own cap, with
-  // a two-second grace, and on an output overrun (`ownedExec`, engine/processTree.ts): exec's own
+  // a two-second grace, and, when a Job Object holds it, on an output overrun (`ownedExec`,
+  // engine/processTree.ts; a walked tree is released then, its root having ended: F255): exec's own
   // kill ended the launcher alone (NOW.md, 2026-11-24; F201, F210). A precheck that ends on its own
   // releases the handle and kills nothing. A cut precheck reads as before: no status, code 1.
   let r: OwnedExecEnd
