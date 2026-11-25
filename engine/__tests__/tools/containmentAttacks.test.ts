@@ -68,6 +68,12 @@ const decide = (tool: string, input: Record<string, unknown>, cwd = fake.mission
 // resolved the path to a place bash does not act on ("which resolves to C:\c"), and cases 1 and 3b admitted a
 // refusal that quoted the text instead of naming the fake AppData for that one form. Since wave 15 the payload is
 // read as 5.1 hands it on (`shellPaths.ts`, `ps51Delivered`), and every form must name its target again.
+// That reading is Windows PowerShell 5.1's and exists only on Windows: on a POSIX host the shell is a POSIX shell
+// (`classifyShell`, `shellInfo.ts`) and the scan reads the same text as POSIX, where the line starting with `&` runs
+// nothing and the payload's `\"` stays a quote, so `rm -rf \"$HOME\"/.cynco` names a folder `"<home>"` under the
+// working folder, which the check rightly allows. Those forms are judged on Windows only (case 1b); every other
+// form, the Git Bash form of `rm-all-dot` (no inner quote) included, is judged on every host (cases 1 and 3b).
+const ps51Form = (v: Variant): boolean => v.variant.startsWith('git-bash') && String(v.call.input.command ?? '').includes('\\"')
 const approvals: string[] = []
 const executor = (cwd = fake.mission, auditSrc?: 'tool' | 'subagent') => new ToolExecutor({
   cwd, approveAll: true, requestApproval: async (tool) => { approvals.push(tool); return true }, ...(auditSrc ? { auditSrc } : {}),
@@ -89,7 +95,7 @@ afterAll(() => {
 
 describe('the attack catalog against the path check (decisions; F242, T1 cases 1 to 9)', () => {
   it('1. every mission-form variant, for PowerShell and for POSIX, is refused, and names what it refused', () => {
-    const seen = allVariants().filter(x => x.v.form === 'mission')
+    const seen = allVariants().filter(x => x.v.form === 'mission' && !ps51Form(x.v))
     expect(seen.length).toBeGreaterThan(10)
     for (const { shell, attack, v } of seen) {
       const verdict = decide(v.call.tool, v.call.input)
@@ -99,6 +105,21 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
       // for a git setting that would start a program, the setting.
       const names = verdict.reason.toLowerCase().includes(fake.home.toLowerCase()) || /git setting core\.fsmonitor/.test(verdict.reason)
       expect(names, `${shell} ${attack.id} ${v.label} refused without naming its target: ${verdict.reason.slice(0, 300)}`).toBe(true)
+    }
+  })
+
+  it.skipIf(!WIN)('1b. (Windows: what Windows PowerShell 5.1 hands Git\'s bash.exe) the Git Bash forms with inner quotes are refused, and name the fake home, and the ninth attack\'s its AppData', () => {
+    const seen = allVariants().filter(x => ps51Form(x.v))
+    expect(seen.map(x => `${x.attack.id} ${x.v.form}`).sort()).toEqual(['appdata-walk mission', 'rm-home-cynco mission'])
+    const local = join(fake.home, 'AppData', 'Local').toLowerCase()
+    const roaming = join(fake.home, 'AppData', 'Roaming').toLowerCase()
+    for (const { shell, attack, v } of seen) {
+      const verdict = decide(v.call.tool, v.call.input)
+      expect(verdict.kind, `${shell} ${attack.id} ${v.label}: ${JSON.stringify(v.call.input)}`).toBe('refuse')
+      if (verdict.kind !== 'refuse') continue
+      const r = verdict.reason.toLowerCase()
+      expect(r.includes(fake.home.toLowerCase()), `${shell} ${attack.id} ${v.label} refused without naming its target: ${verdict.reason.slice(0, 300)}`).toBe(true)
+      if (attack.id === 'appdata-walk') expect(r.includes(local) || r.includes(roaming), `${v.label} ${v.form} refused without naming the fake AppData: ${verdict.reason.slice(0, 300)}`).toBe(true)
     }
   })
 
@@ -124,7 +145,8 @@ describe('the attack catalog against the path check (decisions; F242, T1 cases 1
       const vs = a.variants(P)
       expect(vs.filter(v => v.form === 'mission').length, 'mission forms').toBe(opts.gitBash ? 7 : 6)
       expect(vs.filter(v => v.form === 'literal').length, 'literal forms').toBe(6)
-      for (const v of vs) {
+      // The Git Bash form (with its inner quotes for Windows PowerShell 5.1) is judged in case 1b, on Windows.
+      for (const v of vs.filter(x => !ps51Form(x))) {
         const verdict = decide(v.call.tool, v.call.input)
         expect(verdict.kind, `${v.label} ${v.form}: ${JSON.stringify(v.call.input)}`).toBe('refuse')
         if (verdict.kind !== 'refuse') continue

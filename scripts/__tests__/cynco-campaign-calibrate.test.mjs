@@ -1,11 +1,12 @@
 import { describe, it, expect, afterAll } from 'vitest'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { ownIntegrityLevel } from '../../engine/containment.js'
 import { basename, dirname, join } from 'node:path'
 import { calibrate, instrumentOf, archiveBase, defaultIo, removeNoFollow } from '../cynco-campaign-calibrate.mjs'
 import { listEntries } from '../../engine/realPath.js'
+import { removeLinkEntry } from '../../engine/__tests__/helpers/linkEntry.js'
 import { SUITE_TIMEOUT_MS } from '../cynco-campaign-grade.mjs'
 
 const baseLog = readFileSync(new URL('./fixtures/gate_c8_base.log', import.meta.url), 'utf8')
@@ -440,7 +441,7 @@ describe('freshDir: the BASE folder is emptied without ever entering a link', ()
     const entryThere = (l) => { try { return readdirSync(dirname(l)).includes(basename(l)) } catch { return false } }
     for (const l of [...links, ...linksUnder(ROOT)]) {
       if (!entryThere(l)) continue
-      try { rmdirSync(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${e.message}`) }
+      try { removeLinkEntry(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${e.message}`) }
     }
     const left = linksUnder(ROOT)
     if (left.length > 0) throw new Error(`links are left under ${ROOT}, so it is not removed: ${left.join(', ')}`)

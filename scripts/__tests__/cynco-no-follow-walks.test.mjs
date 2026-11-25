@@ -16,10 +16,11 @@
  * Every case builds its tree under a folder of this file's own, removed at the end.
  */
 import { afterAll, describe, expect, it } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { listEntries } from '../../engine/realPath.js'
+import { removeLinkEntry } from '../../engine/__tests__/helpers/linkEntry.js'
 import { makeRunFolder, removeRunFolder } from '../../engine/__tests__/setup/suiteRunFolder.js'
 import { removeNoFollow } from '../cynco-campaign-calibrate.mjs'
 
@@ -41,7 +42,7 @@ afterAll(() => {
   const entryThere = (l) => { try { return readdirSync(dirname(l)).includes(basename(l)) } catch { return false } }
   for (const l of links) {
     if (!entryThere(l)) continue
-    try { rmdirSync(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${e.message}`) }
+    try { removeLinkEntry(l) } catch (e) { console.error(`[test] the link ${l} could not be removed as an entry: ${e.message}`) }
   }
   const left = []
   const linksUnder = (d) => { for (const e of listEntries(d)) { if (e.kind === 'link') left.push(join(d, e.name)); else if (e.kind === 'dir') linksUnder(join(d, e.name)) } }

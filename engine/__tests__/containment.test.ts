@@ -30,6 +30,7 @@ import {
 import { RUN_ID_RE } from '../missionEnv.js'
 import { auditDir, cyncoHome, guardDir } from '../paths.js'
 import { isLinkEntry, listEntries, whyNotAtOwnPath, type EntryKind } from '../realPath.js'
+import { removeLinkEntry } from './helpers/linkEntry.js'
 
 /**
  * The walks take an entry's kind from the folder's listing (`listEntries`, `isLinkEntry`). A case
@@ -73,6 +74,7 @@ let L: { root: string; home: string; mission: string; extra: string; state: stri
 let folders: RunContainment['folders']
 let links: string[]
 
+/** A junction on Windows; elsewhere the type is ignored and a symbolic link is made. A case removes it with `removeLinkEntry`. */
 function link(target: string, at: string): void {
   symlinkSync(target, at, 'junction')
   links.push(at)
@@ -1015,12 +1017,12 @@ describe('establishContainment: every refusal by its text', () => {
   it('M8: a link at the first or second level that leads out; one that stays inside is allowed', () => {
     link(L.outside, join(L.mission, 'out1'))
     expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'out1')} -> ${L.outside})`)
-    rmdirSync(join(L.mission, 'out1'))
+    removeLinkEntry(join(L.mission, 'out1'))
     links = []
     mkdirSync(join(L.mission, 'sub'))
     link(L.outside, join(L.mission, 'sub', 'out2'))
     expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'sub', 'out2')} -> ${L.outside})`)
-    rmdirSync(join(L.mission, 'sub', 'out2'))
+    removeLinkEntry(join(L.mission, 'sub', 'out2'))
     links = []
     mkdirSync(join(L.mission, 'inner'))
     link(join(L.mission, 'inner'), join(L.mission, 'sub', 'in'))
@@ -1033,7 +1035,7 @@ describe('establishContainment: every refusal by its text', () => {
     mkdirSync(join(L.mission, 'a', 'b', 'c'), { recursive: true })
     link(L.outside, join(L.mission, 'a', 'b', 'c', 'out4'))
     expect(refusal(establishContainment(base()))).toBe(`the mission folder ${L.mission} holds a link that leads outside it (${join(L.mission, 'a', 'b', 'c', 'out4')} -> ${L.outside})`)
-    rmdirSync(join(L.mission, 'a', 'b', 'c', 'out4'))
+    removeLinkEntry(join(L.mission, 'a', 'b', 'c', 'out4'))
     links = []
     link(join(L.mission, 'a'), join(L.mission, 'a', 'b', 'c', 'up'))
     expect(establishContainment(base()).ok).toBe(true)
@@ -1750,7 +1752,7 @@ describe('releaseContainment', () => {
     expect(still.note).toContain(`${L.mission}: the access list saved before this run's grant was not put back, because ${join(L.mission, 'out')} leads outside it (to ${L.outside})`)
     expect(restoreCalls(r1.calls)).toEqual([])
     expect(readRec(c.runId).grantsKept).toEqual([{ folder: L.mission, aclFile, why: 'link' }])
-    rmdirSync(join(L.mission, 'out'))
+    removeLinkEntry(join(L.mission, 'out'))
     const r2 = seam()
     const done = restoreKeptGrants(c.runId, { sandboxRoot: L.root, platform: 'win32', run: r2.run })
     expect(done, done.note).toEqual({ done: true, note: `run ${c.runId}: ${L.mission}: the access list saved before this run's grant was put back` })
@@ -1868,7 +1870,7 @@ describe('releaseContainment', () => {
     link(L.outside, join(L.mission, 'out'))
     releaseContainment(c, { platform: 'win32', run: seam().run })
     expect(readRec(c.runId).grantsKept).toEqual([{ folder: L.mission, aclFile, why: 'link' }])
-    rmdirSync(join(L.mission, 'out'))
+    removeLinkEntry(join(L.mission, 'out'))
     links = []
     rmSync(L.mission, { recursive: true, force: true })
     const r = seam()
@@ -2333,7 +2335,7 @@ describe('sweepSandboxes', () => {
     expect(kept.removed).toEqual([])
     expect(lines).toContain(`[containment] the sweep keeps ${runDir}: the access list saved before this run's grant on ${L.mission} was not put back (${join(runDir, 'acl-0.before')}); put it back with: bun scripts/cynco-sandbox.mjs restore-acl ${c.runId}`)
     expect(existsSync(join(runDir, 'acl-0.before'))).toBe(true)
-    rmdirSync(join(L.mission, 'out'))
+    removeLinkEntry(join(L.mission, 'out'))
     expect(restoreKeptGrants(c.runId, { sandboxRoot: L.root, platform: 'win32', run: seam().run }).done).toBe(true)
     const gone = sweepSandboxes({ sandboxRoot: L.root, home: L.home, platform: 'win32', run: seam().run, log: () => undefined })
     expect(gone.removed).toEqual([runDir])
@@ -3321,7 +3323,7 @@ describe('B1: the Git-tools switch (LOCALCODE_CONTAINMENT_MSYS, read by the star
     expect(r({ msys: g.copy, gitRoot: g.git }, low)).toBe(`the copy of Git's tools at ${g.copy} carries a Low integrity label, so a contained run could change the programs it starts`)
     link(L.outside, join(g.copy, 'usr', 'out'))
     expect(r({ msys: g.copy, gitRoot: g.git })).toBe(`the copy of Git's tools at ${g.copy} holds a link that leads outside it (${join(g.copy, 'usr', 'out')} -> ${L.outside})`)
-    rmdirSync(join(g.copy, 'usr', 'out'))
+    removeLinkEntry(join(g.copy, 'usr', 'out'))
     links = []
     expect(r({ msys: g.copy, gitRoot: null })).toBe(`the installed Git's usr\\bin\\msys-2.0.dll was not found, so the copy of Git's tools at ${g.copy} could not be compared with it`)
     writeFileSync(join(g.copy, 'usr', 'bin', 'msys-2.0.dll'), 'dll-v0')

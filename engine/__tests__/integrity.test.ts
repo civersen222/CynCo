@@ -11,7 +11,7 @@ import {
 } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir, userInfo } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as I from '../integrity.js'
 import { mintRunId, testContainment } from '../containment.js'
@@ -1873,7 +1873,10 @@ describe('wave 15: the known folders', () => {
     const query = () => regText([
       '    AppData    REG_EXPAND_SZ    %USERPROFILE%\\AppData\\Roaming',
       `    Desktop    REG_EXPAND_SZ    ${elsewhere}`,
-      '    Personal    REG_EXPAND_SZ    %userprofile%\\Docs',
+      // The value is joined with this platform's separator: on Windows the text reg.exe prints
+      // (`%userprofile%\Docs`), elsewhere the same value as a path there, where a backslash is a
+      // character of a name and `<home>\Docs` would be a sibling of the home, not inside it.
+      `    Personal    REG_EXPAND_SZ    %userprofile%${sep}Docs`,
       '    My Pictures    REG_EXPAND_SZ    %NOT_SET_HERE%\\Pics',
       '    My Music    REG_EXPAND_SZ    %USERPROFILE%\\Music',
     ])
@@ -2101,7 +2104,8 @@ describe('wave 15b: the known folders are read for this account\'s own profile o
   it('(107) whether the registry and the variables are read is the system\'s answer about the profile, never the environment\'s', () => {
     const w = world()
     let asked = 0
-    const query = () => { asked++; return regText(['    Personal    REG_EXPAND_SZ    %USERPROFILE%\\Docs']) }
+    // This platform's separator, as in (99): on Windows the text reg.exe prints, `%USERPROFILE%\Docs`.
+    const query = () => { asked++; return regText([`    Personal    REG_EXPAND_SZ    %USERPROFILE%${sep}Docs`]) }
     const env = { USERPROFILE: w.home, OneDrive: join(w.home, 'OneDrive') }
     const own: string[] = []
     expect(I.knownFolderPlaces({ home: w.home, profile: () => w.home, env, query, notes: own })).toEqual([resolve(w.home, 'Docs'), resolve(w.home, 'OneDrive')])

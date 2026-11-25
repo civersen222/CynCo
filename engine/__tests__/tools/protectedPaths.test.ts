@@ -411,9 +411,23 @@ describe('the review attack table (W)', () => {
   }
 })
 
+/**
+ * Rows of `reviewAttacks` whose subject exists only on Windows, judged under H on Windows alone (under W they are
+ * judged on every host): cmd's `for /d` over the drive `D:\*`. On a POSIX host `D:\*` is no drive (the scan reads the
+ * loop's folder as `.`, which the check then resolves against the engine's own working folder, not the mission
+ * folder: refused, but as the checkout or as outside, not as an unprotected volume).
+ */
+const REVIEW_H_WINDOWS_ONLY = new Set(['for over D:\\*'])
+
 describe('the review attack table (H)', () => {
   it('every entry is refused with its rule', () => {
-    for (const [label, tool, input, rule] of reviewAttacks(fH())) expectRefuse(decideH(tool, input), rule, H.pc, label)
+    // The entries over a drive letter are the next case's.
+    for (const [label, tool, input, rule] of reviewAttacks(fH()).filter(([l]) => !REVIEW_H_WINDOWS_ONLY.has(l))) expectRefuse(decideH(tool, input), rule, H.pc, label)
+  })
+  it.skipIf(process.platform !== 'win32')('Windows: the entries over a drive letter (cmd\'s for /d over D:\\*) are refused with their rule', () => {
+    const rows = reviewAttacks(fH()).filter(([l]) => REVIEW_H_WINDOWS_ONLY.has(l))
+    expect(rows.map(([l]) => l)).toEqual([...REVIEW_H_WINDOWS_ONLY])
+    for (const [label, tool, input, rule] of rows) expectRefuse(decideH(tool, input), rule, H.pc, label)
   })
 })
 
@@ -804,12 +818,48 @@ describe('the second review attack table (W)', () => {
   }
 })
 
+/**
+ * Pass rows that are PowerShell as written and that a POSIX shell reads as other commands: a variable, a member, an
+ * index or a type in the program's place (`$t[...]`, `$r.StatusCode`, `[IO.Path]::Combine(...)`), a script block
+ * whose first word is an assignment (`{ $n = ... }`), and a PowerShell operator or a `-match` given `'/'`, `'\'` or
+ * `"\[...\]"` as a program's operand. The Bash tool's shell is PowerShell only on Windows (`classifyShell`,
+ * `shellInfo.ts`); on a POSIX host the scan reads the text as POSIX, where these are refused as a program named by an
+ * expansion (`self-building`) or a program handed the root (`unclassified`). They are judged under W on every host
+ * and under H on Windows; the rest of the tables under H on every host.
+ */
+const PS_ONLY_PASSES = new Set([
+  "$t = Get-Content a.txt; $n = $t.Count; $t[($n-30)..($n-1)]",
+  "$c = Get-Content a.txt; $c[($c.Length - 10)..($c.Length - 1)]",
+  "Get-Content dbg_out.txt | Where-Object { $_ -match \"\\[decision\\] (timid|steady)-expert\" } | Select-Object -First 8",
+  "Get-Content log.txt | Where-Object { $_ -match \"\\[ERROR\\]\" }",
+  "$p = (Get-Location).Path; $p -replace '\\\\', '/'",
+  "Get-ChildItem -Recurse -File | ForEach-Object { $_.FullName -replace [regex]::Escape($PWD.Path + '\\'), '' }",
+  "$r = Invoke-WebRequest -UseBasicParsing http://localhost:3000/health; $r.StatusCode",
+  "[IO.Path]::Combine($PWD.Path, 'a', 'b')",
+  "$s = \"a\\b\"; $s.Replace('\\', '/')",
+  "$PSVersionTable.PSVersion",
+  "$json = Get-Content a.json | ConvertFrom-Json; $json.items.Count",
+  "$t = Get-Content packages/engine/src/testing.ts; $start = ($t | Select-String -Pattern 'export function' | Select-Object -First 1).LineNumber; $t[($start-1)..($start+24)]",
+  "Get-ChildItem -Recurse -Include *.py | ForEach-Object { $n = (Get-Content $_).Count; if ($n -gt 500) { \"$($_.FullName) $n\" } }",
+])
+/** A row spelled with the W table's literal home on drive C:, which a POSIX host does not have. */
+const literalWHome = (c: string): boolean => c.includes('C:\\Users\\u') || c.includes('C:/Users/u')
+/** The rows H judges on every host, and the rest, which it judges on Windows. */
+const hostRows = (rows: string[]): string[] => rows.filter(c => !PS_ONLY_PASSES.has(c) && !literalWHome(c))
+const windowsRows = (rows: string[]): string[] => rows.filter(c => PS_ONLY_PASSES.has(c) || literalWHome(c))
+
 describe('the second review pass table', () => {
   it('W: every entry is allowed or escalated', () => {
     for (const command of SECOND_PASSES) expectPass(decideW('Bash', { command }), command)
   })
+  // The entries PowerShell alone reads as written, and those on drive C:, are the next case's.
   it('H: every entry is allowed or escalated', () => {
-    for (const command of SECOND_PASSES) expectPass(decideH('Bash', { command }), command)
+    for (const command of hostRows(SECOND_PASSES)) expectPass(decideH('Bash', { command }), command)
+  })
+  it.skipIf(process.platform !== 'win32')('H, Windows: the entries PowerShell alone reads as written, and those on drive C:, are allowed or escalated', () => {
+    // Every listed row is a row of one of the tables, so the list cannot name a row that is gone.
+    for (const c of PS_ONLY_PASSES) expect([...SECOND_PASSES, ...THIRD_PASSES], c).toContain(c)
+    for (const command of windowsRows(SECOND_PASSES)) expectPass(decideH('Bash', { command }), command)
   })
 })
 
@@ -973,8 +1023,12 @@ describe('the third review pass table', () => {
   it('W: every entry is allowed or escalated', () => {
     for (const command of THIRD_PASSES) expectPass(decideW('Bash', { command }), command)
   })
+  // The entries PowerShell alone reads as written are the next case's.
   it('H: every entry without a literal home folder is allowed or escalated', () => {
-    for (const command of THIRD_PASSES.filter(c => !c.includes('C:\\Users\\u') && !c.includes('C:/Users/u'))) expectPass(decideH('Bash', { command }), command)
+    for (const command of hostRows(THIRD_PASSES)) expectPass(decideH('Bash', { command }), command)
+  })
+  it.skipIf(process.platform !== 'win32')('H, Windows: the entries without a literal home folder that PowerShell alone reads as written are allowed or escalated', () => {
+    for (const command of THIRD_PASSES.filter(c => PS_ONLY_PASSES.has(c) && !literalWHome(c))) expectPass(decideH('Bash', { command }), command)
   })
 })
 
@@ -1624,7 +1678,10 @@ describe('unprotected volumes (W)', () => {
   it('a read there is allowed', () => {
     expect(decideW('Bash', { command: 'Get-Content D:\\x.txt' }).kind).toBe('allow')
   })
-  it('H: no file-system call is made for a foreign volume', () => {
+  // A file tool's field `D:\x.txt` is a drive only on Windows: on a POSIX host it is a relative name, which the Write
+  // tool writes inside the mission folder, and the check allows it there. The shell spellings are judged on every host.
+  const hCases = (windows: boolean) => cases.filter(([tool]) => (tool === 'Write') === windows)
+  const noCallFor = (cs: Array<[string, Record<string, unknown>]>) => {
     const throwing = (p: string): string => {
       if (/^[\\/]{2}/.test(p) || /^[DE]:/i.test(p)) throw new Error(`the file system was asked about ${p}`)
       return realPathOf(p, { quiet: true })
@@ -1632,10 +1689,15 @@ describe('unprotected volumes (W)', () => {
     const r = pathContextOf(H.ctx, { real: throwing })
     if (!r.ok) throw new Error(r.fault)
     const pc = r.pc
-    for (const [tool, input] of cases) {
+    for (const [tool, input] of cs) {
       const v = judgeCall(tool, namePaths(tool, input, H.mission, pc.homes, { platform: pc.platform, real: throwing, drives: pc.drives, lexicalRoots: pc.unprotectedVolumes }), pc, H.mission)
       expect(v.kind, JSON.stringify(input)).toBe('refuse')
     }
+  }
+  it('H: no file-system call is made for a foreign volume', () => noCallFor(hCases(false)))
+  it.skipIf(process.platform !== 'win32')('H, Windows: no file-system call is made for a file tool\'s path on a drive the run has no folder on', () => {
+    expect(hCases(true).length).toBe(1)
+    noCallFor(hCases(true))
   })
 })
 

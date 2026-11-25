@@ -5,7 +5,7 @@
 import { describe, it, expect, afterAll } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { citedKeep, citedWords, DEFAULT_MISSION_LOG_DIR, FAILURE_LOG, folderRefusal, main, parseArgs, pruneMissionLogs } from '../cynco-logs.mjs'
 
 const roots = []
@@ -133,7 +133,9 @@ describe('pruneMissionLogs', () => {
       refused(pruneMissionLogs({ dir: home, now: NOW, homes: [home] }), why)
       refused(pruneMissionLogs({ dir: join(d, 'users'), now: NOW, homes: [home] }), why)
       refused(pruneMissionLogs({ dir: d, now: NOW, homes: [home] }), why)
-      refused(pruneMissionLogs({ dir: `${home}\\..\\someone\\`, now: NOW, homes: [home] }), why)
+      // Through `..` and with a trailing separator, each this platform's own (on Windows `\`): on Linux a
+      // backslash is a character of a name, so `<home>\..\someone\` is one folder that is not the home.
+      refused(pruneMissionLogs({ dir: `${home}${sep}..${sep}someone${sep}`, now: NOW, homes: [home] }), why)
       if (process.platform === 'win32') refused(pruneMissionLogs({ dir: home.toUpperCase(), now: NOW, homes: [home] }), why)
       expect(existsSync(p)).toBe(true)
       expect(existsSync(inHome)).toBe(true)

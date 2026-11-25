@@ -9,16 +9,17 @@
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { execSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { applyPatch } from '../../bestOfN/sampler.js'
+import { removeLinkEntry } from '../helpers/linkEntry.js'
 
 const made: string[] = []
 const links: string[] = []
 afterEach(() => {
-  // Junctions are removed as entries first, so the folder removal below cannot reach through one.
-  for (const l of links.splice(0)) { try { rmdirSync(l) } catch { /* already gone with its test */ } }
+  // Junctions (symbolic links off Windows) are removed as entries first, so the folder removal below cannot reach through one.
+  for (const l of links.splice(0)) { try { removeLinkEntry(l) } catch { /* already gone with its test */ } }
   for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5 })
 })
 
@@ -127,14 +128,20 @@ describe('applyPatch judges the paths the patch writes (check B4-4)', () => {
     expect(existsSync(join(r, 'hello.txt'))).toBe(true)
   })
 
-  it('refuses a path that names a link in another case than its folder lists it', () => {
+  // Windows only: there `OUT` names the folder entry `out` (the file system folds case). On a file system
+  // that tells names apart by case (the Linux CI job), `OUT` is a folder of its own that git makes in the
+  // work tree, nothing reaches the link, and applying is right (the Linux run of 2026-11-25 applied it).
+  it.skipIf(process.platform !== 'win32')('refuses a path that names a link in another case than its folder lists it', () => {
     const r = repo()
     const outside = junction(r, 'out')
     expect(applyPatch(r, adds('OUT/x.txt'))).toBe(false)
     expect(existsSync(join(outside, 'x.txt'))).toBe(false)
   })
 
-  it('refuses a path that names a link with a trailing dot (git refuses that path itself)', () => {
+  // Windows only: there `out.` is read as `out`. Elsewhere `out.` is a name of its own, which git makes in
+  // the work tree and applies to (git's trailing-dot check is in its Windows build only): the non-Windows
+  // expectation of one reason, which no run had checked, failed on the Linux CI job of 2026-11-25.
+  it.skipIf(process.platform !== 'win32')('refuses a path that names a link with a trailing dot (git refuses that path itself)', () => {
     const r = repo()
     const outside = junction(r, 'out')
     const reasons: string[] = []
@@ -145,8 +152,7 @@ describe('applyPatch judges the paths the patch writes (check B4-4)', () => {
     // (check C4-2) the walk refuses the name itself on Windows, before git is asked: the expectation
     // was 'one reason, whoever gives it' and is now the walk's reason (Bun 1.3.13 and Node 24 keep
     // the dot and find nothing: out\dotprobe.txt of wave 19's package D).
-    if (process.platform === 'win32') expect(reasons).toEqual(['it names out., which Windows reads as another name'])
-    else expect(reasons).toHaveLength(1)
+    expect(reasons).toEqual(['it names out., which Windows reads as another name'])
   })
 
   it.skipIf(process.platform !== 'win32')('refuses a path that names a link by its short (8.3) name, which its folder does not list', () => {
