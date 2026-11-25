@@ -8,14 +8,14 @@ import { join } from 'path'
 import { MissionLedger } from './missionLedger.js'
 import { MissionRunner } from './missionRunner.js'
 import { NtfyChannel, ntfyOptionsFromEnv } from './ntfyChannel.js'
-import { TaskRunner } from './taskRunner.js'
+import { TaskRunner, baselineInChild } from './taskRunner.js'
 import { defaultControlPath, readControl } from './control.js'
 import { runPrecheck } from './precheck.js'
 import { auditRefusal } from '../audit/toolAudit.js'
 import { buildMflExportUrl, loadMflApiKey } from '../tools/impl/mfl.js'
 import { createHash } from 'crypto'
 import { cyncoHome, guardDir, missionsDir as resolveMissionsDir, sandboxRoot } from '../paths.js'
-import { checkModelsRecord, flushUnsentPages, haltRefusal, haltState, openBaselines, settleOrphans, settleRun, takeBaseline } from '../integrity.js'
+import { checkModelsRecord, flushUnsentPages, haltRefusal, haltState, openBaselines, settleOrphans, settleRun } from '../integrity.js'
 import { engineCheckout, establishContainment, releaseContainment, sweepSandboxes } from '../containment.js'
 import { giveGpuBack, takeGpuForOneShot } from '../apps/gpu.js'
 import { freeOllamaForCynco } from '../apps/ollama.js'
@@ -23,6 +23,7 @@ import { activity } from '../power/activity.js'
 import { wireHoldAwake } from '../power/awake.js'
 import { WakePublisher } from './wakeSchedule.js'
 import { runHousekeeping } from './housekeeping.js'
+import { PAGED_FILE, loadLastPaged, onceADayRefusals, saveLastPaged } from './housekeeping.js'
 
 // Wakefulness (slice 3): while a one-shot runs, the PC may not sleep. The
 // daemon itself holds nothing while idle, so Windows' own timer can sleep the
@@ -111,6 +112,12 @@ const refuseRun = (): string | null => {
     ? null
     : `containment: the sandbox root ${sandboxRoot()} is not an existing folder; create it once with scripts/cynco-containment-setup.ps1`
 }
+// Wave 15 (NOW.md:89, :94): what was last paged, kept across a restart in the daemon's state folder; a refused due run
+// is paged at most once a day for each reason, and a log over 1 GiB once a day, a restart included.
+const pagedFile = join(cyncoHome(), PAGED_FILE)
+const lastPaged = loadLastPaged(pagedFile)
+const savePaged = (m: Map<string, number>): void => saveLastPaged(pagedFile, m)
+const publishRun = onceADayRefusals({ publish: (p) => ntfy.publish(p), lastPaged, now: () => Date.now(), save: savePaged })
 const runners: MissionRunner[] = []
 for (const entry of readdirSync(missionsDir)) {
   const dir = join(missionsDir, entry)
@@ -124,11 +131,19 @@ for (const entry of readdirSync(missionsDir)) {
     // The daemon names itself the baseline's holder, with the task's own time limit and half an hour more:
     // a daemon killed mid-task leaves an orphan that the next daemon (or any starter) finds (review of wave 5).
     integrity: {
-      before: (runId, cwd, timeoutMs) => { takeBaseline({ runId, cwd, by: 'daemon', holderPid: process.pid, maxRunMs: timeoutMs + 1_800_000 }) },
+      // Wave 15 (NOW.md:83): the walk runs in `bun scripts/cynco-guard.mjs pre`, a process of its own, awaited, so
+      // it does not hold the daemon's event loop; a child that cannot start, fails or hangs refuses the run.
+      before: async (runId, cwd, timeoutMs) => {
+        const lines = await baselineInChild({ runId, cwd, by: 'daemon', holderPid: process.pid, maxSeconds: Math.ceil((timeoutMs + 1_800_000) / 1000), repoRoot: engineCheckout() })
+        for (const l of lines) console.log(`[daemon] ${l}`)
+      },
       after: async (runId, notConfirmedDead) => {
         const c = await settleRun(runId, { by: 'daemon', page: pageOwner, ...(notConfirmedDead !== undefined ? { notConfirmedDead } : {}) })
         return c.changed || notConfirmedDead !== undefined ? c.publicSummary : null
       },
+      // Wave 15b (check P1-C3): a baseline process that wrote the baseline and then failed or hung leaves it open;
+      // TaskRunner settles it at once instead of leaving an orphan that would latch at its deadline.
+      opened: (runId) => openBaselines().some(b => b.runId === runId),
     },
     // The owner's local-LLM apps (engine/apps): a one-shot takes the model port from an app's server by the rule
     // the chat engine uses, and the app gets its server back after the run.
@@ -146,7 +161,7 @@ for (const entry of readdirSync(missionsDir)) {
   })
   runners.push(new MissionRunner(ledger, {
     runTask: (input) => taskRunner.run(input),
-    publish: (p) => ntfy.publish(p),
+    publish: publishRun,
     publishRecommendation: (rec) => ntfy.publishRecommendation(rec),
     fetchMflSnapshot,
     fetchRosterSnapshot,
@@ -214,10 +229,9 @@ const interval = setInterval(async () => {
 // Hourly: one page a day for a service log over 1 GiB. A `>>` log is rotated only when its
 // service starts (scripts/rotate-log.cmd), so this is what bounds one between restarts (F242).
 // Read-only: it lists the *.log files directly in the CynCo home and changes nothing on disk.
-const lastLogPage = new Map<string, number>()
 const housekeep = (): void => {
   void runHousekeeping({
-    logsDir: cyncoHome(), now: () => Date.now(), lastPaged: lastLogPage,
+    logsDir: cyncoHome(), now: () => Date.now(), lastPaged, save: savePaged,
     publish: (p) => ntfy.publish(p, { queueOnFailure: false }),
   }).catch((e) => console.error(`[daemon] housekeeping failed: ${e instanceof Error ? e.message : String(e)}`))
 }

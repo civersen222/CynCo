@@ -31,7 +31,13 @@ KIND_TITLE = {
     "box.silent": "A box went silent without saying why",
     "change.step": "A lasting change (a step)",
     "change.slope": "A lasting change (a slope)",
+    "integrity.latched": "The integrity latch is set",
+    "integrity.unusable": "The guard folder could not be used",
 }
+
+# The latch as a box reported it (watchmodel.integrity_of): the state in words.
+INTEGRITY_WORDS = {"clear": "none", "latched": "set", "unusable": "the guard folder cannot be used"}
+INTEGRITY_STATUS = {"latched": "integrity latch set", "unusable": "integrity guard folder unusable"}
 
 W = 960  # the chart's own coordinate width; the SVG scales to the page
 GUTTER = 128
@@ -332,12 +338,26 @@ def _box_status(box: dict, report: dict) -> str:
     if box["lastSeen"] is None:
         return "%s: never reported" % box["box"]
     heard = "last heard %s ago" % _dur(now - box["lastSeen"])
+    integ = box.get("integrity") or {}
+    latch = ("; %s" % INTEGRITY_STATUS[integ["state"]]) if integ.get("state") in INTEGRITY_STATUS else ""
     if report["t1"] <= now:
-        return "%s: %s (this is a past day)" % (box["box"], heard)
+        return "%s: %s (this is a past day)%s" % (box["box"], heard, latch)
     since = (" since %s" % _local(box["since"], off)) if box["since"] else ""
     words = {"awake": "awake", "asleep": "asleep", "off": "off", "silent": "silent, with no sleep or shutdown reported yet",
              "unwatched": "not watched (its reporter was stopped on purpose)", "unknown": "nothing reported"}.get(box["state"], box["state"])
-    return "%s: %s%s, %s" % (box["box"], words, since, heard)
+    return "%s: %s%s, %s%s" % (box["box"], words, since, heard, latch)
+
+
+def _integrity(box: dict, report: dict) -> str:
+    """The box's latch as it last reported it on this day: the state and its summary, never a path. Nothing when it never said."""
+    integ = box.get("integrity")
+    if not integ:
+        return ""
+    when = "%s, %s" % (_local(integ["at"], report["tzOffsetMin"]), iso(integ["at"]))
+    text = "Integrity latch: %s (as last reported at %s)" % (INTEGRITY_WORDS.get(integ["state"], integ["state"]), when)
+    if integ["state"] == "clear" or not integ["summary"]:
+        return '<p class="small">%s</p>' % e(text)
+    return "<p><strong>%s</strong>. %s</p>" % (e(text), e(integ["summary"]))
 
 
 def render(report: dict) -> str:
@@ -380,6 +400,7 @@ def render(report: dict) -> str:
     for b in boxes:
         marks = [{"at": m, "text": KIND_TITLE.get(f["kind"], f["kind"])} for f in fs if f["box"] == b["box"] for m in f["marks"]]
         out.append("<h2>%s</h2><div class=\"card\">" % e(b["box"]))
+        out.append(_integrity(b, report))
         if not b["segments"] or all(g["state"] == "unknown" for g in b["segments"]) and not b["services"] and not b["jobs"]:
             out.append('<p class="sub">Nothing was recorded for this box on this day.</p>')
         else:
@@ -408,5 +429,7 @@ def findings_json(report: dict) -> dict:
             for f in report["findings"]
         ],
         "learning": report["learning"],
-        "boxes": [{"box": b["box"], "state": b["state"], "lastSeen": iso(b["lastSeen"]) if b["lastSeen"] is not None else None} for b in report["boxes"]],
+        "boxes": [{"box": b["box"], "state": b["state"], "lastSeen": iso(b["lastSeen"]) if b["lastSeen"] is not None else None,
+                   "integrity": {"state": b["integrity"]["state"], "summary": b["integrity"]["summary"], "at": iso(b["integrity"]["at"])} if b.get("integrity") else None}
+                  for b in report["boxes"]],
     }

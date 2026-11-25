@@ -126,15 +126,25 @@ export interface TaskRunnerOptions {
    * through hook(), which swallows.
    */
   integrity?: {
-    before: (runId: string, cwd: string | undefined, timeoutMs: number) => void
+    before: (runId: string, cwd: string | undefined, timeoutMs: number) => void | Promise<void> // awaited (wave 15, `baselineInChild`); a throw or a rejection refuses the run
     /** `notConfirmedDead`: why the one-shot's tree is not known to be dead; the settle then latches whatever it finds. */
     after: (runId: string, notConfirmedDead?: string) => Promise<string | null>
+    /**
+     * Whether a baseline of this run is open in the guard folder (wave 15b, check P1-C3): a `before` that
+     * rejected after its child had written the baseline (it then failed, or hung and was ended) leaves one.
+     * It is settled at once, `after` with nothing run: a clean settle closes it, a real change still latches.
+     * Left out, nothing is asked and nothing is settled.
+     */
+    opened?: (runId: string) => boolean
   }
   /** How long the settle waits for the child's exit after its tree was killed (default 10 s). Tests shorten it. */
   deadWaitMs?: number
 }
 
 type Hook = (name: string, fn?: () => Promise<void>) => Promise<void>
+
+/** How a run refused for want of its baseline is said; the guard (`scripts/cynco-guard.mjs pre`) says it the same way. */
+const NO_BASELINE = 'no integrity baseline could be taken'
 
 /** The engine announces its journal once at startup; the daemon needs the id to resume a paused run. */
 const JOURNAL_LINE = /\[session\] Journal: .*?(session-\d+)\.jsonl/
@@ -175,13 +185,29 @@ export class TaskRunner {
     let baselineTaken = false
     if (this.opts.integrity) {
       try {
-        this.opts.integrity.before(runId, input.cwd, input.timeoutMs)
+        await this.opts.integrity.before(runId, input.cwd, input.timeoutMs)
         baselineTaken = true
       } catch (e) {
-        const why = e instanceof Error ? e.message : String(e)
-        console.log(`[task:${input.triggerId}] REFUSED: integrity: no integrity baseline could be taken (${why}) — nothing was run`)
+        const msg = e instanceof Error ? e.message : String(e)
+        // Wave 15b (check P1-C7): a reason that already says so is not wrapped a second time.
+        let reason = msg.startsWith(NO_BASELINE) ? msg : `${NO_BASELINE} (${msg})`
+        // Wave 15b (check P1-C3): a child that wrote the baseline and then failed or hung leaves it open, and an open
+        // baseline whose holder lives past its deadline is settled as an orphan, which latches and stops every
+        // unattended starter for a run that never started. Nothing ran, so it is settled now; a real change still latches.
+        let settledNote = ''
+        let opened = false
+        try { opened = this.opts.integrity.opened?.(runId) ?? false } catch (oe) {
+          console.log(`[task:${input.triggerId}] whether a baseline of ${runId} was left open could not be read (${oe instanceof Error ? oe.message : String(oe)})`)
+        }
+        if (opened) {
+          const tripped = await this.opts.integrity.after(runId)
+          settledNote = tripped === null ? '' : `; the baseline it left was settled: ${tripped}`
+          console.log(`[task:${input.triggerId}] the refused baseline process left a baseline of ${runId}; settled it${tripped === null ? ', unchanged' : `: ${tripped}`}`)
+        }
+        reason += settledNote
+        console.log(`[task:${input.triggerId}] REFUSED: integrity: ${reason} — nothing was run`)
         await hook('giving the GPU back', this.opts.giveGpuBack)
-        return { ok: false, summary: '', recommendations: [], error: `REFUSED: integrity: no integrity baseline could be taken (${why})` }
+        return { ok: false, summary: '', recommendations: [], error: `REFUSED: integrity: ${reason}` }
       }
     }
     // A holder object, not a `let`: the strict type-check narrows a `let` that only a closure assigns.
@@ -248,8 +274,8 @@ export class TaskRunner {
     let activityEnd: (() => void) | undefined
     try {
     writeTaskFile(taskPath, finalInput)
-
-    const cmd = this.opts.spawnCmd ?? ['bun', join(repoRoot, 'engine', 'main.ts')]
+    // --no-install (wave 19b): Bun never fetches a missing package by itself; one not installed is an error.
+    const cmd = this.opts.spawnCmd ?? ['bun', '--no-install', join(repoRoot, 'engine', 'main.ts')]
     // The one-shot engine must not inherit the daemon's ntfy credentials —
     // it reports through its outcome file, never directly to the phone.
     const env: NodeJS.ProcessEnv = {}
@@ -440,4 +466,88 @@ export class TaskRunner {
       }
     }
   }
+}
+
+// ─── The daemon's baseline in a process of its own (wave 15, NOW.md:83) ─────────────────────────
+
+/** The arguments of `scripts/cynco-guard.mjs pre` for one daemon run (wave 15). */
+export function guardPreArgv(o: { runId: string; cwd: string | undefined; by: string; holderPid: number; maxSeconds: number }): string[] {
+  return ['pre', o.runId, ...(o.cwd ? ['--cwd', o.cwd] : ['--no-cwd']), '--by', o.by, '--holder-pid', String(o.holderPid), '--max-seconds', String(o.maxSeconds)]
+}
+
+/**
+ * What a runtime is told before a script so that Bun never fetches a missing package by itself (wave 19b):
+ * `--no-install` when the runtime's file name is bun or bun.exe (the daemon runs under Bun, so its own
+ * process.execPath is one), nothing for another runtime (a test's Node refuses the flag). The name is read
+ * after either separator, so a Windows path is read the same on every host.
+ */
+export function bunNoInstall(runtime: string): string[] {
+  return /^bun(\.exe)?$/i.test(runtime.split(/[\\/]/).pop() ?? '') ? ['--no-install'] : []
+}
+
+/** How long the baseline process may take: the walk is 6 to 9 s cold on this PC, the volume listing is capped at 20 s. */
+export const BASELINE_CHILD_TIMEOUT_MS = 120_000
+
+/**
+ * The integrity baseline of a daemon run, taken by `bun scripts/cynco-guard.mjs pre` in a process of
+ * its own and awaited (wave 15, NOW.md:83): the walk (6 to 9 s cold on this PC, and the PowerShell
+ * volume listing, capped at 20 s) no longer holds the daemon's event loop. Fail-closed: a child that
+ * cannot start, exits other than 0 or does not end within `timeoutMs` (it is then ended with its tree)
+ * rejects, and the run is refused. A guard refusal is handed on as the guard's own reason. Resolves
+ * with the child's output lines, for the daemon log.
+ */
+export function baselineInChild(o: {
+  runId: string; cwd: string | undefined; by: string; holderPid: number; maxSeconds: number
+  /** The runtime and the guard script; default this process's own runtime (the daemon runs under Bun) and the checkout's script. */
+  runtime?: string; script?: string; repoRoot?: string; timeoutMs?: number
+}): Promise<string[]> {
+  const runtime = o.runtime ?? process.execPath
+  const script = o.script ?? join(o.repoRoot ?? process.cwd(), 'scripts', 'cynco-guard.mjs')
+  const timeoutMs = o.timeoutMs ?? BASELINE_CHILD_TIMEOUT_MS
+  return new Promise<string[]>((resolveP, rejectP) => {
+    let out = ''
+    let err = ''
+    let done = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const finish = (e: Error | null, lines?: string[]) => {
+      if (done) return
+      done = true
+      if (timer) clearTimeout(timer)
+      if (e) rejectP(e)
+      else resolveP(lines ?? [])
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(runtime, [...bunNoInstall(runtime), script, ...guardPreArgv(o)], { cwd: o.repoRoot ?? process.cwd(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    } catch (e) {
+      finish(new Error(`the baseline process could not be started (${(e as NodeJS.ErrnoException)?.code ?? String(e)})`))
+      return
+    }
+    const tree = ownProcessTree(child.pid, (line) => console.log(`[daemon] ${line}`))
+    child.stdout?.on('data', (b: Buffer) => { out += b.toString('utf-8') })
+    child.stderr?.on('data', (b: Buffer) => { err += b.toString('utf-8') })
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      tree.release()
+      finish(new Error(`the baseline process could not be started (${e.code ?? e.message})`))
+    })
+    let timedOut = false
+    const late = () => new Error(`the baseline process did not end within ${timeoutMs} ms; it was ended`)
+    timer = setTimeout(() => {
+      timedOut = true
+      void tree.kill().then(() => finish(late()))
+    }, timeoutMs)
+    child.on('close', (code: number | null) => {
+      if (timedOut) { finish(late()); return }
+      tree.release()
+      const lines = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '')
+      if (code === 0) { finish(null, [...lines(out), ...lines(err)]); return }
+      const errLines = lines(err)
+      const refusal = errLines.map(l => /^\[guard\] REFUSED: integrity: (.*?)(?: — nothing was dispatched)?$/.exec(l)).find(Boolean)
+      // Wave 15b (check P1-C7): the guard's own 'no integrity baseline could be taken (<why>)' is handed on as <why>,
+      // since TaskRunner says that phrase itself; the outcome and the page read it once.
+      if (refusal) { finish(new Error(/^no integrity baseline could be taken \((.*)\)$/s.exec(refusal[1]!)?.[1] ?? refusal[1])); return }
+      const last = [...errLines, ...lines(out)].pop()
+      finish(new Error(`the baseline process exited ${code === null ? 'without a code' : code}${last ? ` (${last})` : ''}`))
+    })
+  })
 }

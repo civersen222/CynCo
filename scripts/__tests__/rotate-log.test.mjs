@@ -76,8 +76,11 @@ describe('rotate-log.cmd and run-daemon.cmd as text (everywhere)', () => {
   })
   it('run-daemon.cmd rotates daemon.log first, then starts the daemon as its last line with >>', () => {
     const lines = text(DAEMON).split(/\r?\n/).filter(l => l !== '')
-    const rotateAt = lines.indexOf('call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\daemon.log"')
-    const launch = 'bun engine\\daemon\\main.ts >> "%USERPROFILE%\\.cynco\\daemon.log" 2>&1'
+    // Changed on purpose in wave 15 (NOW.md:91): the rotation's own line goes to daemon.rotate.log (the case
+    // "wave 15: the rotation's own line reaches a file" below says why not to daemon.log itself).
+    const rotateAt = lines.indexOf('call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\daemon.log" 2>> "%USERPROFILE%\\.cynco\\daemon.rotate.log"')
+    // Changed on purpose in wave 19b (B4): Bun is told --no-install, so it never fetches a package by itself.
+    const launch = 'bun --no-install engine\\daemon\\main.ts >> "%USERPROFILE%\\.cynco\\daemon.log" 2>&1'
     expect(rotateAt).toBeGreaterThan(-1)
     expect(lines[lines.length - 1]).toBe(launch)
     expect(rotateAt).toBe(lines.length - 2)
@@ -88,6 +91,22 @@ describe('rotate-log.cmd and run-daemon.cmd as text (everywhere)', () => {
     expect(text(DAEMON)).not.toMatch(/set\s+"?CYNCO_NTFY_TOKEN/i)
     // The services row matches the daemon by this text (scripts/cynco-services.ps1).
     expect(launch).toContain('engine\\daemon\\main')
+  })
+  // Wave 19b (B4): nothing may be downloaded on this PC without the owner's yes, and Bun's default fetches a
+  // missing package from the registry when the folder it runs from holds no installed packages. Every launcher
+  // that starts Bun says --no-install, each by its exact line (text only, so it holds on Linux too).
+  it('wave 19b: every Bun start of the service launchers and the app launcher says --no-install', () => {
+    const starts = {
+      'run-box-reporter.cmd': ['bun --no-install engine\\power\\reporter\\main.ts >> "%USERPROFILE%\\.cynco\\box-reporter.log" 2>&1'],
+      'run-daemon.cmd': ['bun --no-install engine\\daemon\\main.ts >> "%USERPROFILE%\\.cynco\\daemon.log" 2>&1'],
+      'run-headless-engine.cmd': ['bun --no-install engine\\main.ts >> "%USERPROFILE%\\.cynco\\engine-headless.log" 2>&1'],
+      'run-embed-server.cmd': [], // it starts llama-server, not Bun
+      'cynco-app.cmd': ['call bun --no-install scripts\\cynco-apps.mjs start %*'],
+    }
+    for (const [name, want] of Object.entries(starts)) {
+      const lines = text(join(scripts, name)).split(/\r?\n/).filter(l => !/^\s*(rem\b|::|$)/i.test(l))
+      expect(lines.filter(l => /^\s*(call\s+)?bun(\.exe|\.cmd)?\b/i.test(l)), name).toEqual(want)
+    }
   })
 })
 
@@ -329,5 +348,39 @@ describe.skipIf(process.platform !== 'win32')('rotate-log.cmd, run for real in a
       expect(text(log2)).toBe('o'.repeat(64))
       expect(text(join(real, 'keep.txt'))).toBe('keep')
     })
+  })
+})
+
+// Wave 15 (NOW.md:91): the rotation's refusal or failure line no longer goes to the launcher's standard
+// error, which Task Scheduler drops. It goes to a small file of its own beside the log, "<svc>.rotate.log",
+// NOT to the log itself: measured on 2026-11-24, "2>> <log>" opens the log before the rotation runs and
+// holds it, so the rename always fails ("could not rotate ... (it may be held open)") and the log is never
+// rotated again. The case below runs both shapes for real.
+const LAUNCHERS = [
+  ['run-box-reporter.cmd', 'box-reporter'], ['run-daemon.cmd', 'daemon'],
+  ['run-embed-server.cmd', 'embed-server'], ['run-headless-engine.cmd', 'engine-headless'],
+]
+describe('wave 15: the rotation\'s own line reaches a file', () => {
+  it('each launcher sends the rotation\'s standard error to <svc>.rotate.log beside the log, never to the log itself', () => {
+    for (const [name, svc] of LAUNCHERS) {
+      const lines = text(join(scripts, name)).split(/\r?\n/)
+      const calls = lines.filter(l => l.startsWith('call "%~dp0rotate-log.cmd" '))
+      expect(calls, name).toEqual([`call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\${svc}.log" 2>> "%USERPROFILE%\\.cynco\\${svc}.rotate.log"`])
+    }
+  })
+  it.skipIf(process.platform !== 'win32')('run for real: "2>> <log>" holds the log and it is not rotated; a file of its own rotates it and keeps the line', () => {
+    const d = root()
+    const same = sized(join(d, 'same.log'), 0, 'x'.repeat(200))
+    const other = sized(join(d, 'other.log'), 0, 'x'.repeat(200))
+    const line = (log, errFile) => `call "${SCRIPT}" "${log}" 10 2>> "${errFile}"`
+    const run = (l) => spawnSync('cmd.exe', ['/d', '/s', '/c', `"${l}"`], { windowsVerbatimArguments: true, encoding: 'utf8', timeout: 20000 })
+    expect(run(line(same, same)).status).toBe(0)
+    expect(existsSync(`${same}.1`)).toBe(false)
+    expect(text(same)).toContain(`[rotate-log] could not rotate "${same}" (it may be held open); the service starts anyway`)
+    expect(run(line(other, join(d, 'other.rotate.log'))).status).toBe(0)
+    expect(existsSync(other)).toBe(false)
+    expect(text(`${other}.1`)).toBe('x'.repeat(200))
+    expect(run(line(join(d, 'bad.txt'), join(d, 'other.rotate.log'))).status).toBe(0)
+    expect(text(join(d, 'other.rotate.log'))).toContain(`[rotate-log] not rotated "${join(d, 'bad.txt')}": its name does not end .log`)
   })
 })

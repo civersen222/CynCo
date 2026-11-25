@@ -242,6 +242,21 @@ describe('a sample', () => {
     expect(fingerprint(loaded)).not.toBe(fingerprint(a))
     expect(a.idleS).toBe(12)
   })
+
+  // Wave 15 (NOW.md:57): the integrity latch reaches the watcher in the payload, and a latch set is a change told at once.
+  it('carries the integrity latch from its source; the fingerprint moves when the latch is set; no source is null', async () => {
+    const at = new Date(NOW)
+    const clear = await gatherSample(sources({ integrity: async () => ({ state: 'clear', summary: 'no integrity latch' }) }), at, { modelPort: 8081 })
+    const latched = await gatherSample(sources({ integrity: async () => ({ state: 'latched', summary: '1 change(s) in protected folders (first: PRESENCE); set t by d (presence-lost). No unattended run starts and no queued command runs until it is cleared at the desk: bun scripts/cynco-guard.mjs clear' }) }), at, { modelPort: 8081 })
+    expect(clear.integrity).toEqual({ state: 'clear', summary: 'no integrity latch' })
+    expect(latched.integrity!.state).toBe('latched')
+    expect(fingerprint(latched)).not.toBe(fingerprint(clear))
+    expect((await gatherSample(sources(), at, { modelPort: 8081 })).integrity).toBeNull()
+    const said: string[] = []
+    const broken = await gatherSample(sources({ integrity: async () => { throw new Error('the guard folder broke') } }), at, { modelPort: 8081, log: l => said.push(l) })
+    expect(broken.integrity).toBeNull()
+    expect(said.join(' | ')).toContain('the integrity latch could not be read: the guard folder broke')
+  })
 })
 
 const ev = (n: number): WatchEvent => ({ t: 'event', at: new Date(NOW + n * 1000).toISOString(), kind: 'job.run', key: `k${n}`, data: { n } })
@@ -535,8 +550,9 @@ describe('a stop that is announced (F232)', () => {
     const services = readFileSync(join(process.cwd(), 'scripts', 'cynco-services.ps1'), 'utf-8')
     expect(/Name = 'watch';[^\n]*Goodbye = 'engine\\power\\reporter\\main\.ts'/.test(services)).toBe(true)
     const stop = services.slice(services.indexOf("'stop' {"))
-    expect(stop.indexOf('& bun $s.Goodbye --stop')).toBeGreaterThan(0)
-    expect(stop.indexOf('& bun $s.Goodbye --stop')).toBeLessThan(stop.indexOf('Stop-ScheduledTask'))
+    // Wave 19b: every Bun start of the services script says --no-install (Bun never fetches a package by itself).
+    expect(stop.indexOf('& bun --no-install $s.Goodbye --stop')).toBeGreaterThan(0)
+    expect(stop.indexOf('& bun --no-install $s.Goodbye --stop')).toBeLessThan(stop.indexOf('Stop-ScheduledTask'))
   })
 })
 
@@ -574,7 +590,8 @@ describe('switches and small things', () => {
     // cynco-widget.ps1 and cynco-services.ps1 (the engine and daemon rows).
     const launch = readFileSync(join(process.cwd(), 'scripts', 'run-box-reporter.cmd'), 'utf-8')
     const commandLine = launch.split(/\r?\n/).find(l => l.startsWith('bun '))!.split(' >>')[0]!
-    expect(commandLine).toBe('bun engine\\power\\reporter\\main.ts')
+    // Wave 19b: the launcher starts Bun with --no-install (Bun never fetches a package by itself).
+    expect(commandLine).toBe('bun --no-install engine\\power\\reporter\\main.ts')
     expect(commandLine.includes('engine/main.ts')).toBe(false)
     expect(/engine[\\/]main\.ts/.test(commandLine)).toBe(false)
     expect(/engine\\main\.ts(?!.*--run-task)/.test(commandLine)).toBe(false)

@@ -8,7 +8,7 @@
 // asks before it starts the daemon: one line, no network, exit 0 or 3.
 //
 //   bun scripts/cynco-guard.mjs status [--quiet]
-//   bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>] [--max-seconds <n>]
+//   bun scripts/cynco-guard.mjs pre <runId> (--cwd <dir> | --no-cwd) [--also <dir>]... [--by <who>] [--max-seconds <n>] [--holder-pid <pid>]
 //   bun scripts/cynco-guard.mjs post <runId> [--by <who>] [--engine-not-confirmed-dead <why>]
 //   bun scripts/cynco-guard.mjs hash-models [--all]
 //   bun scripts/cynco-guard.mjs verify [--deep]
@@ -29,7 +29,7 @@ import {
 
 export const USAGE = [
   'usage: bun scripts/cynco-guard.mjs status [--quiet]',
-  '       bun scripts/cynco-guard.mjs pre <runId> --cwd <dir> [--also <dir>]... [--by <who>] [--max-seconds <n>]',
+  '       bun scripts/cynco-guard.mjs pre <runId> (--cwd <dir> | --no-cwd) [--also <dir>]... [--by <who>] [--max-seconds <n>] [--holder-pid <pid>]',
   '       bun scripts/cynco-guard.mjs post <runId> [--by <who>] [--engine-not-confirmed-dead <why>]',
   '       bun scripts/cynco-guard.mjs hash-models [--all]',
   '       bun scripts/cynco-guard.mjs verify [--deep]',
@@ -188,6 +188,12 @@ export async function main(argv, deps = {}) {
     const checks = tail(join(guard, 'checks.jsonl'), 5)
     out(checks.length ? '[guard] last checks:' : '[guard] last checks: none')
     for (const l of checks) out(`[guard]   ${l}`)
+    // Wave 15 (NOW.md:67): the allowance notes of those checks, one line each, readable.
+    for (const l of checks) {
+      let line
+      try { line = JSON.parse(l) } catch { continue } // a line that is not JSON was printed as it is above
+      for (const n of Array.isArray(line?.allowed) ? line.allowed : []) out(`[guard] allowed in the ${line.kind} of run ${line.run}: ${n}`)
+    }
     const models = checkModelsRecord({ guard: guardArg })
     if (models === null) {
       const r = readModelsRecord(guard)
@@ -208,16 +214,21 @@ export async function main(argv, deps = {}) {
   }
 
   if (verb === 'pre') {
-    const a = parse(rest, { '--cwd': { value: true }, '--also': { value: true, many: true }, '--by': { value: true }, '--max-seconds': { value: true } })
-    if (!a || a.pos.length !== 1 || !a.flags['--cwd']) return usage('pre needs <runId> and --cwd <dir>')
+    const a = parse(rest, { '--cwd': { value: true }, '--no-cwd': {}, '--also': { value: true, many: true }, '--by': { value: true }, '--max-seconds': { value: true }, '--holder-pid': { value: true } })
+    // --no-cwd (wave 15): the daemon's task that names no folder; its run is refused later, when no sandbox can be made for it.
+    if (!a || a.pos.length !== 1 || (!a.flags['--cwd']) === (a.flags['--no-cwd'] !== true)) return usage('pre needs <runId> and either --cwd <dir> or --no-cwd')
     const runId = a.pos[0]
     const maxS = a.flags['--max-seconds'] === undefined ? undefined : Number(a.flags['--max-seconds'])
     if (maxS !== undefined && !(Number.isInteger(maxS) && maxS > 0)) return usage('--max-seconds takes a whole number of seconds above 0')
+    // --holder-pid (wave 15): the process that will settle this baseline when it is not this one (the daemon).
+    const holder = a.flags['--holder-pid'] === undefined ? undefined : Number(a.flags['--holder-pid'])
+    if (holder !== undefined && !(Number.isInteger(holder) && holder > 0)) return usage('--holder-pid takes a process id above 0')
     try {
       const r = takeBaseline({
-        runId, cwd: a.flags['--cwd'], also: a.flags['--also'] ?? [], by: a.flags['--by'] ?? 'cynco-guard pre',
+        runId, cwd: a.flags['--cwd'] ?? null, also: a.flags['--also'] ?? [], by: a.flags['--by'] ?? 'cynco-guard pre',
         guard: guardArg, home, now, ...(deps.volumes ? { volumes: deps.volumes } : {}),
         ...(maxS !== undefined ? { maxRunMs: maxS * 1000 } : {}),
+        ...(holder !== undefined ? { holderPid: holder } : {}),
       })
       out(`[guard] integrity baseline ${r.runId}: ${r.frozenEntries} frozen entries, ${r.presenceEntries} presence entries, ${r.ms} ms`)
       for (const n of r.notes) out(`[guard] note: ${n}`)
@@ -244,12 +255,16 @@ export async function main(argv, deps = {}) {
       if (c.latchPath) out(`[guard] latch: ${c.latchPath}`)
       return 3
     }
+    // Wave 15 (NOW.md:67): what the allowance let pass (APPDATA_LOSS_AT) is said here, not only in checks.jsonl.
+    const allowed = () => { for (const n of c.allowed ?? []) out(`[guard] allowed: ${n}`) }
     if (!c.changed) {
       out(`[guard] integrity unchanged for ${runId} (${c.entries} entries, ${c.ms} ms)`)
+      allowed()
       return 0
     }
     out(`[guard] INTEGRITY: ${c.summary}`)
     out(`[guard] latch: ${c.latchPath ?? join(guard, LATCH_FILE)}`)
+    allowed()
     return 3
   }
 

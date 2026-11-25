@@ -39,17 +39,23 @@
  * Everything persisted is in the guard folder (`guardDir()`, outside the home folder), so nothing
  * that decides "may this run" is read from the home folder. The module creates the guard folder's
  * sub-folders and never the guard folder itself, never unlinks, makes no network call (every pager
- * is a parameter) and starts no process; the only child anything here can cause is the volume
- * listing of `listUnprotectedVolumes`, owned by engine/containment.ts.
+ * is a parameter) and starts one process of its own: `reg.exe query` of the user's shell folders, by its
+ * full path, read-only, when a baseline that derives its roots reads the known folders of this account's
+ * own profile (`knownFolderPlaces`, wave 15). The only other child anything here can cause is the volume
+ * listing of `listUnprotectedVolumes`, owned by engine/containment.ts. Which profile is this account's
+ * is asked of the system through bun:ffi under Bun (`systemProfileHome`), no process; so is the serial
+ * of a volume the listing does not name, read with `stat` at its letter (`volumeSerialAt`, wave 15c).
  */
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   appendFileSync, closeSync, createReadStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync,
   opendirSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, statSync, writeFileSync, writeSync,
 } from 'node:fs'
 import type { Dirent, Stats } from 'node:fs'
-import { homedir, hostname, uptime } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { homedir, hostname, uptime, userInfo } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { cyncoHome, guardDir, guardDirSource, modelsDir, sandboxRoot } from './paths.js'
 import { isInside, realPathOf } from './realPath.js'
 import { RUN_ID_RE } from './missionEnv.js'
@@ -97,6 +103,8 @@ export interface PresenceRoot {
   filesDotOnly?: boolean   // with `files`: record a file only when its name starts with a dot (the home's top level)
   application?: boolean    // an application folder of the profile: fewer than APPDATA_LOSS_AT entries lost in a run are notes
   uncounted?: string[]     // with `counts`: folders of this root recorded by name only (`n: null`), never opened
+  // Wave 15 (2026-11-24): absent in a baseline written before it, and for a volume Windows gave no serial for.
+  serial?: string          // with `volume`: the volume's VolumeSerialNumber at the baseline; another volume at the letter is not compared
 }
 
 /**
@@ -190,7 +198,7 @@ export interface ModelsRecord {
   files: Array<{ rel: string; bytes: number; mtimeMs: number; sha256: string }>
 }
 
-type Volume = { root: string; kind: 'local' | 'removable' | 'network' }
+type Volume = { root: string; kind: 'local' | 'removable' | 'network'; serial?: string | null }
 type Context = { campaignId?: string; wave?: number; cwd?: string }
 
 const MAX_CHANGES = 200
@@ -264,7 +272,7 @@ const BEFORE_SUFFIX = '.before.json'
 /** The protected folders. The only place their real paths are named. Pure. */
 export function protectedRoots(o: {
   home?: string; cynco?: string; models?: string
-  volumes?: Array<{ root: string; kind: 'local' | 'removable' | 'network' }>
+  volumes?: Array<{ root: string; kind: 'local' | 'removable' | 'network'; serial?: string | null }>
 } = {}): Roots {
   const home = resolve(o.home ?? homedir())
   // The default state folder AND the redirected one: a campaign under a redirected CYNCO_HOME must
@@ -311,8 +319,174 @@ export function protectedRoots(o: {
   for (const s of states) { addP(join(s, 'authoring'), { counts: true }); addP(join(s, 'campaigns'), { counts: true }) }
   for (const s of states) addP(s, {})
   // Counted, so a top-level folder emptied in place (D:\DCIM after its sub-folders went) is seen.
-  for (const v of o.volumes ?? []) addP(v.root, { files: true, counts: true, volume: true, network: v.kind === 'network' })
+  // Keyed by its serial number when Windows gives one (wave 15): another volume at the same letter is not this one.
+  for (const v of o.volumes ?? []) {
+    addP(v.root, { files: true, counts: true, volume: true, network: v.kind === 'network', ...(typeof v.serial === 'string' && v.serial !== '' ? { serial: v.serial } : {}) })
+  }
   return { frozen, presence }
+}
+
+// ─── The known folders where Windows says they are (wave 15, NOW.md:66) ─────────────────────
+
+/** The values of User Shell Folders that name the folders a person keeps their own files in. */
+const KNOWN_FOLDER_VALUES = ['Desktop', 'Personal', 'My Pictures']
+const ONEDRIVE_VARS = ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']
+const SHELL_FOLDERS_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders'
+
+/** `reg.exe query` of the user's shell folders, by its full path; read-only, five seconds at most. */
+function queryShellFolders(): string {
+  const exe = join(process.env.SystemRoot || 'C:/Windows', 'System32', 'reg.exe')
+  const r = spawnSync(exe, ['query', SHELL_FOLDERS_KEY], { encoding: 'utf-8', timeout: 5_000, windowsHide: true })
+  if (r.error) throw r.error
+  if (r.status !== 0) throw new Error(`reg.exe exited ${String(r.status)}${r.stderr ? `: ${r.stderr.trim()}` : ''}`)
+  return r.stdout
+}
+
+/**
+ * The profile folder of this process's own account, as the system reports it, whatever the
+ * environment says; null when it cannot be read (wave 15b, check P1-C2). Under Bun on Windows
+ * `os.userInfo().homedir` and `os.homedir()` follow USERPROFILE (measured: with USERPROFILE set to a
+ * fake folder Bun answered the fake folder and Node the real profile), so under Bun it asks
+ * userenv.dll's GetUserProfileDirectoryW for the current process token (the pseudo handle -4), the
+ * call the acceptance's `systemHome` makes; elsewhere `os.userInfo().homedir`, which Node takes from
+ * that same call on Windows. Synchronous: bun:ffi is loaded through `createRequire`, by a computed
+ * name so the suite's Node-side module graph never tries to resolve it. Never throws.
+ */
+export function systemProfileHome(): string | null {
+  const bun = (globalThis as { Bun?: { version?: unknown } }).Bun
+  if (process.platform === 'win32' && typeof bun?.version === 'string') {
+    try {
+      const ffiModule = 'bun:ffi'
+      const ffi = createRequire(import.meta.url)(ffiModule) as {
+        dlopen: (lib: string, s: Record<string, { args: unknown[]; returns: unknown }>) => { symbols: Record<string, (...a: unknown[]) => number>; close: () => void }
+        FFIType: Record<string, unknown>
+      }
+      const lib = ffi.dlopen('userenv.dll', { GetUserProfileDirectoryW: { args: [ffi.FFIType.i64, ffi.FFIType.ptr, ffi.FFIType.ptr], returns: ffi.FFIType.i32 } })
+      try {
+        const size = new Uint32Array([1024])
+        const buf = new Uint16Array(1024)
+        if (!lib.symbols.GetUserProfileDirectoryW!(-4n, buf, size) || size[0]! < 2 || size[0]! > 1024) return null
+        return String.fromCharCode(...buf.subarray(0, size[0]! - 1))
+      } finally {
+        lib.close()
+      }
+    } catch {
+      return null
+    }
+  }
+  try {
+    return userInfo().homedir
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Where the known folders really are: when the home is this account's own profile (the system's
+ * answer, `profile`, default `systemProfileHome`, never `homedir()`, which follows USERPROFILE; a
+ * caller may pass `system` instead), Desktop, Documents and Pictures from User Shell Folders and the
+ * OneDrive folders the environment names, each only when it lies inside the home (a value that names
+ * a folder outside it is a note: the registry and the variables are this account's, the home may be a
+ * folder a test or a rehearsal repointed them at); for any home, every folder of its top level whose
+ * name starts with `OneDrive - ` (an organisation's OneDrive). Impure, beside the pure
+ * `protectedRoots`: it reads the system's answer, the registry (`query`, default `reg.exe`), the
+ * environment and the home's top level. Never throws; what it cannot read is a note. Only Windows has
+ * a registry: elsewhere the environment is read alone.
+ */
+export function knownFolderPlaces(o: {
+  home: string; system?: boolean; profile?: () => string | null
+  env?: Record<string, string | undefined>; query?: () => string; notes: string[]
+}): string[] {
+  const env = o.env ?? process.env
+  const home = resolve(o.home)
+  const out: string[] = []
+  const add = (p: string) => { const r = resolve(p); if (!out.some(x => keyOf(x) === keyOf(r))) out.push(r) }
+  let system = o.system
+  if (system === undefined) {
+    let profile: string | null = null
+    try { profile = (o.profile ?? systemProfileHome)() } catch { profile = null }
+    if (profile === null || profile === '') {
+      system = false
+      o.notes.push('the profile of this account could not be read from the system; the known folders are not read from the registry or the environment')
+    } else if (keyOf(resolve(profile)) !== keyOf(home)) {
+      system = false
+      o.notes.push(`the home ${home} is not the profile of this account (${profile}); its known folders are not read from the registry or the environment`)
+    } else {
+      system = true
+    }
+  }
+  if (system) {
+    if (o.query || process.platform === 'win32') {
+      let text = ''
+      try {
+        text = (o.query ?? queryShellFolders)()
+      } catch (e) {
+        o.notes.push(`the known folders could not be read from the registry (${textOf(e)}); the defaults are watched`)
+      }
+      const vars = new Map(Object.entries(env).map(([k, v]) => [k.toLowerCase(), v]))
+      for (const line of text.split(/\r?\n/)) {
+        const m = /^\s+(.+?)\s{2,}REG_(?:EXPAND_)?SZ\s{2,}(.+?)\s*$/.exec(line)
+        if (!m || !KNOWN_FOLDER_VALUES.includes(m[1]!)) continue
+        let unset = false
+        const value = m[2]!.replace(/%([^%]+)%/g, (_, name: string) => {
+          const v = vars.get(name.toLowerCase())
+          if (typeof v !== 'string' || v === '') { unset = true; return '' }
+          return v
+        })
+        if (unset) { o.notes.push(`the known folder ${m[1]} (${m[2]}) names a variable that is not set here; not watched`); continue }
+        if (!isAbsolute(value)) { o.notes.push(`the known folder ${m[1]} (${m[2]}) is not an absolute path; not watched`); continue }
+        if (!isInside(home, value)) { o.notes.push(`the known folder ${m[1]} (${value}) is outside the home ${home}; not watched`); continue }
+        add(value)
+      }
+    }
+    for (const k of ONEDRIVE_VARS) {
+      const v = env[k]
+      if (typeof v !== 'string' || v === '' || !isAbsolute(v)) continue
+      if (!isInside(home, v)) { o.notes.push(`the variable ${k} (${v}) names a folder outside the home ${home}; not watched`); continue }
+      add(v)
+    }
+  }
+  try {
+    for (const e of readdirSync(home, { withFileTypes: true })) {
+      if (e.isDirectory() && e.name.startsWith('OneDrive - ')) add(join(home, e.name))
+    }
+  } catch (e) {
+    o.notes.push(`${home}: its top level could not be listed for its OneDrive folders (${codeOf(e)})`)
+  }
+  return out
+}
+
+/** The drive of a path, upper case (`C:`), or the share of a UNC path, lower case. */
+const driveOf = (p: string) => {
+  const r = resolve(p)
+  const unc = /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.exec(r)
+  return unc ? unc[0].toLowerCase() : r.slice(0, 2).toUpperCase()
+}
+
+/**
+ * The roots with the known folders added (wave 15, NOW.md:66). A place that is already a PRESENCE
+ * root, or a folder directly inside a counted one (whose child count that root keeps already: the home
+ * itself, `OneDrive`), adds nothing, unless it is a OneDrive folder (`OneDrive - <organisation>`),
+ * whose own children are the known folders. Any other place on the home's drive becomes a counted PRESENCE
+ * root, no allowance, so a folder of it gone or emptied is a loss. A place on another drive or a share
+ * is a note and not watched: a listing of a drive that sleeps cannot be bounded on the engine's event
+ * loop, and the settle has no rule for a known folder that is detached. Pure.
+ */
+export function withKnownFolders(roots: Roots, places: string[], home: string, notes: string[]): Roots {
+  const presence = [...roots.presence]
+  for (const raw of places) {
+    const p = resolve(raw)
+    if (presence.some(r => keyOf(r.path) === keyOf(p))) continue
+    // A OneDrive folder holds known folders, so its own children are counted, as `OneDrive`'s are.
+    const holdsKnownFolders = /^OneDrive( - |$)/i.test(basename(p))
+    if (!holdsKnownFolders && presence.some(r => r.counts && !r.dotOnly && !r.volume && keyOf(dirname(p)) === keyOf(r.path))) continue
+    if (driveOf(p) !== driveOf(home)) {
+      notes.push(`the known folder ${raw} is not on the home's drive; not watched (a drive that sleeps cannot be listed within a bound)`)
+      continue
+    }
+    presence.push({ path: p, dotOnly: false, files: false, counts: true, volume: false, network: false })
+  }
+  return { frozen: roots.frozen, presence }
 }
 
 // ─── takeManifest ────────────────────────────────────────────────────────────────────────────
@@ -406,11 +580,10 @@ function isEmptyDir(abs: string, realDir: string, excluded: (p: string) => boole
  * children are counted; elsewhere it is only asked whether it is empty (`n: 0`) or not (`n: null`).
  * A folder with no children is recorded with `n: 0` and never compared, in every root, which is how
  * "an empty folder that disappears is not a loss" is kept while a folder that is still there at the
- * compare is still seen. With `namesOnly` (the tripwire's application roots) no folder is looked
- * into: each is recorded with `n: null`, its name and kind only; so is a folder the root names in
- * `uncounted`, at every listing.
+ * compare is still seen. A folder the root names in `uncounted` is never looked into: it is
+ * recorded with `n: null`, its name and kind only, at every listing.
  */
-function listPresence(r: PresenceRoot, exclude: string[], notes: string[], namesOnly = false): PresenceSection {
+function listPresence(r: PresenceRoot, exclude: string[], notes: string[]): PresenceSection {
   const out: PresenceSection = { root: r.path, exists: false, listed: true, entries: {} }
   const unlisted = (why: string): PresenceSection => {
     notes.push(`${r.path}: could not be listed (${why}; detached or asleep); not compared`)
@@ -464,7 +637,7 @@ function listPresence(r: PresenceRoot, exclude: string[], notes: string[], names
     }
     if (k === 'f' && (!r.files || (r.filesDotOnly === true && !name.startsWith('.')))) continue
     let n: number | null = null
-    if (k === 'd' && looked && !namesOnly && !byNameOnly.has(name.toLowerCase())) {
+    if (k === 'd' && looked && !byNameOnly.has(name.toLowerCase())) {
       try {
         n = r.counts
           ? readdirSync(join(r.path, name)).filter(c => !TRANSIENT_NAME.test(c) && !excluded(join(realChild, c))).length
@@ -666,7 +839,7 @@ const entriesOf = (m: Manifest) =>
 export function takeBaseline(a: {
   runId: string; cwd?: string | null; also?: string[]; by: string
   guard?: string; home?: string; roots?: Roots; checkModels?: boolean
-  volumes?: () => Array<{ root: string; kind: 'local' | 'removable' | 'network' }>; now?: () => Date
+  volumes?: () => Volume[]; now?: () => Date
   /** The sandbox root the guard folder must not be inside; default `sandboxRoot()`. */
   sandboxRoot?: string | null
   /**
@@ -676,6 +849,12 @@ export function takeBaseline(a: {
   holderPid?: number | null
   /** The run's longest life, its own time limit with a margin; a baseline still open after it is an orphan. Default a day. */
   maxRunMs?: number | null
+  /**
+   * The known folders' real places (wave 15): asked when the roots are derived here, and whenever a
+   * caller hands a reader in; default `knownFolderPlaces`, with the registry and the environment read
+   * only when the system says the home is this account's own profile (wave 15b).
+   */
+  knownFolders?: () => string[]
 }): { runId: string; takenAt: string; frozenEntries: number; presenceEntries: number; ms: number; notes: string[] } {
   const t0 = Date.now()
   if (typeof a.runId !== 'string' || !RUN_ID_RE.test(a.runId)) throw new ManifestError(`${a.runId} is not a run id`)
@@ -698,7 +877,7 @@ export function takeBaseline(a: {
   let volumes: Volume[] | null = null
   if (!a.roots || a.volumes) {
     try {
-      volumes = (a.volumes ?? listUnprotectedVolumes)().map(v => ({ root: v.root, kind: v.kind }))
+      volumes = (a.volumes ?? listUnprotectedVolumes)().map(v => ({ root: v.root, kind: v.kind, serial: v.serial ?? null }))
     } catch (e) {
       // An unknown answer is never read as "no such volume".
       const msg = textOf(e)
@@ -707,7 +886,19 @@ export function takeBaseline(a: {
     const onVolume = guardVolumeRefusal(guard, volumes.map(v => v.root))
     if (onVolume !== null) throw new ManifestError(onVolume, 'refusal')
   }
-  const roots = a.roots ?? protectedRoots({ home, volumes: volumes ?? [] })
+  let roots = a.roots ?? protectedRoots({ home, volumes: volumes ?? [] })
+  const knownNotes: string[] = []
+  if (!a.roots || a.knownFolders) {
+    let places: string[] = []
+    try {
+      // Wave 15b (check P1-C2): whether this home is the account's own is the system's answer, never homedir(),
+      // which follows USERPROFILE: a repointed rehearsal must not count the owner's real OneDrive in a fake baseline.
+      places = (a.knownFolders ?? (() => knownFolderPlaces({ home, notes: knownNotes })))()
+    } catch (e) {
+      knownNotes.push(`the known folders could not be read (${textOf(e)}); the defaults are watched`)
+    }
+    roots = withKnownFolders(roots, places, home, knownNotes)
+  }
 
   const exclude = [a.cwd, ...(a.also ?? [])]
     .filter((p): p is string => typeof p === 'string' && p.trim() !== '')
@@ -724,6 +915,7 @@ export function takeBaseline(a: {
 
   const holder = typeof a.holderPid === 'number' && a.holderPid > 0 ? { pid: a.holderPid, host: hostname() } : null
   const m = takeManifest(roots, { runId: a.runId, by: a.by, home, exclude, now: a.now, holder, maxRunMs: a.maxRunMs ?? DEFAULT_MAX_RUN_MS })
+  m.notes.push(...knownNotes)
   try {
     ensureSub(guard, 'manifests')
     if (existsSync(target)) throw new ManifestError(`a baseline for run ${a.runId} already exists; a run id is used once`)
@@ -829,21 +1021,119 @@ function failedCompare(runId: string, by: string, at: string, kind: 'reading' | 
   }
 }
 
+/** The most walks one compare makes (wave 15, NOW.md:73). */
+export const SETTLE_MAX_WALKS = 5
+const WALK_ORDINAL = ['first', 'second', 'third', 'fourth', 'fifth']
+
 /**
  * Walk the baseline's own roots again and compare. When anything differs, or the walk throws,
- * wait `confirmMs` and walk once more, keeping only changes present both times. A change the second
- * walk sees and the first did not gets a third walk of its own (once): it counts when the second and
- * the third both see it, and is a note when the third no longer does.
+ * wait `confirmMs` and walk once more: a change counts when two walks in a row see it. While a walk
+ * sees a change the walk before it did not, another walk follows (wave 15; until then only one more,
+ * the third, and a loss that first showed on the third was a note), up to `SETTLE_MAX_WALKS`. What
+ * first showed on the last walk and so was seen once is a note; so is a change seen on one walk only.
+ * A change seen on two walks in a row counts though a later walk no longer sees it.
  */
-function confirmedWalk(before: Manifest, o: { by: string; confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date })
+type WalkOpts = {
+  by: string; confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date; volumes?: () => Volume[]
+  serialAt?: (root: string) => string | null
+}
+
+/**
+ * The serial number of the volume mounted at a volume root (`D:\`), as eight upper-case hex digits,
+ * read from the volume itself: on Windows the device number `stat` gives is the volume's serial
+ * (measured on 2026-11-24 under Node and Bun: `C:\` gave F67B405B, as Win32_LogicalDisk does). No
+ * process, read-only. Null off Windows, for a path that is not the top of a volume, and when nothing
+ * is mounted at the letter or it cannot be read. Null too for a device number that cannot be a volume
+ * serial: 0, below 0, not whole, or over 32 bits (wave 19, check CC1-1: 0 was read as serial 00000000,
+ * which skipped a volume still attached as another one; null keeps the rule by letter). `statOf` is
+ * the read, a seam for the tests of those bounds.
+ */
+export function volumeSerialAt(root: string, statOf: (p: string) => { dev: number | bigint } = p => statSync(p)): string | null {
+  if (process.platform !== 'win32') return null
+  const r = resolve(root)
+  if (dirname(r) !== r) return null
+  try {
+    const dev = Number(statOf(r).dev)
+    if (!Number.isInteger(dev) || dev <= 0 || dev > 0xffffffff) return null
+    return dev.toString(16).toUpperCase().padStart(8, '0')
+  } catch {
+    return null
+  }
+}
+
+/** Two serial numbers as Windows writes them (hex, any case, with or without leading zeros) name the same volume. */
+const sameSerial = (a: string, b: string) => {
+  const x = Number.parseInt(a, 16), y = Number.parseInt(b, 16)
+  return Number.isFinite(x) && Number.isFinite(y) ? x === y : a.toUpperCase() === b.toUpperCase()
+}
+
+/**
+ * The volume roots of a baseline that are not the volume they were (wave 15, NOW.md:82): a root keyed
+ * by a serial number is compared only while the volume at its letter has that serial. The volumes are
+ * listed once per compare, and only when a root has a serial. Only ANOTHER serial at the letter skips
+ * the root. A volume listed with no serial and a listing that fails keep the rule by letter, with a
+ * note. A letter the listing does not name (wave 15b, check P1-C8: a row the listing drops must not let
+ * a loss on an attached volume pass) is asked for its own serial at the letter (wave 15c, check
+ * CB1-R2: `serialAt`, default `volumeSerialAt`; never for a network drive, whose read can hang): another
+ * serial there, such as an NTFS drive the listing leaves out because integrity labels protect it, is
+ * not compared, with a note; the same serial, none (a volume really detached is absent, which the
+ * volume rule already notes and does not count) or a read that fails keeps the rule by letter, with a
+ * note: fail-closed, its differences latch.
+ */
+function swappedVolumes(before: Manifest, list?: () => Volume[], serialAt?: (root: string) => string | null): { skip: Set<string>; notes: string[] } {
+  const skip = new Set<string>()
+  const notes: string[] = []
+  const keyed = (before.roots?.presence ?? []).filter(r => r.volume && typeof r.serial === 'string' && r.serial !== '')
+  if (keyed.length === 0) return { skip, notes }
+  let now: Volume[]
+  try {
+    now = (list ?? listUnprotectedVolumes)()
+  } catch (e) {
+    notes.push(`the attached volumes could not be listed at the compare (${textOf(e)}); the volume roots are compared by their letters`)
+    return { skip, notes }
+  }
+  for (const r of keyed) {
+    const v = now.find(x => keyOf(resolve(x.root)) === keyOf(r.path))
+    if (!v) {
+      let there: string | null = null
+      if (!r.network) {
+        try { there = (serialAt ?? volumeSerialAt)(r.path) } catch { there = null }
+      }
+      if (typeof there === 'string' && there !== '' && !sameSerial(there, r.serial!)) {
+        skip.add(keyOf(r.path))
+        notes.push(`${r.path}: another volume (serial ${there}) is there now, not the one of the baseline (serial ${r.serial}), read at its letter (the listing does not name it); not compared`)
+        continue
+      }
+      notes.push(`${r.path}: the volume of the baseline (serial ${r.serial}) is not listed at its letter now; compared by its letter`)
+      continue
+    }
+    if (typeof v.serial !== 'string' || v.serial === '') continue
+    if (sameSerial(v.serial, r.serial!)) continue
+    skip.add(keyOf(r.path))
+    notes.push(`${r.path}: another volume (serial ${v.serial}) is there now, not the one of the baseline (serial ${r.serial}); not compared`)
+  }
+  return { skip, notes }
+}
+
+function confirmedWalk(before: Manifest, o: WalkOpts): { diff: Diff | null; error: string | null; after: Manifest | null; entries: number } {
+  const swap = swappedVolumes(before, o.volumes, o.serialAt)
+  const roots = swap.skip.size === 0 ? before.roots
+    : { frozen: before.roots.frozen, presence: before.roots.presence.filter(r => !swap.skip.has(keyOf(r.path))) }
+  const w = walkUntilSettled(before, roots, o)
+  if (w.diff && swap.notes.length > 0) w.diff.notes = [...w.diff.notes, ...swap.notes]
+  return w
+}
+
+function walkUntilSettled(before: Manifest, roots: Roots, o: WalkOpts)
   : { diff: Diff | null; error: string | null; after: Manifest | null; entries: number } {
-  const walk = () => takeManifest(before.roots, { runId: before.runId, by: o.by, home: before.home, exclude: before.exclude, now: o.now })
+  const walk = () => takeManifest(roots, { runId: before.runId, by: o.by, home: before.home, exclude: before.exclude, now: o.now })
+  const wait = () => (o.sleep ?? syncSleep)(o.confirmMs ?? DEFAULT_CONFIRM_MS)
   let a1: Manifest | null = null
   let e1: string | null = null
   try { a1 = walk() } catch (e) { e1 = textOf(e) }
   const d1 = a1 ? diffAll(before, a1) : null
   if (a1 && d1 && d1.changes.length === 0) return { diff: finish([], d1.notes, d1.allowed), error: null, after: a1, entries: entriesOf(a1) }
-  ;(o.sleep ?? syncSleep)(o.confirmMs ?? DEFAULT_CONFIRM_MS)
+  wait()
   let a2: Manifest | null = null
   let e2: string | null = null
   try { a2 = walk() } catch (e) { e2 = textOf(e) }
@@ -858,32 +1148,51 @@ function confirmedWalk(before: Manifest, o: { by: string; confirmMs?: number; sl
     const notes = [...d2.notes, `the first walk failed (${e1}); the second walk is reported`]
     return { diff: finish(d2.changes, notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
   }
-  const seen = new Set(d1.changes.map(changeKey))
-  const confirmed = d2.changes.filter(c => seen.has(changeKey(c)))
-  const late = d2.changes.filter(c => !seen.has(changeKey(c)))
-  if (late.length === 0) return { diff: finish(confirmed, d2.notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
-  // A change the second walk saw and the first did not is not "present both times" yet, and it is not
-  // nothing either: a loss made during the wait, or application folders that crossed the allowance
-  // between the walks (below it on the first walk they are notes, not changes). Dropping it here
-  // settled a run as unchanged when the first walk's difference had come back and a new loss had
-  // taken its place. It gets one more walk: what the second and the third both see counts.
-  ;(o.sleep ?? syncSleep)(o.confirmMs ?? DEFAULT_CONFIRM_MS)
-  let a3: Manifest | null = null
-  let e3: string | null = null
-  try { a3 = walk() } catch (e) { e3 = textOf(e) }
-  if (!a3) {
-    // As for a failed confirming walk above: a change seen is not dropped.
-    const notes = [...d2.notes, `the third walk failed (${e3}); the second walk is reported`]
-    return { diff: finish(d2.changes, notes, d2.allowed), error: null, after: a2, entries: entriesOf(a2) }
+  // A change a walk saw and the walk before it did not is not "seen twice" yet, and it is not nothing
+  // either: a loss made during the wait, or application folders that crossed the allowance between
+  // the walks (below it on one walk they are notes, not changes). Dropping it settled a run as
+  // unchanged when the first walk's difference had come back and a new loss had taken its place. It
+  // gets another walk, until a walk sees nothing new or the bound is reached.
+  const counted = new Map<string, Change>()
+  const lateOnce = new Map<string, Change>()
+  const ever = new Set(d1.changes.map(changeKey))
+  let prev = d1
+  let d = d2
+  let a: Manifest = a2
+  let n = 2
+  let late: Change[] = []
+  for (;;) {
+    const prevKeys = new Set(prev.changes.map(changeKey))
+    for (const c of d.changes) if (prevKeys.has(changeKey(c))) counted.set(changeKey(c), c)
+    late = d.changes.filter(c => !prevKeys.has(changeKey(c)))
+    for (const c of late) if (!ever.has(changeKey(c))) lateOnce.set(changeKey(c), c)
+    for (const c of d.changes) ever.add(changeKey(c))
+    if (late.length === 0 || n >= SETTLE_MAX_WALKS) break
+    wait()
+    let next: Manifest | null = null
+    let en: string | null = null
+    try { next = walk() } catch (e) { en = textOf(e) }
+    if (!next) {
+      // As for a failed confirming walk above: a change seen is not dropped.
+      const notes = [...d.notes, `the ${WALK_ORDINAL[n]} walk failed (${en}); the ${WALK_ORDINAL[n - 1]} walk is reported`]
+      const all = new Map(counted)
+      for (const c of d.changes) all.set(changeKey(c), c)
+      return { diff: finish([...all.values()], notes, d.allowed), error: null, after: a, entries: entriesOf(a) }
+    }
+    prev = d
+    d = diffAll(before, next)
+    a = next
+    n++
   }
-  const d3 = diffAll(before, a3)
-  const lateKeys = new Set(late.map(changeKey))
-  const lateConfirmed = d3.changes.filter(c => lateKeys.has(changeKey(c)))
-  const stillThere = new Set(lateConfirmed.map(changeKey))
-  const once = late.filter(c => !stillThere.has(changeKey(c)))
-  const notes = once.length === 0 ? d3.notes
-    : [...d3.notes, ...once.map(c => `seen on the confirming walk only, so not counted: ${c.class} ${join(c.root, c.path)} (${c.kind})`)]
-  return { diff: finish([...confirmed, ...lateConfirmed], notes, d3.allowed), error: null, after: a3, entries: entriesOf(a3) }
+  const lastOnly = n >= SETTLE_MAX_WALKS ? late.filter(c => !counted.has(changeKey(c))) : []
+  const lastKeys = new Set(lastOnly.map(changeKey))
+  const once = [...lateOnce.values()].filter(c => !counted.has(changeKey(c)) && !lastKeys.has(changeKey(c)))
+  const notes = [
+    ...d.notes,
+    ...once.map(c => `seen on the confirming walk only, so not counted: ${c.class} ${join(c.root, c.path)} (${c.kind})`),
+    ...lastOnly.map(c => `seen on the last of ${n} walks only, so not counted (the walks did not settle): ${c.class} ${join(c.root, c.path)} (${c.kind})`),
+  ]
+  return { diff: finish([...counted.values()], notes, d.allowed), error: null, after: a, entries: entriesOf(a) }
 }
 
 function compareFrom(runId: string, by: string, at: string, kind: 'reading' | 'settle', d: Diff, entries: number, ms: number, settled: boolean): Compare {
@@ -905,6 +1214,10 @@ export async function compareRun(runId: string, o: {
   by: string; page: Pager; guard?: string
   context?: Context
   confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date
+  /** The volume listing a compare asks when a volume root of the baseline has a serial (wave 15); default `listUnprotectedVolumes`. */
+  volumes?: () => Volume[]
+  /** The serial read at the letter of a volume root the listing does not name (wave 15c); default `volumeSerialAt`. */
+  serialAt?: (root: string) => string | null
 }): Promise<Compare> {
   const guard = o.guard ?? guardDir()
   const now = o.now ?? (() => new Date())
@@ -954,6 +1267,10 @@ export async function settleRun(runId: string, o: {
   noLatch?: boolean
   context?: Context
   confirmMs?: number; sleep?: (ms: number) => void; now?: () => Date
+  /** The volume listing a compare asks when a volume root of the baseline has a serial (wave 15); default `listUnprotectedVolumes`. */
+  volumes?: () => Volume[]
+  /** The serial read at the letter of a volume root the listing does not name (wave 15c); default `volumeSerialAt`. */
+  serialAt?: (root: string) => string | null
 }): Promise<Compare> {
   const guard = o.guard ?? guardDir()
   const now = o.now ?? (() => new Date())
@@ -1291,6 +1608,25 @@ export function haltState(guard?: string, home?: string, o: { sandboxRoot?: stri
     state: 'latched', latchPath, latch,
     summary: `the integrity latch is present at ${shown(dir, LATCH_FILE)} (${what}); only the owner clears it, at a terminal, with: ${GUARD_CLEAR_COMMAND}`,
   }
+}
+
+/** The latch as the desk, the phone, the widget and the box reporter show it (wave 15, NOW.md:57). */
+export type DeskIntegrity = { state: 'clear'; summary: string } | { state: 'latched'; summary: string; at: string | null } | { state: 'unusable'; summary: string }
+
+const DESK_STOPS = 'No unattended run starts and no queued command runs until it is cleared at the desk: bun scripts/cynco-guard.mjs clear'
+
+/**
+ * `haltState` in words a page off this machine may show: the latch's public summary, when and by whom
+ * and why it was set, and what it stops; never a path (the guard folder, the latch file, the changes
+ * are what `cynco-guard.mjs status` prints at the desk). Reads what `haltState` reads.
+ */
+export function deskIntegrity(guard?: string, home?: string, o: { sandboxRoot?: string | null; missionCwd?: string | null; unprotectedVolumes?: string[] } = {}): DeskIntegrity {
+  const s = haltState(guard, home, o)
+  if (s.state === 'clear') return { state: 'clear', summary: 'no integrity latch' }
+  if (s.state === 'unusable') return { state: 'unusable', summary: 'the guard folder cannot be used, so no unattended run starts; bun scripts/cynco-guard.mjs status says why' }
+  const l = s.latch
+  if (!l) return { state: 'latched', at: null, summary: `the integrity latch is set, and its record cannot be read. ${DESK_STOPS}` }
+  return { state: 'latched', at: l.at, summary: `${l.publicSummary}; set ${l.at} by ${l.by} (${l.reason}). ${DESK_STOPS}` }
 }
 
 /** Null only when the guard folder is usable and holds no latch; otherwise the reason sentence. */
@@ -1841,19 +2177,42 @@ interface Tripwire {
   before: PresenceSection[]
   exclude: string[]
   minGapMs: number
+  confirmMs: number
   now: () => number
   last: number | null
   timer: ReturnType<typeof setInterval> | null
+  /** The confirmed check under way, if any: a call made meanwhile waits for its answer (wave 15). */
+  pending: Promise<string | null> | null
+  /** One listing of the roots; `presenceTripwireListing` but in a test that makes one look fail (wave 15b). */
+  listing: typeof presenceTripwireListing
 }
 
 /**
  * The shortest time between two looks. One look lists every PRESENCE root but the volumes, the home's
- * top level counted: about 48 ms on this PC since wave 8 (the integrity paragraph of the package
- * document of engine/tools), so tool calls back to back spend up to about 5% of the event loop on it. A model that
+ * top level and since wave 15 the application roots counted: about 61 ms on this PC by the medians
+ * measured in wave 8 (48 ms with the application roots by name only; not measured again since: the
+ * integrity paragraph of the package document of engine/tools), so tool calls back to back spend up
+ * to about 6% of the event loop on it. A model that
  * deletes and then keeps calling tools quickly gets at most about one second of further tools (review
- * of wave 5: it was ten). During one long call the only look is the 60 s timer.
+ * of wave 5: it was ten). During one long call the only look is the timer (`TRIPWIRE_INTERVAL_MS`).
  */
 export const TRIPWIRE_MIN_GAP_MS = 1_000
+
+/**
+ * The timer's interval (wave 15; 60 s until then). During one long tool call the timer is the only
+ * look, so a call that deletes runs on for up to this long after its first loss. Six looks of about
+ * 61 ms a minute (the application roots counted) are about 0.6% of the event loop the dashboard and
+ * the phone are served from (F225).
+ */
+export const TRIPWIRE_INTERVAL_MS = 10_000
+
+/**
+ * How long the confirmed check waits before its second look (wave 15, F248). A loss counts only when
+ * both looks see the same change: a folder another program removes and makes again at the moment of
+ * a look, which latched a run on one look, does not. The wait is a timer, not a sleep: the event loop
+ * goes on meanwhile, and a tool call made during it waits for the answer.
+ */
+export const TRIPWIRE_CONFIRM_MS = 1_000
 
 let wire: Tripwire | null = null
 /** A loss seen by this process. Kept for the life of the process: no stop and no second start clears it. */
@@ -1866,27 +2225,26 @@ const tripwireHalt = (ctx: RunContainment) =>
 
 /**
  * The roots the in-run tripwire lists, from a baseline's PRESENCE roots: no volume root and no network
- * drive (see `startPresenceTripwire`), and the application roots by name only, without counting their
- * folders' children. The tripwire runs on the engine's event loop before tool calls, and one look
- * already costs about 48 ms on this PC, about 20 ms of it the home's counts; counting the application
- * roots too would add about 13 ms (the measured figures are in the integrity paragraph of the package
- * document of engine/tools). So it looks at names there, and the counts of the application roots are
- * compared by the baseline and the settling compare, in the starter's own process: an application
- * folder emptied in place is seen at the run's end, not during it. Pure.
+ * drive (see `startPresenceTripwire`); every other root as the baseline lists it. Since wave 15
+ * (NOW.md:64, the owner's "do it") the application roots are counted here too, with the allowance
+ * `diffPresence` applies to them at the settle (`APPDATA_LOSS_AT`), so an application folder emptied in
+ * place stops the run instead of waiting for the settle; `Temp` and `D3DSCache` stay by name
+ * (`uncounted`). Until then they were looked at by name only: counting them costs about 13 ms more a
+ * look on this PC (61 ms against 48, the integrity paragraph of the package document of engine/tools).
+ * Pure.
  */
 export function presenceTripwireRoots(roots: PresenceRoot[]): PresenceRoot[] {
-  return roots.filter(r => !r.volume && !r.network).map(r => (r.application === true ? { ...r, counts: false } : r))
+  return roots.filter(r => !r.volume && !r.network)
 }
 
 /**
- * One look of the tripwire over `presenceTripwireRoots`: the application roots by name only (no folder
- * of theirs is opened), every other root as the baseline lists it. A root that can no longer be listed
- * is a root that is gone (P1). Read-only.
+ * One look of the tripwire over `presenceTripwireRoots`: each root as the baseline lists it. A root
+ * that can no longer be listed is a root that is gone (P1). Read-only.
  */
 export function presenceTripwireListing(roots: PresenceRoot[], exclude: string[], notes: string[]): PresenceSection[] {
   return roots.map(r => {
     try {
-      return listPresence(r, exclude, notes, r.application === true)
+      return listPresence(r, exclude, notes)
     } catch (e) {
       notes.push(textOf(e))
       return { root: r.path, exists: false, listed: true, entries: {} } as PresenceSection
@@ -1905,7 +2263,9 @@ export function presenceTripwireListing(roots: PresenceRoot[], exclude: string[]
 export function startPresenceTripwire(a: {
   ctx: RunContainment
   onLoss: (loss: { kind: 'presence' | 'latch'; summary: string; publicSummary: string; compare: Compare | null }) => void
-  intervalMs?: number; minGapMs?: number; now?: () => number; timer?: boolean
+  intervalMs?: number; minGapMs?: number; confirmMs?: number; now?: () => number; timer?: boolean
+  /** The listing each look makes; default `presenceTripwireListing`. A test seam (wave 15b): a look whose listing throws has failed. */
+  listing?: typeof presenceTripwireListing
 }): { ok: true; stop: () => void; folders: number; roots: number } | { ok: false; reason: string } {
   if (lostForProcess !== null) return { ok: false, reason: INTEGRITY_LOSS_TO_MODEL }
   stopPresenceTripwire()
@@ -1939,51 +2299,58 @@ export function startPresenceTripwire(a: {
   const folders = before.reduce((n, p) => n + Object.values(p.entries).filter(e => e?.k === 'd').length, 0)
   const w: Tripwire = {
     ctx: a.ctx, onLoss: a.onLoss, roots, before, exclude: Array.isArray(m.exclude) ? m.exclude : [],
-    minGapMs: a.minGapMs ?? TRIPWIRE_MIN_GAP_MS, now: a.now ?? Date.now, last: null, timer: null,
+    minGapMs: a.minGapMs ?? TRIPWIRE_MIN_GAP_MS, confirmMs: a.confirmMs ?? TRIPWIRE_CONFIRM_MS,
+    now: a.now ?? Date.now, last: null, timer: null, pending: null, listing: a.listing ?? presenceTripwireListing,
   }
   wire = w
   if (a.timer !== false) {
-    w.timer = setInterval(() => { presenceTripwireCheck() }, a.intervalMs ?? 60_000)
+    w.timer = setInterval(() => { void presenceTripwireConfirmed() }, a.intervalMs ?? TRIPWIRE_INTERVAL_MS)
     w.timer.unref?.()
   }
   return { ok: true, stop: () => { if (wire === w) stopPresenceTripwire() }, folders, roots: roots.length }
 }
 
-/**
- * Null while nothing was lost (or it is not time to look again); `INTEGRITY_LOSS_TO_MODEL` once a
- * loss was seen, for the rest of the process, whether or not a tripwire is still running. Folders
- * only: a file replaced by delete-then-rename is absent for an instant, and this check has no
- * confirmation wait.
- */
-export function presenceTripwireCheck(now?: number): string | null {
-  if (lostForProcess !== null) return INTEGRITY_LOSS_TO_MODEL
-  const w = wire
-  if (w === null) return null
-  const t = now ?? w.now()
-  if (w.last !== null && t - w.last < w.minGapMs) return null
-  w.last = t
-  let loss: Loss | null = null
+/** One look of the tripwire: the latch first, then the listing against the baseline. Never throws. */
+type Look =
+  | { state: 'clean' }
+  | { state: 'latch'; loss: Loss }
+  | { state: 'changed'; changes: Change[]; notes: string[]; entries: number; t0: number }
+  | { state: 'failed'; why: string }
+
+function lookOnce(w: Tripwire): Look {
   try {
     const refusal = tripwireHalt(w.ctx)
     if (refusal !== null) {
-      loss = { kind: 'latch', summary: refusal, publicSummary: 'the integrity latch is present, or the guard folder can no longer be used', compare: null }
-    } else {
-      const t0 = Date.now()
-      const notes: string[] = []
-      const after = presenceTripwireListing(w.roots, w.exclude, notes)
-      const changes = diffPresence(w.before, after, w.roots, notes, true)
-      if (changes.length > 0) {
-        const d = finish(changes, notes)
-        const compare = compareFrom(w.ctx.runId, 'tripwire', new Date().toISOString(), 'reading', d,
-          after.reduce((n, p) => n + Object.keys(p.entries).length, 0), Date.now() - t0, false)
-        loss = { kind: 'presence', summary: d.summary, publicSummary: d.publicSummary, compare }
-      }
+      return { state: 'latch', loss: { kind: 'latch', summary: refusal, publicSummary: 'the integrity latch is present, or the guard folder can no longer be used', compare: null } }
     }
+    const t0 = Date.now()
+    const notes: string[] = []
+    const after = w.listing(w.roots, w.exclude, notes)
+    const changes = diffPresence(w.before, after, w.roots, notes, true)
+    if (changes.length === 0) return { state: 'clean' }
+    return { state: 'changed', changes, notes, entries: after.reduce((n, p) => n + Object.keys(p.entries).length, 0), t0 }
   } catch (e) {
-    // The reason can name a path: the owner's summary only.
-    loss = { kind: 'presence', summary: `${PRESENCE_FAILED_PUBLIC} (${textOf(e)})`, publicSummary: PRESENCE_FAILED_PUBLIC, compare: null }
+    return { state: 'failed', why: textOf(e) }
   }
-  if (loss === null) return null
+}
+
+/** The loss a look (or two looks' common changes) amounts to. The reason of a failure can name a path: the owner's summary only. */
+function lossOf(w: Tripwire, look: Exclude<Look, { state: 'clean' }>): Loss {
+  if (look.state === 'latch') return look.loss
+  const failed = (why: string): Loss => ({ kind: 'presence', summary: `${PRESENCE_FAILED_PUBLIC} (${why})`, publicSummary: PRESENCE_FAILED_PUBLIC, compare: null })
+  if (look.state === 'failed') return failed(look.why)
+  try {
+    const d = finish(look.changes, look.notes)
+    const compare = compareFrom(w.ctx.runId, 'tripwire', new Date().toISOString(), 'reading', d, look.entries, Date.now() - look.t0, false)
+    return { kind: 'presence', summary: d.summary, publicSummary: d.publicSummary, compare }
+  } catch (e) {
+    return failed(textOf(e))
+  }
+}
+
+/** Keeps the loss for the life of the process and reports it once. */
+function latchLoss(w: Tripwire, loss: Loss): string {
+  if (lostForProcess !== null) return INTEGRITY_LOSS_TO_MODEL
   lostForProcess = loss
   try {
     w.onLoss(loss)
@@ -1993,7 +2360,80 @@ export function presenceTripwireCheck(now?: number): string | null {
   return INTEGRITY_LOSS_TO_MODEL
 }
 
-/** Clears the timer and the running tripwire. A loss this process saw stays (`presenceTripwireCheck` still answers it). */
+/** Whether it is time to look again; marks the look when it is. */
+function lookDue(w: Tripwire, now?: number): boolean {
+  const t = now ?? w.now()
+  if (w.last !== null && t - w.last < w.minGapMs) return false
+  w.last = t
+  return true
+}
+
+/**
+ * Null while nothing was lost (or it is not time to look again); `INTEGRITY_LOSS_TO_MODEL` once a
+ * loss was seen, for the rest of the process, whether or not a tripwire is still running. Folders
+ * only: a file replaced by delete-then-rename is absent for an instant. One look, no confirmation.
+ * No caller in the engine or the acceptance asks it: the executor, the timer and the bypass sites (the
+ * contract check, best-of-N, LSP, the daemon's precheck) ask `presenceTripwireConfirmed`, and the
+ * acceptance's box was switched to it in wave 18. It stays for
+ * the tests of the single look in engine/__tests__/integrity.test.ts.
+ */
+export function presenceTripwireCheck(now?: number): string | null {
+  if (lostForProcess !== null) return INTEGRITY_LOSS_TO_MODEL
+  const w = wire
+  if (w === null) return null
+  if (!lookDue(w, now)) return null
+  const look = lookOnce(w)
+  if (look.state === 'clean') return null
+  return latchLoss(w, lossOf(w, look))
+}
+
+/**
+ * The check the engine asks before a tool call and on its timer (wave 15, F248): as
+ * `presenceTripwireCheck`, but a change counts only when a second look, `TRIPWIRE_CONFIRM_MS` later,
+ * sees the same change (the same root and entry, as the settle's confirming walk keys it); a change
+ * the second look no longer sees, or sees only there, is not counted now and is looked at again at
+ * the next check. The latch needs no second look. A look that fails is a change: a failure at both
+ * looks is a loss, and a change one look saw stands when the other failed (a change seen is not
+ * dropped). While a confirmation is under way every call waits for its answer, inside the gap too.
+ */
+export function presenceTripwireConfirmed(now?: number): Promise<string | null> {
+  if (lostForProcess !== null) return Promise.resolve(INTEGRITY_LOSS_TO_MODEL)
+  const w = wire
+  if (w === null) return Promise.resolve(null)
+  if (w.pending !== null) return w.pending
+  if (!lookDue(w, now)) return Promise.resolve(null)
+  const first = lookOnce(w)
+  if (first.state === 'clean') return Promise.resolve(null)
+  if (first.state === 'latch') return Promise.resolve(latchLoss(w, first.loss))
+  const p = confirmLoss(w, first).finally(() => { if (w.pending === p) w.pending = null })
+  w.pending = p
+  return p
+}
+
+async function confirmLoss(w: Tripwire, first: Extract<Look, { state: 'changed' | 'failed' }>): Promise<string | null> {
+  await new Promise<void>(res => { setTimeout(res, w.confirmMs) })
+  if (lostForProcess !== null) return INTEGRITY_LOSS_TO_MODEL
+  // Wave 15b (check P1-C4): a tripwire stopped (or replaced) during the wait is not looked at again and reports to
+  // no one; the starter's settle compares what is there after the stop.
+  if (wire !== w) return null
+  const second = lookOnce(w)
+  if (second.state === 'latch') return latchLoss(w, second.loss)
+  if (second.state === 'clean') {
+    console.log(`[integrity] tripwire: ${first.state === 'failed' ? 'a look that failed' : `${first.changes.length} change(s)`} not seen again ${w.confirmMs} ms later; not counted`)
+    return null
+  }
+  if (first.state === 'failed') return latchLoss(w, lossOf(w, second))
+  if (second.state === 'failed') return latchLoss(w, lossOf(w, { ...first, notes: [...first.notes, `the confirming look failed (${second.why}); the first look is reported`] }))
+  const seen = new Set(first.changes.map(changeKey))
+  const confirmed = second.changes.filter(c => seen.has(changeKey(c)))
+  if (confirmed.length === 0) {
+    console.log(`[integrity] tripwire: ${first.changes.length} change(s) not seen again ${w.confirmMs} ms later (${second.changes.length} other change(s) seen then, looked at again at the next check); not counted`)
+    return null
+  }
+  return latchLoss(w, lossOf(w, { ...second, changes: confirmed }))
+}
+
+/** Clears the timer and the running tripwire. A loss this process saw stays (`presenceTripwireConfirmed` and `presenceTripwireCheck` still answer it). */
 export function stopPresenceTripwire(): void {
   if (wire?.timer) clearInterval(wire.timer)
   wire = null

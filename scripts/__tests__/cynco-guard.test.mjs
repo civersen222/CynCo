@@ -9,8 +9,8 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { tmpdir, userInfo } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { main, USAGE } from '../cynco-guard.mjs'
 import { mintRunId } from '../../engine/containment.js'
@@ -169,6 +169,47 @@ describe('pre and post', () => {
   })
 })
 
+describe('wave 15: the allowance notes are printed (NOW.md:67)', () => {
+  it('(13) post prints each application folder lost below the allowance, and status prints them from the last checks', async () => {
+    const m = await ready(machine())
+    for (const a of ['app-a', 'app-b', 'app-c']) { put(join(m.home, 'AppData', 'Local', a, 'x')); put(join(m.home, 'AppData', 'Local', a, 'y')) }
+    const id = await pre(m)
+    rmSync(join(m.home, 'AppData', 'Local', 'app-b'), { recursive: true })
+    const o = io(m)
+    expect(await main(['post', id], o.deps), o.errs.join('\n')).toBe(0)
+    expect(o.lines[0]).toMatch(new RegExp(`^\\[guard\\] integrity unchanged for ${id} \\(\\d+ entries, \\d+ ms\\)$`))
+    expect(o.lines.slice(1)).toEqual([`[guard] allowed: PRESENCE ${join(m.home, 'AppData', 'Local')}/app-b gone: an application folder; fewer than 3 lost in this root, so a note and not a loss`])
+    const s = io(m)
+    expect(await main(['status'], s.deps)).toBe(0)
+    expect(s.lines.filter(l => l.startsWith('[guard] allowed'))).toEqual([`[guard] allowed in the settle of run ${id}: PRESENCE ${join(m.home, 'AppData', 'Local')}/app-b gone: an application folder; fewer than 3 lost in this root, so a note and not a loss`])
+    // A run that lost nothing prints no allowance line.
+    const id2 = await pre(m)
+    const c = io(m)
+    expect(await main(['post', id2], c.deps)).toBe(0)
+    expect(c.lines).toHaveLength(1)
+  }, 30_000)
+})
+
+describe('wave 15: pre for the daemon, in a process of its own (NOW.md:83)', () => {
+  it('(14) --holder-pid names the holder in the baseline; --no-cwd takes one with no mission folder; a bad pid or both folder flags is bad usage', async () => {
+    const m = await ready(machine())
+    const id = mintRunId('cli')
+    const o = io(m)
+    expect(await main(['pre', id, '--cwd', m.repo, '--by', 'daemon', '--holder-pid', String(process.pid), '--max-seconds', '60'], o.deps), o.errs.join('\n')).toBe(0)
+    const b = JSON.parse(readFileSync(join(m.guard, 'manifests', `${id}.before.json`), 'utf-8'))
+    expect(b.holder.pid).toBe(process.pid)
+    expect(b.by).toBe('daemon')
+    const id2 = mintRunId('cli')
+    const o2 = io(m)
+    expect(await main(['pre', id2, '--no-cwd', '--by', 'daemon'], o2.deps), o2.errs.join('\n')).toBe(0)
+    expect(JSON.parse(readFileSync(join(m.guard, 'manifests', `${id2}.before.json`), 'utf-8')).exclude).toEqual([])
+    for (const argv of [['pre', mintRunId('cli'), '--cwd', m.repo, '--holder-pid', '0'], ['pre', mintRunId('cli'), '--cwd', m.repo, '--holder-pid', 'x'], ['pre', mintRunId('cli'), '--cwd', m.repo, '--no-cwd']]) {
+      const e = io(m)
+      expect(await main(argv, e.deps), argv.join(' ')).toBe(2)
+    }
+  }, 30_000)
+})
+
 describe('clear', () => {
   const terminal = (answer) => Object.assign(Readable.from([`${answer}\n`]), { isTTY: true })
 
@@ -320,6 +361,12 @@ describe.skipIf(!bunPresent)('cynco-guard.mjs as real processes', () => {
     const id1 = mintRunId('rt')
     r = cli('pre', id1, '--cwd', repo)
     expect(r.status, r.out).toBe(0)
+    // Wave 15c (check CB1-R1): under Bun on Windows the profile is asked of the system (bun:ffi), never of
+    // USERPROFILE, which Bun's homedir() and userInfo() both follow: the fake home is not this account's
+    // profile, so its known folders are not read, and the note names the real profile (Node's userInfo
+    // asks the system the same question). The suite runs under Node, so this is the one case that runs
+    // that branch of systemProfileHome.
+    if (isWin) expect(r.out).toContain(`[guard] note: the home ${resolve(home)} is not the profile of this account (${userInfo().homedir}); its known folders are not read from the registry or the environment`)
     r = cli('post', id1)
     expect(r.status, r.out).toBe(0)
     const id2 = mintRunId('rt')

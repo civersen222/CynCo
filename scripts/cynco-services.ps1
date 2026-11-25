@@ -46,7 +46,7 @@ if ($Action -eq 'start' -or $Action -eq 'status') {
   $guardLine = ''; $guardExit = 3
   try {
     # Collect first, read the exit code afterwards: after a pipe that closes early $LASTEXITCODE is -1.
-    $out = & bun (Join-Path $PSScriptRoot 'cynco-guard.mjs') status --quiet 2>&1; $guardExit = $LASTEXITCODE
+    $out = & bun --no-install (Join-Path $PSScriptRoot 'cynco-guard.mjs') status --quiet 2>&1; $guardExit = $LASTEXITCODE
     $guardLine = ($out | Select-Object -First 1)
   } catch { $guardLine = "the guard check did not run ($($_.Exception.Message))" }
   if ($Action -eq 'status') {
@@ -57,6 +57,21 @@ if ($Action -eq 'start' -or $Action -eq 'status') {
     if (-not $guardRefusal) { $guardRefusal = "the guard check did not answer (exit $guardExit)" }
     Write-Output "warning: $guardRefusal"
   }
+}
+
+# The last non-empty line of a file, read from its last 4 KiB (shared read: the service keeps appending). '' when unreadable.
+function Get-LastLine([string]$path) {
+  try {
+    $fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    try {
+      $n = [int][Math]::Min(4096, $fs.Length)
+      [void]$fs.Seek(-$n, [IO.SeekOrigin]::End)
+      $buf = New-Object byte[] $n
+      $got = $fs.Read($buf, 0, $n)
+      $lines = [Text.Encoding]::UTF8.GetString($buf, 0, $got) -split "`r?`n" | Where-Object { $_.Trim() -ne '' }
+      if ($lines) { return @($lines)[-1] } else { return '' }
+    } finally { $fs.Dispose() }
+  } catch { return '' }
 }
 
 $procs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.ProcessId -ne $ExcludePid }
@@ -98,7 +113,7 @@ foreach ($s in $services) {
         # first: the box reporter tells the watcher, which then shows this box as not watched and
         # not as gone silent (F232). No answer in ten seconds, and it is stopped anyway.
         Push-Location $repo
-        try { & bun $s.Goodbye --stop | ForEach-Object { Write-Output "$($s.Name): $_" } }
+        try { & bun --no-install $s.Goodbye --stop | ForEach-Object { Write-Output "$($s.Name): $_" } }
         catch { Write-Output "$($s.Name): could not ask it to stop first ($($_.Exception.Message)); stopping it anyway" }
         finally { Pop-Location }
       }
@@ -109,8 +124,23 @@ foreach ($s in $services) {
     default {
       $state = if (-not $task) { 'NOT REGISTERED' } elseif ($proc) { "RUNNING (pid $($proc.ProcessId))" } else { 'STOPPED' }
       $last = ''
-      if ($s.Log -and (Test-Path $s.Log)) { $last = (Get-Content $s.Log -Tail 1); if ($last.Length -gt 110) { $last = $last.Substring(0, 110) + '...' } }
-      Write-Output ("{0,-9} {1,-22} {2}" -f $s.Name, $state, $last)
+      # Wave 15 (NOW.md:94): the log's size, so a log growing toward its cap is seen before the daily page.
+      $size = ''
+      if ($s.Log) {
+        $item = Get-Item -LiteralPath $s.Log -ErrorAction SilentlyContinue
+        # One form on every Windows (wave 15b): a decimal point and no group separator, whatever the culture.
+        $size = if ($item) { '[log ' + ([double]($item.Length / 1MB)).ToString('F1', [System.Globalization.CultureInfo]::InvariantCulture) + ' MiB] ' } else { '[no log] ' }
+      }
+      # The last line from the last 4 KiB only: Get-Content -Tail reads a log with no line break back to its start
+      # (measured 2026-11-24: over 90 s for 3 MiB of one line), and a service log can be gigabytes.
+      if ($s.Log -and (Test-Path $s.Log)) { $last = Get-LastLine $s.Log; if ($last.Length -gt 110) { $last = $last.Substring(0, 110) + '...' } }
+      Write-Output ("{0,-9} {1,-22} {2}{3}" -f $s.Name, $state, $size, $last)
+      # Wave 15 (NOW.md:91): the rotation's own refusal or failure line, which the launcher writes beside the log.
+      if ($s.Log) {
+        $rot = $s.Log -replace '\.log$', '.rotate.log'
+        $rl = if (Test-Path -LiteralPath $rot) { Get-LastLine $rot } else { $null }
+        if ($rl) { Write-Output ("{0,-9} rotation: {1}" -f '', $rl) }
+      }
     }
   }
 }

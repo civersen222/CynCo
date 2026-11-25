@@ -23,6 +23,7 @@ import { join } from 'path'
 import { cyncoHome, missionsDir } from '../../paths.js'
 import { ollamaLoaded } from '../../apps/ollama.js'
 import { loadRegistry } from '../../apps/registry.js'
+import { deskIntegrity } from '../../integrity.js'
 import { daemonHasWork, holderReader, readDaemonUp, readEngine, readInferenceToken, readModelPort, readServices, type FetchLike } from './engineFacts.js'
 import { readGpus } from './gpu.js'
 import { readIdleSeconds } from './idle.js'
@@ -265,6 +266,8 @@ export function liveSources(env: NodeJS.ProcessEnv, modelPort: number): Sources 
     services: engine => readServices(engine, { fetchImpl, embedUrl, daemonUp, daemonHasWork: () => daemonHasWork() }),
     // Ollama not running is nothing loaded, and is not worth a log line a minute.
     ollama: cached(async () => (await ollamaLoaded(loadRegistry(undefined, () => {}).ollama.url)).map(m => ({ server: 'ollama', name: m.name, busy: null })), 55_000),
+    // Wave 15 (NOW.md:57): the latch reaches the watcher; read from the guard folder, in words with no path.
+    integrity: async () => { const d = deskIntegrity(); return { state: d.state, summary: d.summary } },
   }
 }
 

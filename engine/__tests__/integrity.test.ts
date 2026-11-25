@@ -489,6 +489,65 @@ describe('the early reading and the settling compare (entry 4.B1)', () => {
     expect(existsSync(join(w.guard, 'HALT.json'))).toBe(false)
   })
 
+  // Wave 15 (NOW.md:73): the walks go on until two walks in a row agree on what is new, at most five.
+  it('(20e) a loss that first shows on the third walk gets a fourth, and counts when the fourth still sees it', async () => {
+    const w = world()
+    const id = baseline(w)
+    const file = join(w.state, 'profiles', 'p.yaml')
+    const other = join(w.state, 'heldout', 'g', 'gate.py')
+    const kept = readFileSync(other)
+    const keptTime = statSync(other).mtime
+    unlinkSync(file)
+    let slept = 0
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => {
+      slept++
+      if (slept === 1) { put(file, 'p'); unlinkSync(other) }
+      if (slept === 2) { writeFileSync(other, kept); utimesSync(other, keptTime, keptTime); rmSync(join(w.home, '.config'), { recursive: true }) }
+    } }))
+    expect(slept).toBe(3)
+    expect(s.changed).toBe(true)
+    expect(kinds(s)).toEqual(['.config:gone'])
+    expect(s.notes.join(' | ')).toMatch(/seen on the confirming walk only, so not counted: FROZEN .*gate\.py \(removed\)/)
+    expect(existsSync(join(w.guard, 'HALT.json'))).toBe(true)
+  })
+
+  it('(20f) a new difference on every walk: five walks at most, the last walk\'s new one a note, nothing seen twice in a row counted', async () => {
+    const w = world()
+    const files = [1, 2, 3, 4, 5].map(i => join(w.state, 'profiles', `p${i}.yaml`))
+    for (const f of files) put(f, 'x')
+    const id = baseline(w)
+    unlinkSync(files[0]!)
+    let slept = 0
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => {
+      put(files[slept]!, 'x')
+      slept++
+      unlinkSync(files[slept]!)
+    } }))
+    expect(slept).toBe(4)
+    expect(s.changed).toBe(false)
+    const said = s.notes.join(' | ')
+    expect(said).toMatch(/seen on the last of 5 walks only, so not counted \(the walks did not settle\): FROZEN .*p5\.yaml \(removed\)/)
+    for (const n of ['p2', 'p3', 'p4']) expect(said).toMatch(new RegExp(`seen on the confirming walk only, so not counted: FROZEN .*${n}\\.yaml`))
+    expect(existsSync(join(w.guard, 'HALT.json'))).toBe(false)
+  })
+
+  it('(20g) a change seen on two walks in a row counts though a later walk no longer sees it', async () => {
+    const w = world()
+    const id = baseline(w)
+    const file = join(w.state, 'profiles', 'p.yaml')
+    unlinkSync(file)
+    let slept = 0
+    const s = await I.settleRun(id, opts(w, pager().fn, { sleep: () => {
+      slept++
+      if (slept === 1) rmSync(join(w.home, '.config'), { recursive: true })
+      if (slept === 2) put(file, 'p')
+    } }))
+    // Walks 1 and 2 both see p.yaml removed; walk 2 also sees .config gone, so walk 3 runs; walk 3 sees
+    // .config gone and p.yaml back. Both count: each was seen on two walks in a row.
+    expect(slept).toBe(2)
+    expect(kinds(s).sort()).toEqual(['.config:gone', 'p.yaml:removed'])
+  })
+
   it('(20b) a path that differs on both walks counts even when its kind of change differs between them', async () => {
     // FROZEN: removed on the first walk, a folder of that name on the second (kind-changed).
     const w = world()
@@ -963,6 +1022,80 @@ describe('review: the top of a volume (findings 2, 15, 16; decisions b, c)', () 
     expect(diffOf(t.roots, () => rmSync(join(t.h, 'paste-cache'), { recursive: true })).changed).toBe(false)
     t = fresh()
     expect(kinds(diffOf(t.roots, () => rmSync(join(t.h, 'projects'), { recursive: true })))).toEqual(['projects:gone'])
+  })
+})
+
+// Wave 15 (NOW.md:82): a volume root is the volume of its serial number, not its letter.
+describe('wave 15: volume roots keyed by serial number', () => {
+  function keyedCamera(serial: string | null) {
+    const w = world()
+    const vol = join(w.base, 'vol')
+    put(join(vol, 'DCIM', '100_PANA', 'a.jpg')); put(join(vol, 'DCIM', '101_PANA', 'b.jpg'))
+    put(join(vol, 'recovery-x', 'f.txt'))
+    const roots = I.protectedRoots({ home: w.home, cynco: w.state, models: w.models, volumes: [{ root: vol, kind: 'removable', serial }] })
+    const id = baseline(w, rid(), { roots })
+    return { w, vol, id }
+  }
+
+  it.skipIf(!isWin)('(105) takeBaseline keeps the serial the volume listing gives, for the roots it derives', () => {
+    const w = world()
+    const id = rid()
+    I.takeBaseline({ runId: id, cwd: w.mission, by: 'test', guard: w.guard, home: w.home, checkModels: false,
+      volumes: () => [{ root: 'Q:\\', kind: 'removable', serial: 'C0FFEE00' }] })
+    const m = JSON.parse(readFileSync(before(w, id), 'utf-8')) as I.Manifest
+    expect(m.roots.presence.find(r => r.path === resolve('Q:\\'))).toMatchObject({ volume: true, serial: 'C0FFEE00' })
+  })
+  const settleWith = (c: ReturnType<typeof keyedCamera>, volumes?: () => Array<{ root: string; kind: 'local' | 'removable' | 'network'; serial: string | null }>) =>
+    I.settleRun(c.id, { by: 'test', page: pager().fn, guard: c.w.guard, sleep: noSleep, ...(volumes ? { volumes } : {}) })
+
+  it('(102) the baseline records the serial; another volume at the same letter is not compared and latches nothing', async () => {
+    const c = keyedCamera('A1B2C3D4')
+    const m = JSON.parse(readFileSync(before(c.w, c.id), 'utf-8')) as I.Manifest
+    expect(m.roots.presence.find(r => r.path === resolve(c.vol))).toMatchObject({ volume: true, serial: 'A1B2C3D4' })
+    // Another stick at the same letter: none of the camera's entries is there.
+    rmSync(join(c.vol, 'DCIM'), { recursive: true }); rmSync(join(c.vol, 'recovery-x'), { recursive: true })
+    const s = await settleWith(c, () => [{ root: c.vol, kind: 'removable', serial: '0F0F0F0F' }])
+    expect(s.changed).toBe(false)
+    expect(s.notes).toContain(`${resolve(c.vol)}: another volume (serial 0F0F0F0F) is there now, not the one of the baseline (serial A1B2C3D4); not compared`)
+    expect(existsSync(join(c.w.guard, I.LATCH_FILE))).toBe(false)
+  })
+
+  it('(103) the same serial is compared as before: DCIM gone latches; an unknown serial now, or a listing that fails, keeps the letter rule', async () => {
+    let c = keyedCamera('A1B2C3D4')
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    expect(kinds(await settleWith(c, () => [{ root: c.vol, kind: 'removable', serial: 'a1b2c3d4' }]))).toEqual(['DCIM:gone'])
+    c = keyedCamera('A1B2C3D4')
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    expect(kinds(await settleWith(c, () => [{ root: c.vol, kind: 'removable', serial: null }]))).toEqual(['DCIM:gone'])
+    c = keyedCamera('A1B2C3D4')
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    const s = await settleWith(c, () => { throw new Error('the listing broke') })
+    expect(kinds(s)).toEqual(['DCIM:gone'])
+    expect(s.notes).toContain('the attached volumes could not be listed at the compare (the listing broke); the volume roots are compared by their letters')
+    // Changed on purpose in wave 15b (check P1-C8): a volume of the baseline that the listing does not name at its letter
+    // is compared by its letter, never skipped: a listing that drops a row (FileSystem empty for a moment) must not let
+    // a loss on an attached volume pass as a note. Until then this case pinned 'not compared' and no change.
+    c = keyedCamera('A1B2C3D4')
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    const unlisted = await settleWith(c, () => [])
+    expect(kinds(unlisted)).toEqual(['DCIM:gone'])
+    expect(unlisted.notes).toContain(`${resolve(c.vol)}: the volume of the baseline (serial A1B2C3D4) is not listed at its letter now; compared by its letter`)
+    // Detached for real: the root is absent, which the volume rule already notes, and nothing is counted.
+    c = keyedCamera('A1B2C3D4')
+    rmSync(c.vol, { recursive: true })
+    const detached = await settleWith(c, () => [])
+    expect(detached.changed).toBe(false)
+    expect(detached.notes).toContain(`${resolve(c.vol)}: the volume of the baseline (serial A1B2C3D4) is not listed at its letter now; compared by its letter`)
+  })
+
+  it('(104) a baseline whose volume has no serial is compared by its letter, and the volumes are not listed at the compare', async () => {
+    const c = keyedCamera(null)
+    const m = JSON.parse(readFileSync(before(c.w, c.id), 'utf-8')) as I.Manifest
+    expect(m.roots.presence.find(r => r.path === resolve(c.vol))!.serial).toBeUndefined()
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    let listed = 0
+    expect(kinds(await settleWith(c, () => { listed++; return [] }))).toEqual(['DCIM:gone'])
+    expect(listed).toBe(0)
   })
 })
 
@@ -1465,9 +1598,11 @@ describe('wave 8: the home\'s top level and the application folders', () => {
     const latch = latchOf(f.w.guard)
     expect(latch.reason).toBe('presence-lost')
     expect(latch.summary).toContain('AppData')
-    // The tripwire looks at the application roots by name: twenty folders gone in AppData\Local and
-    // 96 package folders gone in Packages.
-    expect(latch.changeCount).toBe(20 + 96)
+    // Wave 15 (NOW.md:64, the "do it"): the tripwire counts the application roots as the settle does,
+    // so it sees what the settle sees: twenty folders gone, Packages emptied (110 -> 14), 96 package
+    // folders gone and the one-child folder emptied. Until wave 15 it looked at them by name and this
+    // pin was 20 + 96.
+    expect(latch.changeCount).toBe(20 + 1 + 96 + 1)
     // The settle counts as well: Packages emptied from 110 to 14 is a change of its own.
     const s = await settle(f, t.id)
     expect(s.changed).toBe(true)
@@ -1480,22 +1615,39 @@ describe('wave 8: the home\'s top level and the application folders', () => {
     expect(s.changes.find(c => c.path === 'two-app')).toBeUndefined()
   })
 
-  it('(86) the tripwire lists the application roots by name only (no folder of theirs is opened); their counts are the settle\'s', async () => {
+  // Wave 15 (NOW.md:64, the owner's "do it", about 13 ms more a look): this case pinned the
+  // application roots by name only in the tripwire (counts: false, n: null, emptied in place unseen
+  // until the settle). It now pins the opposite on purpose: they are counted as the settle counts
+  // them, with the same allowance, and `Temp` and `D3DSCache` stay by name.
+  it('(86) the tripwire counts the application roots as the settle does: three emptied in place stop the run; Temp and D3DSCache stay by name', async () => {
     const f = profile()
     const tripRoots = I.presenceTripwireRoots(f.roots.presence)
     const local = tripRoots.find(r => r.path === resolve(f.local))!
-    expect(local).toMatchObject({ application: true, counts: false })
+    expect(local).toMatchObject({ application: true, counts: true })
     expect(tripRoots.find(r => r.path === resolve(f.w.home))).toMatchObject({ counts: true })
     const notes: string[] = []
     const listed = I.presenceTripwireListing([local], [], notes)
-    expect(listed[0]!.entries['app-01']).toEqual({ k: 'd', n: null })
-    expect(listed[0]!.entries.Packages).toEqual({ k: 'd', n: null })
-    // Three application folders emptied in place: the tripwire does not see it; the settle does.
+    expect(listed[0]!.entries['app-01']).toEqual({ k: 'd', n: 2 })
+    expect(listed[0]!.entries.Packages).toEqual({ k: 'd', n: 110 })
+    expect(listed[0]!.entries.Temp).toEqual({ k: 'd', n: null })
+    expect(listed[0]!.entries.D3DSCache).toEqual({ k: 'd', n: null })
+    // Two application folders emptied in place: notes, as at the settle; the third stops the run.
     const t = running(f)
-    for (const a of ['app-01', 'app-02', 'app-03']) for (const n of ['state.db', 'settings.json']) unlinkSync(join(f.local, a, n))
+    for (const a of ['app-01', 'app-02']) for (const n of ['state.db', 'settings.json']) unlinkSync(join(f.local, a, n))
     expect(I.presenceTripwireCheck(200_000)).toBeNull()
-    const s = await settle(f, t.id)
-    expect(kinds(s)).toEqual(['app-01:emptied', 'app-02:emptied', 'app-03:emptied'])
+    for (const n of ['state.db', 'settings.json']) unlinkSync(join(f.local, 'app-03', n))
+    expect(I.presenceTripwireCheck(300_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    await Promise.all(t.trips)
+    expect(t.losses).toEqual(['presence'])
+    expect(latchOf(f.w.guard).changeCount).toBe(3)
+    // Windows' cleanup emptying Temp and the shader cache is still nothing to the tripwire.
+    I.resetPresenceTripwireForTests()
+    const g = profile()
+    const u = running(g)
+    for (const n of ['t1', 't2', 't3', 't4']) unlinkSync(join(g.local, 'Temp', n))
+    for (const n of ['s1', 's2', 's3']) unlinkSync(join(g.local, 'D3DSCache', n))
+    expect(I.presenceTripwireCheck(400_000)).toBeNull()
+    expect(u.losses).toEqual([])
   })
 
   it('(81) one or two application folders gone or emptied in a root are notes, in the settle result and its log line; nothing latches', async () => {
@@ -1701,5 +1853,442 @@ describe('wave 8: the home\'s top level and the application folders', () => {
     const s2 = await settle(g, u)
     expect(s2.changeCount).toBe(4)
     expect(s2.summary).not.toContain('application folder under AppData')
+  })
+})
+
+// ─── Wave 15: the tripwire looks twice before a loss counts (F248, w11c P9) ─────────────────────
+// One look latched the whole machine on a folder another program removed and made again at the
+// moment of the look. A loss now counts only when a second look, a second later, sees the same
+// change; the latch needs no second look. The timer is 10 s (it was 60 s).
+
+// Wave 15 (NOW.md:66): the known folders where Windows says they are, read at the baseline.
+describe('wave 15: the known folders', () => {
+  const regText = (lines: string[]) => ['', 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', ...lines, ''].join('\r\n')
+
+  it('(99) knownFolderPlaces: Desktop, Documents and Pictures from the registry, the OneDrive variables, every "OneDrive - " folder of the home', () => {
+    const w = world()
+    mkdirSync(join(w.home, 'OneDrive - Contoso'))
+    put(join(w.home, 'OneDrive - a file.txt'))
+    const elsewhere = join(w.base, 'elsewhere', 'Desktop')
+    const query = () => regText([
+      '    AppData    REG_EXPAND_SZ    %USERPROFILE%\\AppData\\Roaming',
+      `    Desktop    REG_EXPAND_SZ    ${elsewhere}`,
+      '    Personal    REG_EXPAND_SZ    %userprofile%\\Docs',
+      '    My Pictures    REG_EXPAND_SZ    %NOT_SET_HERE%\\Pics',
+      '    My Music    REG_EXPAND_SZ    %USERPROFILE%\\Music',
+    ])
+    const notes: string[] = []
+    const got = I.knownFolderPlaces({ home: w.home, system: true, env: { USERPROFILE: w.home, OneDriveCommercial: join(w.base, 'od-work') }, query, notes })
+    // Changed on purpose in wave 15b (check P1-C2, the lead's second line): a registry value or a variable that names a
+    // folder outside the home is a note and no place. Until then `elsewhere` and `od-work` were places.
+    expect(got).toEqual([resolve(w.home, 'Docs'), resolve(w.home, 'OneDrive - Contoso')])
+    expect(notes).toEqual([
+      `the known folder Desktop (${elsewhere}) is outside the home ${resolve(w.home)}; not watched`,
+      'the known folder My Pictures (%NOT_SET_HERE%\\Pics) names a variable that is not set here; not watched',
+      `the variable OneDriveCommercial (${join(w.base, 'od-work')}) names a folder outside the home ${resolve(w.home)}; not watched`,
+    ])
+    // Without the system's word (a home that is not this user's own): the home's own listing only, and no registry read.
+    let asked = false
+    expect(I.knownFolderPlaces({ home: w.home, system: false, env: { OneDrive: join(w.base, 'od') }, query: () => { asked = true; return '' }, notes: [] }))
+      .toEqual([resolve(w.home, 'OneDrive - Contoso')])
+    expect(asked).toBe(false)
+    // A registry that cannot be read is a note, never a throw.
+    const n2: string[] = []
+    expect(I.knownFolderPlaces({ home: w.home, system: true, env: {}, query: () => { throw new Error('reg.exe is missing') }, notes: n2 })).toEqual([resolve(w.home, 'OneDrive - Contoso')])
+    expect(n2).toEqual(['the known folders could not be read from the registry (reg.exe is missing); the defaults are watched'])
+  })
+
+  it('(100) a redirected known folder and a "OneDrive - " folder become counted roots of the baseline; one inside a counted root adds none; the settle sees a loss in each', async () => {
+    const w = world()
+    const docs = join(w.base, 'redirected', 'Documents')
+    put(join(docs, 'taxes', 'a')); put(join(docs, 'taxes', 'b')); put(join(docs, 'letters', 'c'))
+    const work = join(w.home, 'OneDrive - Contoso')
+    put(join(work, 'Desktop', 'a.lnk')); put(join(work, 'Desktop', 'b.lnk'))
+    put(join(w.home, 'OneDrive', 'Documents', 'd'))
+    const roots = I.protectedRoots({ home: w.home, cynco: w.state, models: w.models, volumes: [] })
+    const id = rid()
+    I.takeBaseline({ runId: id, cwd: w.mission, by: 'test', guard: w.guard, home: w.home, roots, checkModels: false,
+      knownFolders: () => [docs, work, join(w.home, 'OneDrive', 'Documents'), join(w.home, 'Music')] })
+    const m = JSON.parse(readFileSync(before(w, id), 'utf-8')) as I.Manifest
+    const added = m.roots.presence.filter(r => !roots.presence.some(x => x.path === r.path))
+    expect(added.map(r => [r.path, r.counts])).toEqual([[resolve(docs), true], [resolve(work), true]])
+    rmSync(join(docs, 'taxes'), { recursive: true })
+    for (const n of ['a.lnk', 'b.lnk']) unlinkSync(join(work, 'Desktop', n))
+    const s = await I.settleRun(id, { by: 'test', page: pager().fn, guard: w.guard, sleep: noSleep })
+    expect(s.changes.map(c => `${c.root}|${c.path}:${c.kind}`).sort()).toEqual([`${resolve(work)}|Desktop:emptied`, `${resolve(docs)}|taxes:gone`].sort())
+  })
+
+  it.skipIf(!isWin)('(101) a place on another drive or a share is a note, not a root (Windows drive letters)', () => {
+    const home = 'C:\\Users\\someone'
+    const roots: I.Roots = { frozen: [], presence: [P(home, { counts: true, files: true, filesDotOnly: true })] }
+    const notes: string[] = []
+    const r = I.withKnownFolders(roots, ['E:\\Docs', '\\\\server\\share\\Docs', 'C:\\Elsewhere\\Docs'], home, notes)
+    expect(r.presence.map(p => p.path)).toEqual([resolve(home), resolve('C:\\Elsewhere\\Docs')])
+    expect(notes).toEqual([
+      'the known folder E:\\Docs is not on the home\'s drive; not watched (a drive that sleeps cannot be listed within a bound)',
+      'the known folder \\\\server\\share\\Docs is not on the home\'s drive; not watched (a drive that sleeps cannot be listed within a bound)',
+    ])
+  })
+
+  it('(101b) a reader that throws is a note and the baseline is taken', () => {
+    const w = world()
+    const id = rid()
+    const t = I.takeBaseline({ runId: id, cwd: w.mission, by: 'test', guard: w.guard, home: w.home, roots: w.roots, checkModels: false,
+      knownFolders: () => { throw new Error('the reader broke') } })
+    expect(t.notes).toContain('the known folders could not be read (the reader broke); the defaults are watched')
+  })
+})
+
+describe('wave 15: the confirmed tripwire', () => {
+  function wiredConfirm() {
+    const w = world()
+    put(join(w.home, '.other', 'x'), 'x')
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    const losses: Array<{ kind: string; publicSummary: string }> = []
+    const r = I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false, confirmMs: 300 })
+    expect(r.ok).toBe(true)
+    return { w, id, ctx, losses }
+  }
+  const later = (ms: number, f: () => void) => new Promise<void>(res => setTimeout(() => { f(); res() }, ms))
+
+  it('(91) the constants: a 10 s timer, a one-second confirmation wait, one second between looks', () => {
+    expect(I.TRIPWIRE_INTERVAL_MS).toBe(10_000)
+    expect(I.TRIPWIRE_CONFIRM_MS).toBe(1_000)
+    expect(I.TRIPWIRE_MIN_GAP_MS).toBe(1_000)
+  })
+
+  it('(91b) the engine\'s log line names the interval and the gap from the constants, never a number of its own', () => {
+    const main = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'main.ts'), 'utf-8')
+    const line = main.split('\n').find(l => l.includes('[integrity] tripwire on:'))
+    expect(line, 'the tripwire\'s start line in engine/main.ts').toBeDefined()
+    expect(line).toContain('every ${TRIPWIRE_INTERVAL_MS / 1000} s and before a tool call (at most once in ${TRIPWIRE_MIN_GAP_MS / 1000} s)')
+    expect(line).toContain('a loss counts when a second look ${TRIPWIRE_CONFIRM_MS / 1000} s later sees it too')
+    expect(line).not.toMatch(/every \d+ s/)
+  })
+
+  it('(92) a dot-folder removed and made again within the wait does not latch, and the next look is clean', async () => {
+    const t = wiredConfirm()
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    const answer = I.presenceTripwireConfirmed(100_000)
+    await later(50, () => { put(join(t.w.home, '.config', 'a'), 'a'); put(join(t.w.home, '.config', 'b'), 'b') })
+    expect(await answer).toBeNull()
+    expect(t.losses).toEqual([])
+    expect(await I.presenceTripwireConfirmed(200_000)).toBeNull()
+    expect(existsSync(join(t.w.guard, I.LATCH_FILE))).toBe(false)
+  })
+
+  it('(93) a dot-folder gone at both looks latches once; every later call is refused without a second report', async () => {
+    const t = wiredConfirm()
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    const t0 = Date.now()
+    expect(await I.presenceTripwireConfirmed(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(250)
+    expect(t.losses).toHaveLength(1)
+    expect(t.losses[0]).toMatchObject({ kind: 'presence', publicSummary: '1 change(s) in protected folders (first: PRESENCE)' })
+    expect(await I.presenceTripwireConfirmed(100_001)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(I.presenceTripwireCheck(300_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(t.losses).toHaveLength(1)
+  })
+
+  it('(94) the latch needs no second look: it is a loss of kind latch at once', async () => {
+    const t = wiredConfirm()
+    writeFileSync(join(t.w.guard, I.LATCH_FILE), '')
+    const t0 = Date.now()
+    expect(await I.presenceTripwireConfirmed(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(t.losses.map(l => l.kind)).toEqual(['latch'])
+  })
+
+  it('(95) a different change at the second look is not the first one confirmed; it counts once two looks see it', async () => {
+    const t = wiredConfirm()
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    const answer = I.presenceTripwireConfirmed(100_000)
+    await later(50, () => { put(join(t.w.home, '.config', 'a'), 'a'); put(join(t.w.home, '.config', 'b'), 'b'); rmSync(join(t.w.home, '.other'), { recursive: true }) })
+    expect(await answer).toBeNull()
+    expect(t.losses).toEqual([])
+    expect(await I.presenceTripwireConfirmed(200_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(t.losses).toHaveLength(1)
+  })
+
+  it('(96) a call while a confirmation is under way waits for its answer, even inside the gap; one report', async () => {
+    const t = wiredConfirm()
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    const first = I.presenceTripwireConfirmed(100_000)
+    await later(150, () => {})
+    // 0.15 s later, well inside the one-second gap: not a free pass while the first look is being confirmed.
+    const second = I.presenceTripwireConfirmed(100_150)
+    expect(await second).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(await first).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(t.losses).toHaveLength(1)
+    // Outside a confirmation the gap holds as before: a clean world, two calls 0.5 s apart, one look.
+    I.resetPresenceTripwireForTests()
+    const u = wiredConfirm()
+    expect(await I.presenceTripwireConfirmed(0)).toBeNull()
+    rmSync(join(u.w.home, '.config'), { recursive: true })
+    expect(await I.presenceTripwireConfirmed(500)).toBeNull()
+    expect(await I.presenceTripwireConfirmed(1_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+  })
+
+  it('(97) a look that fails at both looks is a loss with the public summary that names no path', async () => {
+    const w = world()
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const file = before(w, id)
+    const m = JSON.parse(readFileSync(file, 'utf-8'))
+    m.presence[0].entries = { '.config': null }
+    writeFileSync(file, JSON.stringify(m))
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    const losses: Array<{ publicSummary: string }> = []
+    expect(I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false, confirmMs: 50 }).ok).toBe(true)
+    expect(await I.presenceTripwireConfirmed(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(losses.map(l => l.publicSummary)).toEqual(['the presence check could not be completed'])
+  })
+
+  it('(98) the timer asks the confirmed check: a removed folder made again within the wait latches nothing', async () => {
+    const t = wiredConfirm()
+    I.stopPresenceTripwire()
+    const losses: unknown[] = []
+    expect(I.startPresenceTripwire({ ctx: t.ctx, onLoss: l => { losses.push(l) }, intervalMs: 100, confirmMs: 400 }).ok).toBe(true)
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    await later(250, () => { put(join(t.w.home, '.config', 'a'), 'a'); put(join(t.w.home, '.config', 'b'), 'b') })
+    await later(700, () => {})
+    expect(losses).toEqual([])
+    rmSync(join(t.w.home, '.other'), { recursive: true })
+    await later(1_500, () => {})
+    expect(losses).toHaveLength(1)
+  })
+})
+
+// ─── Wave 15b: what the check of wave 15 left (P1-C2, C4, C5) ────────────────────────────────────
+
+describe('wave 15b: the known folders are read for this account\'s own profile only (check P1-C2)', () => {
+  const regText = (lines: string[]) => ['', 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', ...lines, ''].join('\r\n')
+
+  it('(106) a baseline for a home that is not this account\'s profile, with USERPROFILE pointed at it and a OneDrive variable set, adds no root', () => {
+    // The acceptance's repointed inner processes: USERPROFILE names the fake home, the OneDrive variables are kept.
+    const w = world()
+    const od = join(w.base, 'od-real')
+    put(join(od, 'Documents', 'd'))
+    const keys = ['USERPROFILE', 'HOME', 'OneDrive'] as const
+    const saved = keys.map(k => [k, process.env[k]] as const)
+    process.env.USERPROFILE = w.home
+    process.env.HOME = w.home
+    process.env.OneDrive = od
+    try {
+      const id = rid()
+      const t = I.takeBaseline({ runId: id, cwd: w.mission, by: 'test', guard: w.guard, home: w.home, checkModels: false, volumes: () => [] })
+      const m = JSON.parse(readFileSync(before(w, id), 'utf-8')) as I.Manifest
+      const derived = I.protectedRoots({ home: w.home, volumes: [] }).presence.map(r => r.path)
+      expect(m.roots.presence.filter(r => !derived.includes(r.path)).map(r => r.path)).toEqual([])
+      expect(t.notes.join('\n')).toContain(`the home ${resolve(w.home)} is not the profile of this account (`)
+    } finally {
+      for (const [k, v] of saved) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+    }
+  })
+
+  it('(107) whether the registry and the variables are read is the system\'s answer about the profile, never the environment\'s', () => {
+    const w = world()
+    let asked = 0
+    const query = () => { asked++; return regText(['    Personal    REG_EXPAND_SZ    %USERPROFILE%\\Docs']) }
+    const env = { USERPROFILE: w.home, OneDrive: join(w.home, 'OneDrive') }
+    const own: string[] = []
+    expect(I.knownFolderPlaces({ home: w.home, profile: () => w.home, env, query, notes: own })).toEqual([resolve(w.home, 'Docs'), resolve(w.home, 'OneDrive')])
+    expect(asked).toBe(1)
+    expect(own).toEqual([])
+    const other: string[] = []
+    const someone = join(w.base, 'someone-else')
+    expect(I.knownFolderPlaces({ home: w.home, profile: () => someone, env, query, notes: other })).toEqual([])
+    expect(asked).toBe(1)
+    expect(other).toEqual([`the home ${resolve(w.home)} is not the profile of this account (${someone}); its known folders are not read from the registry or the environment`])
+    const unknown: string[] = []
+    expect(I.knownFolderPlaces({ home: w.home, profile: () => null, env, query, notes: unknown })).toEqual([])
+    expect(asked).toBe(1)
+    expect(unknown).toEqual(['the profile of this account could not be read from the system; the known folders are not read from the registry or the environment'])
+    // The default reader is the system's own answer: it does not follow USERPROFILE.
+    const saved = process.env.USERPROFILE
+    process.env.USERPROFILE = w.home
+    try {
+      expect(I.systemProfileHome()).not.toBe(w.home)
+    } finally {
+      if (saved === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = saved
+    }
+  })
+})
+
+describe('wave 15b: the confirmed tripwire (checks P1-C4 and P1-C5)', () => {
+  function wired(extra: Partial<Parameters<typeof I.startPresenceTripwire>[0]> = {}) {
+    const w = world()
+    put(join(w.home, '.other', 'x'), 'x')
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    const losses: Array<{ kind: string; publicSummary: string; compare: I.Compare | null }> = []
+    const r = I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false, confirmMs: 300, ...extra })
+    expect(r.ok).toBe(true)
+    return { w, id, ctx, losses }
+  }
+
+  it('(109) a confirmation that the tripwire\'s stop overtakes reports nothing to the stopped tripwire', async () => {
+    const t = wired()
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    const answer = I.presenceTripwireConfirmed(100_000)
+    I.stopPresenceTripwire()
+    expect(await answer).toBeNull()
+    expect(t.losses).toEqual([])
+    expect(I.presenceTripwireCheck(200_000)).toBeNull()
+    expect(existsSync(join(t.w.guard, I.LATCH_FILE))).toBe(false)
+  })
+
+  it('(110) a change the first look sees stands when the confirming look fails: one loss, whose notes say so', async () => {
+    let looks = 0
+    const listing: typeof I.presenceTripwireListing = (roots, exclude, notes) => {
+      looks++
+      if (looks === 2) throw new Error('the listing broke')
+      return I.presenceTripwireListing(roots, exclude, notes)
+    }
+    const t = wired({ listing })
+    rmSync(join(t.w.home, '.config'), { recursive: true })
+    expect(await I.presenceTripwireConfirmed(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(looks).toBe(2)
+    expect(t.losses).toHaveLength(1)
+    expect(t.losses[0]!.publicSummary).toBe('1 change(s) in protected folders (first: PRESENCE)')
+    expect(t.losses[0]!.compare!.notes.join('\n')).toContain('the confirming look failed (the listing broke); the first look is reported')
+  })
+})
+
+// Wave 15c (check CB1-R2): a serial-keyed volume root that the listing does not name at its letter is
+// asked for its own serial at the letter before the letter rule is kept. Another volume there (an NTFS
+// drive the listing leaves out because integrity labels protect it) is not compared and latches nothing.
+describe('wave 15c: a volume the listing does not name is asked for its own serial (check CB1-R2)', () => {
+  function keyed(kind: 'removable' | 'network' = 'removable') {
+    const w = world()
+    const vol = join(w.base, 'vol')
+    put(join(vol, 'DCIM', '100_PANA', 'a.jpg')); put(join(vol, 'DCIM', '101_PANA', 'b.jpg'))
+    put(join(vol, 'recovery-x', 'f.txt'))
+    const roots = I.protectedRoots({ home: w.home, cynco: w.state, models: w.models, volumes: [{ root: vol, kind, serial: 'A1B2C3D4' }] })
+    const id = baseline(w, rid(), { roots })
+    return { w, vol, id }
+  }
+  const settle = (c: ReturnType<typeof keyed>, serialAt: (root: string) => string | null) =>
+    I.settleRun(c.id, { by: 'test', page: pager().fn, guard: c.w.guard, sleep: noSleep, volumes: () => [], serialAt })
+
+  it('(111) another serial read at the letter skips the root with a note; the same serial, none, or a read that fails keeps the letter rule', async () => {
+    let c = keyed()
+    rmSync(join(c.vol, 'DCIM'), { recursive: true }); rmSync(join(c.vol, 'recovery-x'), { recursive: true })
+    const asked: string[] = []
+    const other = await settle(c, (root) => { asked.push(root); return 'F67B405B' })
+    expect(asked).toEqual([resolve(c.vol)])
+    expect(other.changed).toBe(false)
+    expect(other.notes).toContain(`${resolve(c.vol)}: another volume (serial F67B405B) is there now, not the one of the baseline (serial A1B2C3D4), read at its letter (the listing does not name it); not compared`)
+    expect(existsSync(join(c.w.guard, I.LATCH_FILE))).toBe(false)
+    const unlistedNote = (vol: string) => `${resolve(vol)}: the volume of the baseline (serial A1B2C3D4) is not listed at its letter now; compared by its letter`
+    // The same serial in lower case is the same volume: compared by its letter, as before.
+    c = keyed()
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    const same = await settle(c, () => 'a1b2c3d4')
+    expect(kinds(same)).toEqual(['DCIM:gone'])
+    expect(same.notes).toContain(unlistedNote(c.vol))
+    c = keyed()
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    const none = await settle(c, () => null)
+    expect(kinds(none)).toEqual(['DCIM:gone'])
+    expect(none.notes).toContain(unlistedNote(c.vol))
+    c = keyed()
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    const broke = await settle(c, () => { throw new Error('the read broke') })
+    expect(kinds(broke)).toEqual(['DCIM:gone'])
+    expect(broke.notes).toContain(unlistedNote(c.vol))
+    // A network drive is never asked at its letter (a disconnected share can hold a read for a long time).
+    c = keyed('network')
+    rmSync(join(c.vol, 'DCIM'), { recursive: true })
+    let netAsked = 0
+    const net = await settle(c, () => { netAsked++; return 'F67B405B' })
+    expect(netAsked).toBe(0)
+    expect(kinds(net)).toEqual(['DCIM:gone'])
+  })
+
+  it.skipIf(!isWin)('(112) volumeSerialAt reads the serial of a volume root as the volume itself gives it, and null for a folder or an empty letter', () => {
+    const root = resolve(tmpdir()).slice(0, 3)
+    const vol = spawnSync('cmd.exe', ['/d', '/c', 'vol', root.slice(0, 2)], { encoding: 'utf-8', windowsHide: true, cwd: tmpdir() })
+    const m = /([0-9A-F]{4})-([0-9A-F]{4})\s*$/i.exec(vol.stdout.trim())
+    expect(m, vol.stdout).not.toBeNull()
+    expect(I.volumeSerialAt(root)).toBe(`${m![1]}${m![2]}`.toUpperCase())
+    expect(I.volumeSerialAt(tmpdir())).toBeNull()
+    const free = 'QRSTUVWXYZ'.split('').map(l => `${l}:\\`).find(r => !existsSync(r))
+    if (free) expect(I.volumeSerialAt(free)).toBeNull()
+  })
+})
+
+// Wave 19 (check CC1-1 and CC1-4 of wave 15c).
+describe('wave 19: the serial read at a letter, and a confirmation after a failed look (checks CC1-1, CC1-4)', () => {
+  // CC1-1: a device number that cannot be a volume serial is no serial. 0 was read as serial 00000000, which
+  // is not the baseline's, so a camera still attached would be skipped as "another volume" and a loss on it
+  // would be a note. Null keeps the letter rule (fail-closed). The bounds were untested.
+  it.skipIf(!isWin)('(113) volumeSerialAt: a device number of 0, below 0, not whole or over 32 bits is no serial; a 32-bit one is its eight hex digits', () => {
+    const root = resolve(tmpdir()).slice(0, 3)
+    const asked: string[] = []
+    const devOf = (dev: number | bigint) => (p: string) => { asked.push(p); return { dev } }
+    expect(I.volumeSerialAt(root, devOf(0x12AB34CD))).toBe('12AB34CD')
+    expect(asked).toEqual([resolve(root)])
+    expect(I.volumeSerialAt(root, devOf(0x1A))).toBe('0000001A')
+    expect(I.volumeSerialAt(root, devOf(0xFFFFFFFF))).toBe('FFFFFFFF')
+    expect(I.volumeSerialAt(root, devOf(0x12AB34CDn))).toBe('12AB34CD')
+    expect(I.volumeSerialAt(root, devOf(0))).toBeNull()
+    expect(I.volumeSerialAt(root, devOf(0n))).toBeNull()
+    expect(I.volumeSerialAt(root, devOf(-1))).toBeNull()
+    expect(I.volumeSerialAt(root, devOf(1.5))).toBeNull()
+    expect(I.volumeSerialAt(root, devOf(2 ** 32))).toBeNull()
+    expect(I.volumeSerialAt(root, devOf(Number.NaN))).toBeNull()
+    expect(I.volumeSerialAt(root, () => { throw new Error('the read broke') })).toBeNull()
+    // A folder that is not the top of a volume is never read.
+    const n = asked.length
+    expect(I.volumeSerialAt(tmpdir(), devOf(0x12AB34CD))).toBeNull()
+    expect(asked).toHaveLength(n)
+  })
+
+  // CC1-4: a look that fails and a confirming look that sees a loss is that loss, counted at this call (the
+  // other orders are (97) fail and fail, and (110) changed then failed).
+  it('(114) a first look that fails and a confirming look that sees a dot-folder gone: one loss, reported at that call, from the second look', async () => {
+    const w = world()
+    put(join(w.home, '.other', 'x'), 'x')
+    const roots: I.Roots = { frozen: [], presence: [P(w.home, { dotOnly: true, files: true, counts: true })] }
+    const id = baseline(w, rid(), { roots })
+    const sb = join(w.base, 'sandbox')
+    const ctx = testContainment({
+      runId: id, missionCwd: w.mission, home: w.home,
+      sandbox: { root: join(sb, id), home: join(sb, id, 'home'), tmp: join(sb, id, 'tmp'), scratch: join(sb, id, 'scratch') },
+      folders: { state: w.state, models: w.models, guard: w.guard, audit: null },
+    })
+    let looks = 0
+    const listing: typeof I.presenceTripwireListing = (r, exclude, notes) => {
+      looks++
+      if (looks === 1) throw new Error('the listing broke')
+      return I.presenceTripwireListing(r, exclude, notes)
+    }
+    const losses: Array<{ kind: string; publicSummary: string; compare: I.Compare | null }> = []
+    expect(I.startPresenceTripwire({ ctx, onLoss: l => { losses.push(l) }, timer: false, confirmMs: 50, listing }).ok).toBe(true)
+    rmSync(join(w.home, '.config'), { recursive: true })
+    expect(await I.presenceTripwireConfirmed(100_000)).toBe(I.INTEGRITY_LOSS_TO_MODEL)
+    expect(looks).toBe(2)
+    expect(losses).toHaveLength(1)
+    expect(losses[0]).toMatchObject({ kind: 'presence', publicSummary: '1 change(s) in protected folders (first: PRESENCE)' })
+    expect(losses[0]!.compare).not.toBeNull()
   })
 })

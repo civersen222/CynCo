@@ -13,7 +13,7 @@ import { withCodeIndexNudge } from './toolHints.js'
 import { isWrongPathAnswer } from './impl/pathHint.js'
 import { toolAudit, containmentFault, type AuditSrc } from '../audit/toolAudit.js'
 import { refusalReasonOf, refusalText, refusalLayerOf } from '../containment.js'
-import { presenceTripwireCheck } from '../integrity.js'
+import { presenceTripwireConfirmed } from '../integrity.js'
 
 export type RequestApprovalFn = (
   toolName: string,
@@ -345,7 +345,8 @@ export class ToolExecutor {
     }
 
     // F242, directive 17: a contained engine that lost a protected folder runs no further tool.
-    const lost = presenceTripwireCheck()
+    // Wave 15 (F248): a loss counts when a second look a second later sees it too.
+    const lost = await presenceTripwireConfirmed()
     if (lost) return { refusal: { output: refusalText('integrity', lost), isError: true } }
 
     // F37, and BEFORE the immutable check on purpose: that one's refusal says

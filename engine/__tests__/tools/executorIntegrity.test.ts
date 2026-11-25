@@ -78,6 +78,30 @@ describe('the presence tripwire is the first check of every tool call', () => {
     for (const r of refused) expect(r.layer).toBe('integrity')
   })
 
+  it('wave 15: a dot-folder removed and made again within the confirmation wait does not refuse the call; one gone at both looks does', async () => {
+    const { w, losses } = tripwired({ start: false })
+    setRunContainment(w.ctx)
+    expect(startPresenceTripwire({ ctx: w.ctx, onLoss: (l) => { losses.push(l.kind) }, timer: false, confirmMs: 300, minGapMs: 0 }).ok).toBe(true)
+    const read = getToolByName('Read')!
+    const spy = vi.spyOn(read, 'execute')
+    const ex = executor(w.mission)
+    rmSync(join(w.home, '.config'), { recursive: true })
+    const call = ex.execute('Read', { file_path: join(w.mission, 'a.txt') })
+    await new Promise<void>(res => setTimeout(() => { mkdirSync(join(w.home, '.config', 'x'), { recursive: true }); res() }, 50))
+    const r = await call
+    expect(r.isError, r.output).toBe(false)
+    expect(r.output).toContain('hello')
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(losses).toEqual([])
+    // Gone at both looks: refused, and nothing ran.
+    rmSync(join(w.home, '.other'), { recursive: true })
+    const refused = await ex.execute('Read', { file_path: join(w.mission, 'a.txt') })
+    expect(refused.isError).toBe(true)
+    expect(refused.output.startsWith(`${refusalPrefix('integrity')} ${INTEGRITY_LOSS_TO_MODEL}.`)).toBe(true)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(losses).toEqual(['presence'])
+  })
+
   it('with no tripwire started the same call runs', async () => {
     const { w } = tripwired({ start: false })
     setRunContainment(w.ctx)

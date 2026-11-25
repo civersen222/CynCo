@@ -45,6 +45,7 @@ import { TemplateLoader } from './prompts/templateLoader.js'
 import { initJournal } from './training/decisionJournal.js'
 import { loadOrCreateTokens, TOKEN_FILENAME } from './security/localToken.js'
 import { DashboardServer, countUserTurns } from './dashboard/server.js'
+import { deskIntegrity } from './integrity.js'
 import { isLoopbackAddress } from './dashboard/access.js'
 import { ActivationsConsumer, DEFAULT_LAYERS } from './brain/activationsConsumer.js'
 import { JlensClient } from './brain/jlensClient.js'
@@ -205,7 +206,7 @@ import { bootstrapProvider } from './bootstrapProvider.js'
     }
     {
       // step 6 (F242): the models record, then the in-run tripwire. The baseline was taken by the starter.
-      const { checkModelsRecord, startPresenceTripwire, tripHalt } = await import('./integrity.js')
+      const { checkModelsRecord, startPresenceTripwire, tripHalt, TRIPWIRE_INTERVAL_MS, TRIPWIRE_MIN_GAP_MS, TRIPWIRE_CONFIRM_MS } = await import('./integrity.js')
       const { containmentFault } = await import('./audit/toolAudit.js')
       const { NtfyChannel, ntfyOptionsFromEnv } = await import('./daemon/ntfyChannel.js')
       const ctx = c.runContainment()
@@ -232,7 +233,7 @@ import { bootstrapProvider } from './bootstrapProvider.js'
           },
         })
         if (!tripwire.ok) refuseBoot('integrity', tripwire.reason)
-        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every 60 s and before a tool call (at most once a second)`)
+        else console.log(`[integrity] tripwire on: ${tripwire.folders} folder(s) under ${tripwire.roots} root(s), every ${TRIPWIRE_INTERVAL_MS / 1000} s and before a tool call (at most once in ${TRIPWIRE_MIN_GAP_MS / 1000} s); a loss counts when a second look ${TRIPWIRE_CONFIRM_MS / 1000} s later sees it too`)
       }
     }
   }
@@ -636,6 +637,8 @@ try {
       getRunState: () => ({ processing: loop.isProcessing, toolCalls: loop.toolCallCount }),
       // A chat that shows nothing while the model is waited for can say so, and for how long (D4f).
       getModelSilence: () => modelSilence(),
+      // Wave 15 (NOW.md:57): the integrity latch on the Missions tab, the desk's and the phone's; no path in it.
+      getIntegrity: () => deskIntegrity(),
       // Wakefulness slice 4: the phone's Away tab — what the missions did (runs.jsonl tails).
       getAwayRuns: () => {
         const { collectAwayRuns } = require('./daemon/awayFeed.js')
@@ -957,10 +960,21 @@ async function handleCommand(command: TUICommand): Promise<void> {
           wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
 
-        case '/compact':
-          wsServer.emit({ type: 'stream.token', text: '[System] Compacting context — summarizing conversation history...\n' })
-          await loop.handleUserMessage('[System] Summarize our conversation so far in bullet points. Preserve key decisions, file paths, and current goals.')
+        case '/compact': {
+          // Wave 15 (NOW.md:249): the loop's one compaction path (runCompaction), not a message asking the
+          // model for a summary, which compacted nothing. Wave 15b (check P1-C1): through the loop's public
+          // compactOnRequest, never its private members, which refuses while a turn runs and holds the loop's busy state
+          // for the whole compaction, so a message sent meanwhile meets the busy guard instead of being thrown
+          // away by the compaction.
+          const answer = await loop.compactOnRequest('/compact')
+          wsServer.emit({ type: 'stream.token', text: answer.refused !== null
+            ? `[System] Nothing was compacted: ${answer.refused}.\n`
+            : answer.compacted
+              ? `[System] Compacted: about ${answer.tokensBefore} -> ${answer.tokensAfter} tokens, ${answer.messagesBefore} -> ${answer.messagesAfter} messages.\n`
+              : `[System] Nothing was compacted (${answer.messagesBefore} messages: too few to compact, or the summary could not be made; the engine log says which).\n` })
+          wsServer.emit({ type: 'message.complete', messageId: '', stopReason: 'end_turn' })
           break
+        }
 
         case '/tools': {
           const { ALL_TOOLS } = await import('./tools/registry.js')

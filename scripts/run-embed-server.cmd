@@ -12,7 +12,9 @@ rem The engine's own rule (modelsDir in engine\paths.ts) also follows CYNCO_HOME
 rem it serves the logon task, which has none. The value is quoted wherever it is set or used (a folder
 rem name may hold & or ^), and one that is not a full path below a drive letter is refused, as the
 rem engine refuses it. The embedding GGUF sits in the root of that folder.
-call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\embed-server.log"
+rem Wave 15: the rotation's own refusal or failure line goes to embed-server.rotate.log; Task Scheduler drops
+rem standard error, and redirecting it to the log itself would hold the log open so it is never rotated.
+call "%~dp0rotate-log.cmd" "%USERPROFILE%\.cynco\embed-server.log" 2>> "%USERPROFILE%\.cynco\embed-server.rotate.log"
 if not defined LOCALCODE_MODELS_DIR set "LOCALCODE_MODELS_DIR=%USERPROFILE%\.cynco\models"
 if not "%LOCALCODE_MODELS_DIR:~1,2%"==":\" goto not_full
 set "CYNCO_EMBED_MODEL=%LOCALCODE_MODELS_DIR%\nomic-embed-text-v1.5.f16.gguf"

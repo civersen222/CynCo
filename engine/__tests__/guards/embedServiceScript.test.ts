@@ -41,7 +41,9 @@ describe('embed service', () => {
     expect(launch).toBeGreaterThan(-1)
     // The prompt cache printed its whole listing on every request: the measured cause of the 26 GB log.
     expect(lines[launch]).toMatch(/--no-webui --cache-ram 0 -lv 2 >> /)
-    const rotate = lines.findIndex(l => l === 'call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\embed-server.log"')
+    // Changed on purpose in wave 15 (item 11): the rotation's own refusal or failure line goes to a file of
+    // its own, because Task Scheduler drops standard error and the log itself would be held open by it.
+    const rotate = lines.findIndex(l => l === 'call "%~dp0rotate-log.cmd" "%USERPROFILE%\\.cynco\\embed-server.log" 2>> "%USERPROFILE%\\.cynco\\embed-server.rotate.log"')
     expect(rotate).toBeGreaterThan(-1)
     // First: before the models-folder lines, before every line that appends to the log, before the launch.
     expect(rotate).toBeLessThan(lines.findIndex(l => l.includes('LOCALCODE_MODELS_DIR') && !/^rem\b/i.test(l)))

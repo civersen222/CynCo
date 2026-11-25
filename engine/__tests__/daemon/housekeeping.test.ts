@@ -3,11 +3,14 @@
  * Every dependency is injected: the clock, the page, the listing. The one case that uses the real
  * listing reads a folder that does not exist, so nothing is created and nothing is sent.
  */
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { LOG_PAGE_BYTES } from '../../logCap.js'
-import { LOG_PAGE_TITLE, logPageMessage, runHousekeeping } from '../../daemon/housekeeping.js'
+import {
+  LOG_PAGE_TITLE, PAGED_FILE, REFUSED_RUN_TITLE, loadLastPaged, logPageMessage, onceADayRefusals, refusedRunKey, runHousekeeping, saveLastPaged,
+} from '../../daemon/housekeeping.js'
 
 const HOUR = 60 * 60 * 1000
 const GIB = 1024 * 1024 * 1024
@@ -145,5 +148,102 @@ describe('runHousekeeping', () => {
     }
     expect(pages).toEqual([])
     expect(errors.some(l => l.startsWith('[log-cap] '))).toBe(true)
+  })
+})
+
+// Wave 15 (NOW.md:89, :94): what the daemon last paged about survives a restart, and a refused due
+// run is paged at most once a day for each reason. Every file is under this block's own temp folder.
+describe('wave 15: the record of what was paged, and the refused-run limit', () => {
+  const made: string[] = []
+  afterAll(() => { for (const d of made) rmSync(d, { recursive: true, force: true }) })
+  const tmpFile = () => { const d = mkdtempSync(join(tmpdir(), 'cynco-paged-')); made.push(d); return join(d, PAGED_FILE) }
+
+  it('the record round-trips through its file; a missing file is empty, a broken one is empty and said', () => {
+    const f = tmpFile()
+    const lines: string[] = []
+    expect(loadLastPaged(f, l => lines.push(l)).size).toBe(0)
+    expect(lines).toEqual([])
+    saveLastPaged(f, new Map([['C:\a.log', 5]]), () => 10, l => lines.push(l))
+    expect([...loadLastPaged(f, l => lines.push(l))]).toEqual([['C:\a.log', 5]])
+    writeFileSync(f, '{ torn')
+    expect(loadLastPaged(f, l => lines.push(l)).size).toBe(0)
+    expect(lines.some(l => l.startsWith(`[daemon] the record of pages sent (${f}) cannot be read`))).toBe(true)
+  })
+
+  it('a record older than a day is dropped when the file is written', () => {
+    const f = tmpFile()
+    saveLastPaged(f, new Map([['old', 0], ['new', 2 * 24 * HOUR]]), () => 2 * 24 * HOUR + 1)
+    expect([...loadLastPaged(f)]).toEqual([['new', 2 * 24 * HOUR]])
+  })
+
+  it('a log paged before a restart is not paged again by the restarted daemon within the day', async () => {
+    const f = tmpFile()
+    const big = { path: 'C:\home\.cynco\embed-server.log', bytes: LOG_PAGE_BYTES + 1 }
+    const h = harness([big])
+    await runHousekeeping({ ...h.deps, save: m => saveLastPaged(f, m, h.deps.now) })
+    expect(h.pages).toHaveLength(1)
+    // The restart: a new daemon, a new map, read from the file.
+    const h2 = harness([big])
+    h2.lastPaged.clear()
+    for (const [k, v] of loadLastPaged(f)) h2.lastPaged.set(k, v)
+    await runHousekeeping(h2.deps)
+    expect(h2.pages).toEqual([])
+  })
+
+  it('a refused run is paged once a day for each reason; any other page passes; a page not taken is tried again', async () => {
+    let t = 1_000_000
+    const sent: Array<{ title: string; message: string }> = []
+    const answers: boolean[] = []
+    const saved: number[] = []
+    const lines: string[] = []
+    const lastPaged = new Map<string, number>()
+    const publish = onceADayRefusals({
+      publish: async p => { sent.push(p); return answers.length ? answers.shift()! : true },
+      lastPaged, now: () => t, save: m => { saved.push(m.size) }, log: l => lines.push(l),
+    })
+    const refused = (why: string) => ({ title: 'CynCo refused a run of mission dynasty', message: `REFUSED: integrity: ${why}` })
+    expect(await publish(refused('the models record does not match'))).toBe(true)
+    t += HOUR
+    expect(await publish(refused('the models record does not match'))).toBe(true)
+    expect(sent).toHaveLength(1)
+    expect(lines).toEqual(['[daemon] not paged again today (paged at 1970-01-01T00:16:40.000Z): CynCo refused a run of mission dynasty: REFUSED: integrity: the models record does not match'])
+    expect(await publish(refused('the sandbox root is missing'))).toBe(true)
+    expect(sent).toHaveLength(2)
+    expect(await publish({ title: 'CynCo stuck on mission dynasty', message: 'x' })).toBe(true)
+    expect(await publish({ title: 'CynCo stuck on mission dynasty', message: 'x' })).toBe(true)
+    expect(sent).toHaveLength(4)
+    t += 24 * HOUR
+    expect(await publish(refused('the models record does not match'))).toBe(true)
+    expect(sent).toHaveLength(5)
+    // Not taken: not recorded, so the next due run pages.
+    answers.push(false)
+    expect(await publish(refused('a new reason'))).toBe(false)
+    expect(await publish(refused('a new reason'))).toBe(true)
+    expect(sent.filter(p => p.message.endsWith('a new reason'))).toHaveLength(2)
+    expect(saved.length).toBe(4)
+  })
+
+  // Wave 15b (check P1-C10): a reason that names a run id, a time or a count changes from one due run to the next;
+  // keyed on the message as it was, each one paged again.
+  it('the key leaves out what changes from one due run to the next: run ids, times and numbers; another reason still pages', async () => {
+    expect(refusedRunKey('CynCo refused a run of mission dynasty', 'REFUSED: integrity: the baseline process exited 1 (walk of daemon-dynasty-t1-20261124T101500-0a1b took 6123 ms at 2026-11-24T10:15:06.123Z)'))
+      .toBe('refused|CynCo refused a run of mission dynasty|REFUSED: integrity: the baseline process exited # (walk of <run> took # ms at <time>)')
+    let t = 1_000_000
+    const sent: string[] = []
+    const publish = onceADayRefusals({ publish: async p => { sent.push(p.message); return true }, lastPaged: new Map(), now: () => t, log: () => {} })
+    const page = (m: string) => publish({ title: 'CynCo refused a run of mission dynasty', message: m })
+    await page('REFUSED: integrity: no integrity baseline could be taken (the baseline process exited 1 (daemon-dynasty-t1-20261124T101500-0a1b: 6123 ms))')
+    t += HOUR
+    await page('REFUSED: integrity: no integrity baseline could be taken (the baseline process exited 1 (daemon-dynasty-t1-20261124T111500-9f9f: 5987 ms))')
+    expect(sent).toHaveLength(1)
+    await page('REFUSED: containment: the sandbox root C:/cynco-sandbox is not an existing folder')
+    expect(sent).toHaveLength(2)
+  })
+
+  it('the refused-run title the limit reads is the one the mission runner writes', () => {
+    const src = readFileSync(join(import.meta.dirname, '..', '..', 'daemon', 'missionRunner.ts'), 'utf-8')
+    const title = /title: `(CynCo refused a run of mission )\$\{/.exec(src)
+    expect(title, 'the refused-run page title in missionRunner.ts').not.toBeNull()
+    expect(REFUSED_RUN_TITLE.test(`${title![1]}dynasty`)).toBe(true)
   })
 })

@@ -7,7 +7,7 @@ rem closing this window stops what it started. It does not need the engine to be
 title %~1 - CynCo
 cd /d "%~dp0.."
 rem `call`: bun may be a .cmd shim, and a .cmd run from a .cmd without it never comes back here.
-call bun scripts\cynco-apps.mjs start %*
+call bun --no-install scripts\cynco-apps.mjs start %*
 if errorlevel 1 (
   echo.
   echo %~1 was not started. The lines above say why.

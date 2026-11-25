@@ -74,7 +74,8 @@ describe('the mission path uses it', () => {
   const sh = readFileSync('scripts/dispatch-mission.sh', 'utf-8')
 
   it('dispatch-mission.sh takes the port from an app before its own kill sweep', () => {
-    const take = sh.indexOf('bun scripts/cynco-apps.mjs take')
+    // Changed on purpose in wave 19b: every Bun start of the dispatch passes --no-install.
+    const take = sh.indexOf('bun --no-install scripts/cynco-apps.mjs take')
     const sweep = sh.indexOf('lc_llama_pids()')
     expect(take).toBeGreaterThan(0)
     expect(take).toBeLessThan(sweep)
@@ -82,7 +83,8 @@ describe('the mission path uses it', () => {
   })
 
   it('the idle engine booted after a mission is lazy: it must not take the GPU straight back from the app the mission engine just restored', () => {
-    expect(sh).toMatch(/LOCALCODE_LLAMA_LAZY=true[^\n]*bun engine\/main\.ts > "\$IDLE_LOG"/)
+    // Changed on purpose in wave 19b: --no-install, as at every Bun start of the dispatch.
+    expect(sh).toMatch(/LOCALCODE_LLAMA_LAZY=true[^\n]*bun --no-install engine\/main\.ts > "\$IDLE_LOG"/)
   })
 
   it('the driver gives back after a teardown that ended in the hand kill, where the engine could not', () => {
@@ -123,8 +125,9 @@ describe('cynco-apps icons', () => {
     expect(await runAppsCli(['icons', '--repo', process.cwd(), '--desktop', 'D:/Desk'], deps)).toBe(0)
     expect(await runAppsCli(['icons'], deps)).toBe(0)
     expect(asked[0]).toEqual({ repo: process.cwd(), desktop: 'D:/Desk' })
-    // scripts/.. is the checkout, and the launcher the icons run is in it.
-    expect(readFileSync(`${asked[1].repo}/scripts/cynco-app.cmd`, 'utf-8')).toContain('call bun scripts\\cynco-apps.mjs start %*')
+    // scripts/.. is the checkout, and the launcher the icons run is in it. Wave 19b: the launcher
+    // starts Bun with --no-install (Bun never fetches a package by itself).
+    expect(readFileSync(`${asked[1].repo}/scripts/cynco-app.cmd`, 'utf-8')).toContain('call bun --no-install scripts\\cynco-apps.mjs start %*')
   })
 
   it('a failure is said and is exit 1', async () => {
