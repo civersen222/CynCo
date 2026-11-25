@@ -1724,7 +1724,8 @@ describe('T2.17f wave 10d: what a pass claims is shown, and what is quoted says 
     const BOX = () => ({ run: 9, phase: 'rehearsal', id: 'box', variant: 'realBox', form: 'rehearsal', outcome: 'passed', detail: 'RESULT: PASS (box rehearsal, fake home): x', decoys: null, audit: null, targets: [] })
     const live = () => [E(3, 'x', 'y', 'literal', 'refused'), E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'),
       E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'), E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
-      E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), BOX()]
+      // Changed on purpose in wave 22: run 6's access-list recovery is a live-fire proof of its own (LIVE_PROOFS).
+      E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), E(6, 'grant-recovery', 'restore-acl', 'live', 'passed'), BOX()]
     const rep = (o = {}) => ({ stage: 'fake', platform: 'win32', root: null, refused: null, liveFire: true, lowIntegrity: 'low', entries: live(), links: [], firstFailure: null, tools: null,
       realProfileLoss: false, realProfileUnmeasured: [], innerRuns: [1, 2, 3, 4, 5, 9, 6, 7].map(run => ({ run })), ...o })
     const printed = (report) => {
@@ -2025,7 +2026,9 @@ describe('T2.22 R1, R14, R3 finishFake on synthetic reports', () => {
    */
   const proofs = () => [E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'),
     E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'), E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'),
-    E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained')]
+    // Changed on purpose in wave 22: run 6's access-list recovery is a proof too, appended last so that proofs()[6] is
+    // still the sweep.
+    E(7, 'unseen', 'attack.py', 'literal', 'contained'), E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), E(6, 'grant-recovery', 'restore-acl', 'live', 'passed')]
   it('R1: a Git Bash twin that could not start in run 6 is not the runner\'s fault: an accepted not-proven entry', () => {
     const r = base()
     // Changed on purpose in wave 19: the row admits a Git Bash twin only on the msys runtime's own line (the signature
@@ -4989,7 +4992,8 @@ describe('T2.43 wave 19: decision sheet item 25, the Git-tools switch, and what 
     })
     it('realBox prints it after the release, from the release\'s own note', () => {
       const box = fnSource('async function realBox(')
-      expect(at(box, 'released = C.releaseContainment(ctx)')).toBeLessThan(at(box, 'say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note }))'))
+      // Changed on purpose in wave 22: the line is also handed whether the box's own recovery put a kept grant back (T2.45).
+      expect(at(box, 'released = C.releaseContainment(ctx)')).toBeLessThan(at(box, "say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))"))
       expect(box).not.toContain('removes the sandbox seven days after it was made; until then it stays')
     })
   })
@@ -5223,6 +5227,334 @@ describe('T2.44 wave 19b: the switch from the stage\'s own flag, Bun --no-instal
     const starts = [...src.matchAll(/^\s*(?:run =|const r =) spawnSync\(bunPath, \[([^\]]*)\]/gm)].map(m => m[1])
     expect(starts, 'the T3 and K6 starts').toHaveLength(2)
     for (const s of starts) expect(s.startsWith("'--no-install', "), s).toBe(true)
+  })
+})
+
+// Wave 22 (the fifth live-fire run, live-5 of 2026-11-25): run 6's release kept its access-list grant on the mission
+// folder (a junction the contained child made at its top leads out), as the engine decides, and step 8's sweep then kept
+// run 6's run folder, as the engine decides, while the stage still expected every run folder gone. The stage now does
+// what the release's own line tells the owner to do (restore-acl, whose function is restoreKeptGrants) and proves it
+// before it sweeps. The suite's own fake stage (T3) runs inside the home and takes no grant, which is why this was found
+// only by hand: the real case below makes the engine take the grant for a folder of its own temp folder.
+describe('T2.45 wave 22: a grant the release kept is put back by the engine\'s own recovery, and proven, before step 8 sweeps', () => {
+  const W = acceptance
+  const need = (...names) => { for (const n of names) expect(typeof W[n], `${n} is not exported`).toBe('function') }
+  const at3 = (src, s) => { const i = src.indexOf(s); expect(i, s).toBeGreaterThan(-1); return i }
+  const SDDL = 'D:AI(A;OICIID;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIID;0x1200a9;;;BU)'
+
+  describe('aclReadingOf: the access list read the same way before and after, or why it could not be read', () => {
+    it('one marked line holding a DACL in SDDL is the reading', () => {
+      need('aclReadingOf')
+      expect(W.aclReadingOf({ status: 0, stdout: `cynco-acl|${SDDL}\r\n`, stderr: '' })).toEqual({ sddl: SDDL })
+      expect(W.aclReadingOf({ status: 0, stdout: 'cynco-acl|D:PAI(A;OICI;0x1301bf;;;S-1-5-21-1-2-3-1001)\n', stderr: '' })).toEqual({ sddl: 'D:PAI(A;OICI;0x1301bf;;;S-1-5-21-1-2-3-1001)' })
+    })
+    it('a reading that fails is an error, never an empty list: not started, timed out, a non-zero exit, no line, two lines, not SDDL', () => {
+      need('aclReadingOf')
+      const err = (r) => { const x = W.aclReadingOf(r); expect(x.sddl, JSON.stringify(r)).toBeUndefined(); expect(typeof x.error).toBe('string'); return x.error }
+      expect(err({ fault: { code: 'ENOENT' }, status: null, stdout: '', stderr: '' })).toMatch(/could not be started \(ENOENT\)/)
+      expect(err({ timedOut: true, status: null, stdout: '', stderr: '' })).toMatch(/timed out/)
+      expect(err({ status: 1, stdout: '', stderr: 'Exception calling "GetAccessControl": Access is denied' })).toMatch(/exit 1: Exception calling "GetAccessControl": Access is denied/)
+      expect(err({ status: 1, stdout: `cynco-acl|${SDDL}`, stderr: '' })).toMatch(/exit 1/)
+      expect(err({ status: 0, stdout: 'a profile spoke\r\n', stderr: '' })).toMatch(/no line cynco-acl\|/)
+      expect(err({ status: 0, stdout: `cynco-acl|${SDDL}\r\ncynco-acl|${SDDL}\r\n`, stderr: '' })).toMatch(/2 lines cynco-acl\|/)
+      expect(err({ status: 0, stdout: 'cynco-acl|O:BAG:SYD:(A;;FA;;;BA)\r\n', stderr: '' })).toMatch(/not an access list in SDDL/)
+      expect(err({ status: 0, stdout: 'cynco-acl|\r\n', stderr: '' })).toMatch(/not an access list in SDDL/)
+    })
+    it('readAclOf asks Windows PowerShell 5.1 for the DACL alone through .NET, as the engine\'s restore writes it', () => {
+      const src = fnSource('export function readAclOf(')
+      expect(src).toContain("sysExe('WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script]")
+      expect(src).toContain('[System.IO.Directory]::GetAccessControl(')
+      expect(src).toContain('GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)')
+      expect(src).toContain('return aclReadingOf(')
+    })
+  })
+
+  describe('grantRecovery: the stage\'s step, on the engine\'s own reader and recovery (seams)', () => {
+    const RUN_DIR = WIN ? 'C:\\r\\sandbox-root\\acc-6-20261125T032817-e7b2' : '/r/sandbox-root/acc-6-20261125T032817-e7b2'
+    const MISSION = WIN ? 'C:\\r\\mission' : '/r/mission'
+    const ACL = join(RUN_DIR, 'acl-0.before')
+    const rec = (o = {}) => ({ schema: 1, runId: basename(RUN_DIR), missionCwd: MISSION, grants: [{ folder: MISSION, aclFile: ACL }], ...o })
+    /** A stand-in of the engine module: `records`, the records containmentFromRecord answers in turn; `restore`, restoreKeptGrants' answer. */
+    const engine = ({ records, restore }) => {
+      const calls = { read: [], restore: [] }
+      let n = 0
+      return {
+        calls,
+        C: {
+          containmentFromRecord: (dir) => { calls.read.push(dir); const r = records[Math.min(n++, records.length - 1)]; return r === null ? { ok: false, reason: `the containment record ${join(dir, 'containment.json')} could not be read (Unexpected end of JSON input)` } : { ok: true, containment: {}, record: r } },
+          restoreKeptGrants: (runId, o) => { calls.restore.push([runId, o]); return restore },
+        },
+      }
+    }
+    const kept = rec({ grantsKept: [{ folder: MISSION, aclFile: ACL, why: 'link' }] })
+    const DONE = { done: true, note: `run ${basename(RUN_DIR)}: ${MISSION}: the access list saved before this run's grant was put back` }
+    const before = { sddl: SDDL }
+    const readAcl = (answer) => { const asked = []; return { asked, fn: (f) => { asked.push(f); return answer } } }
+
+    it('the record keeps a grant; the recovery answers done; the record keeps none; the lists are equal: passed, with what was compared', () => {
+      need('grantRecovery')
+      const e = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
+      const r = readAcl({ sddl: SDDL })
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: r.fn })
+      expect(o.outcome, o.detail).toBe('passed')
+      expect(e.calls.restore).toEqual([[basename(RUN_DIR), { sandboxRoot: join(RUN_DIR, '..') }]])
+      expect(e.calls.read).toEqual([RUN_DIR, RUN_DIR])
+      expect(r.asked).toEqual([MISSION])
+      // The three pieces of evidence first, the engine's note last: the printed entry keeps 300 characters of its detail.
+      expect(o.detail).toBe(`the access list of ${MISSION} (its DACL in SDDL, 3 entries, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${basename(RUN_DIR)}, answered done (${DONE.note})`)
+    })
+    it('the recovery answers not done: FAILED, with the engine\'s own words, and the list is not read', () => {
+      need('grantRecovery')
+      const note = `run ${basename(RUN_DIR)}: ${MISSION}: the access list saved before this run's grant was not put back, because ${MISSION}\\c0low-x leads outside it (to C:\\r\\scratch)`
+      const e = engine({ records: [kept], restore: { done: false, note } })
+      const r = readAcl({ sddl: SDDL })
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: r.fn })
+      expect(o).toEqual({ outcome: 'FAILED', detail: `the recovery (restoreKeptGrants, the function behind restore-acl) answered not done: ${note}` })
+      expect(r.asked).toEqual([])
+    })
+    it('the recovery answers done but the record still keeps a grant: FAILED, naming the folder', () => {
+      need('grantRecovery')
+      const e = engine({ records: [kept, kept], restore: DONE })
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ sddl: SDDL }).fn })
+      expect(o.outcome).toBe('FAILED')
+      expect(o.detail).toBe(`the recovery answered done (${DONE.note}), but the record still keeps a grant on ${MISSION}`)
+    })
+    it('the lists differ: FAILED, with both readings', () => {
+      need('grantRecovery')
+      const e = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
+      const after = 'D:AI(A;OICI;FA;;;S-1-5-21-1-2-3-1001)(A;OICIID;FA;;;BA)'
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ sddl: after }).fn })
+      expect(o.outcome).toBe('FAILED')
+      expect(o.detail).toBe(`the recovery answered done and the record keeps no grant, but the access list of ${MISSION} differs from the one read before the run's establish: before ${SDDL}; after ${after}`)
+    })
+    it('a reading that failed, before or after, is not proven, never a pass', () => {
+      need('grantRecovery')
+      const e1 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
+      const o1 = W.grantRecovery({ C: e1.C, runDir: RUN_DIR, folder: MISSION, before: { error: 'exit 1: Access is denied' }, readAcl: readAcl({ sddl: SDDL }).fn })
+      expect(o1).toEqual({ outcome: 'not proven', detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read before the run's establish (exit 1: Access is denied), so nothing was compared` })
+      const e2 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
+      const o2 = W.grantRecovery({ C: e2.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ error: 'the reading timed out' }).fn })
+      expect(o2).toEqual({ outcome: 'not proven', detail: `the recovery answered done (${DONE.note}) and the record keeps no grant, but the access list of ${MISSION} could not be read after it (the reading timed out), so nothing was compared` })
+      // Never read before the establish at all (null): not proven too.
+      const e3 = engine({ records: [kept, rec({ grantsKept: [] })], restore: DONE })
+      expect(W.grantRecovery({ C: e3.C, runDir: RUN_DIR, folder: MISSION, before: null, readAcl: readAcl({ sddl: SDDL }).fn }).outcome).toBe('not proven')
+    })
+    it('a record that cannot be read, before or after the recovery, is not proven', () => {
+      need('grantRecovery')
+      const e1 = engine({ records: [null], restore: DONE })
+      const o1 = W.grantRecovery({ C: e1.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ sddl: SDDL }).fn })
+      expect(o1.outcome).toBe('not proven')
+      expect(o1.detail).toBe(`the record of ${basename(RUN_DIR)} could not be read through the engine's reader: the containment record ${join(RUN_DIR, 'containment.json')} could not be read (Unexpected end of JSON input)`)
+      expect(e1.calls.restore).toEqual([])
+      const e2 = engine({ records: [kept, null], restore: DONE })
+      const o2 = W.grantRecovery({ C: e2.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ sddl: SDDL }).fn })
+      expect(o2.outcome).toBe('not proven')
+      expect(o2.detail).toMatch(/^the recovery answered done \(.*\), but the record could not be read again: the containment record /)
+    })
+    it('a grant kept on another folder than the one read before: the recovery runs, the comparison is not proven', () => {
+      need('grantRecovery')
+      const other = WIN ? 'C:\\r\\base-archive' : '/r/base-archive'
+      const e = engine({ records: [rec({ grantsKept: [{ folder: other, aclFile: ACL, why: 'link' }] }), rec({ grantsKept: [] })], restore: DONE })
+      const o = W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: readAcl({ sddl: SDDL }).fn })
+      expect(e.calls.restore).toHaveLength(1)
+      expect(o.outcome).toBe('not proven')
+      expect(o.detail).toMatch(new RegExp(`the grant kept was on ${other.replace(/\\/g, '\\\\')}, not on ${MISSION.replace(/\\/g, '\\\\')}, whose access list alone was read before the run's establish`))
+    })
+    it('no grant kept: not applicable, with the reason from the record (no grant taken, or the release put it back itself); nothing is run', () => {
+      need('grantRecovery')
+      for (const [r, why] of [
+        [rec({ grants: [] }), `the record of ${basename(RUN_DIR)} holds no access-list grant: its establish labelled ${MISSION} without widening its access list (this user holds the rights to label it, as in a folder inside the home)`],
+        [rec({ grants: undefined }), `the record of ${basename(RUN_DIR)} holds no access-list grant: its establish labelled ${MISSION} without widening its access list (this user holds the rights to label it, as in a folder inside the home)`],
+        [rec({}), `the record of ${basename(RUN_DIR)} keeps no grant: its release put back itself the access list saved before its grant on ${MISSION}`],
+        [rec({ grantsKept: [] }), `the record of ${basename(RUN_DIR)} keeps no grant: its release put back itself the access list saved before its grant on ${MISSION}`],
+      ]) {
+        const e = engine({ records: [r], restore: DONE })
+        const a = readAcl({ sddl: SDDL })
+        expect(W.grantRecovery({ C: e.C, runDir: RUN_DIR, folder: MISSION, before, readAcl: a.fn })).toEqual({ outcome: 'not applicable', detail: why })
+        expect(e.calls.restore).toEqual([])
+        expect(a.asked).toEqual([])
+      }
+    })
+    it('grantRecoveryLine: the box\'s one line for it', () => {
+      need('grantRecoveryLine')
+      expect(W.grantRecoveryLine({ outcome: 'not applicable', detail: 'x' })).toBe('[acceptance] the access-list recovery after the release: not applicable (x)')
+      expect(W.grantRecoveryLine({ outcome: 'passed', detail: 'y' })).toBe('[acceptance] the access-list recovery after the release: passed (y)')
+    })
+  })
+
+  describe('where the stage takes the step (run 6) and where the box takes it (realBox, executed by the rehearsal)', () => {
+    it('run 6: the list is read before its establish, and the step runs after the release and canary c0-low, its junction removed first; one entry', () => {
+      const inner = fnSource('async function runInner(')
+      const read = at3(inner, "const aclBefore = spec.mode === 'live' ? readAclOf(missionCwd) : null")
+      expect(read).toBeLessThan(at3(inner, 'const est = E.C.establishContainment({'))
+      expect(inner).toContain('R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec, aclBefore }')
+      const after = fnSource('function afterLiveRelease(')
+      const c0 = at3(after, 'const why = removeOne(R.c0low.path)')
+      const step = at3(after, 'const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf })')
+      expect(c0).toBeLessThan(step)
+      expect(at3(after, "entry(report, { id: 'canary', variant: 'c0-low', form: 'live', outcome: o.outcome, detail: o.detail })")).toBeLessThan(step)
+      expect(after).toContain("entry(report, { id: 'grant-recovery', variant: 'restore-acl', form: 'live', outcome: g.outcome, detail: g.detail })")
+      // Outside the c0-low block (at the function's own indent): taken whether or not the child made that junction (a grant
+      // may be kept for another link).
+      expect(after).toContain('\n  const g = grantRecovery({')
+    })
+    it('a PASS with live fire on needs that entry once (liveProofCoverage)', () => {
+      const E = (run, id, variant, form, outcome) => ({ run, phase: 'mission', id, variant, form, outcome, detail: null, decoys: null, audit: null, targets: [] })
+      const all = [E(6, 'canary', 'idle', 'live', 'passed'), E(6, 'protected-folder', 'delete the latch', 'live', 'denied'), E(6, 'protected-folder', 'delete the audit file', 'live', 'denied'),
+        E(6, 'release-walk', 'ends at a loop', 'live', 'passed'), E(6, 'canary', 'c0-low', 'live', 'passed'), E(7, 'unseen', 'attack.py', 'literal', 'contained'),
+        E(8, 'sweep', 'does not delete through a link', 'outer', 'contained'), E(6, 'grant-recovery', 'restore-acl', 'live', 'not applicable')]
+      expect(liveProofCoverage(all)).toEqual([])
+      expect(liveProofCoverage(all.filter(e => e.id !== 'grant-recovery'))).toEqual(['run 6 has no entry for grant-recovery restore-acl'])
+      expect(liveProofCoverage([...all, all[7]])).toEqual(['run 6 has 2 entries for grant-recovery restore-acl'])
+    })
+    it('realBox: the list read before its establish; after the release the same step and its line, before the line about what was left', () => {
+      const box = fnSource('async function realBox(')
+      const read = at3(box, 'const aclBefore = readAclOf(mission)')
+      expect(read).toBeLessThan(at3(box, 'const est = C.establishContainment({'))
+      const rel = at3(box, 'released = C.releaseContainment(ctx)')
+      const step = at3(box, 'recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf })')
+      const line = at3(box, 'say(grantRecoveryLine(recovery))')
+      const left = at3(box, "say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))")
+      expect(rel).toBeLessThan(step)
+      expect(step).toBeLessThan(line)
+      expect(line).toBeLessThan(left)
+      // After the finally block, on the path that ran to its end: FAILED stops the box, not proven is an item outside both
+      // accepted lists (the result is INCOMPLETE).
+      const end = at3(box, '  const { fell } = ended\n')
+      const failed = at3(box, "if (recovery?.outcome === 'FAILED') { say(`${TAG} FAIL (${where}): the access-list recovery after the release: ${recovery.detail}`); return { code: 1 } }")
+      const np = at3(box, "if (recovery?.outcome === 'not proven') notProven.push({ what: `the access-list recovery after the release: ${recovery.detail}`, cls: 'grant-recovery-not-proven' })")
+      expect(end).toBeLessThan(failed)
+      expect(failed).toBeLessThan(np)
+      expect(np).toBeLessThan(at3(box, 'const result = realResult({'))
+      expect(Object.keys(REAL_ACCEPTED_NOT_PROVEN)).not.toContain('grant-recovery-not-proven')
+    })
+    it('sandboxLeftLine: a kept grant the stage put back is said as put back, and the sweep removes the sandbox in its seven days', () => {
+      const SB = 'C:\\cynco-sandbox\\acceptance-real-x', BOX = 'C:\\t\\cynco-acceptance-real-y'
+      const kept = 'run acceptance-real-x released; C:\\t: the access list saved before this run\'s grant was not put back, because C:\\t\\j leads outside it (to C:\\o); writing it rewrites what every entry under the folder inherited; its saved access list is C:\\cynco-sandbox\\acceptance-real-x\\acl-0.before; put it back with: bun scripts/cynco-sandbox.mjs restore-acl acceptance-real-x'
+      expect(W.sandboxLeftLine({ sandbox: SB, box: BOX, note: kept, recovered: true })).toBe(`[acceptance] the sandbox ${SB} and the scratch mission folder ${BOX} were left in place. The release kept an access-list grant, which this stage then put back with the function behind bun scripts/cynco-sandbox.mjs restore-acl acceptance-real-x (it answered done); the sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made (never Remove-Item -Recurse on a sandbox: it may hold a link).`)
+      // Not recovered: the line of wave 19 (C10), unchanged.
+      expect(W.sandboxLeftLine({ sandbox: SB, box: BOX, note: kept, recovered: false })).toBe(W.sandboxLeftLine({ sandbox: SB, box: BOX, note: kept }))
+      expect(W.sandboxLeftLine({ sandbox: SB, box: BOX, note: kept })).toMatch(/so the sweep keeps the sandbox until it is put back: run bun scripts\/cynco-sandbox\.mjs restore-acl acceptance-real-x;/)
+    })
+  })
+
+  describe('step 8: a run folder the sweep keeps for a reason of the engine\'s own is named by that reason', () => {
+    const sbx = WIN ? 'C:\\r\\sandbox-root' : '/r/sandbox-root'
+    const runDir = join(sbx, 'acc-6-20261125T032817-e7b2')
+    const repo = join(runDir, 'scratch', 'repo-6cc15225')
+    const keepLine = `[containment] the sweep keeps ${runDir}: the access list saved before this run's grant on C:\\r\\mission was not put back (${join(runDir, 'acl-0.before')}); put it back with: bun scripts/cynco-sandbox.mjs restore-acl acc-6-20261125T032817-e7b2`
+    const clean = { missionDiff: [], homeDiff: [], left: [runDir] }
+    it('the junction still there in a run folder the sweep kept, with its line: FAILED, naming the engine\'s reason as the sweep printed it', () => {
+      const lines = [`[containment] removed the sandbox ${join(sbx, 'acc-5-x')} (created x)`, keepLine]
+      const o = sweepOutcome({ ...clean, lines, met: [{ path: repo, runDir, wasRecord: true, gone: false }] })
+      expect(o).toEqual({ outcome: 'FAILED', detail: `the sweep kept the run folder ${runDir} for a reason of the engine's own, as it printed it: ${keepLine}; the junction ${repo} is in it` })
+    })
+    it('the junction still there and the sweep said nothing of its run folder: the words of before (a junction left behind)', () => {
+      const o = sweepOutcome({ ...clean, lines: [`[containment] removed the sandbox ${join(sbx, 'acc-5-x')} (created x)`], met: [{ path: repo, runDir, wasRecord: true, gone: false }] })
+      expect(o).toEqual({ outcome: 'FAILED', detail: `the sweep left the junction ${repo} in a run folder it was to remove (${runDir})` })
+    })
+  })
+
+  // Item 6 of the brief: the smallest real case that reaches the grant path. The engine takes the grant when this user
+  // cannot set the mission folder's label (WRITE_OWNER), which is the case outside the home, where live fire runs, and not
+  // in the suite's temp folder, where this user holds full control by inheritance. So the case makes one temp folder need
+  // it without leaving the temp folder: inheritance off on the mission folder, this user granted Modify only (measured
+  // 2026-11-25, w22 scratch f out/probe-acl-stripped.txt: icacls answers "Access is denied" to the label, and as owner
+  // this user may still write the folder's access list, as the grant and the restore do). The establish, the release, the
+  // recovery, the reading and the sweep are the engine's and the stage's own; only the volume listing is answered (so an
+  // attached camera drive does not refuse the establish). The access list is reset and the folder removed by the test.
+  describe.skipIf(!WIN)('the real case (Windows): the engine takes the grant, the release keeps it for a link leading out, the stage\'s step puts it back, the sweep removes the run folder', () => {
+    it('kept, refused while the link is there (FAILED with the engine\'s words), put back once it is gone (passed), and the sweep then removes run folder and junction', async () => {
+      need('grantRecovery', 'readAclOf')
+      const C = await import('../../engine/containment.js')
+      const SYS = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
+      const sh = (exe, args) => { const r = spawnSync(join(SYS, exe), args, { encoding: 'utf-8', timeout: 60_000, windowsHide: true }); return { code: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` } }
+      const sid = /"[^"]*","(S-1-5-[0-9-]+)"/.exec(sh('whoami.exe', ['/user', '/fo', 'csv', '/nh']).out)?.[1]
+      expect(sid, 'this user\'s SID').toMatch(/^S-1-5-/)
+      const T = realpathSync.native(mkdtempSync(join(tmpdir(), 'cynco-acc-w22-')))
+      const L = { sandbox: join(T, 'sandbox-root'), home: join(T, 'home'), mission: join(T, 'mission'), outside: join(T, 'outside'), state: join(T, 'state'), models: join(T, 'models'), guard: join(T, 'guard') }
+      for (const p of Object.values(L)) mkdirSync(p)
+      mkdirSync(join(L.mission, '.git'))
+      writeFileSync(join(L.mission, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+      mkdirSync(join(L.mission, 'src'))
+      writeFileSync(join(L.mission, 'src', 'a.txt'), 'a\n')
+      const links = []
+      const calls = []
+      const run = (file, args, cap) => {
+        calls.push([basename(file).toLowerCase(), ...args])
+        if (basename(file).toLowerCase() === 'powershell.exe' && String(args.at(-1)).includes('Win32_LogicalDisk')) return { ok: true, out: 'C:|3|NTFS|0\r\n', code: 0 }
+        const r = spawnSync(file, args, { encoding: 'utf-8', timeout: cap, windowsHide: true })
+        return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, code: r.status }
+      }
+      const was = process.env.LOCALCODE_CONTAINMENT_OFF
+      process.env.LOCALCODE_CONTAINMENT_OFF = 'lowil'
+      try {
+        const strip = sh('icacls.exe', [L.mission, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)M`])
+        expect(strip.code, strip.out).toBe(0)
+        const before = W.readAclOf(L.mission)
+        expect(before.sddl, JSON.stringify(before)).toMatch(/^D:PAI?\(A;OICI;0x1301bf;;;S-1-5-[0-9-]+\)$/)
+        const est = C.establishContainment({ test: true, kind: 'mission', label: 'acc-w22', missionCwd: L.mission, sandboxRoot: L.sandbox, home: L.home,
+          folders: { state: L.state, models: L.models, guard: L.guard, audit: null }, platform: 'win32', run, msys: null })
+        expect(est.ok, est.reason).toBe(true)
+        const ctx = est.containment
+        // The engine decided by a real denial: its first label of the mission folder was refused by Windows, then the grant.
+        const labels = calls.filter(c => c[0] === 'icacls.exe' && c[2] === '/setintegritylevel' && c[1].toLowerCase() === L.mission.toLowerCase())
+        expect(labels.length, JSON.stringify(calls)).toBeGreaterThanOrEqual(2)
+        const rec0 = C.containmentFromRecord(ctx.sandbox.root)
+        expect(rec0.ok && rec0.record.grants, JSON.stringify(rec0)).toEqual([{ folder: L.mission, aclFile: join(ctx.sandbox.root, 'acl-0.before') }])
+        expect(rec0.record.cwdGranted).toBe(true)
+        // What run 6 leaves: a junction at the top of the mission folder leading out (c0-low's), and one from its scratch
+        // folder to the mission folder (step 8's).
+        const c0low = join(L.mission, 'c0low-w22')
+        const repo = join(ctx.sandbox.scratch, 'repo-w22')
+        symlinkSync(L.outside, c0low, 'junction'); links.push(c0low)
+        symlinkSync(L.mission, repo, 'junction'); links.push(repo)
+        const rel = C.releaseContainment(ctx, { platform: 'win32', run })
+        expect(rel.note).toContain(`${L.mission}: the access list saved before this run's grant was not put back, because ${c0low} leads outside it (to ${L.outside})`)
+        expect(C.containmentFromRecord(ctx.sandbox.root).record.grantsKept).toEqual([{ folder: L.mission, aclFile: join(ctx.sandbox.root, 'acl-0.before'), why: 'link' }])
+        // The sweep before the recovery keeps the run folder, and step 8's reading names the engine's reason.
+        const ahead = () => new Date(Date.now() + 8 * 24 * 3600_000)
+        const lines1 = []
+        const s1 = C.sweepSandboxes({ sandboxRoot: L.sandbox, home: L.home, now: ahead, platform: 'win32', log: (l) => lines1.push(String(l)) })
+        expect(s1, lines1.join('\n')).toEqual({ removed: [], kept: 1 })
+        const met1 = acceptance.sweepMet({ sandboxRoot: L.sandbox, met: [repo], records: [ctx.runId], exists: (p) => { try { lstatSync(p); return true } catch { return isLinkEntry(p) === true } }, isLink: isLinkEntry })
+        const o1 = sweepOutcome({ missionDiff: [], homeDiff: [], left: [ctx.sandbox.root], lines: lines1, met: met1 })
+        expect(o1.outcome).toBe('FAILED')
+        expect(o1.detail).toBe(`the sweep kept the run folder ${ctx.sandbox.root} for a reason of the engine's own, as it printed it: ${lines1.find(l => l.includes('the sweep keeps'))}; the junction ${repo} is in it`)
+        // The stage's step while the junction is still there: the engine refuses to write the list, and the step says so.
+        const o2 = W.grantRecovery({ C, runDir: ctx.sandbox.root, folder: L.mission, before, readAcl: W.readAclOf })
+        expect(o2.outcome).toBe('FAILED')
+        expect(o2.detail).toContain(`answered not done: run ${ctx.runId}: ${L.mission}: the access list saved before this run's grant was not put back, because ${c0low} leads outside it`)
+        // The canary's junction removed (as afterLiveRelease does before the step), the step again: passed.
+        rmdirSync(c0low)
+        expect(gone(c0low)).toBe(true)
+        const o3 = W.grantRecovery({ C, runDir: ctx.sandbox.root, folder: L.mission, before, readAcl: W.readAclOf })
+        expect(o3.outcome, o3.detail).toBe('passed')
+        expect(C.containmentFromRecord(ctx.sandbox.root).record.grantsKept).toEqual([])
+        expect(W.readAclOf(L.mission)).toEqual(before)
+        // Step 8's sweep afterwards: the run folder removed with its junction, the mission folder unchanged.
+        const m0 = treeDigest(L.mission)
+        const lines2 = []
+        const s2 = C.sweepSandboxes({ sandboxRoot: L.sandbox, home: L.home, now: ahead, platform: 'win32', log: (l) => lines2.push(String(l)) })
+        expect(s2, lines2.join('\n')).toEqual({ removed: [ctx.sandbox.root], kept: 0 })
+        expect(gone(repo)).toBe(true)
+        expect(treeDigest(L.mission)).toBe(m0)
+        const met2 = acceptance.sweepMet({ sandboxRoot: L.sandbox, met: [repo], records: [ctx.runId], exists: (p) => { try { lstatSync(p); return true } catch { return isLinkEntry(p) === true } }, isLink: isLinkEntry })
+        expect(sweepOutcome({ missionDiff: [], homeDiff: [], left: [], lines: lines2, met: met2 }).outcome).toBe('contained')
+      } finally {
+        if (was === undefined) delete process.env.LOCALCODE_CONTAINMENT_OFF
+        else process.env.LOCALCODE_CONTAINMENT_OFF = was
+        for (const l of links) {
+          if (gone(l)) continue
+          try { rmdirSync(l) } catch { try { unlinkSync(l) } catch (e) { console.log(`[test] the link ${l} could not be removed: ${e.message}`) } }
+        }
+        for (const l of links) expect(gone(l), `the link ${l} is still there`).toBe(true)
+        // This user's own folder: inheritance back on and its explicit entries replaced (icacls /reset), then removed.
+        const reset = sh('icacls.exe', [L.mission, '/reset', '/T', '/C', '/Q'])
+        if (reset.code !== 0) console.log(`[test] icacls /reset of ${L.mission}: ${reset.out}`)
+        rmSync(T, { recursive: true, force: true, maxRetries: 5 })
+      }
+    }, 180_000)
   })
 })
 
@@ -5701,6 +6033,26 @@ describe.skipIf(!bunPath)('T3 the fake-home stage under Bun, no live fire', () =
       }
     }
     expect(astray, 'paths below the real home outside the test root').toEqual([])
+  })
+
+  // Wave 22: the box's step after its release, executed by the rehearsal. This test root lies in the temp folder inside
+  // the home, so the establish takes no grant and the step is not applicable, for the reason the record gives; the kept
+  // branch is executed by run 6 with live fire (outside the home) and by T2.45's real case.
+  it.skipIf(!WIN)('wave 22: the box rehearsal prints its access-list recovery after the release, before the line about what it left', (ctx) => {
+    const rep = need(ctx)
+    const out = String(run.stdout).split(/\r?\n/)
+    const start = out.indexOf('[acceptance] inner run 9: --inner box --phase rehearsal')
+    const lines = out.slice(start)
+    const runId = lines.map(l => /^\[acceptance\] run id (acceptance-real-\S+); mission folder /.exec(l)?.[1]).find(Boolean)
+    const mission = join(rep.boxFolder, 'mission')
+    const rel = lines.findIndex(l => l.startsWith(`[acceptance] released: run ${runId} released`))
+    const rec = lines.findIndex(l => l.startsWith('[acceptance] the access-list recovery after the release: '))
+    const left = lines.findIndex(l => l.startsWith('[acceptance] the sandbox ') && l.includes(' were left in place.'))
+    expect(rel, lines.join('\n')).toBeGreaterThan(-1)
+    expect(rec, 'the box printed no recovery line').toBeGreaterThan(rel)
+    expect(left).toBeGreaterThan(rec)
+    expect(lines.filter(l => l.startsWith('[acceptance] the access-list recovery after the release: '))).toHaveLength(1)
+    expect(lines[rec]).toBe(`[acceptance] the access-list recovery after the release: not applicable (the record of ${runId} holds no access-list grant: its establish labelled ${mission} without widening its access list (this user holds the rights to label it, as in a folder inside the home))`)
   })
 
   it.skipIf(!WIN)('Windows: low integrity, every canary as rule F3 says, no label leak', (ctx) => {

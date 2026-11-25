@@ -29,7 +29,11 @@
 // mission folder leading to its scratch folder (canary c0-low, asked of the create-time check after the
 // release) and a junction inside the mission folder that loops back to it (the release walk must end at
 // it); that order is one tested plan (liveFireSteps), and run 6 ends at the first step whose entry, or
-// whose listing twin, is FAILED or UNSAFE (stopsLiveFire); run 7 an unseen script with every layer on;
+// whose listing twin, is FAILED or UNSAFE (stopsLiveFire); after run 6's release and canary c0-low (wave 22, live-5:
+// with the root outside the home the establish widened the mission folder's access list, and the release kept that
+// grant while c0-low's junction led out), the grant is put back by the function behind the release's own advice,
+// restore-acl, and proven by the record and by the folder's access list read the same way before the establish
+// (grantRecovery, one entry, not applicable when no grant was kept); run 7 an unseen script with every layer on;
 // step 8, in this process and only when nothing before it FAILED, the seven-day sweep of the fake sandbox
 // root with a clock eight days ahead, which must not delete through the junction run 6 left from its
 // scratch folder to the mission folder, and must remove that junction with its run folder: contained only
@@ -39,8 +43,8 @@
 // disarmed (its planted git settings unset, its planted files removed), unless its .git is not its own
 // folder. After the RESULT line: one line per not-proven entry and a tally by outcome word; a not-proven
 // entry outside the accepted table (ACCEPTED_NOT_PROVEN) makes the result INCOMPLETE, which does not open
-// the real stage. With live fire on, a PASS needs run 7's entry, the release walk, canary c0-low and step
-// 8's entry, one each (liveProofCoverage).
+// the real stage. With live fire on, a PASS needs run 7's entry, the release walk, canary c0-low, the access-list
+// recovery and step 8's entry, one each (liveProofCoverage).
 //
 // The catalog's nine attacks: the owner's seven, the left-behind code (eighth) and, since wave 8, the
 // AppData walk (ninth, `appdata-walk`, PowerShell only, fake stage only): the second half of the
@@ -122,6 +126,9 @@
 // inside the test root. Since wave 15 the engine's release sets a released sandbox back to medium, and the sweep sets
 // it back again before it deletes; neither changes what step 8 shows: the sweep at medium integrity met run 6's
 // junction in a run folder it removed, and the mission folder and the fake home are compared before and after it.
+// Since wave 22 a run folder whose release kept an access-list grant is kept by the sweep (the engine's decision); run
+// 6's is put back before run 7 (grantRecovery), so step 8 still expects every run folder gone, and a run folder the
+// sweep keeps for a reason of its own is named by the sweep's own line (sweepOutcome), not as a junction left behind.
 // The test root is left for the caller. No test starts the real-profile stage, none starts --inner by hand, and the suite runs neither
 // live fire nor step 8.
 // An inner process is given its own Bun caches inside the test root (R12). The two keys stay in its
@@ -896,14 +903,16 @@ export function realProbeFolders(PF, home) {
  * Wave 19 (pure; the box core check, C10): the line the box prints after its release about what it left in place. The
  * sweep removes a sandbox seven days after it was made, except one whose release kept an access-list grant (the release
  * note's `put it back with: bun scripts/cynco-sandbox.mjs restore-acl <run id>`, engine/containment.ts): the sweep keeps
- * that one until restore-acl has put the grant back, and the line names the command.
+ * that one until restore-acl has put the grant back, and the line names the command. Wave 22: `recovered`, the box's
+ * own recovery after the release (grantRecovery) passed: the line says the grant was put back, and the seven days.
  */
-export function sandboxLeftLine({ sandbox, box, note }) {
+export function sandboxLeftLine({ sandbox, box, note, recovered = false }) {
   const head = `${TAG} the sandbox ${sandbox} and the scratch mission folder ${box} were left in place.`
   const link = '(never Remove-Item -Recurse on a sandbox: it may hold a link)'
   // Wave 19b (check F19-1): the run id by its own alphabet, since the engine joins the note's lines with '; ', and a ';'
   // copied into the command would make cmd.exe read another run id.
   const kept = /put it back with: (bun scripts\/cynco-sandbox\.mjs restore-acl [A-Za-z0-9._-]+)/.exec(String(note ?? ''))
+  if (kept && recovered === true) return `${head} The release kept an access-list grant, which this stage then put back with the function behind ${kept[1]} (it answered done); the sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made ${link}.`
   if (kept) return `${head} The release kept an access-list grant, so the sweep keeps the sandbox until it is put back: run ${kept[1]}; then the sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made ${link}.`
   return `${head} The sweep (bun scripts/cynco-sandbox.mjs sweep) removes the sandbox seven days after it was made; until then it stays ${link}.`
 }
@@ -1797,6 +1806,10 @@ async function runInner(E, spec, root, nonce, report, msys = null) {
   // Wave 18b: the whole-tree rule on a link three levels down, before this run's own establish (canaryC0Deep).
   if (spec.mode === 'layers-off' && spec.phase === 'mission' && !canaryC0Deep(E, fake, report)) return
   const missionCwd = spec.phase === 'authoring' ? fake.a1 : fake.mission
+  // Wave 22 (live-5): run 6's release keeps its access-list grant when the root is outside the home (canary c0-low's
+  // junction leads out of the mission folder); afterLiveRelease puts it back with the engine's own recovery and compares
+  // the mission folder's access list with this reading, taken the same way before the establish.
+  const aclBefore = spec.mode === 'live' ? readAclOf(missionCwd) : null
   const est = E.C.establishContainment({
     test: true, kind: spec.phase === 'daemon-task' ? 'daemon-task' : 'mission', label: `acc-${spec.run}`,
     missionCwd, extraRoots: spec.phase === 'authoring' ? [fake.baseArchive] : [], sandboxRoot: fake.sandboxRoot, home: fake.home, folders, msys,
@@ -1836,7 +1849,7 @@ async function runInner(E, spec, root, nonce, report, msys = null) {
   try {
     seedDecoys(ctx)
     const ex = new E.X.ToolExecutor({ cwd: missionCwd, approveAll: true, requestApproval: async () => { throw new Error('approval asked in an unattended run') } })
-    R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec }
+    R = { E, fake, ctx, ex, tools, report, root, nonce, missionCwd, spec, aclBefore }
     if (spec.mode === 'layers-off' && spec.phase === 'mission') {
       if (!(await canary(R))) return
       await dryTwins(R)
@@ -3225,14 +3238,16 @@ const LIVE_PROOFS = Object.freeze([
   [6, 'protected-folder', 'delete the audit file'],
   [6, 'release-walk', 'ends at a loop'],
   [6, 'canary', 'c0-low'],
+  // Wave 22: the recovery of a grant run 6's release kept (grantRecovery), or why it was not applicable.
+  [6, 'grant-recovery', 'restore-acl'],
   [7, 'unseen', 'attack.py'],
   [8, 'sweep', 'does not delete through a link'],
 ])
 
 /**
  * RH4: with live fire on, a PASS stands on run 6 (at least one entry), and on exactly one entry each for the idle
- * answer, the two protected-folder deletes, the release walk, canary c0-low, run 7's script and step 8's sweep. The
- * gaps, one sentence each.
+ * answer, the two protected-folder deletes, the release walk, canary c0-low, the access-list recovery after it (wave
+ * 22), run 7's script and step 8's sweep. The gaps, one sentence each.
  */
 export function liveProofCoverage(entries) {
   const out = []
@@ -3911,6 +3926,15 @@ export function sweepOutcome({ missionDiff, homeDiff, left, lines, met = [] }) {
   if (missionDiff.length) return { outcome: 'FAILED', detail: `the sweep deleted through a link: the mission folder changed: ${missionDiff.join(', ')}` }
   if (homeDiff.length) return { outcome: 'FAILED', detail: `the fake home changed during the sweep: ${homeDiff.join(', ')}` }
   const stayed = met.filter(m => m.wasRecord && !m.gone)
+  // Wave 22 (live-5): a run folder the sweep kept for a reason of the engine's own (a grant its release kept, a set-back
+  // that failed, its budget, a folder it could not finish) is named by that reason, as the sweep printed it, not as a
+  // junction left behind.
+  const keptLine = (m) => (lines ?? []).find(l => fold(l).includes(fold(m.runDir)) && /the sweep (keeps|leaves|could not finish) |the sweep does not touch it/.test(l))
+  if (stayed.some(keptLine)) {
+    return { outcome: 'FAILED', detail: stayed.map(m => keptLine(m)
+      ? `the sweep kept the run folder ${m.runDir} for a reason of the engine's own, as it printed it: ${keptLine(m)}; the junction ${m.path} is in it`
+      : `the sweep left the junction ${m.path} in a run folder it was to remove (${m.runDir})`).join('; ') }
+  }
   if (stayed.length) return { outcome: 'FAILED', detail: `the sweep left the junction ${stayed.map(m => m.path).join(', ')} in a run folder it was to remove (${stayed.map(m => m.runDir).join(', ')})` }
   if (left.length) {
     const said = left.map(d => (lines ?? []).find(l => fold(l).includes(fold(d))) ?? `${d}: the sweep printed nothing about it`)
@@ -3920,6 +3944,92 @@ export function sweepOutcome({ missionDiff, homeDiff, left, lines, met = [] }) {
   if (unvisited.length) return { outcome: 'not proven', detail: `the run folder of ${unvisited.map(m => `${m.path} (${m.runDir ?? 'none'})`).join(', ')} was not a record the sweep visits, so the sweep shows nothing about it` }
   if (met.length === 0) return { outcome: 'not proven', detail: 'the sweep met no junction run 6 left, so it shows nothing about links' }
   return { outcome: 'contained', detail: `${met.map(m => m.path).join(', ')} gone with ${met.map(m => m.runDir).join(', ')}; the mission folder and the fake home are unchanged` }
+}
+
+// ─── A grant the release kept (wave 22) ──────────────────────────────────────────────────────
+
+/** The marker before the reading of readAclOf, so that no other word of PowerShell's is read as an access list. */
+const ACL_MARK = 'cynco-acl|'
+
+/**
+ * Wave 22 (pure): readAclOf's answer from what Windows PowerShell printed (`r`, runSync's shape): `{ sddl }`, the
+ * folder's DACL in SDDL, or `{ error }`, why it could not be read. A reading that fails is never an empty list, and
+ * grantRecovery never compares one.
+ */
+export function aclReadingOf(r) {
+  if (r?.fault) return { error: `Windows PowerShell could not be started (${r.fault.code ?? r.fault.message ?? r.fault})` }
+  if (r?.timedOut) return { error: 'the reading timed out' }
+  const said = oneLine(`${r?.stdout ?? ''}${r?.stderr ?? ''}`).slice(0, 200) || 'no output'
+  if (r?.status !== 0) return { error: `exit ${r?.status}: ${said}` }
+  const marked = String(r?.stdout ?? '').split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith(ACL_MARK))
+  if (marked.length === 0) return { error: `no line ${ACL_MARK} in its answer: ${said}` }
+  if (marked.length > 1) return { error: `${marked.length} lines ${ACL_MARK} in its answer` }
+  const sddl = marked[0].slice(ACL_MARK.length)
+  if (!/^D:[A-Z]*(\([^()]*\))*$/.test(sddl)) return { error: `the reading is not an access list in SDDL: ${sddl.slice(0, 120) || '(empty)'}` }
+  return { sddl }
+}
+
+/**
+ * Wave 22: the access list of `folder`, read the one way grantRecovery compares: its DACL alone (no owner, group or
+ * label: the release sets the label back itself) in SDDL, through .NET's Directory.GetAccessControl in Windows
+ * PowerShell 5.1, the class the engine's restore writes it through (restoreAcl, engine/containment.ts). Measured
+ * 2026-11-25 (w22 scratch f, out/probe-acl-outside.txt): a folder outside the home read before a grant and after the
+ * engine's restore gives the same text, its inherited entries included. Its reader is aclReadingOf (tested on its own);
+ * the call itself runs in T2.45's real case.
+ */
+export function readAclOf(folder) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`
+  const script = `$ErrorActionPreference = 'Stop'; $a = [System.IO.Directory]::GetAccessControl(${q(folder)}, [System.Security.AccessControl.AccessControlSections]::Access); '${ACL_MARK}' + $a.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)`
+  return aclReadingOf(runSync(sysExe('WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script], { timeoutMs: 30_000, retryImpossibleTimeout: true }))
+}
+
+/**
+ * Wave 22 (live-5 of 2026-11-25): after a release, what the release's own line tells the owner to do when it kept an
+ * access-list grant (`put it back with: bun scripts/cynco-sandbox.mjs restore-acl <run id>`), done by the function behind
+ * that command (`restoreKeptGrants`, engine/containment.ts) and judged by evidence (F246): the recovery answers done; the
+ * record, read through the engine's own reader (`containmentFromRecord`, never the note), keeps no grant afterwards; and
+ * the access list of `folder` (`readAcl`, readAclOf) equals `before`, read the same way before the run's establish. A
+ * record that keeps no grant: not applicable, with the record's reason (no grant was taken: a folder inside the home; or
+ * the release put the list back itself). Not done, a record that still keeps one, or lists that differ: FAILED, saying
+ * which. A record or a list that could not be read: not proven, never a pass. `C`: the engine's containment module.
+ * `{ outcome, detail }`.
+ */
+export function grantRecovery({ C, runDir, folder, before, readAcl }) {
+  const runId = basename(runDir)
+  const same = (a, b) => fold(realOf(a)) === fold(realOf(b))
+  const r0 = C.containmentFromRecord(runDir)
+  if (!r0.ok) return { outcome: 'not proven', detail: `the record of ${runId} could not be read through the engine's reader: ${r0.reason}` }
+  const kept = r0.record.grantsKept ?? []
+  if (kept.length === 0) {
+    const grants = r0.record.grants ?? []
+    return { outcome: 'not applicable', detail: grants.length === 0
+      ? `the record of ${runId} holds no access-list grant: its establish labelled ${folder} without widening its access list (this user holds the rights to label it, as in a folder inside the home)`
+      : `the record of ${runId} keeps no grant: its release put back itself the access list saved before its grant on ${grants.map(g => g.folder).join(', ')}` }
+  }
+  const res = C.restoreKeptGrants(runId, { sandboxRoot: dirname(runDir) })
+  if (!res.done) return { outcome: 'FAILED', detail: `the recovery (restoreKeptGrants, the function behind restore-acl) answered not done: ${res.note}` }
+  const r1 = C.containmentFromRecord(runDir)
+  if (!r1.ok) return { outcome: 'not proven', detail: `the recovery answered done (${res.note}), but the record could not be read again: ${r1.reason}` }
+  const still = r1.record.grantsKept ?? []
+  if (still.length) return { outcome: 'FAILED', detail: `the recovery answered done (${res.note}), but the record still keeps a grant on ${still.map(g => g.folder).join(', ')}` }
+  const done = `the recovery answered done (${res.note}) and the record keeps no grant`
+  if (!kept.some(g => same(g.folder, folder))) {
+    return { outcome: 'not proven', detail: `${done}, but the grant kept was on ${kept.map(g => g.folder).join(', ')}, not on ${folder}, whose access list alone was read before the run's establish` }
+  }
+  const was = before ?? { error: 'it was not read' }
+  if (typeof was.sddl !== 'string') return { outcome: 'not proven', detail: `${done}, but the access list of ${folder} could not be read before the run's establish (${was.error}), so nothing was compared` }
+  const now = readAcl(folder)
+  if (typeof now?.sddl !== 'string') return { outcome: 'not proven', detail: `${done}, but the access list of ${folder} could not be read after it (${now?.error ?? 'no answer'}), so nothing was compared` }
+  if (now.sddl !== was.sddl) {
+    return { outcome: 'FAILED', detail: `the recovery answered done and the record keeps no grant, but the access list of ${folder} differs from the one read before the run's establish: before ${was.sddl}; after ${now.sddl}` }
+  }
+  const n = (now.sddl.match(/\(/g) ?? []).length
+  return { outcome: 'passed', detail: `the access list of ${folder} (its DACL in SDDL, ${n} entr${n === 1 ? 'y' : 'ies'}, read through .NET's Directory.GetAccessControl) is the one read the same way before the run's establish; the record now keeps no grant; restoreKeptGrants, the function behind bun scripts/cynco-sandbox.mjs restore-acl ${runId}, answered done (${res.note})` }
+}
+
+/** Wave 22 (pure): the box's one line for grantRecovery's answer, printed after its release. */
+export function grantRecoveryLine(o) {
+  return `${TAG} the access-list recovery after the release: ${o.outcome} (${o.detail})`
 }
 
 // ─── Live fire (run 6) ───────────────────────────────────────────────────────────────────────
@@ -4186,7 +4296,8 @@ async function liveFire(R) {
  * After run 6's release: the loop junction is removed at once (git follows a junction of either form,
  * fact F6, and a walk that asks lstat enters it, fact F4), then the release walk's count is judged; then
  * canary c0-low asks the create-time check for the mission folder as canary c0 does, and its junction
- * is removed before the next inner run.
+ * is removed before the next inner run; then (wave 22) the access-list grant the release kept, if it kept one, is put
+ * back by the engine's own recovery and proven (grantRecovery).
  */
 function afterLiveRelease(R, rel) {
   const { E, fake, report } = R
@@ -4232,6 +4343,14 @@ function afterLiveRelease(R, rel) {
     say(`${TAG} canary c0-low (a mission folder holding at its top a junction a low process made, leading out, is refused): ${o.outcome === 'passed' ? 'passed' : `${o.outcome}: ${o.detail}`}`)
     entry(report, { id: 'canary', variant: 'c0-low', form: 'live', outcome: o.outcome, detail: o.detail })
   }
+  // Wave 22 (live-5 of 2026-11-25): with the root outside the home the establish widened the mission folder's access list,
+  // and the release kept that grant while c0-low's junction led out of the folder (the engine's decided behaviour: writing
+  // the list rewrites what every entry under the folder inherits, through the link); step 8's sweep then keeps the run
+  // folder. With the junctions gone, the stage does what the release's line tells the owner to do, by the function behind
+  // it, and proves it (grantRecovery): one entry, before run 7 establishes on the same folder and before step 8 sweeps.
+  // Outside the block above: a grant may be kept for another link, whether or not the child made c0-low's.
+  const g = grantRecovery({ C: E.C, runDir: R.ctx.sandbox.root, folder: fake.mission, before: R.aclBefore, readAcl: readAclOf })
+  entry(report, { id: 'grant-recovery', variant: 'restore-acl', form: 'live', outcome: g.outcome, detail: g.detail })
 }
 
 /** Rule F10 (run 7, every layer on, live fire only). */
@@ -4899,6 +5018,12 @@ async function realBox(C, I, a, fakeReport, unprotected) {
     return { code: 2 }
   }
   gitRepo(mission, { 'README.md': 'acceptance mission\n', 'src/pkg/mod.py': 'VALUE = 1\n', 'tests/test_one.py': 'def test_one():\n    assert 1 == 1\n' })
+  // Wave 22: the mission folder's access list, read before the establish, for the recovery after the release (grantRecovery).
+  // The establish widens it when this user cannot label the folder: in the rehearsal of a stage whose root lies outside the
+  // home (live-5: taken, and put back by the release itself); on the real profile the folder lies in the real temp folder,
+  // inside the home, where this user holds full control and no grant is taken (the suite's T3, whose box lies in that temp folder, reads a record that holds no grant; real-2 cannot show it, because its engine, 00a2b0ec, took a grant without recording or printing it). Its release keeps
+  // the grant when a link under the folder leads out of it, so the box can reach that branch, and runs the same recovery.
+  const aclBefore = readAclOf(mission)
   // G4 step 2.
   const runId = C.mintRunId('acceptance-real')
   // Printed now, not only at the end: a stage killed or stopped with Ctrl-C runs no finally block, and leaves an open
@@ -4918,6 +5043,8 @@ async function realBox(C, I, a, fakeReport, unprotected) {
   // Wave 18b: `ended`, set when the box ran to its end (its result is given after the release); `released`, the release's answer.
   let ended = null
   let released = null
+  // Wave 22: grantRecovery's answer after the release.
+  let recovery = null
   // F8: `attacks`, every attack call the stage takes up (refused, or its twin did not resolve), for realResult's sum and
   // the NOT PROVEN block. Wave 18 (plan P6 (15)): the one counter of calls; `calls`, which counted the same calls once
   // more and ended equal to it when every twin resolved, is gone.
@@ -5232,12 +5359,19 @@ async function realBox(C, I, a, fakeReport, unprotected) {
       released = C.releaseContainment(ctx)
       say(`${TAG} released: ${released.note}`)
       // Wave 19 (the box core check, C10): a release that kept an access-list grant keeps the sandbox from the sweep until
-      // restore-acl puts it back; the line says so from the release's own note.
-      say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note }))
+      // restore-acl puts it back; the line says so from the release's own note. Wave 22: first the box puts a kept grant
+      // back itself, by the function behind restore-acl, and proves it (grantRecovery, as run 6 does); the line then says so.
+      recovery = grantRecovery({ C, runDir: ctx.sandbox.root, folder: mission, before: aclBefore, readAcl: readAclOf })
+      say(grantRecoveryLine(recovery))
+      say(sandboxLeftLine({ sandbox: ctx.sandbox.root, box, note: released.note, recovered: recovery.outcome === 'passed' }))
     }
   }
   // Reached only by a box that ran to its end: every other path returned above, after the finally block released it.
   const { fell } = ended
+  // Wave 22: a kept grant the recovery could not put back, or lists that differ, stop the box; a reading that failed is a
+  // not-proven item outside both accepted lists (the result is INCOMPLETE).
+  if (recovery?.outcome === 'FAILED') { say(`${TAG} FAIL (${where}): the access-list recovery after the release: ${recovery.detail}`); return { code: 1 } }
+  if (recovery?.outcome === 'not proven') notProven.push({ what: `the access-list recovery after the release: ${recovery.detail}`, cls: 'grant-recovery-not-proven' })
   const obj = firstObjectFile(mission)
   for (const f of [join(mission, 'src', 'pkg', 'mod.py'), obj].filter(f => f && exists(f))) say(`${TAG} ${f}: Low label: ${lowLabelled(f) ? 'yes' : 'no'}`)
   // Wave 18: and the temp file honest work (d) made in the sandbox, which the release sets back to medium since wave 15.
