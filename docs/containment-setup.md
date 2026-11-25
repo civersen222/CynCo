@@ -80,8 +80,8 @@ What to do about each STOP:
 - **`... carries a Low integrity label`.** A contained process could write it. Choose another folder, or
   remove the label yourself after finding out how it got there.
 - **`... has an access list that could not be read`** or **`... has a parent (...) whose access list could
-  not be read`.** `icacls` failed, so the label is unknown. Find out why (the account may not read that
-  folder) before you use it.
+  not be read`.** The security descriptor could not be read (`GetNamedSecurityInfoW`), so the label is
+  unknown. Find out why (the account may not read that folder) before you use it.
 - **`... has a parent (...) with an inheritable Low integrity label`.** The folder `-Apply` would make
   inherits it, and a contained process could write it. Choose a parent that carries no such label.
 - **`<one folder> and <another> overlap`.** The sandbox root, the guard, audit and models folders must
@@ -103,8 +103,10 @@ What to do about each STOP:
   could change what Task Scheduler starts at your next logon. Move the launcher out of the mission's
   folder, or give the mission a working folder that holds no launcher, before you switch the daemon on.
 
-The check for a Low label reads the output of `icacls` in English (`Mandatory Label\Low`). On a Windows
-installed in another language the line does not match and the check passes without saying so.
+The check for a Low label reads the label from the folder's security descriptor as SDDL (an `ML` entry
+for Low or Untrusted: `LW`, `S-1-16-4096` or `S-1-16-0`), not from the words `icacls` prints, so it holds
+in any Windows language. Until wave 15 (2026-11-24) it read `icacls` in English, and on a Windows in another
+language it passed without saying so.
 
 The daemon check (section 5 of the script) and the default models folder use `CYNCO_HOME` and
 `CYNCO_MISSIONS_DIR` as the logon tasks and the daemon get them (user, then machine variable), not as the
@@ -301,14 +303,16 @@ or edit a profile while a run is open: the settling compare reads that as a chan
 2026-11-24 the same holds for every top-level folder of the home and for the folders in `OneDrive` (where
 this PC keeps Desktop, Documents and Pictures): renaming, deleting or emptying one (down to none, or to fewer
 than half of the entries it had and by at least two) while a run is open ends the running mission or daemon
-task at once, within a minute or at its next tool call, as a containment fault, and latches. Ordinary examples:
+task at once, within about eleven seconds (a look every 10 s, counted when a second look one second later
+sees it too) or at its next tool call, as a containment fault, and latches. Ordinary examples:
 clearing `Downloads`, removing a worktree, scratch or backup folder at the home's top level, tidying more than
 half of the Desktop away, deleting the only file of a folder that holds one. `OneDrive`'s folders change from
 other devices too: a deletion synced from the phone or another PC while a run is open ends it and latches the
 same way. The rule for a folder emptied in place holds in every counted folder, the top of an acknowledged
 camera drive included. One or two application folders
-going from `AppData\Local`, `Roaming`, `LocalLow` or `Local\Packages` in a run are a note, three from one of them
-latch (gone: within a minute; emptied in place: at the run's end). Uninstalling a program during a run can do
+going from `AppData\Local`, `Roaming`, `LocalLow` or `Local\Packages` in a run are a note, three from one of them,
+gone or emptied in place, end the run the same way and latch (the in-run look counts those folders since
+wave 15). Uninstalling a program during a run can do
 that by itself (one program can keep three folders in `Roaming`), and so can a disk cleanup together with an
 updater: `Temp` and the shader cache `D3DSCache` are recorded by name only, so Windows' own cleanup emptying
 them counts for nothing, but every other cache folder it empties counts toward the two. A page about a change
@@ -319,9 +323,9 @@ then says so): `bun scripts/cynco-guard.mjs status` lists up to ten changes; the
 a day in the audit folder, `C:\cynco-audit` by default, each record with its run id) shows whether a call of the
 run named `AppData` or those folders; folders gone in alphabetical order, as on 2026-11-22, are a walk, while a
 few scattered folders that their applications have made again since are ordinary life. One or two such
-folders in a run latch nothing and are written only to `allowed` on the run's line in `checks.jsonl` in the
-guard folder; `post` does not print them, and `status` shows them only inside the raw JSON of the last five
-check lines.
+folders in a run latch nothing and are written to `allowed` on the run's line in `checks.jsonl` in the
+guard folder; `post` prints each as a `[guard] allowed: ...` line, and `status` prints those of its last five
+check lines as `[guard] allowed in the <kind> of run <id>: ...`.
 
 `clear` needs a console. In a Git Bash (mintty) window Bun's input is a pipe, not a console: run
 `winpty bun scripts/cynco-guard.mjs clear`, or run it from PowerShell or Windows Terminal (not measured in
@@ -336,3 +340,80 @@ The embedding server's log: the first start of the embed service after this chan
 `%USERPROFILE%\.cynco\embed-server.log` (26 GB today) to `embed-server.log.1`, and the next rotation, at a
 later start when the new log is over 50 MiB, replaces that `.1`, which deletes it. Delete or keep it
 yourself before then; the daemon pages once a day about a `.log.1` over 1 GiB.
+
+## 14. The copy of Git's Unix tools (optional)
+
+Inside a contained run on Windows the programs of the installed Git's Unix runtime (`bash`, `sh`, `grep`,
+`sed`, `head`, `tail`, `find`, a git hook written as a shell script) never start: the process that starts the
+run's commands holds that Git's shared namespace at normal integrity for as long as it may start contained
+children (the package document of `engine/tools`, "What stops working in a contained run on Windows"). The
+Git-tools switch gives them back from a copy of that runtime. It is off by default. To switch it on:
+
+1. In an ordinary PowerShell, with nothing unattended running:
+   `scripts\cynco-containment-setup.ps1 -MsysCopy -Apply`. It copies `usr\bin`, `etc`, `dev` and `tmp` of the
+   installed Git (about 95 MB, 445 files) into `C:\cynco-msys` (`-MsysDir` names another folder; `-GitRoot`
+   names the Git folder when it is not found on PATH). It copies no link (`robocopy /XJ`), never deletes, and
+   writes `cynco-msys.manifest.json` beside the copy (the SHA-256 of `msys-2.0.dll` and the file count). A
+   folder that holds files and no manifest is refused as not made by the script (`STOP`). Without `-Apply`
+   the report says `ok`, `TODO` (missing or stale) or `STOP`.
+2. Set `LOCALCODE_CONTAINMENT_MSYS=C:\cynco-msys` in the environment of whatever starts runs: as a user
+   variable for the daemon and the services (sign out and in once, section 4), or in the shell that runs
+   `scripts/dispatch-mission.sh`. Only the starter reads it, when it makes the run's sandbox; the run keeps it
+   in its record and cannot change it, and a contained child never holds the variable. The containment
+   acceptance does not read it: pass `--git-tools-copy C:\cynco-msys` on the stage's own command line.
+3. Run step 1 again after every Git for Windows update: a copy whose `msys-2.0.dll` differs from the
+   installed Git's refuses the run by name (`... is older than the installed Git; run the setup step again`).
+4. Never start a program from `C:\cynco-msys` yourself, and never put it on a PATH of your own: while a
+   normal-privilege process of the copy runs, every contained run's start of it fails, and one started after
+   a contained one joins the namespace the run made.
+
+To switch it off, remove the variable (and sign out and in, when it was a user variable). To remove the copy:
+`cmd /c dir /AL /S /B C:\cynco-msys` must print nothing, then `cmd /c rd /s /q C:\cynco-msys`.
+
+With the switch on, a bare `bash`, `grep` or a hook's `sh` starts the copy at low integrity; a program of the
+installed Git started by its full path still fails. Why it was built, what it costs and its six questions:
+`docs/decisions/2026-11-23-mission-containment.md`.
+
+## 15. Giving back what an unattended run loses (decision sheet item 2)
+
+The owner accepted the six losses of item 2 on 2026-11-24 on the condition that each can be given back
+quickly. What stops working, how you would see it, how long a lever takes and what it exposes again is the
+give-back table in `docs/decisions/2026-11-23-mission-containment.md` (section "Capability removed"); read
+the exposure there before you use a lever. The steps:
+
+- **SSH keys (`git push` over SSH).** No lever inside a run, by design: push from your own terminal after the
+  run. Handing `~\.ssh` in is refused (a home dot-folder).
+- **User-level tool configuration.** Name the real file in the starter's environment, the same way as the
+  variable of section 14: `NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, and for cargo, which finds no toolchain
+  in the sandbox home, `RUSTUP_HOME=%USERPROFILE%\.rustup`. A contained child receives these: `toolEnv`
+  strips credentials, sessions and the harness's own variables, and none of these is among them.
+- **`pip install --user`, and the pip, npm and cargo caches.** Make a folder of its own for missions (never
+  your real cache or user site), hand it to the run, and point the tool at it in the starter's environment:
+  `PYTHONUSERBASE`, `PIP_CACHE_DIR`, `npm_config_cache`, `CARGO_HOME` (with `RUSTUP_HOME` as above). A
+  dispatch hands extra folders to the run through `CYNCO_MISSION_ALSO_LABEL` (a `;` list) in the shell that
+  starts it, which becomes `--also <folder>` at the sandbox's create; the folder is labelled low for the
+  run's length and set back at its release.
+- **Git's Unix tools.** Section 14.
+- **Writing to `C:\tmp`.** A brief or a gate uses the run's scratch folder (`$env:CYNCO_SCRATCH`). For a path
+  that cannot be changed, hand in a sub-folder such as `C:\tmp\<mission>` as above, never `C:\tmp` whole: the
+  dispatch writes its engine and driver logs there.
+- **A mission folder that is a worktree, not the top of a repository, or in or around the engine's
+  checkout.** Clone it with `git clone --no-hardlinks <repository> <folder>` outside the checkout and the
+  home's dot-folders, dispatch there, and bring the work back with a fetch or a push from your own terminal.
+- **A daemon task that names no `cwd`.** Set `cwd` in the mission's `mission.json` (the mission's, or one
+  trigger's) and restart the daemon, which reads `mission.json` at start.
+- **The driver pointed at an engine it did not start.** Not run by anyone yet, and written from reading the
+  dispatch, which does the same steps in this order: mint a run id with
+  `bun --no-install scripts/cynco-sandbox.mjs mint <label>` (the guard refuses an id of any other shape), take
+  the integrity baseline with `bun --no-install scripts/cynco-guard.mjs pre <id> --cwd <mission folder> --by owner
+  --max-seconds <the run's limit and three hours more>`, make the sandbox with
+  `bun --no-install scripts/cynco-sandbox.mjs create --run-id <id> --cwd <mission folder>`, start the engine by
+  hand with `LOCALCODE_MISSION_RUN_ID=<id>` and `LOCALCODE_MISSION_CWD=<mission folder>`, and start the driver
+  with the same run id. Without the baseline the engine refuses to boot (`no integrity baseline exists for run
+  <id>; the starter takes it before the engine starts`). Once the engine has ended, settle the baseline with
+  `bun --no-install scripts/cynco-guard.mjs post <id> --by owner` and give the sandbox back with
+  `bun --no-install scripts/cynco-sandbox.mjs release <id>`: a baseline still open past its `--max-seconds` is
+  an orphan, and the guard refuses every later baseline, so every later run, until it is settled. An
+  interactive or the phone engine has no lever, by design.
+- **The model running the gate-authoring check itself (the seventh loss, item 25).** Nothing to do: the
+  driver runs the check outside the box when the turn ends (the package document of `engine/tools`).

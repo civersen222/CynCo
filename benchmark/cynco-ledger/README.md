@@ -358,7 +358,12 @@ decisions still recorded here).
   // 2026-11-14): the turn was open or unanswered and produced no model output,
   // tool activity or turn end for 30 minutes (or the Bash cap plus 10 minutes
   // while a tool ran) — a stall, so the outcome is "engine_error" when nothing
-  // landed and the gate labels nothing when something did.
+  // landed and the gate labels nothing when something did. "integrity-latch"
+  // (F242): the driver's poll met the integrity latch and tore the mission
+  // down; "integrity-guard-unusable" (wave 19): the guard folder could not be
+  // used, so the latch could not be asked, and the mission was torn down the
+  // same way. Both give the outcome "engine_error"; what the campaign runner
+  // does with such a wave: docs/cynco-self-orchestration-spec.md, section 10.
   "exitReason": "engine_closed_the_turn",
   "markerSeen": true,        // commit-marker substring found in `git log`
   "engineError": null,       // non-null when the engine process died (outcome "engine_error")
@@ -893,7 +898,16 @@ same, next to the code):
   (`--adopt-inflight`, or `scripts/cynco-campaign-adopt.mjs` — both are the
   operator handing a wave over) and for the fault `--adopt-inflight` records
   when the driver wrote no row. Earlier records carry no mark, so adoptions
-  before Phase 5 are not counted.
+  before Phase 5 are not counted. An in-flight record that names no run id
+  (dispatched before the dispatch printed one) has no integrity baseline to
+  look up (F242): `--adopt-inflight` grades it all the same and writes
+  `integrityNote: "no integrity baseline was settled for this wave"` on its
+  ledger row (`NO_SETTLED_BASELINE`, `scripts/cynco-campaign.mjs`); the wave
+  record carries the same `integrityNote` beside `integrity` (null), and its
+  verdict entry has the line `- Integrity: no integrity baseline was settled
+  for this wave.` `scripts/cynco-campaign-adopt.mjs` writes no note; it prints
+  one `[adopt]` line saying the runner takes no integrity reading for a wave
+  adopted by hand.
 - **Rules** — the S5 rules only: entries of `rule-verdicts.json` whose
   `source` is not `"model"`. The learner's `M1.*` rows (see "Outcome hindcast
   and the `M1.*` rows" below) share the file and the Holm family but are not

@@ -152,7 +152,9 @@ with the runbook's `dynasty` topics. Autostart as in section 5; no token variabl
 
 - `scripts\cynco-services.ps1 register daemon`, which creates the logon task that runs
   `scripts\run-daemon.cmd` (the launcher rotates `daemon.log` when the daemon starts:
-  `scripts\rotate-log.cmd` keeps one previous file, `daemon.log.1`, once the log is over 50 MiB; F242).
+  `scripts\rotate-log.cmd` keeps one previous file, `daemon.log.1`, once the log is over 50 MiB; F242;
+  a rotation that refuses or fails writes its line to `daemon.rotate.log`, which `scripts\cynco-services.ps1
+  status` shows; why it has a file of its own: `engine/daemon/CLAUDE.md`, the `housekeeping.ts` row).
 - The one-time step for a PC that still has the old task: delete the task named `CynCo liveness daemon`
   in Task Scheduler first, then register (Task Scheduler compares task names without case, so
   `register` would otherwise answer that the task is already registered). Set `CYNCO_NTFY_TOKEN` as a
@@ -168,7 +170,7 @@ its service starts, so the page asks for a stop and start of that service.
 > the daemon and the interactive TUI provably run the same model.
 
 In Task Scheduler GUI, open the task → Settings → check "If the task fails, restart every 1 minute".
-The daemon never loads a model — it spawns `bun engine/main.ts --run-task <file>` per task,
+The daemon never loads a model — it spawns `bun --no-install engine/main.ts --run-task <file>` per task,
 which starts llama-server, runs, and stops it again. If you have an interactive CynCo session
 open (llama-server already running), scheduled tasks defer 10 minutes and retry.
 

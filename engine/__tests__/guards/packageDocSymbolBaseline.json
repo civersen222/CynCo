@@ -8,6 +8,5 @@
   "ollama/CLAUDE.md: toOpenAITools @ format.ts:24",
   "profiles/CLAUDE.md: ollama @ types.ts:64",
   "skills/CLAUDE.md: getSkillIndex @ store.ts:19",
-  "tools/CLAUDE.md: ContractState @ contract.ts:90",
   "workflows/CLAUDE.md: advance() @ engine.ts:65"
 ]
