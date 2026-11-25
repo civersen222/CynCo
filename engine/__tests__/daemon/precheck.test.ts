@@ -11,6 +11,7 @@ import { runPrecheck } from '../../daemon/precheck.js'
 import { LAUNCHER_UNAVAILABLE, containmentRecords } from '../../containment.js'
 import { SUITE_CONTAINMENT_ENV } from '../setup/containment.js'
 import { AUDIT_MARKER, AUDIT_NOT_WRITTEN } from '../../audit/toolAudit.js'
+import { endMarked, goneWithin, newMark, watchMarked } from '../helpers/markedProcesses.js'
 
 describe('runPrecheck', () => {
   let dir = ''
@@ -147,18 +148,28 @@ describe('runPrecheck', () => {
     // started running. The tree is owned from the start and ended on the precheck's cap; asked by
     // the pid of the program the shell started. Off Windows here; on Windows vitest's Node has no
     // launcher, so the same code runs only under Bun.
+    // Wave 24 (F255): the program the shell starts in the background and waits on is a node that carries a mark in
+    // its command line (a `sleep` cannot carry one), and it is asked about and ended by the mark, never by its pid.
+    // Wave 24, round two: a watcher lists for the mark from before the precheck starts and must have seen the program's
+    // pid carrying it, since "gone" is also the answer of a mark that never named the program. Changed on purpose: the
+    // cap was 1000 ms, which gave the program under a second, too briefly for two listings a second to be sure to see
+    // it; at 3000 ms it lives through several.
     it('a precheck cut at its cap ends what it started, and reads as a cut precheck (code 1, no status)', async () => {
-      const r = await runPrecheck('sleep 300 & echo "pid=$!"; wait', mission, 'cap', 1000)
-      expect(r.code).toBe(1)
-      const pid = Number(/pid=(\d+)/.exec(r.stdout)?.[1])
-      expect(Number.isInteger(pid) && pid > 0, r.stdout).toBe(true)
-      const alive = () => { try { process.kill(pid, 0); return true } catch { return false } }
-      const until = Date.now() + 5000
-      while (alive() && Date.now() < until) await new Promise(res => setTimeout(res, 100))
-      const survived = alive()
-      if (survived) process.kill(pid, 'SIGKILL')
-      expect(survived, `sleep ${pid}, started by the precheck, outlived its cap`).toBe(false)
-      expect(said).toContain('[daemon] precheck cut at its cap of 1000 ms; its process tree is ended')
+      const mark = newMark('precheckCap')
+      const watch = watchMarked(mark)
+      try {
+        await watch.ready
+        const r = await runPrecheck(`node -e "setTimeout(() => {}, 60000) // ${mark}" & echo "pid=$!"; wait`, mission, 'cap', 3000)
+        expect(r.code).toBe(1)
+        const pid = Number(/pid=(\d+)/.exec(r.stdout)?.[1])
+        expect(Number.isInteger(pid) && pid > 0, r.stdout).toBe(true)
+        expect(await watch.stop(), `node ${pid} was never seen carrying its mark while the precheck ran`).toContain(pid)
+        expect(await goneWithin(pid, mark), `node ${pid}, started by the precheck, outlived its cap`).toBe(true)
+      } finally {
+        await watch.stop().catch(() => undefined)
+        endMarked(mark)
+      }
+      expect(said).toContain('[daemon] precheck cut at its cap of 3000 ms; its process tree is ended')
       expect(records().find(x => x.kind === 'end')).toMatchObject({ isError: true, exitCode: null })
       expect(containmentRecords({ sandboxRoot: root }).every((rec) => rec.releasedAt !== null)).toBe(true)
     }, 20_000)

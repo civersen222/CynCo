@@ -6,6 +6,10 @@
  * this PC runs under Bun, where the tree is a Job Object; `fixtures/bypassTrees.ts` runs the real
  * sites there, as `processTreeJob.test.ts` runs its own, and this file reads its one JSON line.
  *
+ * Every case that says a program is gone after a cut or an overrun also says the program was seen carrying its mark
+ * while it ran (`seenMarked`, a watcher of `helpers/markedProcesses.ts`; wave 24, round two): "gone" is also the
+ * answer of a mark that never named the program, so without it a mark lost in a wrapper would pass every case.
+ *
  * The precheck's cut is not here: under Bun on Windows it makes a real `precheck` sandbox whose
  * tool-call audit folder must lie outside the home folder, and a test may make folders only in the
  * temp folder, which is inside it. Windows only, and only where `bun` names its executable.
@@ -54,6 +58,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     const c = get().cases.contractCut
     expect(c.outcome, JSON.stringify(c)).toBe('timeout')
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the check's cap`).toBe(true)
   }, 180_000)
 
@@ -68,6 +73,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     const c = get().cases.contractOverflow
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
     expect(c.ms, JSON.stringify(c)).toBeLessThan(55_000)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the overrun`).toBe(true)
   }, 180_000)
 
@@ -75,6 +81,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     const c = get().cases.lspCut
     expect(c.diags, JSON.stringify(c)).toEqual([])
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the diagnostics' cap`).toBe(true)
   }, 180_000)
 
@@ -85,6 +92,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     expect(c.diags, JSON.stringify(c)).toBe(0)
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
     expect(c.ms, JSON.stringify(c)).toBeLessThan(9_000)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the overrun`).toBe(true)
   }, 180_000)
 
@@ -99,6 +107,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     expect(c.cut, JSON.stringify(c)).toEqual([])
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
     expect(c.ms, JSON.stringify(c)).toBeLessThan(12_000)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the overrun`).toBe(true)
   }, 180_000)
 
@@ -109,6 +118,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     expect([c.passed, c.total], JSON.stringify(c)).toEqual([0, 0])
     expect(c.ms, JSON.stringify(c)).toBeLessThan(10_000)
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the run's cap`).toBe(true)
   }, 180_000)
 
@@ -124,6 +134,23 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the bypass sit
     expect(c.refused, JSON.stringify(c)).toBeNull()
     expect(c.pid, JSON.stringify(c)).toBeGreaterThan(0)
     expect(c.ms, JSON.stringify(c)).toBeLessThan(55_000)
+    expect(c.seenMarked, `the program ${c.pid} was never seen carrying its mark while it ran: ${JSON.stringify(c)}`).toBe(true)
     expect(c.gone, `the program ${c.pid} outlived the overrun`).toBe(true)
+  }, 180_000)
+
+  // F255 (wave 24): the fixture's last line ended "what was left" by nine pid numbers it had read up to nineteen
+  // seconds earlier, seven of them of programs it had already seen gone, so a number another process had been given
+  // meanwhile would have been ended with it. It now ends what carries its mark and nothing else, and says what that was.
+  it('ends at its end only what carries its mark: the programs left running on purpose, and nothing is left', () => {
+    const r = get()
+    const onPurpose = [r.cases.contractNatural?.pid, r.cases.bestOfNNatural?.pid]
+    expect(Array.isArray(r.endedAtEnd), `the fixture does not say what it ended at its end: ${JSON.stringify(r)}`).toBe(true)
+    for (const pid of r.endedAtEnd) {
+      expect(onPurpose, `the fixture ended ${pid} at its end, which is not a program it left running on purpose (${JSON.stringify(r.endedAtEnd)})`).toContain(pid)
+    }
+    // The best-of-N run's program lives two minutes: it is still running at the end, so it is what shows that the
+    // mark finds what it must (the contract check's ends itself after 20 s, and may be gone by then).
+    expect(r.endedAtEnd, `the program left running on purpose was not found by its mark: ${JSON.stringify(r)}`).toContain(r.cases.bestOfNNatural.pid)
+    expect(r.cleanAfterEnd, `something that carries the fixture's mark was still running after its end: ${JSON.stringify(r)}`).toBe(true)
   }, 180_000)
 })

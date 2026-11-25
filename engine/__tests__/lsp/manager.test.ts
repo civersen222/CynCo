@@ -1,16 +1,22 @@
-import { afterAll, describe, expect, it } from 'bun:test'
+import { afterAll, afterEach, describe, expect, it } from 'bun:test'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LSPManager } from '../../lsp/manager.js'
 import { setContainmentFaultSink } from '../../audit/toolAudit.js'
+import { endMarked, goneWithin, newMark, watchMarked, type MarkWatch } from '../helpers/markedProcesses.js'
 
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }) })
 const folder = () => { const d = mkdtempSync(join(tmpdir(), 'cynco-lsp-')); dirs.push(d); return d }
-const alive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
-}
+// A program a case starts carries a mark in its command line and is asked about and ended by it, never by the pid it
+// wrote (F255, wave 24: a number read from a file names whatever process has it now).
+const marks: string[] = []
+const watches: MarkWatch[] = []
+afterEach(async () => {
+  for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+  for (const m of marks.splice(0)) endMarked(m)
+})
 
 // NOW.md, 2026-11-24: py_compile got the file name inside a shell string, so the shell read it
 // (cmd expands `%NAME%` even inside quotes; a POSIX shell a `$(...)`), and its `2>&1` left stderr an
@@ -45,29 +51,36 @@ describe('LSPManager: Python diagnostics pass the file as one argument', () => {
 describe('LSPManager: a diagnostics command cut at its cap ends what it started', () => {
   it('the grandchild of a hung py_compile is gone after the cap', async () => {
     const d = folder()
+    const mark = newMark('lspCut')
+    marks.push(mark)
     const pidFile = join(d, 'grandchild.pid')
+    // Both wait two minutes, longer than the case needs (the cap is 10 s). The grandchild carries the mark in its
+    // `-c` text; the hung py_compile, which is `python -m py_compile <file>`, carries it in the file's name.
     writeFileSync(join(d, 'py_compile.py'), [
       'import subprocess, sys, time',
-      `p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(4000)'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)`,
+      `p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)  # ${mark}'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)`,
       `open(${JSON.stringify(pidFile)}, 'w').write(str(p.pid))`,
       // What a cut command printed is not a diagnostic of the file.
       'sys.stderr.write("not a diagnostic\\n"); sys.stderr.flush()',
-      'time.sleep(4000)',
+      'time.sleep(120)',
       '',
     ].join('\n'))
-    const file = join(d, 'ok.py')
+    const file = join(d, `ok_${mark}.py`)
     writeFileSync(file, 'x = 1\n')
+    // Wave 24, round two: a watcher lists for the mark from before the command starts (the grandchild lives until the
+    // 10 s cap) and must have seen the grandchild's pid carrying it: "gone" is also the answer of a mark that never
+    // named the program.
+    const watch = watchMarked(mark)
+    watches.push(watch)
+    await watch.ready
     const started = Date.now()
     const diags = await new LSPManager(d).getDiagnostics(file)
     expect(Date.now() - started).toBeLessThan(25_000)
     expect(diags).toEqual([])
     const pid = Number(readFileSync(pidFile, 'utf-8'))
-    expect(pid).toBeGreaterThan(0)
-    const until = Date.now() + 5000
-    while (alive(pid) && Date.now() < until) await new Promise(res => setTimeout(res, 100))
-    const survived = alive(pid)
-    if (survived) process.kill(pid)
-    expect(survived, `python ${pid}, started by the diagnostics command, outlived its cap`).toBe(false)
+    expect(Number.isInteger(pid) && pid > 0, `the pid file held ${JSON.stringify(readFileSync(pidFile, 'utf-8'))}`).toBe(true)
+    expect(await watch.stop(), `python ${pid} was never seen carrying its mark while the command ran`).toContain(pid)
+    expect(await goneWithin(pid, mark), `python ${pid}, started by the diagnostics command, outlived its cap`).toBe(true)
   }, 40000)
 })
 

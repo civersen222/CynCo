@@ -375,24 +375,42 @@ describe('TaskRunner containment (refuse, contain, release)', () => {
 
   // Review finding of slice S2: a throw after the spawn (here the activity registry) used to give
   // the sandbox back with the one-shot still running in the folder.
+  //
+  // Changed on purpose in wave 24 (A4, F255): the child was `node -e "<code>" --run-task <file>`, which Node refuses at
+  // once (`bad option: --run-task`, exit 9, 18 ms: measured), so it was never alive, the case proved nothing, and its
+  // kill logged `taskkill /T <pid>: ... not found` in every run. The stub engine accepts --run-task and, for WRITE_LATE,
+  // writes `outlived.txt` 2.5 s later; the control below shows it does when nothing ends it, so the case cannot be
+  // empty again.
   it('a throw after the child started ends the child before the sandbox is released, and still reaches the caller', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    const said: string[] = []
+    const log = console.log
+    console.log = (...a: unknown[]) => { said.push(a.map(String).join(' ')); log(...a) }
     try {
       const w = wired(dir)
-      const marker = join(dir, 'outlived.txt').replace(/\\/g, '/')
-      const late = `setTimeout(() => require('fs').writeFileSync('${marker}', 'x'), 2500)`
       const runner = new TaskRunner({
-        workDir: dir, spawnCmd: [process.execPath, '-e', late], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts,
+        workDir: dir, spawnCmd: [process.execPath, STUB], gpuBusyPath: join(dir, 'gpu-busy.json'), ...w.opts,
         activity: { begin: () => { throw new Error('activity registry broken') } } as unknown as ActivityRegistry,
       })
-      await expect(runner.run(makeInput(dir, 'do the thing'))).rejects.toThrow('activity registry broken')
+      await expect(runner.run(makeInput(dir, 'WRITE_LATE please'))).rejects.toThrow('activity registry broken')
       expect(w.calls.slice(-2)).toEqual(['give back', 'release'])
       expect(w.released.length).toBe(1)
       await new Promise(r => setTimeout(r, 4000))
       expect(existsSync(join(dir, 'outlived.txt')), 'the one-shot outlived the failed setup').toBe(false)
       expect(existsSync(join(dir, 'gpu-busy.json'))).toBe(false)
-    } finally { rmSync(dir, { recursive: true, force: true }) }
-  }, 20000)
+      // The child was alive when it was ended: no "not found" from a kill of a child that had already gone, and no
+      // refusal of a walk whose root had ended.
+      expect(said.filter(l => /not found|was not killed/.test(l)), said.join('\n')).toEqual([])
+    } finally { console.log = log; rmSync(dir, { recursive: true, force: true }) }
+    // The control: the same child, with nothing thrown and nothing ended, does write its file.
+    const control = mkdtempSync(join(tmpdir(), 'cynco-tr-'))
+    try {
+      const runner = new TaskRunner({ workDir: control, spawnCmd: [process.execPath, STUB], isGpuBusyImpl: async () => false, gpuBusyPath: join(control, 'gpu-busy.json') })
+      const outcome = await runner.run({ ...makeInput(control, 'WRITE_LATE please'), timeoutMs: 15_000 })
+      expect(outcome.ok).toBe(false)
+      expect(existsSync(join(control, 'outlived.txt')), 'the stand-in did not write its file even when nothing ended it').toBe(true)
+    } finally { rmSync(control, { recursive: true, force: true }) }
+  }, 40000)
 
   it('released once when the program cannot be found (the spawn reports an error instead of throwing)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cynco-tr-'))

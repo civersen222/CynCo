@@ -24,6 +24,17 @@ const clockOf = () => ({ t: 1_000_000 })
 
 const ETIMEDOUT = { status: null, stdout: '', stderr: '', error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) }
 
+// Wave 24 (A9, F255): every fake child handed to runAsync carries a made-up pid (1, 4242, 7 ...). The default kill
+// would run a real `taskkill /PID <that number> /T /F`, which names whatever process has the number now, so every
+// case with a fake child also hands runAsync a kill hook. Where a case does not expect a kill, it is this one, and a
+// fake child that reaches it fails the case.
+const strayKills = []
+const noRealKill = (c) => { strayKills.push(c?.pid) }
+afterEach(() => {
+  const k = strayKills.splice(0)
+  expect(k, 'a fake child reached a kill the case did not expect').toEqual([])
+})
+
 describe('runSync: a timeout is an elapsed measurement', () => {
   it('calls an early ETIMEDOUT a harness fault, not a timeout', () => {
     const clock = clockOf()
@@ -509,7 +520,7 @@ describe('runAsync: the signal option', () => {
     const ac = new AbortController()
     ac.abort()
     const r = await runAsync('python', ['gate.py'], { timeoutMs: 1000, signal: ac.signal, audit: { handle, src: 'driver-marker' }, contained: { own: 'C:/never-made' } }, {
-      spawn: () => { spawned++; return childOf(9, 5) },
+      spawn: () => { spawned++; return childOf(9, 5) }, kill: noRealKill,
       establish: () => { throw new Error('must not establish') },
     })
     expect(spawned).toBe(0)
@@ -535,7 +546,7 @@ describe('runAsync: the signal option', () => {
     // A long-lived signal (the driver's poll) must not collect one listener per check.
     const listeners = new Set()
     const signal = { aborted: false, addEventListener: (ev, fn) => listeners.add(fn), removeEventListener: (ev, fn) => listeners.delete(fn) }
-    const p = runAsync('x', [], { timeoutMs: 1000, signal }, { spawn: () => childOf(15, 5) })
+    const p = runAsync('x', [], { timeoutMs: 1000, signal }, { spawn: () => childOf(15, 5), kill: noRealKill })
     expect(listeners.size).toBe(1)
     await p
     expect(listeners.size).toBe(0)
@@ -584,6 +595,77 @@ describe('runAsync: the signal option', () => {
     expect(r.fault?.code).toBe('EABORTED')
     expect(r.timedOut).toBe(false)
     expect(r.status).toBeNull()
+  })
+
+  // Wave 24 (A5, F255): the run stays open on 'close', which a process the root started can hold off after the root
+  // itself has exited. By then the runtime has handled the root's exit and its number is free, so the default kill
+  // (taskkill /PID <root> /T) could only reach a stranger. It now starts nothing for a root whose exit was handled and
+  // says so on stderr; the run stays open until 'close', as the comment above runAsync says. The fake child has a pid
+  // no process can have, and no kill hook is given, so the default kill is the one under test.
+  describe('the default kill of a root whose exit was handled', () => {
+    const NO_SUCH_PID = 2_000_000_000
+    const exitedChild = (ended = { exitCode: 0, signalCode: null }) => {
+      const child = new EventEmitter()
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter()
+      child.pid = NO_SUCH_PID
+      child.exitCode = ended.exitCode
+      child.signalCode = ended.signalCode
+      child.killed = []
+      child.kill = (sig) => { child.killed.push(sig ?? 'SIGTERM'); return true }
+      return child
+    }
+    const LINE = `[spawn] pid ${NO_SUCH_PID} was not killed: its process has ended and its exit was handled, so the number may be another process's now; the run stays open until what holds its output ends`
+    let errors
+    let restore
+    beforeEach(() => {
+      errors = []
+      const orig = console.error
+      console.error = (...a) => { errors.push(a.map(String).join(' ')) }
+      restore = () => { console.error = orig }
+    })
+    afterEach(() => restore())
+
+    it('at the deadline: nothing is killed, the line says why, and the run stays open until close', async () => {
+      let child
+      let settled = false
+      const p = runAsync('x', [], { timeoutMs: 40 }, { spawn: () => { child = exitedChild(); return child } })
+      p.then(() => { settled = true })
+      await new Promise(r => setTimeout(r, 250))
+      expect(settled, 'the run settled although nothing closed it').toBe(false)
+      expect(child.killed).toEqual([])
+      expect(errors).toEqual([LINE])
+      child.emit('close', 0, null)
+      const r = await p
+      expect(r.status).toBeNull()
+      expect(r.timedOut).toBe(true)
+    })
+
+    it('a root ended by a signal (signalCode set, exitCode null) is not killed either', async () => {
+      let child
+      const p = runAsync('x', [], { timeoutMs: 30 }, { spawn: () => { child = exitedChild({ exitCode: null, signalCode: 'SIGTERM' }); return child } })
+      await new Promise(r => setTimeout(r, 150))
+      expect(child.killed).toEqual([])
+      expect(errors).toEqual([LINE])
+      child.emit('close', null, 'SIGTERM')
+      expect((await p).timedOut).toBe(true)
+    })
+
+    it('at an abort, and again at the deadline after it: nothing is killed, and the run stays open until close', async () => {
+      let child
+      let settled = false
+      const ac = new AbortController()
+      const p = runAsync('x', [], { timeoutMs: 80, signal: ac.signal }, { spawn: () => { child = exitedChild(); return child } })
+      p.then(() => { settled = true })
+      ac.abort()
+      await new Promise(r => setTimeout(r, 250))
+      expect(settled, 'the run settled although nothing closed it').toBe(false)
+      expect(child.killed).toEqual([])
+      expect(errors).toEqual([LINE, LINE])
+      child.emit('close', 0, null)
+      const r = await p
+      expect(r.fault?.code).toBe('EABORTED')
+      expect(r.timedOut).toBe(false)
+    })
   })
 
   it('runCheckAsync forwards the signal: verified null, stopped, not a spawn failure, and the line says the check was stopped', async () => {
@@ -651,7 +733,7 @@ describe('the contained option', () => {
     expect(r).toEqual({ status: null, stdout: '', stderr: UNKNOWN, elapsedMs: 0, timedOut: false, fault: { code: 'ECONTAINMENT', status: null, signal: null, elapsedMs: 0 } })
     expect(faultSummary(r.fault)).toBe('code ECONTAINMENT, status null, after 0 ms')
     let spawned = 0
-    const a = await runAsync('python', ['gate.py'], { contained: ctxOf(), timeoutMs: 1000 }, { spawn: () => { spawned++; return asyncChild(0)() } })
+    const a = await runAsync('python', ['gate.py'], { contained: ctxOf(), timeoutMs: 1000 }, { spawn: () => { spawned++; return asyncChild(0)() }, kill: noRealKill })
     expect(a.fault?.code).toBe('ECONTAINMENT')
     expect(a.stderr).toBe(UNKNOWN)
     expect(a.timedOut).toBe(false)
@@ -726,7 +808,7 @@ describe('the contained option', () => {
     const a = await runAsync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: () => { throw Object.assign(new Error('no'), { code: 'ENOENT' }) } })
     expect(a.fault?.code).toBe('ENOENT')
     expect(released).toEqual([ctx, ctx, ctx])
-    const b = await runAsync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: asyncChild(0) })
+    const b = await runAsync('python', ['gate.py'], { contained: { own } }, { ...hooks, spawn: asyncChild(0), kill: noRealKill })
     expect(b.status).toBe(0)
     expect(released).toEqual([ctx, ctx, ctx, ctx])
   })
@@ -769,7 +851,7 @@ describe('the contained option', () => {
 
   // Entry 1.M1. `platform` and `bun` are seams that make the plan take the launcher's form here.
   describe('through the launcher', () => {
-    const launcherHooks = (spawn) => ({ spawn, platform: 'win32', bun: true })
+    const launcherHooks = (spawn) => ({ spawn, platform: 'win32', bun: true, kill: noRealKill })
     it('starts the launcher, not the command, with the colour-forcing keys out of its environment', () => {
       const prev = process.env.FORCE_COLOR
       process.env.FORCE_COLOR = '3'
@@ -852,7 +934,7 @@ describe('the contained option', () => {
       const own = join(dir, 'base')
       const runs = [
         (o, hk) => runSync('python', ['gate.py'], o, { ...hk, spawn: recorder().spawn }),
-        (o, hk) => runAsync('python', ['gate.py'], o, { ...hk, spawn: asyncChild(0) }),
+        (o, hk) => runAsync('python', ['gate.py'], o, { ...hk, spawn: asyncChild(0), kill: noRealKill }),
       ]
       for (const run of runs) {
         const asked = []
@@ -1017,7 +1099,7 @@ describe('the audit option', () => {
       setTimeout(() => { child.stdout.emit('data', 'hi'); child.emit('close', 0, null) }, 5)
       return child
     }
-    const r = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'driver-marker' } }, { spawn })
+    const r = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'driver-marker' } }, { spawn, kill: noRealKill })
     expect(r.status).toBe(0)
     expect(order).toEqual(['start', 'spawn'])
     expect(h.events[1][0]).toBe('end')
@@ -1033,7 +1115,7 @@ describe('the audit option', () => {
       elapsedMs: 0, timedOut: false, fault: { code: 'EAUDIT', status: null, signal: null, elapsedMs: 0 },
     })
     expect(faultSummary(r.fault)).toBe('code EAUDIT, status null, after 0 ms')
-    const a = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { spawned++; return null } })
+    const a = await runAsync('python', ['gate.py'], { timeoutMs: 1000, audit: { handle: h.handle, src: 'gate' } }, { spawn: () => { spawned++; return null }, kill: noRealKill })
     expect(a.fault?.code).toBe('EAUDIT')
     expect(a.timedOut).toBe(false)
     expect(spawned).toBe(0)

@@ -1,5 +1,6 @@
 """Project picker -- select working directory before launching engine."""
 from __future__ import annotations
+import csv
 import os
 import subprocess
 import asyncio
@@ -44,6 +45,57 @@ def read_engine_log_tail(log_path: str, max_lines: int = 8) -> str:
         return "\n".join(lines[-max_lines:]) if lines else "(engine log is empty)"
     except OSError:
         return "(no engine log found)"
+
+
+ENGINE_IMAGE = "bun.exe"
+
+
+def listening_pids(netstat_text: str, port: int) -> list[str]:
+    """The pids ``netstat -ano`` names as listening on exactly ``port``, each once.
+
+    The port is the local address's own (``127.0.0.1:9160``, ``[::1]:9160``): 9160 is not :91600, :19160 or an IPv6
+    address that holds 9160 as a group, which the substring match took for it (F255).
+    """
+    pids: list[str] = []
+    for line in netstat_text.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or not parts[0].upper().startswith("TCP") or parts[3] != "LISTENING":
+            continue
+        if parts[1].rsplit(":", 1)[-1] != str(port):
+            continue
+        pid = parts[-1]
+        if pid.isdigit() and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
+def image_of_pid(pid: str, run=subprocess.run) -> str | None:
+    """The image name of the process that has ``pid`` now (``tasklist``), or None when there is none or it cannot be read."""
+    result = run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=5)
+    for row in csv.reader((result.stdout or "").splitlines()):
+        if len(row) >= 2 and row[1].strip() == pid:
+            return row[0].strip()
+    return None
+
+
+def stop_stale_engine(port: int, run=subprocess.run) -> list[tuple[str, str]]:
+    """Clear the bridge port of a stale engine; the notifications to show, as (message, severity).
+
+    netstat names as a socket's owner the pid of the process that made it, also after that process has ended, and the
+    number may be another process's by then (F255). So a pid is killed only when the process that has it now is an
+    engine (``bun.exe``); anything else is named and left running.
+    """
+    result = run(["netstat", "-ano"], capture_output=True, text=True, timeout=5)
+    said: list[tuple[str, str]] = []
+    for pid in listening_pids(result.stdout or "", port):
+        image = image_of_pid(pid, run=run)
+        if image is None or image.lower() != ENGINE_IMAGE:
+            what = image if image is not None else "its image could not be read"
+            said.append((f"Port {port} is held by PID {pid} ({what}), which is not an engine ({ENGINE_IMAGE}): left running", "warning"))
+            continue
+        run(["taskkill", "/PID", pid, "/F"], capture_output=True, timeout=5)
+        said.append((f"Killed stale engine (PID {pid})", "warning"))
+    return said
 
 
 def load_recent_projects() -> list[str]:
@@ -184,17 +236,8 @@ class ProjectPicker(Screen):
         port = getattr(self.app, 'bridge_port', 9160)
         try:
             if sys.platform == "win32":
-                result = subprocess.run(
-                    ["netstat", "-ano"], capture_output=True, text=True, timeout=5
-                )
-                for line in result.stdout.split("\n"):
-                    if f":{port}" in line and "LISTENING" in line:
-                        parts = line.split()
-                        pid = parts[-1].strip()
-                        if pid.isdigit():
-                            subprocess.run(["taskkill", "/PID", pid, "/F"],
-                                         capture_output=True, timeout=5)
-                            self.notify(f"Killed stale engine (PID {pid})", severity="warning")
+                for message, severity in stop_stale_engine(port):
+                    self.notify(message, severity=severity)
             else:
                 subprocess.run(["fuser", "-k", f"{port}/tcp"],
                              capture_output=True, timeout=5)

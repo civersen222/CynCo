@@ -34,8 +34,11 @@ const child = exec(
   { cwd: dir, shell: 'powershell.exe' },
   () => {},
 )
-const tree = mode === 'own' ? ownProcessTree(child.pid) : null
+const tree = mode === 'own' ? ownProcessTree(child) : null
 const count = (prefix: string) => readdirSync(dir).filter(f => f.startsWith(prefix)).length
+// Wave 24 (F255): a root whose exit was already handled is never opened by its number, for a job either. This
+// process's own pid, alive, handed over as an ended root: with the guard gone it would be put in a job ('job').
+const endedRootKind = ownProcessTree({ pid: process.pid, exitCode: 0, signalCode: null }, () => {}).kind
 
 const giveUp = Date.now() + 30_000
 while (count('started-') < KILL_AFTER_STARTED && Date.now() < giveUp) await sleep(15)
@@ -45,5 +48,5 @@ if (tree) await tree.kill()
 else await killProcessTree(child.pid!)
 const killMs = Date.now() - t0
 await sleep(6000)
-console.log(JSON.stringify({ mode, kind: tree?.kind ?? 'walk', engineJob: engineJob.installed, children: CHILDREN, startedAtKill, started: count('started-'), survivors: count('marker-'), killMs }))
+console.log(JSON.stringify({ mode, kind: tree?.kind ?? 'walk', engineJob: engineJob.installed, children: CHILDREN, startedAtKill, started: count('started-'), survivors: count('marker-'), killMs, endedRootKind }))
 process.exit(0)

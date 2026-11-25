@@ -22,7 +22,7 @@ import { basename, join } from 'path'
 import { cyncoHome } from '../paths.js'
 import { throughGitBash } from './gitBash.js'
 import { writeJsonAtomic, type AppLaunch, type LocalApp } from './registry.js'
-import { listProcesses as readProcessList, type ListedProc, type Proc } from './portTree.js'
+import { listenerNow, listProcesses as readProcessList, lookDecidedNothing, stoppedAsReadLine, type ListedProc, type Proc, type RunPowerShell } from './portTree.js'
 
 export type Displaced = { appId: string; name: string; root: string; port: number; at: string; by: string; launch: AppLaunch }
 
@@ -120,7 +120,7 @@ export type DisplaceCtx = {
   sleep?: (ms: number) => Promise<void>
   now?: () => Date
   log?: (line: string) => void
-}
+} & BeforeTheStop
 
 /**
  * Stop an app's model server for CynCo's work. `displaced`: its server is owed back. `leftover`: the app
@@ -150,8 +150,10 @@ export async function displaceApp(holder: { app: LocalApp; listener: Proc; launc
       log(`[apps] the debt to ${app.name} could not be written to ${file}: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
-  const result = await ctx.kill(listener.pid)
+  const result = await stopIfStillListening(holder, ctx, inUse, file, log)
+  if (typeof result === 'string') return result
   if (result && !result.stopped) {
+    ctx.refused?.(result.why)
     // The debt was written first so that a crash between the two could not lose it; the server is still there, so nothing is owed.
     if (inUse) {
       try { forgetDebt(app.id, file, log) } catch (e) { log(`[apps] the debt to ${app.name} could not be taken back from ${file}: ${e instanceof Error ? e.message : String(e)}`) }
@@ -304,4 +306,45 @@ export function launchOutsideJob(asRecorded: AppLaunch): Promise<number | null> 
       resolve(Number.isInteger(pid) && pid > 0 ? pid : null)
     })
   })
+}
+
+/** The look at the port immediately before an app's server is stopped (F255; `stopIfStillListening`). */
+export type BeforeTheStop = {
+  /** How the port is read again: `readPortTree`'s PowerShell (`portTree.ts`). The default is the real one. */
+  runPowerShell?: RunPowerShell
+  /** Told why, whenever the outcome is `refused`: the stop was refused, or the port's listener is not the one identified. */
+  refused?: (why: string) => void
+}
+
+/**
+ * F255: the listener was read seconds ago (identified, the owner told, the app's processes listed, the debt written),
+ * and its number may be another process's by now. So the port is read again here, immediately before the stop, and
+ * the server is stopped when the same process (same pid, same creation time) still listens (`listenerNow`), or when
+ * the look decided nothing (`lookDecidedNothing`: a reading that failed, a creation time missing; stopped as read).
+ * Otherwise nothing is stopped and nothing is owed (the debt is taken back): nothing listening is `leftover`, which
+ * every caller goes on from as after a stop (the lazy engine and the one-shot see the port free and load); another
+ * listener, or one younger than its socket, is `refused`, which every caller goes on from as after a stop that could
+ * not be done (the lazy engine answers on the fallback or refuses the request, the one-shot leaves the port to its
+ * busy check). Answers the stop's own result when it ran.
+ */
+async function stopIfStillListening(holder: { app: LocalApp; listener: Proc }, ctx: DisplaceCtx, inUse: boolean, file: string, log: (line: string) => void): Promise<'leftover' | 'refused' | Awaited<ReturnType<DisplaceCtx['kill']>>> {
+  const { app, listener } = holder
+  const now = await listenerNow(ctx.port, listener, ctx.runPowerShell, log)
+  if (now.kind === 'same') return ctx.kill(listener.pid)
+  // A look that could not be made decides nothing (`lookDecidedNothing`): the stop goes ahead as it was read.
+  if (lookDecidedNothing(now)) { log(stoppedAsReadLine(ctx.port, listener.pid, now.because)); return ctx.kill(listener.pid) }
+  if (inUse) {
+    try { forgetDebt(app.id, file, log) } catch (e) { log(`[apps] the debt to ${app.name} could not be taken back from ${file}: ${e instanceof Error ? e.message : String(e)}`) }
+  }
+  const was = `${app.name}'s model server on port ${ctx.port} (pid ${listener.pid})`
+  if (now.kind === 'free') {
+    ctx.say(`${was} let go of the port by itself before CynCo stopped it, and nothing listens there now: CynCo stopped nothing, and owes ${app.name} nothing.`)
+    return 'leftover'
+  }
+  const why = now.kind === 'other'
+    ? `it let go of the port by itself before CynCo stopped it, and pid ${now.now.pid} (${now.now.name}${now.now.pid === listener.pid ? ', a later process with the same number' : ''}) listens there now, which CynCo has not identified and did not stop`
+    : `the process that made the socket on the port has ended and its number is another process's now (the process listed for the socket was created after it), so CynCo could not tell what holds the port, and stopped nothing`
+  ctx.refused?.(why)
+  ctx.say(`${was}: ${why}. CynCo's model is not loaded.`)
+  return 'refused'
 }

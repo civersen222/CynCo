@@ -20,15 +20,20 @@ import { globalContract } from '../../tools/contract.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+import { endMarked, goneWithin, isMarked, newMark, watchMarked, type MarkWatch } from '../helpers/markedProcesses.js'
 
 const dirs: string[] = []
 const links: string[] = []
-/** Files a hanging test script wrote its pid into: a program still running under one is ended (the defect's survivor). */
-const pidFiles: string[] = []
-afterAll(() => {
-  for (const f of pidFiles) {
-    try { process.kill(Number(readFileSync(f, 'utf-8'))) } catch { /* never started, or already gone */ }
-  }
+/**
+ * The marks a hanging test script carries in its command line: a program still running under one is ended by it (the
+ * defect's survivor), never by the pid it wrote (F255, wave 24: until then a number read back from its file was ended
+ * here, after the test had seen that program gone, so whatever process had the number by then was ended).
+ */
+const marks: string[] = []
+const watches: MarkWatch[] = []
+afterAll(async () => {
+  for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+  for (const m of marks) endMarked(m)
   // Junctions are removed as entries first, so the folder removal cannot reach through one.
   for (const l of links) { try { rmdirSync(l) } catch { /* already gone with its worktree */ } }
   for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 })
@@ -188,14 +193,21 @@ describe('best-of-N candidates in the loop', () => {
     process.env.LOCALCODE_BEST_OF_N = 'true'
     process.env.LOCALCODE_BEST_OF_N_COUNT = '2'
     const { cwd, git } = repo('cynco-bon-stop-')
-    const marks = mkdtempSync(join(tmpdir(), 'cynco-bon-stop-marks-'))
-    dirs.push(marks)
-    const started = join(marks, 'started.txt').replace(/\\/g, '/')
-    pidFiles.push(started)
-    // The candidates' tests: say they started (with their pid), then hang until they are ended.
+    const startedDir = mkdtempSync(join(tmpdir(), 'cynco-bon-stop-marks-'))
+    dirs.push(startedDir)
+    const started = join(startedDir, 'started.txt').replace(/\\/g, '/')
+    const mark = newMark('bonStop')
+    marks.push(mark)
+    // Wave 24, round two: a watcher lists for the mark while the turn runs, and the Stop is pressed once it has seen the
+    // program carrying it: "gone" afterwards is also the answer of a mark that never named the program.
+    const watch = watchMarked(mark)
+    watches.push(watch)
+    await watch.ready
+    // The candidates' tests: say they started (with their pid), then hang until they are ended (for two minutes at
+    // most, far longer than the case needs: a survivor of the defect ends by itself too). The program carries `mark`.
     writeFileSync(join(cwd, 'package.json'), JSON.stringify({
       name: 'bon-stop', private: true,
-      scripts: { test: `node -e "require('fs').writeFileSync('${started}', String(process.pid)); setInterval(() => {}, 1000)"` },
+      scripts: { test: `node -e "require('fs').writeFileSync('${started}', String(process.pid)); setTimeout(() => {}, 120000) // ${mark}"` },
     }))
     git('add -A'); git('commit -q -m tests')
     const texts: string[] = []
@@ -208,20 +220,28 @@ describe('best-of-N candidates in the loop', () => {
       allowedTools: ['Read', 'Write'],
     })
     const turn = loop.handleUserMessage('write g.txt')
+    // The file exists before its writer has written into it: only a whole positive number is a pid. Number('') is 0,
+    // and pid 0 names the asking process itself (wave 24).
+    const pidOf = (): number | null => {
+      if (!existsSync(started)) return null
+      const n = Number(readFileSync(started, 'utf-8').trim())
+      return Number.isInteger(n) && n > 0 ? n : null
+    }
     const until = Date.now() + 60_000
-    while (!existsSync(started) && Date.now() < until) await new Promise(res => setTimeout(res, 100))
+    while (pidOf() === null && Date.now() < until) await new Promise(res => setTimeout(res, 100))
     expect(existsSync(started), 'the first candidate\'s tests never started').toBe(true)
-    const pid = Number(readFileSync(started, 'utf-8'))
+    const pid = pidOf()
+    expect(pid, `the first candidate's tests wrote no pid: ${JSON.stringify(readFileSync(started, 'utf-8'))}`).not.toBeNull()
+    // The control: before the Stop the mark finds the program, so "gone" after it is not a mark that finds nothing.
+    expect(isMarked(pid!, mark), `node ${pid} is not found by its mark while the candidate's tests run`).toBe(true)
+    await watch.saw(pid!, 15_000)
     const t0 = Date.now()
     loop.abort()
     await turn
     const ms = Date.now() - t0
-    let gone = false
-    for (const deadline = Date.now() + 5000; Date.now() < deadline;) {
-      try { process.kill(pid, 0) } catch { gone = true; break }
-      await new Promise(res => setTimeout(res, 100))
-    }
-    if (!gone) { try { process.kill(pid) } catch { /* gone meanwhile */ } }
+    expect(await watch.stop(), `node ${pid} was never seen carrying its mark while the candidate's tests ran`).toContain(pid)
+    // Asked by the mark, never by the number alone; a survivor is ended by the mark in afterAll.
+    const gone = await goneWithin(pid!, mark)
     const page = texts.join('')
     expect(ms, 'the turn waited for the tests\' cap, not the Stop').toBeLessThan(15_000)
     expect(gone, `node ${pid}, started by the candidate's tests, outlived the Stop`).toBe(true)

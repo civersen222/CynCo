@@ -5,6 +5,7 @@ import { join } from 'path'
 import {
   buildServerArgs,
   DEFAULT_CTX_SIZE,
+  listeningPidsOnPort,
   ProcessManager,
   recentRestartCount,
   restartDelayMs,
@@ -632,12 +633,17 @@ describe('restartDelayMs — a transient fault must not spend the whole budget i
 })
 
 describe('ProcessManager pre-spawn check', () => {
+  // These two run the real ensureRunning on port 1. Nothing answers /health there, so the port is never cleared; if it
+  // ever were, the kill reads an empty listing and kills nothing (F255: never a real taskkill from a test).
+  const noPortKill = { platform: 'win32', netstat: () => '', listenerAges: async () => [], taskkill: () => { throw new Error('a test reached taskkill') }, log: () => {} }
+
   it('refuses to spawn, reports the reason, and never touches the binary when the check fails', async () => {
     const faults: string[] = []
     const pm = new ProcessManager({
       binaryPath: join(tmpdir(), 'no-such-llama-server.exe'), modelPath: 'm.gguf', port: 1,
       preSpawnCheck: async () => ({ ok: false, reason: 'host commit charge exhausted: 1200 MiB free' }),
     })
+    pm.portKill = noPortKill
     pm.onFault = r => faults.push(r)
     await expect(pm.ensureRunning()).rejects.toThrow(/commit charge exhausted/)
     expect(faults).toEqual(['host commit charge exhausted: 1200 MiB free'])
@@ -650,6 +656,7 @@ describe('ProcessManager pre-spawn check', () => {
       binaryPath: join(tmpdir(), 'no-such-llama-server.exe'), modelPath: 'm.gguf', port: 1,
       preSpawnCheck: async () => ({ ok: true }),
     })
+    pm.portKill = noPortKill
     await expect(pm.ensureRunning()).rejects.toThrow()   // spawn ENOENT / health failure, not a refusal
     expect(pm.lastRefusal).toBeNull()
   })
@@ -1039,5 +1046,197 @@ describe('ProcessManager.ensureRunningLazy', () => {
     } finally { console.log = orig }
     expect(lines.filter(l => l.includes('waiting for the model port') && l.includes('digest-espn') && !l.includes('stopped'))).toHaveLength(1)
     expect(lines.filter(l => l.includes('stopped waiting for the model port'))).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// F255, the port form: the kill of "whatever listens on the port". netstat names as a socket's owner the pid of the
+// process that MADE it; when that process has ended and something it started inherited the socket, the number may
+// be another process's by now. And `line.includes(':' + port)` took port 1 for :135, :11434 and :18081.
+//
+// The listing's listener is on 65531, a port nothing on this PC serves, and every pid in it is 2,000,000,000 or above,
+// numbers no process can have: were the injected listing or kill ever skipped, the real `netstat` and `taskkill` would
+// find nothing to end. (It used 8081, the owner's live model port, and 4242.)
+// ---------------------------------------------------------------------------
+const PORT = 65531
+const PID = 2_000_000_000
+const PID2 = 2_000_000_004
+const NETSTAT = [
+  '',
+  'Active Connections',
+  '',
+  '  Proto  Local Address          Foreign Address        State           PID',
+  '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       2000000008',
+  '  TCP    0.0.0.0:65531          0.0.0.0:0              LISTENING       2000000000',
+  '  TCP    127.0.0.1:18081        0.0.0.0:0              LISTENING       2000000012',
+  '  TCP    127.0.0.1:65531        127.0.0.1:55000        ESTABLISHED     2000000000',
+  '  TCP    127.0.0.1:55000        127.0.0.1:65531        ESTABLISHED     2000000016',
+  '  TCP    [::]:65531             [::]:0                 LISTENING       2000000000',
+  '  TCP    [2001:db8::8081]:443   [::]:0                 LISTENING       2000000020',
+  '  TCP    [::]:11434             [::]:0                 LISTENING       2000000024',
+  '  UDP    0.0.0.0:65531          *:*                                    2000000028',
+  '',
+].join('\r\n')
+
+describe('listeningPidsOnPort: the pids netstat names as listening on exactly the port (F255)', () => {
+  it('matches the local address\'s port exactly, once per pid', () => {
+    expect(listeningPidsOnPort(NETSTAT, PORT)).toEqual([PID])
+    expect(listeningPidsOnPort(NETSTAT, 135)).toEqual([2_000_000_008])
+    expect(listeningPidsOnPort(NETSTAT, 11434)).toEqual([2_000_000_024])
+  })
+  it('a port that is a prefix of another, or a group of an IPv6 address, is not that port', () => {
+    // The substring match took port 1 for :135, :18081 and :11434, 6553 for :65531, and 8081 (and 808) for the IPv6
+    // address [2001:db8::8081].
+    expect(listeningPidsOnPort(NETSTAT, 1)).toEqual([])
+    expect(listeningPidsOnPort(NETSTAT, 6553)).toEqual([])
+    expect(listeningPidsOnPort(NETSTAT, 8081)).toEqual([])
+    expect(listeningPidsOnPort(NETSTAT, 808)).toEqual([])
+    expect(listeningPidsOnPort(NETSTAT, 443)).toEqual([2_000_000_020])
+  })
+  it('a connection or a UDP endpoint on the port is no listener', () => {
+    expect(listeningPidsOnPort(NETSTAT, 55000)).toEqual([])
+    expect(listeningPidsOnPort('  UDP    0.0.0.0:65531          *:*                                    2000000028', PORT)).toEqual([])
+    expect(listeningPidsOnPort('', PORT)).toEqual([])
+  })
+})
+
+describe('ProcessManager.killProcessOnPort with its netstat, reading and taskkill injected (F255)', () => {
+  const S = 13_440_039_258_000 // a socket's creation time, ms since 1601
+  type Ages = import('../../llama/portOwner.js').ListenerAge[] | null
+
+  /**
+   * Every case hands the kill its own netstat, reading and taskkill. A ProcessManager without that seam would run the
+   * real `netstat -ano` and a real `taskkill /F /PID` on whatever listens on the port. Each kill below says that it read
+   * the injected listing and the injected reading, once each, and a case fails when it did not: then the real ones were
+   * read (on a port nothing serves, with pids no process can have, so they found nothing to end).
+   */
+  function rig(ages: Ages | (() => never), opts: { netstat?: string; taskkill?: (pid: number) => void } = {}) {
+    const order: string[] = []
+    const killed: number[] = []
+    const log: string[] = []
+    const reads = { netstat: 0, ages: 0 }
+    const pm = new ProcessManager({ binaryPath: 'nope', modelPath: join(tmpdir(), 'does-not-exist.gguf'), port: PORT })
+    pm.portKill = {
+      platform: 'win32',
+      netstat: () => { reads.netstat++; order.push('netstat'); return opts.netstat ?? NETSTAT },
+      listenerAges: async (port: number) => { reads.ages++; order.push(`ages ${port}`); return typeof ages === 'function' ? ages() : ages },
+      taskkill: (pid: number) => { order.push(`taskkill ${pid}`); killed.push(pid); opts.taskkill?.(pid) },
+      log: (line: string) => log.push(line),
+    }
+    const kill = async (port = PORT): Promise<string | void> => {
+      const before = { ...reads }
+      const answer: string | void = await (pm as any).killProcessOnPort(port)
+      expect(reads.netstat - before.netstat, 'the injected netstat was read: not the real one').toBe(1)
+      expect(reads.ages - before.ages, 'the injected reading was asked: not the real one').toBe(1)
+      return answer
+    }
+    return { kill, order, killed, log }
+  }
+
+  it('the owner of its socket is killed, once for its IPv4 and IPv6 sockets, and the answer is nothing, as before', async () => {
+    const r = rig([{ pid: PID, socketCreatedMs: S, processCreatedMs: S - 5_000 }, { pid: PID, socketCreatedMs: S, processCreatedMs: S - 5_000 }])
+    expect(await r.kill()).toBeUndefined()
+    expect(r.killed).toEqual([PID])
+    expect(r.log).toEqual(['[llama-cpp] Killed stale process PID 2000000000 on port 65531'])
+  })
+
+  it('a pid created after the socket it is named for is not killed: one line names it, and that reason is the answer', async () => {
+    const r = rig([{ pid: PID, socketCreatedMs: S, processCreatedMs: S + 3_600_000 }])
+    const why = await r.kill()
+    expect(r.killed).toEqual([])
+    expect(r.log).toEqual(['[llama-cpp] not killing PID 2000000000 on port 65531: the socket on the port outlived the process that made it, and the number is another process\'s now (created after the socket)'])
+    expect(why).toBe('the socket on port 65531 outlived the process that made it, and its pid 2000000000 now belongs to another process, which CynCo did not kill')
+  })
+
+  it('what cannot be read is killed as before: no reading, no row for the pid, a time missing', async () => {
+    for (const ages of [null, [], [{ pid: 2_000_000_032, socketCreatedMs: S, processCreatedMs: S + 3_600_000 }], [{ pid: PID, socketCreatedMs: null, processCreatedMs: S + 3_600_000 }]] as Ages[]) {
+      const r = rig(ages)
+      expect(await r.kill(), JSON.stringify(ages)).toBeUndefined()
+      expect(r.killed, JSON.stringify(ages)).toEqual([PID])
+    }
+  })
+
+  it('a reading that throws is a reading that failed: the kill goes ahead as before', async () => {
+    const r = rig(() => { throw new Error('powershell is gone') })
+    expect(await r.kill()).toBeUndefined()
+    expect(r.killed).toEqual([PID])
+  })
+
+  it('the port is read before netstat, so the kill follows netstat by as little as it always did', async () => {
+    const r = rig([{ pid: PID, socketCreatedMs: S, processCreatedMs: S - 1 }])
+    await r.kill()
+    expect(r.order).toEqual(['ages 65531', 'netstat', 'taskkill 2000000000'])
+  })
+
+  it('port 1 kills nothing in a listing where the substring match found three listeners', async () => {
+    const r = rig(null)
+    expect(await r.kill(1)).toBeUndefined()
+    expect(r.killed).toEqual([])
+  })
+
+  it('a refusal by Windows is still answered with the F223 reason', async () => {
+    const r = rig(null, { taskkill: () => { throw Object.assign(new Error('Command failed'), { stderr: 'ERROR: The process with PID 2000000000 could not be terminated.\r\nReason: Access is denied.\r\n' }) } })
+    expect(await r.kill()).toBe('Windows refused (Access is denied): it was started as administrator and CynCo was not')
+    expect(r.log).toEqual(['[llama-cpp] taskkill 2000000000 on port 65531: Reason: Access is denied.'])
+  })
+
+  it('with two listeners, the one whose number changed hands is left and the other is killed; the answer names the one left', async () => {
+    const two = '  TCP    0.0.0.0:65531          0.0.0.0:0              LISTENING       2000000000\r\n  TCP    [::]:65531             [::]:0                 LISTENING       2000000004\r\n'
+    const r = rig([{ pid: PID, socketCreatedMs: S, processCreatedMs: S + 9_000 }, { pid: PID2, socketCreatedMs: S, processCreatedMs: S - 9_000 }], { netstat: two })
+    expect(await r.kill()).toMatch(/its pid 2000000000 now belongs to another process/)
+    expect(r.killed).toEqual([PID2])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// F255, the server's own stop: when `child.kill()` throws, `stop()` falls back to `taskkill /F /PID <child.pid>`. Once
+// the runtime has handled the child's exit (`exitCode` or `signalCode` set) the number is free and may be another
+// process's, so the fallback runs only while both are null, and in the same turn as that look. The child here is an
+// object of this test's own with a pid no process can have; no server is started and no port is bound. The fallback's
+// `execSync` is replaced on the `child_process` module this worker shares with the code under test, so nothing runs.
+// ---------------------------------------------------------------------------
+describe('ProcessManager.stop: the taskkill after a kill that threw asks whether the child has ended (F255)', () => {
+  function stopWith(exit: { exitCode: number | null; signalCode: string | null }) {
+    const cp = require('child_process') as { execSync: (cmd: string, opts?: unknown) => unknown }
+    const realExecSync = cp.execSync
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    const ran: string[] = []
+    const pm = new ProcessManager({ binaryPath: 'nope', modelPath: join(tmpdir(), 'does-not-exist.gguf'), port: 1 })
+    const child = {
+      pid: 2_000_000_000, ...exit,
+      kill: () => { throw new Error('kill threw') },
+      on: (event: string, cb: () => void) => { if (event === 'exit') cb() },
+    }
+    ;(pm as any).child = child
+    cp.execSync = (cmd: string) => { ran.push(cmd); return '' }
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+    try {
+      const done = pm.stop()
+      // What `stop()` did before its first wait: the look at the child and the fallback belong to that one turn.
+      const sync = [...ran]
+      return { done, sync, ran }
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      cp.execSync = realExecSync
+    }
+  }
+
+  it('a child whose exit was handled (an exit code) is not looked for by its number', async () => {
+    const r = stopWith({ exitCode: 0, signalCode: null })
+    await r.done
+    expect(r.ran).toEqual([])
+  })
+
+  it('a child that ended on a signal is not looked for by its number either', async () => {
+    const r = stopWith({ exitCode: null, signalCode: 'SIGTERM' })
+    await r.done
+    expect(r.ran).toEqual([])
+  })
+
+  it('a child still running when its kill threw is ended by number, once, in the same turn as the look', async () => {
+    const r = stopWith({ exitCode: null, signalCode: null })
+    expect(r.sync).toEqual(['taskkill /F /PID 2000000000'])
+    await r.done
+    expect(r.ran).toEqual(['taskkill /F /PID 2000000000'])
   })
 })

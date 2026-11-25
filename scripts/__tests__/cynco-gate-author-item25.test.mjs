@@ -138,10 +138,11 @@ function stand({ code = 0, stdout = '', stderr = '', hang = false } = {}) {
     calls.starts.push({ file, args, opts })
     answer = cb
     if (!hang) setTimeout(() => cb(code === 0 ? null : Object.assign(new Error('exit'), { code }), stdout, stderr), 5)
-    return { pid: 4242 }
+    return { pid: 4242, exitCode: null, signalCode: null }
   }
-  const own = (pid) => {
-    calls.owned.push(pid)
+  // The tree is owned by the started process, not by its number (F255): `own` is handed what execFile returned.
+  const own = (root) => {
+    calls.owned.push(typeof root === 'object' && root !== null ? root.pid : root)
     return { kind: 'job', kill: async () => { calls.killed++; setTimeout(() => answer?.(Object.assign(new Error('killed'), { killed: true, code: null }), '', ''), 1) }, release: () => { calls.released++ } }
   }
   return { calls, hooks: { execFile, own, bun: 'C:/bin/bun.exe', graceMs: 50 } }

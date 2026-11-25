@@ -13,7 +13,7 @@
  * children running. A Stop that lands as the shell starts its command (the
  * first few hundred ms of every Bash call) is that case.
  *
- * `ownProcessTree(pid)` is taken when the process is started. On Windows
+ * `ownProcessTree(child)` is taken when the process is started. On Windows
  * under Bun it puts the process in a Job Object of its own: every process the
  * root starts from then on is in the job the instant it exists, and
  * `TerminateJobObject` ends them all at once, with no list to go stale. The
@@ -25,10 +25,46 @@
  * A handle that is not killed must be released when its process ends, or the
  * job handle leaks until the engine exits. Releasing kills nothing: a
  * background process the command left running on purpose lives on, as before.
+ *
+ * The walk is given the started process, not its number (F255). A pid is a
+ * number, not a process: while the runtime has not handled a child's exit it
+ * holds the child's handle and the number is nobody else's (measured
+ * 2026-11-25: 300 starts, none got it), but once Node or Bun has handled the
+ * exit (`exitCode` or `signalCode` set) the number is free and Windows gives it
+ * to a new process after some seconds of churn. A walked tree cannot be found
+ * from a root that has ended anyway, so its kill then starts nothing and says
+ * why. While the root has not ended the walk runs `taskkill` synchronously, in
+ * the same turn of the event loop as that look, so the runtime cannot handle the
+ * exit in between; an asynchronous one is started at once but opens the pid
+ * only after it has loaded (100 to 300 ms), and meanwhile the event loop can
+ * handle the exit.
+ * The cost: on the fallback path only (no Job Object: vitest's Node, or a job
+ * that could not be taken), a kill blocks the event loop for one `taskkill`
+ * (about 0.1 to 0.3 s measured, `WALK_KILL_CAP_MS` at most). A Job Object kill
+ * is unchanged: it ends the job through its handle whatever the root did.
+ * Off Windows the walk stays asynchronous and refuses the same way once the
+ * root has ended. A bare number is still taken: the caller then says it knows
+ * the process is alive (the jlens sidecar's stale sweep, by-hand fixtures).
  */
 import { execFile, execFileSync } from 'child_process'
 
 type Log = (msg: string) => void
+
+/** The started process a walked tree is found from, as Node's ChildProcess and Bun's Subprocess both show it. */
+export interface TreeRoot {
+  readonly pid?: number
+  /** null until the runtime has handled the process's exit; after that the pid number may be another process's. */
+  readonly exitCode?: number | null
+  readonly signalCode?: string | number | null
+}
+
+/** Has the runtime handled this root's exit? Then its pid number is free and may be another process's. */
+function rootEnded(root: TreeRoot): boolean {
+  return (root.exitCode !== null && root.exitCode !== undefined) || (root.signalCode !== null && root.signalCode !== undefined)
+}
+
+/** The longest a walk's synchronous `taskkill` may hold the event loop (measured at 0.1 to 0.3 s). */
+const WALK_KILL_CAP_MS = 5000
 
 /** Kill a process and everything it started, as found at the moment of the call. Never rejects. */
 export function killProcessTree(pid: number, log: Log = console.log): Promise<void> {
@@ -71,13 +107,14 @@ export function killProcessTree(pid: number, log: Log = console.log): Promise<vo
 }
 
 /**
- * The same kill, finished before it returns, for the one caller that starts a
+ * The same kill, finished before it returns: for the caller that starts a
  * replacement on the same port in its next line (the jlens sidecar's stale
- * sweep). Windows only: elsewhere that caller uses `pkill`.
+ * sweep), and for a walked tree whose root is still held (`ownProcessTree`).
+ * Windows only: elsewhere the sweep uses `pkill`.
  */
-export function killProcessTreeSync(pid: number, log: Log = console.log): void {
+export function killProcessTreeSync(pid: number, log: Log = console.log, capMs = 10000): void {
   try {
-    execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', timeout: 10000, windowsHide: true })
+    execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore', timeout: capMs, windowsHide: true })
   } catch (e) {
     log(`[process-tree] pid ${pid} already gone: ${e instanceof Error ? e.message.split('\n')[0] : e}`)
   }
@@ -150,17 +187,50 @@ function takeJob(pid: number): { k: Kernel32; job: unknown } | { why: string } {
 }
 
 /**
- * Take ownership of a process tree at the moment its root was started.
- * `pid` undefined (the spawn failed) gives a handle whose kill does nothing.
+ * The walk of a tree whose root the caller handed over: it kills only while the runtime has not handled the root's
+ * exit, and on Windows in the same turn as that look (the module's header says why).
  */
-export function ownProcessTree(pid: number | undefined, log: Log = console.log): OwnedTree {
+function walkFrom(root: TreeRoot, pid: number, log: Log): OwnedTree {
+  let said = false
+  return {
+    kind: 'walk',
+    kill: () => {
+      if (rootEnded(root)) {
+        if (!said) {
+          said = true
+          log(`[process-tree] pid ${pid} was not killed: its process has ended and its exit was handled, so the number may be another process's now, and without a Job Object what it started cannot be found from it`)
+        }
+        return Promise.resolve()
+      }
+      if (process.platform === 'win32') {
+        killProcessTreeSync(pid, log, WALK_KILL_CAP_MS)
+        return Promise.resolve()
+      }
+      return killProcessTree(pid, log)
+    },
+    release: () => {},
+  }
+}
+
+/**
+ * Take ownership of a process tree at the moment its root was started. Callers hand the started process (a
+ * `TreeRoot`); a bare number is taken as a process the caller knows to be alive. No pid (the spawn failed) gives a
+ * handle whose kill does nothing.
+ */
+export function ownProcessTree(root: number | undefined | TreeRoot, log: Log = console.log): OwnedTree {
+  const held = typeof root === 'object' && root !== null ? root : null
+  const pid = held ? held.pid : (root as number | undefined)
   if (pid === undefined) return { kind: 'walk', kill: async () => {}, release: () => {} }
+  // A root whose exit was already handled is not opened by its number, for a job or a walk: the number may be
+  // another process's (F255). Every caller owns the tree in the turn it started it, so this is a guard, not a path.
+  if (held && rootEnded(held)) return walkFrom(held, pid, log)
   const taken = takeJob(pid)
   if ('why' in taken) {
     if (taken.why && !fallbackSaid) {
       fallbackSaid = true
       log(`[process-tree] no Job Object for child processes: ${taken.why}. A kill finds the tree when it happens and can miss a child started mid-kill.`)
     }
+    if (held) return walkFrom(held, pid, log)
     return { kind: 'walk', kill: () => killProcessTree(pid, log), release: () => {} }
   }
   const { k, job } = taken
@@ -203,7 +273,7 @@ export interface OwnedExecEnd {
   timedOut: boolean
   /** Ended because `signal` fired: the tree was killed. */
   stopped: boolean
-  /** exec ended the root because its output overran its buffer, and the tree was killed with it. */
+  /** exec ended the root because its output overran its buffer; a tree a Job Object holds was killed with it, a walked tree was released (its root had ended, F255). */
   overran: boolean
 }
 
@@ -212,18 +282,20 @@ export interface OwnedExecEnd {
  * diagnostics, the daemon precheck), with its process tree owned from the moment the root exists
  * (F201, F210, NOW.md 2026-11-24). `start` starts it with exec's callback and returns the child;
  * exec is given no `timeout`, because exec's kill ends the root alone and left what it had started
- * running. The tree is ended on the cap (`capMs`), on `signal`, and when exec ended the root for an
- * output overrun; a child that ends on its own gives the handle back and kills nothing, so a
- * background process it left on purpose lives on. A process the kill could not reach that still
- * holds the pipes would hold the callback for ever: after `graceMs` the answer comes anyway, with
- * nothing printed. `own` is `ownProcessTree`, passed by each caller so that a test's module mock
- * of it reaches every site. Rejects only when `start` throws (nothing was started).
+ * running. The tree is ended on the cap (`capMs`), on `signal`, and, when a Job Object holds it,
+ * when exec ended the root for an output overrun (a walked tree is released there: exec answers after
+ * the root's exit was handled, so it cannot be found from the root any more, F255); a child that ends
+ * on its own gives the handle back and kills nothing, so a background process it left on purpose
+ * lives on. A process the kill could not reach that still holds the pipes would hold the callback for
+ * ever: after `graceMs` the answer comes anyway, with nothing printed. `own` is `ownProcessTree`,
+ * passed by each caller so that a test's module mock of it reaches every site, and it is handed the
+ * child `start` returned, never its pid alone. Rejects only when `start` throws (nothing was started).
  */
 export function ownedExec(
-  start: (callback: (err: Error | null, stdout: string, stderr: string) => void) => { pid?: number },
+  start: (callback: (err: Error | null, stdout: string, stderr: string) => void) => TreeRoot,
   opts: {
     capMs: number
-    own: (pid: number | undefined) => OwnedTree
+    own: (root: TreeRoot) => OwnedTree
     graceMs?: number
     signal?: AbortSignal
     /** Called once when the cap ends the tree, before the kill (a site's log line). */
@@ -253,13 +325,14 @@ export function ownedExec(
       void tree?.kill()
       grace = setTimeout(() => settle({ err: null, stdout: '', stderr: '', timedOut, stopped, overran: false }), graceMs)
     }
-    let child: { pid?: number }
+    let child: TreeRoot
     try {
       child = start((err, stdout, stderr) => {
         if (timer) clearTimeout(timer)
         if (grace) clearTimeout(grace)
         const overran = !timedOut && !stopped && overranBuffer(err)
-        if (overran) void tree?.kill()
+        // On an overrun only a Job Object can still end what the root started (as the Bash tool does).
+        if (overran && tree?.kind === 'job') void tree.kill()
         else if (!timedOut && !stopped) tree?.release()
         settle({ err, stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), timedOut, stopped, overran })
       })
@@ -268,7 +341,7 @@ export function ownedExec(
       return
     }
     // exec's callback never runs before `start` returns, so the tree is taken before any answer.
-    tree = opts.own(child.pid)
+    tree = opts.own(child)
     timer = setTimeout(() => end('cap'), opts.capMs)
     if (opts.signal?.aborted) end('stopped')
     else opts.signal?.addEventListener('abort', onAbort, { once: true })

@@ -204,8 +204,8 @@ const SPAWN_SITES: Record<string, { count: number; class: SpawnClass; git?: true
   // Wave 19 (A5, from the harness-children builder): the reasons changed on purpose (runTests and runDiag own
   // their trees); lsp/manager.ts 2 to 4: tsc through toolExec, py_compile through containedCommand into execFile.
   // Wave 19c (package D, check D19b-6): the two git apply calls are one execFileSync helper now, so the count is 2 (was 3).
-  'engine/bestOfN/sampler.ts': { count: 2, class: 'contained', git: true, reason: 'runTests through toolExec, which owns the tree and ends it at its cap or on an output overrun; the two git apply calls are harness git through one execFileSync of harnessGitBin with an argument vector, no shell, under GIT_TIMEOUT_MS (wave 19c), after every path the patch writes is walked for a link.' },
-  'engine/lsp/manager.ts': { count: 4, class: 'contained', reason: 'tsc diagnostics through toolExec and py_compile through containedCommand into one execFile (the file one argument, never shell text), both in runDiag, which owns the tree and ends it at its cap or on an output overrun (recorded by the tool-call audit, S5); the which / where lookup of a fixed server name runs in the engine\'s own folder.' },
+  'engine/bestOfN/sampler.ts': { count: 2, class: 'contained', git: true, reason: 'runTests through toolExec, which owns the tree and ends it at its cap, and on an output overrun when a Job Object holds it; the two git apply calls are harness git through one execFileSync of harnessGitBin with an argument vector, no shell, under GIT_TIMEOUT_MS (wave 19c), after every path the patch writes is walked for a link.' },
+  'engine/lsp/manager.ts': { count: 4, class: 'contained', reason: 'tsc diagnostics through toolExec and py_compile through containedCommand into one execFile (the file one argument, never shell text), both in runDiag, which owns the tree and ends it at its cap, and on an output overrun when a Job Object holds it (recorded by the tool-call audit, S5); the which / where lookup of a fixed server name runs in the engine\'s own folder.' },
   'engine/daemon/precheck.ts': { count: 1, class: 'contained', reason: 'a trigger\'s precheck command through toolExec in a precheck sandbox of its own, owned by ownedExec.' },
   'engine/vsm/verifyFirst.ts': { count: 1, class: 'contained', via: 'engine/tools/contractVerify.ts', reason: 'calls the run it is handed (this.run), which the loop builds from runCommandDetailed: toolExec.' },
 
@@ -389,8 +389,11 @@ describe('containment wiring: the pins of slices S1 and S2 (F242)', () => {
     const refusal = src.indexOf('toolSpawnRefusal()')
     expect(refusal).toBeGreaterThan(-1)
     expect(refusal).toBeLessThan(src.indexOf('toolExec(runnable'))
-    // F201, F210: the pid the engine owns is the launcher's.
-    expect(src).toContain('ownProcessTree(child.pid)')
+    // F201, F210: the tree the engine owns is the launcher's. Changed on purpose in wave 24 (F255), was
+    // `ownProcessTree(child.pid)`: the launcher's process is handed over, so a walked tree is never killed by its
+    // number once its exit was handled.
+    expect(src).toContain('ownProcessTree(child)')
+    expect(src).not.toContain('ownProcessTree(child.pid)')
   })
 
   it('the dispatch makes the sandbox after its exit trap and before the engine starts, and releases it', () => {
@@ -1224,9 +1227,12 @@ describe('dispatch-mission.sh confirms a dead engine fail-closed (F242)', () => 
         + confirmBlock()
         + 'printf \'winpid=%s\\n\' "${ENGINE_WINPID:-}"\n'
         + 'if [ -n "${ENGINE_WINPID:-}" ]; then printf \'row=%s\\n\' "$(tasklist //FI "PID eq $ENGINE_WINPID" //NH //FO CSV | tr -d \'\\r\')"; fi\n'
-        // The test's own stand-in, ended with its tree by the pid it was started under.
-        + 'taskkill //PID "${ENGINE_TREE_WINPID:-${ENGINE_WINPID:-0}}" //T //F > /dev/null 2>&1 || true\n'
-        + 'taskkill //PID "${ENGINE_WINPID:-0}" //T //F > /dev/null 2>&1 || true\n')
+        // The test's own stand-in, ended once, with its tree, by the pid the lifted confirmation has just confirmed as
+        // its bun.exe (with its creation time; the shim's sh.exe waits on it, so the number is still the stand-in's).
+        // Changed on purpose in wave 24 (F255): a second taskkill of the same number followed, tens of ms after the
+        // first had freed it, and an unconfirmed /proc read was killed too. A stand-in that was never confirmed (the
+        // case then fails) is left to end by itself: it waits 60 s.
+        + 'if [ -n "${ENGINE_WINPID:-}" ]; then taskkill //PID "$ENGINE_WINPID" //T //F > /dev/null 2>&1 || true; fi\n')
       const winpid = /^winpid=(\d*)$/m.exec(out)?.[1] ?? ''
       expect(winpid, out).not.toBe('')
       expect(/^row=(.*)$/m.exec(out)?.[1] ?? '', out).toMatch(new RegExp(`^"bun\\.exe","${winpid}",`))
@@ -1310,6 +1316,8 @@ describe('dispatch-mission.sh confirms a dead engine fail-closed (F242)', () => 
   type Answer = keyof typeof TASKLIST
   /** Wave 13d (R8): the creation time (.NET ticks, UTC) every start-time read answers unless a case sets STARTED_NOW. */
   const STARTED = '638000000000000001'
+  // The pids these cases hand the lifted text (123, 4242, 999, 888, 777 ...) are made up and reach only the recording
+  // functions below: a real taskkill or kill of one would end whatever process has that number now (F255).
   const stubs = (answer: Answer) => [
     'REC="$REC_DIR/rec.txt"',
     ': > "$REC"',

@@ -294,8 +294,9 @@ export class TaskRunner {
     })
     startedChild = child
     // Taken now, while the child has started nothing: a kill later cannot miss
-    // the llama-server it spawns (engine/processTree.ts).
-    tree = ownProcessTree(child.pid)
+    // the llama-server it spawns (engine/processTree.ts). The process, not its pid:
+    // a walked tree is never killed by the number once the child's exit was handled (F255).
+    tree = ownProcessTree(child)
     startedTree = tree
     // The claim on the GPU: readers (lazy engine, dashboard, widget) wait on
     // it instead of killing this child's llama-server (F182). Cleared in the
@@ -445,10 +446,17 @@ export class TaskRunner {
   private async killTree(child: ReturnType<typeof spawn>, exited: Promise<number | null>, tree: OwnedTree): Promise<void> {
     {
       if (process.platform === 'win32') {
-        // A tree found at kill time must be walked while its root is alive;
-        // skip if the child exited during the race window (avoids a noisy
-        // taskkill ERROR). A Job Object needs no such care.
-        if (tree.kind === 'job' || (child.pid && child.exitCode === null)) await tree.kill()
+        // A tree found at kill time must be walked while its root is alive: once
+        // the child's exit was handled its pid may be another process's (F255).
+        // The walked handle is given the child, asks its exitCode and signalCode in
+        // the turn of its taskkill, and refuses with one line when it has ended; a
+        // handle of a child with no pid kills nothing. A Job Object ends the job
+        // whatever the child did. So nothing is asked here (wave 24, round three,
+        // check Y2c-4: the condition that stood here only decided whether that
+        // refusal line was logged, on a path no caller reaches: every path to
+        // killTree runs before the child's exit can have been handled). The tree's
+        // own kill is pinned by daemon/taskRunnerTreeKill.test.ts.
+        await tree.kill()
         try { child.kill() } catch {}
       } else {
         // Kill the whole process group (bun → llama-server); escalate to
@@ -523,7 +531,7 @@ export function baselineInChild(o: {
       finish(new Error(`the baseline process could not be started (${(e as NodeJS.ErrnoException)?.code ?? String(e)})`))
       return
     }
-    const tree = ownProcessTree(child.pid, (line) => console.log(`[daemon] ${line}`))
+    const tree = ownProcessTree(child, (line) => console.log(`[daemon] ${line}`))
     child.stdout?.on('data', (b: Buffer) => { out += b.toString('utf-8') })
     child.stderr?.on('data', (b: Buffer) => { err += b.toString('utf-8') })
     child.on('error', (e: NodeJS.ErrnoException) => {

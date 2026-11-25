@@ -384,7 +384,9 @@ await step('burst', async () => {
   let child: ChildProcess | null = null
   const done = run(`1..${CHILDREN} | ForEach-Object { Start-Process -WindowStyle Hidden cmd.exe -ArgumentList '/c', '.\\late.cmd', $_ }`,
     { cwd: burstDir, shell: PS, ctx, onChild: c => { child = c } })
-  const tree = ownProcessTree((child as ChildProcess | null)?.pid)
+  // The started process, not its pid (wave 24, F255): the kill below comes after a wait in which the root can end, and
+  // a tree without a Job Object is then not looked for from a number that may be another process's.
+  const tree = ownProcessTree((child as ChildProcess | null) ?? undefined)
   const count = (prefix: string) => readdirSync(burstDir).filter(f => f.startsWith(prefix)).length
   const giveUp = Date.now() + 30_000
   while (count('started-') < KILL_AFTER && Date.now() < giveUp) await sleep(15)
@@ -785,7 +787,8 @@ await step('sealUnreadable', async () => {
   const seal = c.seal ?? ''
   let out = '', errText = ''
   const child = spawn(c.file, c.args, { cwd: c.cwd, env: c.env, windowsHide: true })
-  const tree = ownProcessTree(child.pid)
+  // The started process, not its pid (wave 24, F255): the cap's kill comes up to 90 s later, when the root may have ended.
+  const tree = ownProcessTree(child)
   child.stdout?.on('data', d => { out += String(d) })
   child.stderr?.on('data', d => { errText += String(d) })
   const exited = new Promise<number | null>(r => child.on('close', code => r(code)))

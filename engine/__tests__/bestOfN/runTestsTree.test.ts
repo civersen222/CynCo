@@ -11,33 +11,60 @@
  * every engine here runs) is `bypassTreesJob.test.ts`; the grace is `tools/bypassGrace.test.ts`.
  */
 import { afterEach, describe, expect, it } from 'vitest'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { runTests, TEST_RUN_CAP_MS } from '../../bestOfN/sampler.js'
+import { endMarked, goneWithin, newMark, watchMarked, type MarkWatch } from '../helpers/markedProcesses.js'
 
-const alive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }
-}
-const seen: number[] = []
-afterEach(() => {
-  // A survivor (the defect) is ended here so the suite does not leave it running.
-  for (const pid of seen.splice(0)) if (alive(pid)) { try { process.kill(pid) } catch { /* gone between the two calls */ } }
+// The grandchild carries a mark in its command line and is asked about and ended by it, never by the pid it
+// printed (F255, wave 24: a number read from output names whatever process has it now). A watcher asks for the mark
+// while the run runs, and each case asserts it saw the printed pid carrying it (wave 24, round two): "gone" is also
+// the answer of a mark that never named the program.
+const marks: string[] = []
+const watches: MarkWatch[] = []
+const dirs: string[] = []
+const newCaseMark = (label: string) => { const m = newMark(label); marks.push(m); return m }
+/** A watcher already listing for `mark`. */
+const watching = async (mark: string): Promise<MarkWatch> => { const w = watchMarked(mark); watches.push(w); await w.ready; return w }
+afterEach(async () => {
+  for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+  // A survivor (the defect) is ended here by its mark, so the suite does not leave it running.
+  for (const m of marks.splice(0)) endMarked(m)
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true, maxRetries: 5 })
 })
+/** A grandchild that prints its pid and waits two minutes (longer than any case here needs), carrying `mark`. */
+const waiter = (mark: string) => `node -e "console.log('pid=' + process.pid); setTimeout(() => {}, 120000) // ${mark}"`
+/** The same, which also writes its pid to `file` (a path with forward slashes) as soon as it runs. */
+const waiterWritingPid = (mark: string, file: string) =>
+  `node -e "require('fs').writeFileSync('${file}', String(process.pid)); console.log('pid=' + process.pid); setTimeout(() => {}, 120000) // ${mark}"`
+/** The whole positive number `file` holds, once it holds one; null after `ms`. */
+async function pidIn(file: string, ms: number): Promise<number | null> {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (existsSync(file)) { const n = Number(readFileSync(file, 'utf-8').trim()); if (Number.isInteger(n) && n > 0) return n }
+    await new Promise(r => setTimeout(r, 50))
+  }
+  return null
+}
 
 const info = (command: string) => ({ available: true, framework: 'pytest', command })
 
 describe('runTests owns the tree of a candidate\'s test run', () => {
   it('a run cut at its cap ends the program the shell started, and answers no score', async () => {
+    const mark = newCaseMark('runTestsCut')
+    // Listing before the run starts: the program lives until the 3 s cap, several of the watcher's listings.
+    const w = await watching(mark)
     const t0 = Date.now()
-    const r = await runTests(process.cwd(), info('node -e "console.log(\'pid=\' + process.pid); setInterval(() => {}, 1000)"'), 3000)
+    const r = await runTests(process.cwd(), info(waiter(mark)), 3000)
     const ms = Date.now() - t0
     expect(r.refused).toBeUndefined()
     expect(r).toMatchObject({ passed: 0, total: 0 })
     const m = /pid=(\d+)/.exec(r.output)
     expect(m, `the grandchild printed no pid: ${r.output}`).not.toBeNull()
     const pid = Number(m![1])
-    seen.push(pid)
-    const until = Date.now() + 5000
-    while (alive(pid) && Date.now() < until) await new Promise(res => setTimeout(res, 100))
-    expect(alive(pid), `node ${pid}, started by the candidate's tests, outlived the run's cap`).toBe(false)
+    expect(await w.stop(), `node ${pid} was never seen carrying its mark while the run ran`).toContain(pid)
+    expect(await goneWithin(pid, mark), `node ${pid}, started by the candidate's tests, outlived the run's cap`).toBe(true)
     expect(ms).toBeLessThan(10_000)
   }, 30_000)
 
@@ -62,16 +89,22 @@ describe('runTests owns the tree of a candidate\'s test run', () => {
 
   // Wave 19, check C4-5: Stop reaches a best-of-N test run. The turn's signal ends the tree at once,
   // not at the two-minute cap, and the run answers no score.
+  // Changed on purpose in wave 24, round two: the Stop was pressed at a fixed 1.5 s, when the program had run for about
+  // a second, too briefly for the watcher's listings to be sure to see it. It is now pressed once the watcher has seen
+  // the program carrying its mark (or after 20 s, when the case fails on what the watcher saw); still long before the cap.
   it('a Stop ends the run and the program the shell started, long before the cap', async () => {
+    const mark = newCaseMark('runTestsStop')
+    const w = await watching(mark)
+    const d = mkdtempSync(join(tmpdir(), 'cynco-runtests-stop-'))
+    dirs.push(d)
+    const pidFile = join(d, 'pid.txt').replace(/\\/g, '/')
     const stop = new AbortController()
     const t0 = Date.now()
-    const timer = setTimeout(() => stop.abort(), 1500)
-    let r: Awaited<ReturnType<typeof runTests>>
-    try {
-      r = await runTests(process.cwd(), info('node -e "console.log(\'pid=\' + process.pid); setInterval(() => {}, 1000)"'), 60_000, stop.signal)
-    } finally {
-      clearTimeout(timer)
-    }
+    const run = runTests(process.cwd(), info(waiterWritingPid(mark, pidFile)), 60_000, stop.signal)
+    const early = await pidIn(pidFile, 20_000)
+    if (early !== null) await w.saw(early, 15_000)
+    stop.abort()
+    const r = await run
     const ms = Date.now() - t0
     expect(r.refused).toBeUndefined()
     expect(r).toMatchObject({ passed: 0, total: 0 })
@@ -79,10 +112,9 @@ describe('runTests owns the tree of a candidate\'s test run', () => {
     const m = /pid=(\d+)/.exec(r.output)
     expect(m, `the grandchild printed no pid: ${r.output}`).not.toBeNull()
     const pid = Number(m![1])
-    seen.push(pid)
-    const until = Date.now() + 5000
-    while (alive(pid) && Date.now() < until) await new Promise(res => setTimeout(res, 100))
-    expect(alive(pid), `node ${pid}, started by the candidate's tests, outlived the Stop`).toBe(false)
+    expect(early, 'the pid the program wrote is the one it printed').toBe(pid)
+    expect(await w.stop(), `node ${pid} was never seen carrying its mark while the run ran`).toContain(pid)
+    expect(await goneWithin(pid, mark), `node ${pid}, started by the candidate's tests, outlived the Stop`).toBe(true)
   }, 90_000)
 
   it('a run asked after the Stop starts nothing', async () => {

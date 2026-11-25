@@ -12,7 +12,7 @@
 #                                              the dynasty tasks are owned by fantasyman\dynasty\ops)
 #
 # Status reads the task's own state (Running/Ready), the process behind it when
-# it can be matched by command line, and the last line of its log.
+# it can be matched by its image and command line, and the last line of its log.
 param(
   [ValidateSet('status', 'start', 'stop', 'register')] [string] $Action = 'status',
   [string] $Only = '',
@@ -26,12 +26,12 @@ param(
 
 $repo = 'C:\Users\civer\localcode'
 $services = @(
-  @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
-  @{ Name = 'embed';    Task = 'CynCo embed server';        Match = 'llama-server.*--embeddings'; Log = "$env:USERPROFILE\.cynco\embed-server.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-embed-server.cmd'); Description = 'CynCo embedding server: llama-server --embeddings on 127.0.0.1:9165 (nomic-embed-text, CPU) for every engine''s project and code index' } },
-  @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main';   Log = "$env:USERPROFILE\.cynco\daemon.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-daemon.cmd'); Description = 'CynCo liveness daemon: triggers, one-shots, phone commands, and the hourly page for an oversized service log' } },
-  @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Goodbye = 'engine\power\reporter\main.ts'; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
+  @{ Name = 'engine';   Task = 'CynCo headless engine';     Match = 'engine\\main\.ts(?!.*--run-task)'; Images = @('bun.exe'); Log = "$env:USERPROFILE\.cynco\engine-headless.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-headless-engine.cmd'); Description = 'CynCo headless phone engine: dashboard behind the doorman, cold GPU until a message needs the model' } },
+  @{ Name = 'embed';    Task = 'CynCo embed server';        Match = 'llama-server.*--embeddings'; Images = @('llama-server.exe'); Log = "$env:USERPROFILE\.cynco\embed-server.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-embed-server.cmd'); Description = 'CynCo embedding server: llama-server --embeddings on 127.0.0.1:9165 (nomic-embed-text, CPU) for every engine''s project and code index' } },
+  @{ Name = 'daemon';   Task = 'CynCo liveness daemon';     Match = 'engine\\daemon\\main'; Images = @('bun.exe'); Log = "$env:USERPROFILE\.cynco\daemon.log"; Register = @{ Action = (Join-Path $repo 'scripts\run-daemon.cmd'); Description = 'CynCo liveness daemon: triggers, one-shots, phone commands, and the hourly page for an oversized service log' } },
+  @{ Name = 'watch';    Task = 'CynCo box reporter';        Match = 'engine\\power\\reporter\\main'; Images = @('bun.exe'); Log = "$env:USERPROFILE\.cynco\box-reporter.log"; Goodbye = 'engine\power\reporter\main.ts'; Register = @{ Action = (Join-Path $repo 'scripts\run-box-reporter.cmd'); Description = 'CynCo box reporter: pushes this PC''s state (awake and asleep, GPUs, model, services, jobs) to the watcher on the doorman; listens on nothing, changes nothing' } },
   @{ Name = 'ntfy';     Remote = '100.110.117.10'; Port = 8090; Note = 'on the doorman (docker compose, /opt/doorman/ntfy)' },
-  @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Log = '' }
+  @{ Name = 'listener'; Task = 'Dynasty approval listener'; Match = 'approval_listener\.py'; Images = @('python.exe', 'pythonw.exe'); Log = '' }
 )
 if ($Only) { $services = $services | Where-Object { $_.Name -eq $Only }; if (-not $services) { Write-Error "no service named '$Only' (engine, embed, daemon, watch, ntfy, listener)"; exit 2 } }
 
@@ -88,7 +88,9 @@ foreach ($s in $services) {
     continue
   }
   $task = Get-ScheduledTask -TaskName $s.Task -ErrorAction SilentlyContinue
-  $proc = $procs | Where-Object { $_.Name -eq 'bun.exe' -or $_.Name -notmatch 'bun' } | Where-Object { $_.CommandLine -match $s.Match } | Select-Object -First 1
+  # F255: a row's process is one of the images it runs as, with its text in the command line. The text alone let any
+  # image through (an editor opened on engine\main.ts was the "engine" that stop engine stopped).
+  $proc = $procs | Where-Object { $s.Images -contains $_.Name } | Where-Object { $_.CommandLine -match $s.Match } | Select-Object -First 1
   switch ($Action) {
     'register' {
       if (-not $s.Register) { Write-Output "$($s.Name): registration is owned elsewhere (not this script)"; break }
@@ -118,7 +120,11 @@ foreach ($s in $services) {
         finally { Pop-Location }
       }
       if ($task -and $task.State -eq 'Running') { Stop-ScheduledTask -TaskName $s.Task }
-      if ($proc) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
+      # F255: $proc was listed when this script started; the goodbye and the task stop above may each have ended it
+      # since, and its number may be another process's now. So it is opened (the handle keeps the number its own),
+      # its start time is compared with the listed creation time, and only the process listed is ended, through that
+      # handle; one that is gone, another one, or one that cannot be opened is not stopped.
+      if ($proc) { try { $h = [System.Diagnostics.Process]::GetProcessById([int]$proc.ProcessId); [void]$h.Handle; if ([math]::Abs(($h.StartTime - $proc.CreationDate).TotalMilliseconds) -lt 5) { $h.Kill() } } catch { } }
       if ($task -or $proc) { Write-Output "$($s.Name): stopped" } else { Write-Output "$($s.Name): not running" }
     }
     default {

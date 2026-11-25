@@ -405,7 +405,8 @@ export const bashTool: ToolImpl = {
         })
         return
       }
-      const tree = ownProcessTree(child.pid)
+      // The process, not its pid: a walked tree is never killed by the number once the shell's exit was handled (F255).
+      const tree = ownProcessTree(child)
       const deadline = setTimeout(() => killFor('timeout'), timeout)
       signal?.addEventListener('abort', onAbort, { once: true })
     })

@@ -159,7 +159,8 @@ async function runOwned(c: ContainedSpawn, signal?: AbortSignal, capMs = bashDef
   : Promise<{ stdout: string; stderr: string; exitCode: number | null; ended: 'stopped' | 'timeout' | null }> {
   if (signal?.aborted) return { stdout: '', stderr: '', exitCode: null, ended: 'stopped' }
   const proc = Bun.spawn([c.file, ...c.args], { cwd: c.cwd, env: c.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
-  const tree = ownProcessTree(proc.pid)
+  // The process, not its pid: a walked tree is never killed by the number once git's exit was handled (F255).
+  const tree = ownProcessTree(proc)
   let ended: 'stopped' | 'timeout' | null = null
   let giveUp: () => void = () => {}
   const gaveUp = new Promise<void>(resolve => { giveUp = resolve })

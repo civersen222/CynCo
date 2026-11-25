@@ -23,8 +23,9 @@ vi.mock('../../processTree.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../processTree.js')>()
   return {
     ...real,
-    ownProcessTree: (pid: number | undefined) => {
-      const inner = real.ownProcessTree(pid)
+    // Wave 24: the Bash tool hands the started process (a `TreeRoot`), no longer its pid; either is passed on as given.
+    ownProcessTree: (root: Parameters<typeof real.ownProcessTree>[0]) => {
+      const inner = real.ownProcessTree(root)
       const seen = { killed: 0, released: 0 }
       trees.push(seen)
       const kind = fakeKind ?? inner.kind
@@ -149,6 +150,11 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('the Bash tool 
     expect(run.status, `the fixture failed:\n${run.stdout}\n${run.stderr}`).toBe(0)
     const report = JSON.parse(run.stdout.trim().split('\n').pop()!)
     expect(report.engineJob?.installed, `the engine's own job must be installed, as in main.ts: ${JSON.stringify(report)}`).toBe(true)
+    // Wave 24 (F255): the child is asked about by a mark in its command line. The control is the same command
+    // without the overrun: its child runs on and the mark finds it, so a "gone" below is not a mark that finds nothing.
+    expect(report.control?.isError, JSON.stringify(report)).toBe(false)
+    expect(report.control?.pid, JSON.stringify(report)).toBeGreaterThan(0)
+    expect(report.control?.aliveAfter, `the control's child ${report.control?.pid} was not found running by its mark: ${JSON.stringify(report)}`).toBe(true)
     expect(report.isError).toBe(true)
     expect(report.pid).toBeGreaterThan(0)
     expect(report.aliveAfter, `the child ${report.pid} outlived the overrun`).toBe(false)

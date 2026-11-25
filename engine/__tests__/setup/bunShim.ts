@@ -277,7 +277,10 @@ function makeBunSpawn(
     get stdout() { return makeStream(chunks.stdout) },
     get stderr() { return makeStream(chunks.stderr) },
     get exitCode() { return child.exitCode },
-    // The Git tool owns the tree by this pid (F201, F210).
+    // With exitCode, what tells a walked tree that this process's exit was handled (F255): a git ended by a
+    // signal has exitCode null and this set.
+    get signalCode() { return child.signalCode },
+    // The Git tool owns the tree by the started process, which this object stands for (F201, F210, F255).
     get pid() { return child.pid },
     exited: exitedPromise,
   }

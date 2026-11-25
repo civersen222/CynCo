@@ -413,7 +413,9 @@ function classified({ status, stdout, stderr, signal, error }, elapsedMs, timeou
  * the deadline or the abort, names the end; after an abort, a run still open at
  * the deadline is killed once more (wave 19c): that reaches a root the first kill
  * left running, never a process that outlived a dead root (killTree finds the tree
- * from the root's pid), which keeps the run open until it ends.
+ * from the root's pid), which keeps the run open until it ends. A root whose exit
+ * the runtime has handled is not killed at all, at the deadline or at an abort: its
+ * pid may be another process's by then (F255); killTree says so on stderr.
  */
 export function runAsync(cmd, args, { cwd, env, envExact, timeoutMs, shell, contained, audit, signal } = {}, { spawn: spawnImpl = spawn, now = () => Date.now(), kill = killTree, ...hooks } = {}) {
   if (signal?.aborted) return Promise.resolve(abortedResult())
@@ -495,9 +497,18 @@ function abortedResult() {
   }
 }
 
-/** Kill a child and everything under it. */
+/**
+ * Kill a child and everything under it, found from the child's pid at the moment of the kill. Only while the
+ * runtime has not handled the child's exit (F255): after that the number is free and may be another process's, and
+ * what the child started cannot be found from it, so nothing is killed and one line on stderr says so. The run then
+ * stays open until whatever holds its output ends.
+ */
 function killTree(child) {
   if (!child?.pid) return
+  if ((child.exitCode !== null && child.exitCode !== undefined) || (child.signalCode !== null && child.signalCode !== undefined)) {
+    console.error(`[spawn] pid ${child.pid} was not killed: its process has ended and its exit was handled, so the number may be another process's now; the run stays open until what holds its output ends`)
+    return
+  }
   if (process.platform === 'win32') {
     const r = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true })
     if (r.status === 0) return

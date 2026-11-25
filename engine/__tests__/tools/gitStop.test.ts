@@ -8,13 +8,20 @@
  * starts a node process that writes its pid at once and a marker after LATE_MS. Stopped or timed
  * out, the call returns long before that and the process is dead. And a commit with no message
  * waits on no editor.
+ *
+ * Wave 24 (F255): the hook's process carries a mark in its command line (an extra argument of late.js) and
+ * "gone" is asked of the mark, never of the number alone: a pid whose process has ended may be given to
+ * another process, which `process.kill(pid, 0)` would answer for. A watcher asks for the mark while the call
+ * runs, and each case asserts it saw the process's pid carrying it, so "gone" is never the answer of a mark
+ * that named nothing.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gitTool } from '../../tools/impl/git.js'
+import { endMarked, goneWithin, newMark, watchMarked, type MarkWatch } from '../helpers/markedProcesses.js'
 
 const HAS_GIT = spawnSync('git', ['--version'], { encoding: 'utf-8' }).status === 0
 const LATE_MS = 60_000
@@ -45,8 +52,25 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true, maxRetries: 5 })
 })
 
-/** A repository with one staged file and a pre-commit hook that starts the late process. */
-function repoWithSlowHook(name: string): string {
+const marks: string[] = []
+const watches: MarkWatch[] = []
+/** A mark for one case's late process, and a watcher already listing for it. */
+async function marking(label: string): Promise<{ mark: string; watch: MarkWatch }> {
+  const mark = newMark(label)
+  marks.push(mark)
+  const watch = watchMarked(mark)
+  watches.push(watch)
+  await watch.ready
+  return { mark, watch }
+}
+afterEach(async () => {
+  for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+  // A survivor (the defect) is ended by its mark, so the suite does not leave it running.
+  for (const m of marks.splice(0)) endMarked(m)
+})
+
+/** A repository with one staged file and a pre-commit hook that starts the late process, which carries `mark`. */
+function repoWithSlowHook(name: string, mark = ''): string {
   const repo = join(root, name)
   mkdirSync(repo, { recursive: true })
   const git = (...args: string[]) => expect(spawnSync('git', args, { cwd: repo, encoding: 'utf-8' }).status).toBe(0)
@@ -55,7 +79,7 @@ function repoWithSlowHook(name: string): string {
     `require('fs').writeFileSync('pid.txt', String(process.pid)); setTimeout(() => require('fs').writeFileSync('marker.txt', 'x'), ${LATE_MS})\n`)
   writeFileSync(join(repo, '.gitignore'), 'pid.txt\nmarker.txt\n')
   git('add', '-A')
-  writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nnode late.js\n', { mode: 0o755 })
+  writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), `#!/bin/sh\nnode late.js ${mark}\n`, { mode: 0o755 })
   return repo
 }
 
@@ -73,27 +97,36 @@ const hookPid = (cwd: string) => waitFor(() => {
   const n = Number(readFileSync(join(cwd, 'pid.txt'), 'utf-8'))
   return Number.isInteger(n) && n > 0 ? n : 0
 }, 'the hook to start its child')
-const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
-const gone = (pid: number) => waitFor(() => !alive(pid), `pid ${pid} to be gone`, 10_000)
+/** The hook's process, seen carrying its mark while it ran, is gone (asked of the mark, never of the number alone). */
+async function gone(pid: number, mark: string, watch: MarkWatch): Promise<void> {
+  const seen = await watch.stop()
+  expect(seen, `the hook's process ${pid} was never seen carrying its mark while it ran (${JSON.stringify(seen)})`).toContain(pid)
+  expect(await goneWithin(pid, mark, 10_000), `pid ${pid} is still the hook's process that carries its mark`).toBe(true)
+}
 
 describe.skipIf(!HAS_GIT)('the Git tool, Stop and its cap', () => {
   it('a Stop while a hook runs returns at once, says stopped, and kills what the hook started', async () => {
-    const repo = repoWithSlowHook('stop')
+    const { mark, watch } = await marking('gitStopStop')
+    const repo = repoWithSlowHook('stop', mark)
     const ac = new AbortController()
     const call = gitTool.execute({ subcommand: 'commit', args: '-m "held by a hook"' }, repo, ac.signal)
     const pid = await hookPid(repo)
+    // Stopped once the watcher has seen it running: the process lives long enough to be seen.
+    await watch.saw(pid, 15_000)
     const stoppedAt = Date.now()
     ac.abort()
     const result = await call
     expect(result.isError).toBe(true)
     expect(result.output).toMatch(/^git commit stopped/)
     expect(Date.now() - stoppedAt).toBeLessThan(LATE_MS / 2)
-    await gone(pid)
+    await gone(pid, mark, watch)
     expect(existsSync(join(repo, 'marker.txt'))).toBe(false)
   }, 60_000)
 
   it('a hook that outlives the cap is ended by it, and the result says timeout', async () => {
-    const repo = repoWithSlowHook('cap')
+    // The hook's process lives about two seconds before the cap ends it: several of the watcher's listings.
+    const { mark, watch } = await marking('gitStopCap')
+    const repo = repoWithSlowHook('cap', mark)
     process.env.CYNCO_BASH_TIMEOUT_MS = '3000'
     try {
       const call = gitTool.execute({ subcommand: 'commit', args: '-m "held by a hook"' }, repo, new AbortController().signal)
@@ -101,14 +134,16 @@ describe.skipIf(!HAS_GIT)('the Git tool, Stop and its cap', () => {
       const result = await call
       expect(result.isError).toBe(true)
       expect(result.output).toMatch(/^git commit timeout after 3000ms/)
-      await gone(pid)
+      await gone(pid, mark, watch)
     } finally {
       delete process.env.CYNCO_BASH_TIMEOUT_MS
     }
   }, 60_000)
 
   it('a call asked for after the Stop is not started', async () => {
-    const repo = repoWithSlowHook('after-stop')
+    // Marked like the others: if a regression did start the commit, its hook's program would be ended after the case.
+    const { mark } = await marking('gitStopAfterStop')
+    const repo = repoWithSlowHook('after-stop', mark)
     const ac = new AbortController()
     ac.abort()
     const result = await gitTool.execute({ subcommand: 'commit', args: '-m "never"' }, repo, ac.signal)

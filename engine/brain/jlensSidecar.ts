@@ -186,8 +186,9 @@ export function startJlensSidecar(opts: {
   })
   log(`[jlens] sidecar starting (pid ${proc.pid ?? '?'}, ${python} -u -m ${SIDECAR_MODULE})`)
   // proc.kill() only signals the direct child; the owned tree is what actually
-  // releases the port on Windows (engine/processTree.ts).
-  const tree = ownProcessTree(proc.pid, log)
+  // releases the port on Windows (engine/processTree.ts). The process, not its pid:
+  // a walked tree is never killed by the number once the sidecar's exit was handled (F255).
+  const tree = ownProcessTree(proc, log)
   proc.on('exit', () => tree.release())
 
   return {

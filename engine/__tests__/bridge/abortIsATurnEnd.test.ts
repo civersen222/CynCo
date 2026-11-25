@@ -29,10 +29,19 @@ import { AskBroker } from '../../tools/askBroker.js'
 import type { Provider, ModelCapabilities, CompletionRequest } from '../../provider.js'
 import type { StreamEvent } from '../../types.js'
 import type { LocalCodeConfig } from '../../config.js'
+import { endMarked, goneWithin, newMark, watchMarked, type MarkWatch } from '../helpers/markedProcesses.js'
 
 const dirs: string[] = []
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true, maxRetries: 5 }) })
-afterEach(() => { globalContract.clear() })
+// A program a case starts carries a mark in its command line and is asked about and ended by it, never by the pid it
+// wrote (F255, wave 24: a number whose process has ended may be another process's by the time it is asked).
+const marks: string[] = []
+const watches: MarkWatch[] = []
+afterEach(async () => {
+  globalContract.clear()
+  for (const w of watches.splice(0)) await w.stop().catch(() => undefined)
+  for (const m of marks.splice(0)) endMarked(m)
+})
 
 function config(over: Partial<LocalCodeConfig> = {}): LocalCodeConfig {
   return {
@@ -260,20 +269,31 @@ describe('Stop is a turn end', () => {
     // finds the tree when it happens can miss a child started at that instant
     // (F210; under vitest the Bash tool has no Job Object). The survivor then
     // held this test's directory and the cleanup failed with EPERM.
+    // Wave 24 (F255): the child carries a mark (an extra argument of late.js) and "gone" is asked of the mark, never
+    // of the number alone, which `process.kill(pid, 0)` would answer for whatever process has it now. A watcher asks
+    // for the mark while the command runs; the Stop is pressed once it has seen the child carrying it, so the case
+    // has its own evidence that the mark named the child.
     const LATE_MS = 60_000
-    const { loop, events, provider, cwd } = setup(() => [bash('node late.js'), done()], { allowedTools: ['Bash'] })
+    const mark = newMark('abortTurnBash')
+    marks.push(mark)
+    const watch = watchMarked(mark)
+    watches.push(watch)
+    await watch.ready
+    const { loop, events, provider, cwd } = setup(() => [bash(`node late.js ${mark}`), done()], { allowedTools: ['Bash'] })
     writeFileSync(join(cwd, 'late.js'), `require('fs').writeFileSync('pid.txt', String(process.pid)); setTimeout(() => {}, ${LATE_MS})\n`)
     const childPid = (): number => {
       if (!existsSync(join(cwd, 'pid.txt'))) return 0
       const n = Number(readFileSync(join(cwd, 'pid.txt'), 'utf-8'))
       return Number.isInteger(n) && n > 0 ? n : 0
     }
-    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
     let stoppedAt = 0
     let pid = 0
+    let pidAt = 0
     const timer = setInterval(() => {
       pid = childPid()
-      if (pid) { clearInterval(timer); stoppedAt = Date.now(); loop.abort() }
+      if (pid && pidAt === 0) pidAt = Date.now()
+      // Never seen in 15 s: stopped all the same, and the assertion on what the watcher saw says why the case fails.
+      if (pid && (watch.seen().includes(pid) || Date.now() - pidAt > 15_000)) { clearInterval(timer); stoppedAt = Date.now(); loop.abort() }
     }, 10)
     try {
       await loop.handleUserMessage('wait a while')
@@ -283,9 +303,8 @@ describe('Stop is a turn end', () => {
     expect(events.filter(e => e.type === 'message.complete').map(c => c.stopReason)).toEqual(['aborted'])
     expect(provider.calls()).toBe(1)
     expect(loop.isProcessing).toBe(false)
-    const until = Date.now() + 10_000
-    while (alive(pid) && Date.now() < until) await new Promise(r => setTimeout(r, 25))
-    expect(alive(pid), 'the process the command started outlived the Stop').toBe(false)
+    expect(await watch.stop(), `the child ${pid} was never seen carrying its mark while it ran`).toContain(pid)
+    expect(await goneWithin(pid, mark, 10_000), 'the process the command started outlived the Stop').toBe(true)
   }, 60000)
 
   it('Stop while a sub-agent the turn started is on its model call ends the sub-agent and the turn (F210)', async () => {

@@ -43,5 +43,7 @@ describe.skipIf(process.platform !== 'win32' || bunExe === null)('ownProcessTree
     expect(report.startedAtKill, 'the shell had not started any child when it was killed').toBeGreaterThan(3)
     expect(report.startedAtKill, 'the shell had finished starting children: nothing was mid-start at the kill').toBeLessThan(report.children)
     expect(report.survivors, 'a child outlived the kill').toBe(0)
+    // Wave 24 (F255): a root whose exit was handled is not opened by its number, so it gets no Job Object.
+    expect(report.endedRootKind, 'an ended root was put in a job by its number').toBe('walk')
   }, 60_000)
 })

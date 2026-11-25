@@ -1950,7 +1950,8 @@ function viaToolExec(R, command, cwd, timeoutMs = VIA_TOOLEXEC_CAP_MS) {
         const code = err == null ? 0 : (typeof err.code === 'number' ? err.code : null)
         done({ code, err, timedOut, stdout: String(stdout ?? ''), stderr: String(stderr ?? ''), refused: err instanceof E.C.ContainmentRefusal ? err : null })
       }, ctx)
-      tree = E.T.ownProcessTree(child.pid, (line) => say(line))
+      // The process, not its pid: a walked tree is never killed by the number once its exit was handled (F255).
+      tree = E.T.ownProcessTree(child, (line) => say(line))
       timer = setTimeout(() => {
         timedOut = true
         say(`${TAG} a call through toolExec ran past ${timeoutMs} ms and its tree was killed: ${oneLine(command).slice(0, 160)}`)
