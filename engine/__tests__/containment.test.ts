@@ -3397,7 +3397,9 @@ describe('B1: the Git-tools switch (LOCALCODE_CONTAINMENT_MSYS, read by the star
   // process may start the copy (measured: while one runs, every low start of it fails, and one started
   // after a low one joins the namespace the low one made).
   it('guard: the switch is read in one place, and the copy is named only in toolEnv\'s contained Windows branch', () => {
-    const text = readFileSync(fileURLToPath(new URL('../containment.ts', import.meta.url)), 'utf-8')
+    // Read as LF: a Windows checkout with core.autocrlf=true hands this test CRLF, and the function ends
+    // below are found by '\n}\n' (F231's class; on this PC the main checkout failed here from 3533c4d0).
+    const text = readFileSync(fileURLToPath(new URL('../containment.ts', import.meta.url)), 'utf-8').replace(/\r\n/g, '\n')
     expect(text.match(/process\.env\.LOCALCODE_CONTAINMENT_MSYS/g)).toHaveLength(1)
     const est0 = text.indexOf('export function establishContainment(')
     const read = text.indexOf('process.env.LOCALCODE_CONTAINMENT_MSYS')

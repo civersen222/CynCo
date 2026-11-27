@@ -4,6 +4,8 @@
 # First deploy installs example configs (targets.json, naswatch.json) when they are missing.
 # The watcher (metasystem slice 1) keeps its store in /var/lib/cynco-watcher and serves the daily
 # note on the Tailscale address, port 9171; nothing in it acts on any box.
+# The doorman also answers on its tailnet HTTPS name through `tailscale serve` (set below): the phone
+# app's waking page knocks there (engine/dashboard/wake.ts).
 set -euo pipefail
 HOST="${DOORMAN_HOST:-cynco@100.110.117.10}"
 KEY="${DOORMAN_KEY:-$HOME/.ssh/cynco-doorman}"
@@ -30,8 +32,14 @@ $SSH '
   sudo systemctl daemon-reload
   sudo systemctl enable --now doorman naswatch watcher >/dev/null 2>&1
   sudo systemctl restart doorman naswatch watcher
+  # An HTTPS name for the doorman on the tailnet (never Funnel): the phone app knocks here when the PC
+  # does not answer (engine/dashboard/wake.ts), and an https page may not fetch http. serve proxies to
+  # 127.0.0.1 only, which doorman.service binds beside the Tailscale address. Kept by tailscaled across
+  # restarts; running it again changes nothing. Off: sudo tailscale serve --https=443 off
+  # (No apostrophe anywhere in this block: it is one single-quoted argument of ssh.)
+  sudo tailscale serve --bg --https=443 http://127.0.0.1:9170 >/dev/null
   sleep 2
-  echo "--- doorman:  $(systemctl is-active doorman) ($(systemctl is-enabled doorman))"
+  echo "--- doorman:  $(systemctl is-active doorman) ($(systemctl is-enabled doorman)); loopback for serve: HTTP $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://127.0.0.1:9170/status?target=main"); https: $(sudo tailscale serve status 2>/dev/null | head -1)"
   echo "--- naswatch: $(systemctl is-active naswatch) ($(systemctl is-enabled naswatch))"
   echo "--- watcher:  $(systemctl is-active watcher) ($(systemctl is-enabled watcher)) - the note: http://$TS_IP:9171/"
   echo "--- ntfy:     $(docker inspect -f "{{.State.Status}} restart={{.HostConfig.RestartPolicy.Name}}" ntfy 2>/dev/null || echo not-running) on $TS_IP:8090"

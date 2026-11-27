@@ -40,3 +40,28 @@ in under a second; daemon up against the new URL.
 Doorman service answers `/status`, `/wake`, `/schedule`, `/` on the tailnet; `etherwake` from the doorman woke the sleeping main PC in 7 s with Power-Troubleshooter naming the USB adapter's host as the wake source, nobody at the desk. The engine-side live proof (cold GPU behind a live dashboard, Sleep-after + wake-before-trigger) runs after merge + pull, since the daemon and the headless engine run from the main checkout; its results go in the PR.
 
 **Image box joined (2026-11-09, after PR #200).** `/etc/doorman/targets.json` on the mini PC now has `image` (wired MAC `D8:43:AE:96:AE:8B`, health `http://192.168.0.47:11434/api/version`) and `main.with: ["image"]`; backup `targets.json.bak-2026-11-09`. The health probe needed a pinned neighbour: the box never answered the doorman's ARP over the shared Wi-Fi though unicast flowed once the MAC was known (F188), so `/etc/systemd/network/10-netplan-wlo1.network.d/image-box-neigh.conf` declares `192.168.0.47` → the box's Wi-Fi MAC `2c:98:11:0b:6e:a9` as a `[Neighbor]`; it lives outside the repo and is edited by hand if the box's adapter or address changes. `/status` shows `with: [{"name": "image", "up": true}]`. The box: ComfyUI portable at `D:\ComfyUI_windows_portable` kept up by `comfy_watchdog.ps1` (`--listen 0.0.0.0 --port 8188`, polls every 30 s, so allow ~30 s plus boot after a wake), `comfyui_controlnet_aux` installed, wake-on-magic-packet armed on the wired adapter, Fast Startup on, S3 only. The knock-wakes-both proof (design check 7) is still to run with both boxes asleep.
+
+## The phone app knocks (2026-11-27, F256)
+
+**Problem.** Since the HTTPS install (2026-11-11) the phone opens CynCo at the PC's own tailnet name, so a
+PC asleep answers nothing and the doorman, which wakes only on a knock, never hears from the phone.
+**Decision.** The app knocks by itself. A service worker on the HTTPS name answers a page load the PC does
+not answer in 6 s with a cached waking page and knocks; the waking page asks the PC's manifest, knocks only
+while nothing answers, and opens CynCo past the worker's cut-off once the PC answers; an open page wakes
+the PC before it trusts a quiet socket and sends the held message afterwards, into the chat it was typed in
+only (`engine/dashboard/wake.ts`, `LOCALCODE_DASHBOARD_WAKE_URL`). The knock goes to the doorman's own HTTPS
+name (`tailscale serve` → 127.0.0.1:9170, `deploy.sh`), because an https page may not fetch http. It is
+`mode: 'no-cors'` and never read, so the doorman gets no CORS rule. Rejected: sending the phone through the
+doorman's page first (a second icon, and the PC still sleeps under an open page); turning off the PIN on
+wake (it would not have helped: the locked session runs CynCo); "Sleep after: Never" (gives up goal 3).
+**After review (the same day).** Any answer but a 200 means the PC is awake, so an engine restarting is
+waited for and never knocked about; a wake that gives up starts no other until the owner acts; the HTTPS
+name's listener takes no writes and a schedule must be `application/json`, because once the doorman has an
+https name any https page a tailnet browser opens can send to it; unsetting the variable removes the worker
+from the phone at its next open.
+**Costs.** A service worker on the phone, scoped to page loads, that stores one static page; two more
+token-free static routes, only while the variable is set; a loopback listener and a tailnet HTTPS name on
+the doorman (the audience is the tailnet, as for its address). Any https page a tailnet browser opens can
+still knock, which wakes the PC and the image box and does nothing else; any tailnet device could already.
+**Guards.** `engine/__tests__/dashboard/phoneWake.test.ts`, `scripts/doorman/test_doorman_https.py`. Live
+check owed: `docs/NOW.md`.

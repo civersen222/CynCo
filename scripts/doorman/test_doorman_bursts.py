@@ -76,7 +76,7 @@ def test_jsonl_recorder_appends_one_line_per_burst_and_trims(tmp_path):
 def test_main_wires_the_recorder(tmp_path, monkeypatch):
     made = {}
 
-    def fake_serve(bind, port, d, page_html=None):
+    def fake_serve(bind, port, d, page_html=None, knocks_only=False):
         made["d"] = d
 
         class S:

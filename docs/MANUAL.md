@@ -107,6 +107,7 @@ data, and write the audit log before exit.
 | `LOCALCODE_BRIDGE_HOST` | Bridge bind host (default `127.0.0.1`) |
 | `LOCALCODE_DASHBOARD_HOST` | Dashboard bind host(s) (default `127.0.0.1`) — see README → Phone access |
 | `LOCALCODE_DASHBOARD_PROXY_PORT` | Unset by default. A loopback port for `tailscale serve` to forward the HTTPS name to; every client on it must be a paired device — see README → Phone access → HTTPS |
+| `LOCALCODE_DASHBOARD_WAKE_URL` | Unset by default. The doorman's https wake address (`https://doorman.<tailnet>.ts.net/wake?target=main`): the phone app knocks there when the PC does not answer — see README → Phone access → Waking the PC from the phone |
 | `LOCALCODE_CONTEXT_LENGTH` | Override context window (tokens) |
 | `LOCALCODE_PROFILE` | YAML profile name |
 | `LOCALCODE_S5_MODEL` | Fine-tuned LoRA S5 model (else rule-based) |
