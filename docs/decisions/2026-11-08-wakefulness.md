@@ -65,3 +65,9 @@ the doorman (the audience is the tailnet, as for its address). Any https page a 
 still knock, which wakes the PC and the image box and does nothing else; any tailnet device could already.
 **Guards.** `engine/__tests__/dashboard/phoneWake.test.ts`, `scripts/doorman/test_doorman_https.py`. Live
 check owed: `docs/NOW.md`.
+**The first live try (2026-11-27 12:19).** The phone's knock reached the doorman through its HTTPS name 12 s after the PC
+was put to sleep, and the doorman sent its one-minute burst; the PC entered S3 at 12:20:05 and ignored all five
+packets, the last 46 s into its sleep, and the owner woke it with the power button. A burst now goes on while the
+box does not answer, every 15 s up to 10 minutes (`BURST_UNTIL_UP_S` in `scripts/doorman/doorman.py`), and the
+watcher matches a wake to a burst that started up to 615 s before it. How long the PC ignores packets after it
+falls asleep is not yet measured.
