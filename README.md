@@ -680,10 +680,12 @@ So the engine opens a second loopback listener for the proxy, `LOCALCODE_DASHBOA
 **Waking the PC from the phone** *(opt-in: `LOCALCODE_DASHBOARD_WAKE_URL`)*. The HTTPS name lives on the PC, so when the PC is asleep nothing answers there, and nothing wakes it unless something knocks on the doorman ([`scripts/doorman/`](scripts/doorman/CLAUDE.md)). With a wake address set, the installed app knocks by itself. Opened while the PC sleeps, it shows "Waking CynCo's PC...", asks the doorman to wake it and opens CynCo when the PC answers, usually within a minute. A page left open while the PC fell asleep does the same before it sends: the message stays in the box, the PC is woken, and the message goes once it answers. Windows sign-in is not involved: CynCo runs in the signed-in session, and a locked one keeps it running.
 
 1. `bash scripts/doorman/deploy.sh` gives the doorman an HTTPS name on the tailnet, `https://doorman.<tailnet>.ts.net/` (a page on https may not fetch http). Tailnet only, never Funnel.
-2. `[Environment]::SetEnvironmentVariable('LOCALCODE_DASHBOARD_WAKE_URL', 'https://doorman.<tailnet>.ts.net/wake?target=main', 'User')`, then restart the engine (`scripts\cynco-services.ps1 stop engine`, then `start engine`). Its log says `phone wake: ...`.
+2. `[Environment]::SetEnvironmentVariable('LOCALCODE_DASHBOARD_WAKE_URL', 'https://doorman.<tailnet>.ts.net/wake?target=main', 'User')`, then restart the engine (`scripts\cynco-services.ps1 stop engine`, then `start engine`). Its log says `phone wake: ...`. Set it as a user variable, like the proxy port, so every engine that serves the phone has it: a phone page served without it removes the waking page.
 3. Open the app once while the PC is awake. From then on it keeps the waking page (a service worker, `engine/dashboard/wake.ts`).
 
-The knock is a plain GET whose answer the page never reads. It carries no token, no cookie and no referrer, and it can do nothing but start a wake burst, which any tailnet device can already do. Unsetting the variable stops new phones from taking the waking page. A phone that already has it keeps it until its site data is cleared, which does no harm.
+If the PC answers but CynCo does not (an engine restarting), the waking page says so and waits without knocking. If nothing answers for 3 minutes it stops, and so does an open page; the next Send, or coming back to the page, tries again.
+
+The knock is a plain GET whose answer the page never reads. It carries no token, no cookie and no referrer, and it can do nothing but start a wake burst, which any tailnet device can already do. The doorman's HTTPS name takes knocks only: it refuses every write, so a web page open on a tailnet phone cannot change the wake schedule through it. Unsetting the variable takes the waking page off the phone the next time the app opens with the PC awake.
 
 ### The Brain
 

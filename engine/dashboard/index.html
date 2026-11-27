@@ -1624,7 +1624,9 @@ var WAKE_POLL_MS = 2500;
 var WAKE_KNOCK_EVERY_MS = 20000;  // a doorman burst lasts 60 s, and one already running is not doubled
 var WAKE_GIVE_UP_MS = 180000;
 var WAKE_BANNER_TEXT = 'Reconnecting to engine...';
-var wakeState = { lastFrameAt: Date.now(), waking: null, lastKnockAt: 0, pendingText: null };
+// gaveUp: the last wake ran out of time; until the owner acts (Send, or coming back to the page) a
+// close does not start another, so a PC that cannot be woken is not knocked on for ever.
+var wakeState = { lastFrameAt: Date.now(), waking: null, lastKnockAt: 0, pendingText: null, gaveUp: false };
 
 /** True on a phone's page that has a doorman to knock on. */
 function wakeConfigured() {
@@ -1636,11 +1638,30 @@ function wakeNeedsAsk(now, lastFrameAt, readyState) {
   return readyState !== 1 || now - lastFrameAt >= WAKE_QUIET_MS;
 }
 
-/** The service worker, on the HTTPS name of a phone's page that has a doorman: true when asked for. */
-function registerWakeWorker(nav, loc, remote, wakeUrl) {
-  if (!remote || !wakeUrl || loc.protocol !== 'https:' || !nav || !nav.serviceWorker) return false;
-  nav.serviceWorker.register('/sw.js', { scope: '/' }).catch(function (e) { console.log('[cynco] wake worker not registered: ' + e); });
-  return true;
+/**
+ * The service worker on the HTTPS name of a phone's page: registered while there is a doorman to knock
+ * on, and removed with its stored page once there is none, so it never outlives the switch. The desk
+ * never registers one. Says what it did: 'registered', 'removed' or 'none'.
+ */
+function registerWakeWorker(nav, loc, remote, wakeUrl, cacheStore) {
+  if (!remote || loc.protocol !== 'https:' || !nav || !nav.serviceWorker) return 'none';
+  if (wakeUrl) {
+    nav.serviceWorker.register('/sw.js', { scope: '/' }).catch(function (e) { console.log('[cynco] wake worker not registered: ' + e); });
+    return 'registered';
+  }
+  if (typeof nav.serviceWorker.getRegistrations !== 'function') return 'none';
+  nav.serviceWorker.getRegistrations().then(function (regs) {
+    regs.forEach(function (r) {
+      var w = r.active || r.waiting || r.installing;
+      if (w && /\/sw\.js$/.test(w.scriptURL)) r.unregister();
+    });
+  }).catch(function (e) { console.log('[cynco] wake worker not removed: ' + e); });
+  if (cacheStore && typeof cacheStore.keys === 'function') {
+    cacheStore.keys().then(function (keys) {
+      keys.forEach(function (k) { if (k.indexOf('cynco-wake-') === 0) cacheStore.delete(k); });
+    }).catch(function (e) { console.log('[cynco] wake page not removed: ' + e); });
+  }
+  return 'removed';
 }
 
 /** Knock on the doorman. Its answer is never read (no-cors), and the injected fetch sends this page's token to this origin only. */
@@ -1650,17 +1671,22 @@ function wakeKnock() {
     .catch(function (e) { console.log('[cynco] knock not sent: ' + e); });
 }
 
-/** Resolves true when the PC answers its manifest (which needs no token) within WAKE_ASK_TIMEOUT_MS. */
+/**
+ * Asks the PC for its manifest (which needs no token): 'up' when CynCo answers, 'awake' for any other
+ * answer (the PC is up and CynCo is not, as with serve's 502 while the engine restarts: nothing to
+ * wake), 'asleep' when nothing answers within WAKE_ASK_TIMEOUT_MS.
+ */
 function wakeAnswers() {
   var ctl = typeof AbortController === 'function' ? new AbortController() : null;
   var cut = setTimeout(function () { if (ctl) ctl.abort(); }, WAKE_ASK_TIMEOUT_MS);
   return fetch('/manifest.webmanifest', { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
-    .then(function (r) { clearTimeout(cut); return !!(r && r.ok); }, function () { clearTimeout(cut); return false; });
+    .then(function (r) { clearTimeout(cut); return r && r.ok ? 'up' : 'awake'; }, function () { clearTimeout(cut); return 'asleep'; });
 }
 
-/** A socket opened: it carries frames again, and the banner says what it said before any wake. */
+/** A socket opened: it carries frames again, a later wake may start, and the banner says what it said before any wake. */
 function wakeOnOpen() {
   wakeState.lastFrameAt = Date.now();
+  wakeState.gaveUp = false;
   var banner = document.getElementById('reconnectBanner');
   if (banner && !wakeState.waking) banner.textContent = WAKE_BANNER_TEXT;
 }
@@ -1677,7 +1703,7 @@ function wakeDropSocket() {
   render();
 }
 
-/** Knock now and every WAKE_KNOCK_EVERY_MS, ask every WAKE_POLL_MS: true once the PC answers, false after WAKE_GIVE_UP_MS. One at a time. */
+/** Knock now and every WAKE_KNOCK_EVERY_MS, ask every WAKE_POLL_MS: true once the PC answers at all, false after WAKE_GIVE_UP_MS. One at a time. */
 function wakeUntilAnswering() {
   if (wakeState.waking) return wakeState.waking;
   var banner = document.getElementById('reconnectBanner');
@@ -1688,6 +1714,7 @@ function wakeUntilAnswering() {
     function finish(ok) {
       clearInterval(timer);
       wakeState.waking = null;
+      wakeState.gaveUp = !ok;
       banner.textContent = ok ? WAKE_BANNER_TEXT : "CynCo's PC did not wake. Send again, or come back to this page, to try again.";
       resolve(ok);
     }
@@ -1698,10 +1725,10 @@ function wakeUntilAnswering() {
       if (Date.now() - wakeState.lastKnockAt >= WAKE_KNOCK_EVERY_MS) wakeKnock();
       if (asking) return;
       asking = true;
-      wakeAnswers().then(function (ok) {
+      wakeAnswers().then(function (state) {
         asking = false;
         if (!wakeState.waking) return;
-        if (ok) finish(true);
+        if (state !== 'asleep') finish(true);
         else if (Date.now() - started > WAKE_GIVE_UP_MS) finish(false);
       });
     }
@@ -1712,22 +1739,25 @@ function wakeUntilAnswering() {
 }
 
 /**
- * When the socket cannot be trusted, ask whether the PC answers. Awake: a closed socket is opened now
- * when `reconnectNow` (the page came into view, or a message waits), else left to its backoff. Asleep:
- * drop the socket, wake the PC, and open a new one once it answers. Resolves when that is done.
+ * When the socket cannot be trusted, ask whether the PC answers. `reconnectNow` says the owner acted
+ * (the page came into view, or a message waits). Awake, CynCo up or not: a closed socket is opened now
+ * when the owner acted, else left to its backoff. Asleep: drop the socket, wake the PC, and open a new
+ * one once it answers. After a wake that gave up, only the owner starts another. Resolves when done.
  */
 function wakeIfAsleep(reconnectNow) {
   if (!wakeConfigured()) return Promise.resolve(true);
   if (wakeState.waking) return wakeState.waking;
+  if (wakeState.gaveUp && !reconnectNow) return Promise.resolve(false);
   if (!wakeNeedsAsk(Date.now(), wakeState.lastFrameAt, ws ? ws.readyState : 3)) return Promise.resolve(true);
-  var asked = ws;
-  return wakeAnswers().then(function (ok) {
-    if (ok) {
-      // Two asks at once (the page came into view and a message was sent) open one socket: the
-      // second finds the socket it asked about already replaced.
-      if (ws !== asked) return true;
+  wakeState.gaveUp = false;
+  var asked = ws, askedAt = Date.now();
+  return wakeAnswers().then(function (state) {
+    // During the ask another socket took this one's place (two asks at once: the page came into view
+    // and a message was sent), or this one carried a frame: either way there is a socket in use.
+    if (ws !== asked || (ws && ws.readyState === 1 && wakeState.lastFrameAt >= askedAt)) return true;
+    if (state !== 'asleep') {
       if (!ws || ws.readyState === 3) { if (reconnectNow) { clearTimeout(reconnectTimer); reconnectDelay = 1000; connectWS(); } }
-      else wakeState.lastFrameAt = Date.now();
+      else if (state === 'up') wakeState.lastFrameAt = Date.now();
       return true;
     }
     if (wakeState.waking) return wakeState.waking;
@@ -1741,34 +1771,58 @@ function wakeIfAsleep(reconnectNow) {
   });
 }
 
+/** The project binding has settled, asked without a word to the chat (projectChatUnsettled writes a line each time). */
+function wakeBindingSettled() {
+  return typeof projectsState === 'undefined' || !projectsState.active || projectsState.reconciled !== false;
+}
+
 /** Resolves true once the socket is open and the project binding has settled, false after `maxMs`. */
 function wakeSocketReady(maxMs) {
   var until = Date.now() + maxMs;
   return new Promise(function (resolve) {
     (function check() {
-      var unsettled = typeof projectChatUnsettled === 'function' && projectChatUnsettled();
-      if (ws && ws.readyState === 1 && !unsettled) { resolve(true); return; }
+      if (ws && ws.readyState === 1 && wakeBindingSettled()) { resolve(true); return; }
       if (Date.now() > until) { resolve(false); return; }
       setTimeout(check, 250);
     })();
   });
 }
 
+/** The chat this pane shows: null for the coding session, else its project and chat file. */
+function wakeChatNow() {
+  var a = typeof projectsState !== 'undefined' ? projectsState.active : null;
+  return a ? { slug: a.slug, chat: a.chat || null } : null;
+}
+
+/** The same chat after the wake: the coding session both times, or the same project and the same chat file (a chat unnamed before may have been named since). */
+function wakeSameChat(before, now) {
+  if (!before || !now) return before === now;
+  return before.slug === now.slug && (!before.chat || before.chat === now.chat);
+}
+
 /**
  * Before a message goes out on a phone's page: when the socket cannot be trusted, the text stays in
- * the box, the PC is woken if it sleeps, and the text is sent once a socket is open and settled
- * (unless it was edited meanwhile). True when the send is held.
+ * the box, the PC is woken if it sleeps, and the text is sent once a socket is open and settled, and
+ * only into the chat it was typed in and only as typed (an edit, or a pane the reconnect bound
+ * elsewhere, leaves it in the box). True when the send is held.
  */
 function wakeHoldsSend(text) {
   if (!wakeConfigured()) return false;
   if (wakeState.pendingText !== null) return true;
   if (!wakeNeedsAsk(Date.now(), wakeState.lastFrameAt, ws ? ws.readyState : 3)) return false;
   wakeState.pendingText = text;
+  var typedIn = wakeChatNow();
   wakeIfAsleep(true).then(function () { return wakeSocketReady(60000); }).then(function (ready) {
     var held = wakeState.pendingText;
     wakeState.pendingText = null;
     var input = document.getElementById('chatInput');
-    if (ready && input && input.value.trim() === held) { wakeState.lastFrameAt = Date.now(); sendChatMessage(); }
+    if (!ready || !input || input.value.trim() !== held) return;
+    if (!wakeSameChat(typedIn, wakeChatNow())) {
+      appendChatMsg('system', "This pane is another chat now than the one the message was typed in; it is still in the box.");
+      return;
+    }
+    wakeState.lastFrameAt = Date.now();
+    sendChatMessage();
   }, function (e) {
     // A held message must never hold every later one: the text stays in the box, and the next Send asks again.
     wakeState.pendingText = null;
@@ -4056,8 +4110,10 @@ document.addEventListener('visibilitychange', function() {
   if (wakeConfigured()) { wakeIfAsleep(true); return; }
   if (ws && ws.readyState === 3) { clearTimeout(reconnectTimer); reconnectDelay = 1000; connectWS(); }
 });
-// The page that answers a phone while the PC sleeps (engine/dashboard/wake.ts).
-registerWakeWorker(navigator, location, window.__CYNCO_REMOTE, window.__CYNCO_WAKE_URL);
+// The page that answers a phone while the PC sleeps (engine/dashboard/wake.ts), and its way back in:
+// `?direct=1` is dropped from the address, so a later reload goes through the worker again.
+registerWakeWorker(navigator, location, window.__CYNCO_REMOTE, window.__CYNCO_WAKE_URL, typeof caches !== 'undefined' ? caches : null);
+if (/[?&]direct=1(&|$)/.test(location.search)) history.replaceState(null, '', location.pathname + location.hash);
 if (window.__CYNCO_REMOTE) { var phonePanelEl = document.getElementById('phonePanel'); if (phonePanelEl) phonePanelEl.style.display = 'none'; }
 // On a touch-only device Enter inserts a newline; say so where the desk's hint said the opposite.
 if (chatEnterInsertsNewline()) { var chatInputEl = document.getElementById('chatInput'); if (chatInputEl) chatInputEl.placeholder = 'Type a message... (/plan, /tdd, /debug for workflows)' + String.fromCharCode(10) + String.fromCharCode(10) + 'The Send button sends'; }

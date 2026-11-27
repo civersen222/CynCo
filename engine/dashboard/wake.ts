@@ -9,12 +9,16 @@
  * wake address, read in server.ts):
  *
  * - `/sw.js`, a service worker the remote page registers on the HTTPS name. It handles page loads
- *   of this origin and nothing else. A page load with no answer after NAV_KNOCK_AFTER_MS knocks on
- *   the doorman; after NAV_TIMEOUT_MS, or on a network error, it is answered with the cached waking
- *   page instead of the browser's error page. The worker stores that page and nothing else: never
- *   the dashboard, never an API answer.
- * - `/waking`, that page. It knocks, asks this PC's manifest every POLL_EVERY_MS, and reloads when
- *   the PC answers; the reload is a page load again, answered this time.
+ *   of this origin and nothing else. A page load with no answer after NAV_TIMEOUT_MS, or a network
+ *   error, knocks on the doorman and is answered with the cached waking page instead of the
+ *   browser's error page; a 502, 503 or 504 (the PC answers, CynCo does not: `tailscale serve`
+ *   while the engine restarts) is answered with the waking page too, without a knock. A load marked
+ *   `direct=1` (the waking page's way back in) goes to the network with no cut-off. The worker
+ *   stores the waking page and nothing else: never the dashboard, never an API answer.
+ * - `/waking`, that page. It asks this PC's manifest every POLL_EVERY_MS: an answer of 200 opens
+ *   CynCo (marked `direct=1`, so a slow link cannot send it back here); any other answer means the
+ *   PC is awake and CynCo is not, and it waits without knocking; no answer means asleep, and it
+ *   knocks every KNOCK_EVERY_MS until GIVE_UP_MS.
  * - `window.__CYNCO_WAKE_URL` in the remote page (server.ts `serveIndex`), for a page that is
  *   already open when the PC sleeps: index.html, "Waking the PC".
  *
@@ -32,20 +36,15 @@ import { createHash } from 'crypto'
 export const SERVICE_WORKER_PATH = '/sw.js'
 export const WAKING_PAGE_PATH = '/waking'
 
-/** A page load with no answer after this long knocks on the doorman... */
-export const NAV_KNOCK_AFTER_MS = 2_500
-/** ...and after this long is answered with the waking page. */
+/** A page load with no answer after this long is the PC asleep: a knock, and the waking page. */
 export const NAV_TIMEOUT_MS = 6_000
 /** The waking page asks this PC this often, each ask cut after PING_TIMEOUT_MS... */
 export const POLL_EVERY_MS = 2_500
 export const PING_TIMEOUT_MS = 4_000
-/** ...knocks again this often while it waits (a burst lasts 60 s, and one already running is not doubled)... */
+/** ...knocks this often while nothing answers (a burst lasts 60 s, and one already running is not doubled)... */
 export const KNOCK_EVERY_MS = 20_000
-/** ...and says the PC is still asleep after this long: the doorman's own page waits as long. */
+/** ...and gives up after this long: the doorman's own page waits as long. */
 export const GIVE_UP_MS = 180_000
-/** Reloads the waking page makes in RELOADS_WINDOW_MS before it stops and offers a button (a slow link, not sleep). */
-export const RELOADS_MAX = 3
-export const RELOADS_WINDOW_MS = 120_000
 
 export type WakeConfig = { url: string; origin: string }
 
@@ -78,14 +77,13 @@ h1{font-size:20px;margin:0 0 8px}p{color:var(--dim);margin:6px 0}
 button{margin-top:18px;padding:10px 18px;border:0;border-radius:8px;background:#2e6fdc;color:#fff;font-size:16px}
 `
 
-/** The waking page's script: knock, ask, reload. Every number is one of the constants above. */
+/** The waking page's script: ask, and knock while nothing answers. Every number is one of the constants above. */
 function wakingScript(w: WakeConfig): string {
   return `
 (function () {
   var WAKE = ${scriptLiteral(w.url)};
   var POLL_EVERY_MS = ${POLL_EVERY_MS}, PING_TIMEOUT_MS = ${PING_TIMEOUT_MS}, KNOCK_EVERY_MS = ${KNOCK_EVERY_MS}, GIVE_UP_MS = ${GIVE_UP_MS};
-  var RELOADS_KEY = 'cynco-wake-reloads', RELOADS_MAX = ${RELOADS_MAX}, RELOADS_WINDOW_MS = ${RELOADS_WINDOW_MS};
-  var started = 0, lastKnock = 0, timer = null, asking = false;
+  var started = 0, lastKnock = 0, timer = null, asking = false, last = 'asleep';
   function el(id) { return document.getElementById(id); }
   function say(title, msg) { el('title').textContent = title; el('msg').textContent = msg; }
   // The doorman's answer is never read: no CORS rule needed there, and nothing about this page sent.
@@ -94,50 +92,40 @@ function wakingScript(w: WakeConfig): string {
     return fetch(WAKE, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' })
       .then(function () { return true; }, function (e) { console.log('[cynco] knock not sent: ' + e); return false; });
   }
-  // Same origin, no token needed: the manifest answers whoever asks, so a 200 means the PC is up.
-  function answers() {
+  // 'up': CynCo answers. 'awake': the PC answers and CynCo does not (serve's 502 while the engine
+  // restarts). 'asleep': nothing answers in time. The manifest needs no token.
+  function ask() {
     var ctl = typeof AbortController === 'function' ? new AbortController() : null;
     var cut = setTimeout(function () { if (ctl) ctl.abort(); }, PING_TIMEOUT_MS);
     return fetch('/manifest.webmanifest', { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
-      .then(function (r) { clearTimeout(cut); return r.ok; }, function () { clearTimeout(cut); return false; });
+      .then(function (r) { clearTimeout(cut); return r.ok ? 'up' : 'awake'; }, function () { clearTimeout(cut); return 'asleep'; });
   }
-  function recentReloads(now) {
-    var list = [];
-    try { list = JSON.parse(sessionStorage.getItem(RELOADS_KEY) || '[]'); } catch (e) { console.log('[cynco] reload count unreadable: ' + e); }
-    if (!Array.isArray(list)) return [];
-    return list.filter(function (t) { return typeof t === 'number' && now - t >= 0 && now - t < RELOADS_WINDOW_MS; });
+  // The same page, past the service worker's cut-off: the PC has answered, so a slow load now is a slow link.
+  function openCynCo() {
+    var q = location.search || '';
+    if (!/[?&]direct=1(&|$)/.test(q)) q = (q ? q + '&' : '?') + 'direct=1';
+    location.replace(location.pathname + q + location.hash);
   }
   function stop() { clearInterval(timer); timer = null; }
-  function reloadNow() {
-    var now = Date.now(), list = recentReloads(now);
-    if (list.length >= RELOADS_MAX) {
-      // The PC answers this page, but a page load still runs out of time: a slow link, not sleep.
-      say('CynCo answers slowly', 'The PC is awake, but CynCo took too long to load. Tap to try again.');
-      el('retry').textContent = 'Open CynCo';
-      el('retry').hidden = false;
-      return;
-    }
-    list.push(now);
-    try { sessionStorage.setItem(RELOADS_KEY, JSON.stringify(list)); } catch (e) { console.log('[cynco] reload count not kept: ' + e); }
-    say('Awake', 'Opening CynCo.');
-    location.reload();
-  }
   function tick() {
     if (asking || !timer) return;
     var waited = Date.now() - started;
     el('t').textContent = Math.round(waited / 1000) + ' s';
-    if (Date.now() - lastKnock >= KNOCK_EVERY_MS) knock();
     asking = true;
-    answers().then(function (ok) {
+    ask().then(function (state) {
       asking = false;
       if (!timer) return;
-      if (ok) { stop(); reloadNow(); return; }
+      last = state;
+      if (state === 'up') { stop(); say('Awake', 'Opening CynCo.'); openCynCo(); return; }
       if (waited > GIVE_UP_MS) {
         stop();
-        say('Still asleep', 'The PC did not answer in 3 minutes.');
+        if (last === 'awake') say('CynCo is not answering', 'The PC is awake, but CynCo did not answer in 3 minutes.');
+        else say('Still asleep', 'The PC did not answer in 3 minutes.');
         el('retry').hidden = false;
         return;
       }
+      if (state === 'awake') { say('CynCo\\'s PC is awake', 'CynCo is not answering yet (it may be starting). This page opens it when it does.'); return; }
+      if (Date.now() - lastKnock >= KNOCK_EVERY_MS) knock();
       if (waited > 30000) say('Waking CynCo\\'s PC...', 'It is coming back from sleep; its network can take a minute.');
     });
   }
@@ -145,20 +133,12 @@ function wakingScript(w: WakeConfig): string {
     started = Date.now();
     lastKnock = 0;
     el('retry').hidden = true;
-    el('retry').textContent = 'Try again';
     say('Waking CynCo\\'s PC...', 'It was asleep. The doorman is waking it, and CynCo opens by itself when it answers.');
     stop();
     timer = setInterval(tick, POLL_EVERY_MS);
     tick();
   }
-  el('retry').onclick = function () {
-    if (el('retry').textContent === 'Open CynCo') {
-      try { sessionStorage.removeItem(RELOADS_KEY); } catch (e) { console.log('[cynco] reload count not cleared: ' + e); }
-      location.reload();
-      return;
-    }
-    start();
-  };
+  el('retry').onclick = function () { start(); };
   start();
 })();
 `
@@ -172,7 +152,9 @@ var VERSION = ${scriptLiteral(version)};
 var CACHE = 'cynco-wake-' + VERSION;
 var WAKING = ${scriptLiteral(WAKING_PAGE_PATH)};
 var WAKE = ${scriptLiteral(w.url)};
-var KNOCK_AFTER_MS = ${NAV_KNOCK_AFTER_MS}, TIMEOUT_MS = ${NAV_TIMEOUT_MS};
+var TIMEOUT_MS = ${NAV_TIMEOUT_MS};
+// The PC answers and CynCo does not: tailscale serve's answers while the engine is down or starting.
+var NOT_READY = [502, 503, 504];
 
 self.addEventListener('install', function (event) {
   event.waitUntil(caches.open(CACHE)
@@ -194,34 +176,32 @@ function knock() {
     .catch(function (e) { console.log('[cynco] knock not sent: ' + e); });
 }
 
-// The network's answer when it comes in time; otherwise a knock, and the waking page.
+// The network's answer when it comes in time and is CynCo's; otherwise the waking page, after a knock
+// when nothing answered.
 function pageLoad(request) {
   var net = fetch(request);
   return new Promise(function (resolve) {
-    var done = false, knocked = false;
-    function wake() { if (!knocked) { knocked = true; knock(); } }
-    function waking() {
-      wake();
-      // No stored copy (the browser cleared it): wait for the network, as the browser would without this worker.
+    var done = false;
+    function waking(asleep) {
+      if (asleep) knock();
+      // No stored copy (the browser cleared it): the network's answer, as the browser would without this worker.
       resolve(caches.open(CACHE)
         .then(function (cache) { return cache.match(WAKING); })
         .then(function (page) { return page || net; }));
     }
-    var knockTimer = setTimeout(wake, KNOCK_AFTER_MS);
-    var giveUp = setTimeout(function () { if (done) return; done = true; waking(); }, TIMEOUT_MS);
+    var giveUp = setTimeout(function () { if (done) return; done = true; waking(true); }, TIMEOUT_MS);
     net.then(function (res) {
-      clearTimeout(knockTimer);
       clearTimeout(giveUp);
       if (done) return;
       done = true;
+      if (res && NOT_READY.indexOf(res.status) >= 0) { waking(false); return; }
       resolve(res);
     }, function (e) {
-      clearTimeout(knockTimer);
       clearTimeout(giveUp);
       console.log('[cynco] page load failed: ' + e);
       if (done) return;
       done = true;
-      waking();
+      waking(true);
     });
   });
 }
@@ -231,6 +211,8 @@ self.addEventListener('fetch', function (event) {
   if (req.mode !== 'navigate' || req.method !== 'GET') return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin || url.pathname === WAKING) return;
+  // The waking page's way back in once the PC has answered: no cut-off, so a slow link still gets through.
+  if (url.searchParams.get('direct') === '1') return;
   event.respondWith(pageLoad(req));
 });
 `
