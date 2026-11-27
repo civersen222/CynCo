@@ -12,7 +12,7 @@
  * to OpenSCAD's own library folders; OPENSCADPATH is not passed on.
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { realInside } from '../realPath.js'
 import type { Runner } from './run.js'
 
@@ -45,13 +45,14 @@ export function findOpenScad(env: NodeJS.ProcessEnv = process.env, platform: Nod
         if (exists(p)) return p
       }
     }
-    for (const dir of (env.PATH ?? env.Path ?? '').split(delimiter)) {
+    // The platform's own PATH separator, not the host's: the platform is a parameter (a test on Linux asks about Windows).
+    for (const dir of (env.PATH ?? env.Path ?? '').split(';')) {
       if (dir && exists(join(dir, 'openscad.exe'))) return join(dir, 'openscad.exe')
     }
     return null
   }
   for (const p of POSIX_CANDIDATES) if (exists(p)) return p
-  for (const dir of (env.PATH ?? '').split(delimiter)) if (dir && exists(join(dir, 'openscad'))) return join(dir, 'openscad')
+  for (const dir of (env.PATH ?? '').split(':')) if (dir && exists(join(dir, 'openscad'))) return join(dir, 'openscad')
   return null
 }
 
