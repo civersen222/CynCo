@@ -127,8 +127,8 @@ describe('the two routes, with a wake address', () => {
     const res = await fetch(base + WAKING_PAGE_PATH)
     const csp = res.headers.get('content-security-policy') ?? ''
     const body = await res.text()
-    const script = /<script>([\s\S]*?)<\/script>/.exec(body)![1]!
-    const style = /<style>([\s\S]*?)<\/style>/.exec(body)![1]!
+    const script = /<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/i.exec(body)![1]!
+    const style = /<style\b[^>]*>([\s\S]*?)<\/style\b[^>]*>/i.exec(body)![1]!
     const hash = (t: string) => `'sha256-${createHash('sha256').update(t, 'utf8').digest('base64')}'`
     expect(csp).toContain("default-src 'none'")
     expect(csp).toContain(`script-src ${hash(script)}`)
@@ -179,7 +179,7 @@ describe('the page says where to knock to a phone only', () => {
   it('a knock through the injected fetch never carries the device token; a same-origin ask does', async () => {
     const phone = await start(PHONE, WAKE)
     const page = await (await fetch(phone.base + '/')).text()
-    const prelude = /<head><script>([\s\S]*?)<\/script>/.exec(page)![1]!
+    const prelude = /<head><script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/i.exec(page)![1]!
     const seen: Array<{ url: string; auth: string | null }> = []
     const win: Record<string, any> = {
       fetch: (input: string, init?: { headers?: HeadersInit }) => { seen.push({ url: input, auth: new Headers(init?.headers).get('Authorization') }); return Promise.resolve({ status: 200 }) },
@@ -331,7 +331,7 @@ describe('the service worker', () => {
 /** The waking page's script against a fake document, location and fetch. */
 function wakingPage(manifest: () => Promise<{ ok: boolean; status?: number }>, loc: { pathname?: string; search?: string; hash?: string } = {}) {
   const body = wakeAssets(parseWakeUrl(WAKE)!).page.body
-  const script = /<script>([\s\S]*?)<\/script>/.exec(body)![1]!
+  const script = /<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/i.exec(body)![1]!
   const els: Record<string, any> = { title: { textContent: '' }, msg: { textContent: '' }, t: { textContent: '' }, retry: { hidden: true, textContent: 'Try again', onclick: null } }
   const location = { pathname: loc.pathname ?? '/', search: loc.search ?? '', hash: loc.hash ?? '', replace: vi.fn() }
   const asked: Array<{ url: string; init: Record<string, unknown> }> = []
