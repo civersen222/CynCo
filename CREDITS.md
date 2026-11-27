@@ -71,3 +71,47 @@ problem and the lessons their prompts encode.
 
 No source from these projects is included; CynCo's implementation is
 distributed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+## 3D printing (slicing with Bambu Studio)
+
+The slicer step of MakeModel (`engine/print3d/slicer.ts`) drives Bambu
+Studio's command line the way **bambu-studio-ai** does: the presets written
+into a scratch folder, the flags it passes, the estimate read from
+`result.json`, the build plate set in the process preset, and the order in
+which Bambu Studio's system presets are flattened (the `inherits` chain, then
+the `include`d templates, then the preset's own keys, with a preset's identity
+never inherited and a filament's id never taken from a template). The ground
+rule that the owner, not the assistant, starts a print is also theirs.
+
+- **Original project:** bambu-studio-ai (https://github.com/heyixuan2/bambu-studio-ai)
+- **Author:** Yixuan He
+- **Original license:** MIT
+- **Use here:** the approach was rewritten in TypeScript; no source was copied.
+  CynCo's implementation is distributed under the AGPL-3.0. The MIT notice:
+
+```
+MIT License
+
+Copyright (c) 2026 Yixuan He
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+MoraesGil/bambu-studio-mcp (AGPL-3.0) was read while designing this; nothing
+was taken from it.

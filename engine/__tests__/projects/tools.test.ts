@@ -79,7 +79,7 @@ describe('LookAt (F191: the text-only model asks the image box a question about 
   })
   it('refuses a path outside the project, a file that is not a picture, a missing file and an empty question — without calling the box', async () => {
     const asks = withAsk()
-    expect(await lookAtTool.execute({ file: '../elsewhere/x.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true })
+    expect(await lookAtTool.execute({ file: '../elsewhere/x.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: the file must be a picture inside this project (knowledge/…, artifacts/… or models/…).', isError: true })
     expect(await lookAtTool.execute({ file: 'knowledge/a.md', question: 'q' }, dir)).toEqual({ output: 'LookAt: knowledge/a.md is not a picture (.png, .jpg, .jpeg, .webp, .gif).', isError: true })
     expect(await lookAtTool.execute({ file: 'knowledge/missing.png', question: 'q' }, dir)).toEqual({ output: 'LookAt: knowledge/missing.png is not in this project.', isError: true })
     expect(await lookAtTool.execute({ file: 'knowledge/shot.png', question: '  ' }, dir)).toEqual({ output: 'LookAt: question is required.', isError: true })

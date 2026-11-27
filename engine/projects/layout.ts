@@ -19,7 +19,7 @@ export type JournalEvent =
   | 'created' | 'knowledge.added' | 'knowledge.removed' | 'knowledge.unindexed'
   | 'artifact.saved' | 'artifact.unindexed' | 'artifact.removed' | 'artifact.promoted' | 'chat.opened' | 'chat.renamed'
   | 'index.rebuilt' | 'history.failed' | 'registry.rebuilt' | 'image.generated' | 'image.failed'
-  | 'draft.added' | 'draft.accepted' | 'draft.discarded'
+  | 'draft.added' | 'draft.accepted' | 'draft.discarded' | 'model.built'
 
 export const INSTRUCTIONS_HINT = '<!-- Standing instructions for every chat in this project. Write them below this line. -->\n'
 export const PLAN_TEMPLATE = '# Plan\n\n<!-- One checkbox item per line: - [ ] item -->\n'

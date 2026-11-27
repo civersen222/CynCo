@@ -163,7 +163,14 @@ export type UiElement = {
   tab?: string
   /** On an Image with a "prompt": its generated picture (engine/imagegen); with a path "src": the project file it shows. Set by the engine only. */
   image?: UiImageState
+  /** On a Model3D: the project's model file it shows (engine/print3d), or why not. Set by the engine only. */
+  model?: UiModelState
 }
+
+/** What a Model3D shows: an .stl of the project (and a model file to download), served by GET /api/projects/:slug/files/<path>; or off with the reason. Engine-only, like `image`. */
+export type UiModelState =
+  | { status: 'off'; reason: string }
+  | { status: 'file'; slug: string; path: string; download?: string }
 
 /** A validated spec: a flat element map plus the id drawn first. */
 export type UiSpec = {

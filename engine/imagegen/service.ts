@@ -462,10 +462,15 @@ export class ImageService implements ImageAnnotator {
         this.log(`[imagegen] RenderUI ${at.toolId} (surface ${at.surfaceId}): ${count} not shown — ${FILES_ONLY_REASON}`)
         return `Files: not shown — ${FILES_ONLY_REASON}.`
       }
-      const missing = files.filter(f => !isProjectFile(project.dir, f.path)).map(f => f.path)
+      const gone = files.filter(f => !isProjectFile(project.dir, f.path))
+      const missing = gone.map(f => f.path)
       this.log(`[imagegen] RenderUI ${at.toolId} (surface ${at.surfaceId}): ${count} from the project${missing.length ? `, ${missing.length} not found: ${missing.join(', ')}` : ''}`)
       if (missing.length === 0) return null
-      return `Files: not in the project — ${missing.join(', ')}; write the file first, or describe the picture in "prompt" and the engine generates it.`
+      const pictures = gone.filter(f => f.kind === 'image').map(f => f.path), models = gone.filter(f => f.kind === 'model').map(f => f.path)
+      return [
+        ...(pictures.length ? [`Files: not in the project — ${pictures.join(', ')}; write the file first, or describe the picture in "prompt" and the engine generates it.`] : []),
+        ...(models.length ? [`Models: not in the project — ${models.join(', ')}; build the model with MakeModel first (a .3mf exists only after a slice).`] : []),
+      ].join(' ')
     } catch (e) {
       this.log(`[imagegen] annotating RenderUI ${at.toolId}'s files threw: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
       return null

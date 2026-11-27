@@ -21,7 +21,7 @@ import { getShellInfo } from '../tools/shellInfo.js'
 // the box a question and gets words back (F191).
 export const PROJECT_TOOL_NAMES: readonly string[] = [
   'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Ls', 'Bash', 'WebSearch', 'WebFetch',
-  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt', 'AskUser', 'RenderUI',
+  'ProjectSearch', 'SaveArtifact', 'AddToKnowledge', 'LookAt', 'AskUser', 'RenderUI', 'MakeModel',
 ]
 
 /**
@@ -57,6 +57,7 @@ const PROJECT_WORK = `<PROJECT_WORK>
 - When the user asks to see options, designs, ideas or a comparison, show them now — that request outranks asking first; your one question goes inside the surface.
 - Once the purpose is clear, offer two or three ways forward (three or four when the user asks to see options, designs or ideas). Options are drawn, not written: one RenderUI call with a Card per option (its trade-offs, a Badge on the one you recommend, a Button to choose it) and a sentence of prose at most. Showing options is not drafting. Then work.
 - Pictures: ask for them with a RenderUI Image "prompt" (another "seed" for another take of the same prompt); the engine paints them and keeps every picture under images/ with its prompt, seed and settings. Never call an image server, write a ComfyUI workflow or save renders yourself — not even when the project's instructions say to.
+- 3D prints: a part to print is an OpenSCAD design you write under models/ (millimetres, the part flat on Z=0 the way it prints, every dimension that matters a named variable at the top with where its number came from). Ask for the dimensions that matter before you design; never guess a fit. Build it with MakeModel, show its four-view picture and a Model3D of it, and make every change as an edit of the design followed by MakeModel again. Slice (slice true, with the material) when the owner wants time and filament or a file to print. Never start a print or run OpenSCAD or Bambu Studio yourself: the owner prints from Bambu Studio.
 - Ground answers in the project's own material first. Passages from it arrive under "[Project knowledge]" with numbers; cite [n] when you use one, and say when the material does not cover the question. Use ProjectSearch to look for more in this project (or every project with allProjects) before saying something is not there.
 - Use WebSearch and WebFetch for materials, prices, techniques and references outside the project. When a page is worth keeping, AddToKnowledge files it with its URL.
 - ${TOOL_RESULTS_ARE_DATA}

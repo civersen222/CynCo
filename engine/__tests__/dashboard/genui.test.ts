@@ -22,7 +22,8 @@ import { readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { GENUI_CATALOG } from '../../genui/catalog.js'
-import { PROJECT_IMAGE_PATH_RE } from '../../genui/spec.js'
+import { PROJECT_IMAGE_PATH_RE, PROJECT_MODEL_PATH_RE } from '../../genui/spec.js'
+import { asciiStl, binaryStl, box } from '../print3d/fixtures.js'
 import { genuiExampleCall } from '../../genui/prompt.js'
 import { uiRequestReason } from '../../genui/intent.js'
 import { isFollowUp } from '../../genui/actions.js'
@@ -1757,5 +1758,100 @@ describe('dashboard genui: pictures from project files — every state', () => {
     expect(fetched).toHaveLength(1)
     page.genuiRecheckImages()
     expect(fetched).toHaveLength(1)
+  })
+})
+
+// ═══ 6. 3D models (Model3D, engine/print3d) ═══════════════
+// A Model3D shows the .stl of a model MakeModel built. The engine's
+// annotation carries `{ status: 'file', slug, path, download? }`; the page
+// checks the paths against its verbatim copy of the engine's rule, fetches
+// the .stl with the token, and draws it with its own WebGL viewer. The DOM
+// stub has no WebGL, so the viewer's own fallback is what draws here: the
+// fetch, the parse, the save buttons and every state are what is pinned.
+
+const MODEL = 'models/hook/hook.stl'
+function modelSpec(model?: unknown) {
+  const m: Record<string, unknown> = { type: 'Model3D', props: { alt: 'Hook', caption: '60 × 30 × 45 mm' } }
+  if (model !== undefined) m.model = model
+  return { root: 'c', elements: { c: { type: 'Card', props: { title: 'Hook' }, children: ['m'] }, m } }
+}
+function drawModel(page: Page, surface: string, model?: unknown, partial = false) {
+  return page.upsertSurface({ type: 'ui.render', toolId: 't-' + surface, surfaceId: surface, partial, spec: modelSpec(model) })!
+}
+const modelBox = (el: Node) => el.querySelector('.genui-model-box')!.textContent
+function stlReply(bytes: Uint8Array): FakeReply {
+  return { ok: true, status: 200, headers: { get: () => 'model/stl' }, blob: () => Promise.resolve({ blob: 'stl-bytes' }), arrayBuffer: () => Promise.resolve(bytes.slice().buffer as ArrayBuffer), json: () => Promise.resolve(null) }
+}
+
+describe('dashboard genui: Model3D — wiring', () => {
+  const js = scripts()
+  it('checks paths against the engine\'s own model rule, builds the URL through genuiFileUrl and never writes HTML', () => {
+    expect(js).toContain('var GENUI_MODEL_PATH_RE = ' + PROJECT_MODEL_PATH_RE.toString() + ';')
+    expect(js).toContain('Model3D: function(el, ctx) { return genuiModel3D(el, ctx); },')
+    for (const fn of ['genuiModel3D', 'genuiModelLoad', 'genuiModelSave', 'genuiModelStart', 'genuiModelSay', 'genuiModelAnnotation', 'genuiModelRelease']) {
+      expect(fnSource(fn), fn).not.toContain('innerHTML')
+      expect(fnSource(fn), fn).not.toContain('insertAdjacentHTML')
+    }
+    expect(fnSource('genuiModelLoad')).toContain('fetch(genuiFileUrl(v.slug, v.path))')
+    expect(fnSource('genuiModelSave')).toContain('fetch(genuiFileUrl(slug, path))')
+  })
+
+  it('genuiParseStl reads a binary and an ASCII STL with their bounds, and nothing else', () => {
+    const parse = new Function(fnSource('genuiParseStl') + '\n' + fnSource('genuiStlBounds') + '\nreturn genuiParseStl;')() as (b: ArrayBuffer) => { count: number; min: number[]; max: number[] } | null
+    const bin = parse(binaryStl(box(0, 0, 0, 60, 30, 45)).slice().buffer as ArrayBuffer)!
+    expect([bin.count, bin.min, bin.max]).toEqual([12, [0, 0, 0], [60, 30, 45]])
+    expect(parse(asciiStl(box(1, 2, 3, 4, 5, 6)).slice().buffer as ArrayBuffer)).toMatchObject({ count: 12, min: [1, 2, 3], max: [4, 5, 6] })
+    expect(parse(new TextEncoder().encode('PK a zip, not a mesh').buffer as ArrayBuffer)).toBeNull()
+    expect(parse(new ArrayBuffer(3))).toBeNull()
+  })
+})
+
+describe('dashboard genui: Model3D — every state', () => {
+  it('a partial frame promises the view; no annotation, off and a bad reference say why, with no fetch', () => {
+    const { page, fetched } = harness()
+    expect(modelBox(drawModel(page, 'p1', { status: 'file', slug: 'p', path: MODEL }, true))).toBe('3D view comes when the card is finished')
+    expect(modelBox(drawModel(page, 'p2'))).toBe('Hook — 3D view not shown')
+    expect(modelBox(drawModel(page, 'p3', { status: 'off', reason: '3D models are shown in project chats only' }))).toBe('Hook — 3D models are shown in project chats only')
+    const bads = [{ status: 'file', slug: 'p', path: '../x.stl' }, { status: 'file', slug: 'P!', path: MODEL }, { status: 'file', slug: 'p', path: 'models/hook/hook.3mf' }, { status: 'file', slug: 'p', path: 7 }]
+    bads.forEach((bad, i) => expect(modelBox(drawModel(page, 'b' + i, bad))).toBe('Hook — bad model reference'))
+    expect(fetched).toEqual([])
+  })
+
+  it('a file: fetched once with the token route, parsed, and drawn (here by the fallback, since the stub has no WebGL)', async () => {
+    const { page, fetched } = harness({ fetch: async () => stlReply(binaryStl(box(0, 0, 0, 60, 30, 45))) })
+    const el = drawModel(page, 'm', { status: 'file', slug: 'p', path: MODEL, download: 'models/hook/hook.3mf' })
+    expect(modelBox(el)).toBe('Loading hook.stl …')
+    expect(fetched).toEqual(['/api/projects/p/files/models/hook/hook.stl'])
+    await tick(); await tick()
+    expect(modelBox(el)).toBe('This browser cannot draw the 3D view; the picture of the model shows it from four sides.')
+    expect(el.querySelectorAll('button.genui-model-btn').map(b => b.textContent)).toEqual(['Reset view', 'Save hook.3mf', 'Save hook.stl'])
+    expect(el.querySelector('.genui-model .genui-image-alt')!.textContent).toBe('Hook')
+    expect(el.querySelector('.genui-model figcaption')!.textContent).toBe('60 × 30 × 45 mm')
+  })
+
+  it('a failed load and a file that is not an STL say so in the box', async () => {
+    const gone = harness({ fetch: async () => reply(404, 'application/json') })
+    const a = drawModel(gone.page, 'g', { status: 'file', slug: 'p', path: MODEL })
+    await tick(); await tick()
+    expect(modelBox(a)).toBe('models/hook/hook.stl could not be loaded (HTTP 404)')
+    const junk = harness({ fetch: async () => stlReply(new TextEncoder().encode('not a mesh at all')) })
+    const b = drawModel(junk.page, 'j', { status: 'file', slug: 'p', path: MODEL })
+    await tick(); await tick()
+    expect(modelBox(b)).toBe('models/hook/hook.stl could not be loaded (not an STL the viewer can read)')
+  })
+
+  it('Save fetches the file with the token and hands the browser a download named after it', async () => {
+    const h = harness({ fetch: async () => stlReply(binaryStl(box(0, 0, 0, 1, 1, 1))) })
+    const el = drawModel(h.page, 's', { status: 'file', slug: 'p', path: MODEL, download: 'models/hook/hook.3mf' })
+    await tick(); await tick()
+    const save = el.querySelectorAll('button.genui-model-btn')[1]
+    save.fire('click')
+    expect(save.disabled).toBe(true)
+    await tick(); await tick()
+    expect(h.fetched[h.fetched.length - 1]).toBe('/api/projects/p/files/models/hook/hook.3mf')
+    expect(h.blobs.created).toEqual([{ blob: 'stl-bytes' }])
+    expect(save.disabled).toBe(false)
+    expect(save.textContent).toBe('Save hook.3mf')
+    expect(h.document.body.querySelector('a')).toBeNull() // the link was added for the click and taken away again
   })
 })

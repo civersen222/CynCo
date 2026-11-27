@@ -177,6 +177,10 @@ export const addToKnowledgeTool: ToolImpl = {
   },
 }
 
+/** Where LookAt may look: the owner's material, the chat's artifacts, and a model's four-view picture (MakeModel, `engine/print3d`). */
+const LOOK_AREAS = ['knowledge', 'artifacts', 'models'] as const
+const LOOK_AREA_REFUSAL = 'LookAt: the file must be a picture inside this project (knowledge/…, artifacts/… or models/…).'
+
 /**
  * LookAt — the text-only model asks the image box one question about a picture
  * in this project (F191: the upload-time look reads text and describes, but
@@ -194,7 +198,7 @@ export const addToKnowledgeTool: ToolImpl = {
  */
 export const lookAtTool: ToolImpl = {
   name: 'LookAt',
-  description: 'Ask the image box one question about a picture in this project (a photo or screenshot in knowledge/ or artifacts/): what is selected, a value, a colour, a detail the attached-image block did not give. Returns the box\'s answer in words. You cannot see pictures yourself; this is how you look. A large picture is looked at in 2–4 full-detail tiles (zoom auto); say zoom "on" when small things matter — checkboxes, bold vs plain, little marks, small numbers — and "off" for one quick look at the whole.',
+  description: 'Ask the image box one question about a picture in this project (a photo or screenshot in knowledge/ or artifacts/, or a model\'s picture in models/): what is selected, a value, a colour, a detail the attached-image block did not give. Returns the box\'s answer in words. You cannot see pictures yourself; this is how you look. A large picture is looked at in 2–4 full-detail tiles (zoom auto); say zoom "on" when small things matter — checkboxes, bold vs plain, little marks, small numbers — and "off" for one quick look at the whole.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -209,17 +213,17 @@ export const lookAtTool: ToolImpl = {
     if (!context) return NOT_IN_PROJECT('LookAt')
     if (!context.ask) return { output: 'LookAt: no image box is configured (LOCALCODE_VISION_URL unset); pictures cannot be read in this chat.', isError: true }
     const raw = String(input.file ?? '').trim().replace(/\\/g, '/').replace(/^\.?\//, '')
-    const rel = raw.startsWith('knowledge/') || raw.startsWith('artifacts/') ? raw : `knowledge/${raw}`
+    const rel = LOOK_AREAS.some(a => raw.startsWith(`${a}/`)) ? raw : `knowledge/${raw}`
     const dir = projectDir(context.home, context.slug)
     const abs = resolve(dir, rel)
-    if (!raw || raw.includes('..') || !(isInside(join(dir, 'knowledge'), abs) || isInside(join(dir, 'artifacts'), abs))) {
-      return { output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true }
+    if (!raw || raw.includes('..') || !LOOK_AREAS.some(a => isInside(join(dir, a), abs))) {
+      return { output: LOOK_AREA_REFUSAL, isError: true }
     }
     const ext = rel.toLowerCase().slice(rel.lastIndexOf('.'))
     if (!IMAGE_EXTS.has(ext)) return { output: `LookAt: ${rel} is not a picture (${[...IMAGE_EXTS].join(', ')}).`, isError: true }
     if (!existsSync(abs) || !statSync(abs).isFile()) return { output: `LookAt: ${rel} is not in this project.`, isError: true }
     const real = realInside(dir, abs)
-    if (!real.inside) return { output: 'LookAt: the file must be a picture inside this project (knowledge/… or artifacts/…).', isError: true }
+    if (!real.inside) return { output: LOOK_AREA_REFUSAL, isError: true }
     const question = String(input.question ?? '').trim()
     if (!question) return { output: 'LookAt: question is required.', isError: true }
     const bytes = new Uint8Array(readFileSync(real.real)), mime = imageMime(rel)

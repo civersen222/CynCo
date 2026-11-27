@@ -27,7 +27,9 @@ describe('genui prompt section', () => {
     expect(genuiPromptSection('project')).toBe(text)
     expect(genuiPromptSection('session')).toBe(session)
     expect(session.length).toBeLessThan(12_000)
-    expect(text.length).toBeLessThan(13_000)
+    // 13,000 until 2026-11-27, when the project section stood at 12,996 and Model3D (engine/print3d), a project-only
+    // component, added its signature line; a coding session's section does not list it.
+    expect(text.length).toBeLessThan(13_300)
     expect(text.startsWith('<RENDER_UI>')).toBe(true)
     expect(text.trimEnd().endsWith('</RENDER_UI>')).toBe(true)
   })
@@ -134,6 +136,10 @@ describe('genui prompt section', () => {
       .replace('never to tidy a note or wait for pictures — they fill in by themselves;', 'never to tidy a note;')
       .replace('(designs, names, options — and the whole-number "seed" of a picture\'s take)', '(designs, names, options)')
       .replace(JSON.stringify(genuiOptionsExampleCall()), JSON.stringify(sessionOptionsExample()))
+      // Model3D is listed in a project chat only: its model files and MakeModel exist there only (engine/print3d).
+      .replace(/\n- Model3D\([^\n]*/, '')
+    expect(text).toMatch(/\n- Model3D\(src\*: string, download: string, alt\*: string, caption: string\)/)
+    expect(session).not.toContain('Model3D')
     expect(asSession).not.toBe(projectBody)
     expect(session.slice(opening.length)).toBe(asSession)
   })

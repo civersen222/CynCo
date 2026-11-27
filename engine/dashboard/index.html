@@ -790,6 +790,18 @@ h1.genui-heading { font-size: 17px; } h2.genui-heading { font-size: 15px; } h3.g
 .genui-image-open:focus-visible { outline: 2px solid #569cd6; outline-offset: -2px; }
 .genui-image-open .genui-img { width: 100%; height: 100%; object-fit: contain; border-radius: 0; }
 .genui-image-alt { color: #808080; font-size: 11px; margin-top: 4px; }
+/* A model MakeModel built (engine/print3d): the viewer's box keeps a 4:3 shape from the first frame. */
+.genui-model { margin: 0; max-width: 640px; }
+.genui-model-box { position: relative; width: 100%; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center;
+  background: #141417; border: 1px solid #333; border-radius: 4px; overflow: hidden; }
+.genui-model-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.genui-model-canvas:active { cursor: grabbing; }
+.genui-model-bad { color: #f44747; }
+.genui-model-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.genui-model-btn { background: #264f78; color: #d4d4d4; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px;
+  cursor: pointer; font-family: inherit; }
+.genui-model-btn:disabled { opacity: .5; cursor: default; }
+.genui-model-hint { color: #808080; font-size: 11px; }
 .genui-lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, .82); display: flex; align-items: center;
   justify-content: center; padding: 16px; }
 .genui-lightbox-panel { display: flex; flex-direction: column; gap: 6px; max-width: min(100%, 1100px); max-height: 100%;
@@ -6168,6 +6180,370 @@ function genuiCloseLightbox() {
   for (var i = 0; i < open.length; i++) if (open[i].parentNode) open[i].parentNode.removeChild(open[i]);
 }
 
+// ── Model3D: a model MakeModel built (engine/print3d) ──
+// The engine annotates a Model3D in a project chat with
+// `{ status: 'file', slug, path, download? }` (the .stl it shows, and a model
+// file it offers to save) or `{ status: 'off', reason }`; the paths are checked
+// here again against the engine's own rule (engine/genui/spec.ts
+// PROJECT_MODEL_PATH_RE, copied verbatim) before a URL is built. The .stl is
+// fetched with the token through the injected fetch wrapper and drawn with
+// WebGL by the page's own small viewer: no library, nothing loaded from
+// elsewhere. A browser can hold only so many WebGL contexts, so the page keeps
+// GENUI_MODEL_LIVE_MAX viewers drawing at once; an older one gives its context
+// back and offers "Show in 3D" to take one again. The model is drawn only on a
+// change (a drag, a zoom, a resize), never in a loop, so an idle view costs
+// nothing on a phone. Z is up and -Y the front, as in the slicer.
+var GENUI_MODEL_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*)*\.(?:stl|3mf)$/i;
+var GENUI_MODEL_MAX_BYTES = 64 * 1024 * 1024;   // the file route's own cap on a model file
+var GENUI_MODEL_LIVE_MAX = 4;
+var genuiModelLive = [];   // viewers holding a WebGL context, oldest first
+
+function genuiModelPathOk(p) {
+  return typeof p === 'string' && p.length > 0 && p.length <= GENUI_IMAGE_PATH_MAX && p.indexOf('..') < 0 && GENUI_MODEL_PATH_RE.test(p);
+}
+
+/** The engine's annotation on a Model3D, checked: a replayed transcript spec is otherwise unvalidated here. */
+function genuiModelAnnotation(el) {
+  var m = el && el.model;
+  if (!m || typeof m !== 'object') return null;
+  if (m.status === 'off') return { status: 'off', reason: genuiStr(m.reason) || '3D view not shown' };
+  if (m.status !== 'file' || typeof m.slug !== 'string' || !GENUI_IMAGE_SLUG_RE.test(m.slug) ||
+      !genuiModelPathOk(m.path) || !/\.stl$/i.test(m.path)) return { status: 'off', reason: 'bad model reference' };
+  return { status: 'file', slug: m.slug, path: m.path, download: genuiModelPathOk(m.download) ? m.download : '' };
+}
+
+/**
+ * An STL's triangles (binary, or ASCII "solid … facet") as nine floats each,
+ * with their bounds; null when it is neither or has no triangles.
+ */
+function genuiParseStl(buf) {
+  if (!buf || typeof buf.byteLength !== 'number' || buf.byteLength < 15) return null;
+  var view = new DataView(buf), pos, count, i, k;
+  if (buf.byteLength >= 84) {
+    count = view.getUint32(80, true);
+    if (84 + count * 50 === buf.byteLength && count > 0) {
+      pos = new Float32Array(count * 9);
+      for (i = 0; i < count; i++) for (k = 0; k < 9; k++) pos[i * 9 + k] = view.getFloat32(84 + i * 50 + 12 + k * 4, true);
+      return genuiStlBounds(pos, count);
+    }
+  }
+  var text = '';
+  var bytes = new Uint8Array(buf);
+  for (i = 0; i < bytes.length; i += 8192) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  if (!/^\s*solid/i.test(text)) return null;
+  var nums = [], re = /vertex\s+(\S+)\s+(\S+)\s+(\S+)/gi, m;
+  while ((m = re.exec(text)) !== null) nums.push(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+  if (!nums.length || nums.length % 9 !== 0) return null;
+  return genuiStlBounds(new Float32Array(nums), nums.length / 9);
+}
+function genuiStlBounds(pos, count) {
+  var min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  for (var i = 0; i < pos.length; i++) {
+    var v = pos[i], a = i % 3;
+    if (!isFinite(v)) return null;
+    if (v < min[a]) min[a] = v;
+    if (v > max[a]) max[a] = v;
+  }
+  return { pos: pos, count: count, min: min, max: max };
+}
+
+/** The Model3D renderer: a box the viewer draws into, a Reset button, the save buttons, the alt and caption. */
+function genuiModel3D(el, ctx) {
+  var p = el.props || {};
+  var alt = genuiStr(p.alt);
+  var fig = genuiEl('figure', 'genui-model');
+  var box = genuiEl('div', 'genui-model-box');
+  var bar = genuiEl('div', 'genui-model-bar');
+  fig.appendChild(box);
+  fig.appendChild(bar);
+  if (alt) fig.appendChild(genuiEl('div', 'genui-image-alt', alt));
+  if (p.caption) fig.appendChild(genuiEl('figcaption', 'genui-image-caption', p.caption));
+  var v = { fig: fig, box: box, bar: bar, slug: '', path: '', mesh: null, gl: null, canvas: null, view: null, drawing: false, alt: alt };
+  fig.__genuiModel = v;
+  if (ctx && ctx.partial) { genuiModelSay(v, '3D view comes when the card is finished'); return fig; }
+  var a = genuiModelAnnotation(el);
+  if (!a || a.status === 'off') { genuiModelSay(v, (alt ? alt + ' — ' : '') + (a ? a.reason : '3D view not shown')); return fig; }
+  v.slug = a.slug;
+  v.path = a.path;
+  var reset = genuiEl('button', 'genui-model-btn', 'Reset view');
+  reset.type = 'button';
+  reset.disabled = true;
+  reset.addEventListener('click', function() { if (v.view) { genuiModelHome(v); genuiModelDraw(v); } });
+  v.reset = reset;
+  bar.appendChild(reset);
+  var saves = a.download ? [a.download] : [];
+  if (saves.indexOf(a.path) < 0) saves.push(a.path);
+  saves.forEach(function(path) {
+    var b = genuiEl('button', 'genui-model-btn', 'Save ' + genuiBaseName(path));
+    b.type = 'button';
+    b.title = 'Save ' + path + ' to this device';
+    b.addEventListener('click', function() { genuiModelSave(a.slug, path, b); });
+    bar.appendChild(b);
+  });
+  bar.appendChild(genuiEl('span', 'genui-model-hint', 'Drag to turn · scroll or pinch to zoom'));
+  genuiModelLoad(v);
+  return fig;
+}
+
+function genuiModelSay(v, text, bad) {
+  genuiClear(v.box);
+  var m = genuiEl('div', 'genui-image-msg' + (bad ? ' genui-model-bad' : ''), text);
+  v.box.appendChild(m);
+}
+
+/** Fetch the .stl (with the token) and start the viewer; every failure is said in the box. */
+function genuiModelLoad(v) {
+  genuiModelSay(v, 'Loading ' + genuiBaseName(v.path) + ' …');
+  var failed = function(why) { genuiModelSay(v, v.path + ' could not be loaded (' + why + ')', true); };
+  fetch(genuiFileUrl(v.slug, v.path)).then(function(res) {
+    if (!res.ok) { failed('HTTP ' + res.status); return null; }
+    return res.arrayBuffer().then(function(buf) {
+      if (buf.byteLength > GENUI_MODEL_MAX_BYTES) { failed('larger than 64 MB'); return; }
+      var mesh = genuiParseStl(buf);
+      if (!mesh) { failed('not an STL the viewer can read'); return; }
+      v.mesh = mesh;
+      genuiModelStart(v);
+    });
+  }).catch(function(e) {
+    console.warn('[genui] loading model ' + v.path + ': ' + (e && e.message ? e.message : e));
+    failed(e && e.message ? e.message : 'network error');
+  });
+}
+
+/** Save a model file of the project to this device: fetched with the token, handed to the browser as a download. */
+function genuiModelSave(slug, path, btn) {
+  var label = 'Save ' + genuiBaseName(path);
+  btn.disabled = true;
+  btn.textContent = 'Saving …';
+  fetch(genuiFileUrl(slug, path)).then(function(res) {
+    if (!res.ok) throw new Error(res.status === 404 ? 'not in the project' : 'HTTP ' + res.status);
+    return res.blob();
+  }).then(function(blob) {
+    var url = URL.createObjectURL(blob);
+    var link = genuiEl('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', genuiBaseName(path));
+    document.body.appendChild(link);
+    if (typeof link.click === 'function') link.click();
+    if (link.parentNode) link.parentNode.removeChild(link);
+    setTimeout(function() { genuiRevoke(url, path); }, 60000);
+    btn.disabled = false;
+    btn.textContent = label;
+  }).catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = label + ' — failed (' + (e && e.message ? e.message : 'network error') + ')';
+  });
+}
+
+/** Let go of the contexts of viewers no longer on the page, then of the oldest past the cap. */
+function genuiModelMakeRoom() {
+  var onPage = function(v) { return !(document.body && typeof document.body.contains === 'function') || document.body.contains(v.fig); };
+  genuiModelLive = genuiModelLive.filter(function(v) { if (onPage(v)) return true; genuiModelRelease(v, false); return false; });
+  while (genuiModelLive.length >= GENUI_MODEL_LIVE_MAX) genuiModelRelease(genuiModelLive.shift(), true);
+}
+
+function genuiModelRelease(v, offer) {
+  if (v.gl) {
+    var lose = v.gl.getExtension && v.gl.getExtension('WEBGL_lose_context');
+    if (lose) lose.loseContext();
+  }
+  v.gl = null;
+  v.canvas = null;
+  if (v.reset) v.reset.disabled = true;
+  if (!offer) return;
+  genuiClear(v.box);
+  var again = genuiEl('button', 'genui-model-btn genui-model-again', 'Show in 3D');
+  again.type = 'button';
+  again.addEventListener('click', function() { genuiModelStart(v); });
+  v.box.appendChild(again);
+}
+
+var GENUI_MODEL_VS = 'attribute vec3 aPos; attribute vec3 aNorm; uniform mat4 uMvp; varying vec3 vNorm;' +
+  'void main() { vNorm = aNorm; gl_Position = uMvp * vec4(aPos, 1.0); }';
+var GENUI_MODEL_FS = 'precision mediump float; varying vec3 vNorm; uniform vec3 uEye; uniform vec3 uKey; uniform vec3 uColor; uniform float uFlat;' +
+  'void main() { if (uFlat > 0.5) { gl_FragColor = vec4(uColor, 1.0); return; }' +
+  ' vec3 n = normalize(vNorm); if (!gl_FrontFacing) { gl_FragColor = vec4(0.84, 0.27, 0.25, 1.0); return; }' +
+  ' float l = 0.32 + 0.5 * max(dot(n, uEye), 0.0) + 0.22 * max(dot(n, uKey), 0.0);' +
+  ' gl_FragColor = vec4(min(uColor * l, vec3(1.0)), 1.0); }';
+
+/** Take a WebGL context and draw the model; a browser without one is told so (the picture still shows the model). */
+function genuiModelStart(v) {
+  if (!v.mesh) return;
+  genuiModelMakeRoom();
+  genuiClear(v.box);
+  var canvas = genuiEl('canvas', 'genui-model-canvas');
+  canvas.setAttribute('aria-label', (v.alt || genuiBaseName(v.path)) + ' — 3D view');
+  var gl = typeof canvas.getContext === 'function' ? (canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl')) : null;
+  if (!gl) { genuiModelSay(v, 'This browser cannot draw the 3D view; the picture of the model shows it from four sides.'); return; }
+  v.box.appendChild(canvas);
+  v.canvas = canvas;
+  v.gl = gl;
+  var compile = function(type, src) { var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  var prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, GENUI_MODEL_VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, GENUI_MODEL_FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { genuiModelRelease(v, false); genuiModelSay(v, 'The 3D view could not start (' + (gl.getProgramInfoLog(prog) || 'shader') + ')', true); return; }
+  var mesh = v.mesh, pos = mesh.pos, norm = new Float32Array(pos.length);
+  for (var i = 0; i < mesh.count; i++) {
+    var o = i * 9;
+    var ux = pos[o + 3] - pos[o], uy = pos[o + 4] - pos[o + 1], uz = pos[o + 5] - pos[o + 2];
+    var wx = pos[o + 6] - pos[o], wy = pos[o + 7] - pos[o + 1], wz = pos[o + 8] - pos[o + 2];
+    var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+    for (var c = 0; c < 3; c++) { norm[o + c * 3] = nx / len; norm[o + c * 3 + 1] = ny / len; norm[o + c * 3 + 2] = nz / len; }
+  }
+  // The 10 mm grid on the plate under the part, as in the engine's four-view picture.
+  var lines = [], gz = mesh.min[2], step = 10;
+  var x0 = Math.floor((mesh.min[0] - step) / step) * step, x1 = Math.ceil((mesh.max[0] + step) / step) * step;
+  var y0 = Math.floor((mesh.min[1] - step) / step) * step, y1 = Math.ceil((mesh.max[1] + step) / step) * step;
+  for (var gx = x0; gx <= x1 + 1e-9; gx += step) lines.push(gx, y0, gz, gx, y1, gz);
+  for (var gy = y0; gy <= y1 + 1e-9; gy += step) lines.push(x0, gy, gz, x1, gy, gz);
+  var buffer = function(data) { var b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
+  v.view = {
+    prog: prog, posBuf: buffer(pos), normBuf: buffer(norm), lineBuf: buffer(new Float32Array(lines)), lineCount: lines.length / 3,
+    aPos: gl.getAttribLocation(prog, 'aPos'), aNorm: gl.getAttribLocation(prog, 'aNorm'),
+    uMvp: gl.getUniformLocation(prog, 'uMvp'), uEye: gl.getUniformLocation(prog, 'uEye'), uKey: gl.getUniformLocation(prog, 'uKey'),
+    uColor: gl.getUniformLocation(prog, 'uColor'), uFlat: gl.getUniformLocation(prog, 'uFlat'),
+    center: [(mesh.min[0] + mesh.max[0]) / 2, (mesh.min[1] + mesh.max[1]) / 2, (mesh.min[2] + mesh.max[2]) / 2],
+    radius: Math.max(1, Math.sqrt(Math.pow(x1 - x0, 2) + Math.pow(y1 - y0, 2) + Math.pow(mesh.max[2] - mesh.min[2], 2)) / 2),
+    yaw: 0, pitch: 0, dist: 1, pointers: {},
+  };
+  genuiModelHome(v);
+  genuiModelWire(v);
+  if (v.reset) v.reset.disabled = false;
+  genuiModelLive.push(v);
+  genuiModelDraw(v);
+}
+
+/** The starting view: from the front right, above, the whole part and its grid in sight. */
+function genuiModelHome(v) {
+  var s = v.view;
+  s.yaw = -Math.PI / 4;
+  s.pitch = Math.PI / 6;
+  s.dist = s.radius / Math.sin(GENUI_MODEL_FOV / 2) * 1.05;
+}
+var GENUI_MODEL_FOV = Math.PI / 5;
+
+/** Drag turns, wheel and pinch zoom, a double click goes home; the canvas takes the touch so the chat does not scroll. */
+function genuiModelWire(v) {
+  var c = v.canvas, s = v.view;
+  c.style.touchAction = 'none';
+  var pinch = function() {
+    var ids = Object.keys(s.pointers);
+    if (ids.length < 2) return 0;
+    var a = s.pointers[ids[0]], b = s.pointers[ids[1]];
+    return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
+  };
+  c.addEventListener('pointerdown', function(ev) {
+    s.pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
+    s.pinch = pinch();
+    if (c.setPointerCapture) { try { c.setPointerCapture(ev.pointerId); } catch (e) { console.warn('[genui] pointer capture: ' + (e && e.message ? e.message : e)); } }
+  });
+  c.addEventListener('pointermove', function(ev) {
+    var pt = s.pointers[ev.pointerId];
+    if (!pt) return;
+    var dx = ev.clientX - pt.x, dy = ev.clientY - pt.y;
+    pt.x = ev.clientX; pt.y = ev.clientY;
+    if (Object.keys(s.pointers).length >= 2) {
+      var d = pinch();
+      if (s.pinch > 0 && d > 0) s.dist = Math.min(s.radius * 40, Math.max(s.radius * 0.3, s.dist * s.pinch / d));
+      s.pinch = d;
+    } else {
+      s.yaw -= dx * 0.01;
+      s.pitch = Math.max(-1.5, Math.min(1.5, s.pitch + dy * 0.01));
+    }
+    genuiModelDraw(v);
+  });
+  var up = function(ev) { delete s.pointers[ev.pointerId]; s.pinch = pinch(); };
+  c.addEventListener('pointerup', up);
+  c.addEventListener('pointercancel', up);
+  c.addEventListener('wheel', function(ev) {
+    if (ev.preventDefault) ev.preventDefault();
+    s.dist = Math.min(s.radius * 40, Math.max(s.radius * 0.3, s.dist * Math.exp((ev.deltaY || 0) * 0.0015)));
+    genuiModelDraw(v);
+  }, { passive: false });
+  c.addEventListener('dblclick', function() { genuiModelHome(v); genuiModelDraw(v); });
+}
+
+/** Draw once on the next frame (several changes in one frame are one draw). */
+function genuiModelDraw(v) {
+  if (!v.gl || v.drawing) return;
+  v.drawing = true;
+  var frame = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function(f) { return setTimeout(f, 16); };
+  frame(function() { v.drawing = false; genuiModelPaint(v); });
+}
+
+function genuiModelPaint(v) {
+  var gl = v.gl, s = v.view, c = v.canvas;
+  if (!gl || !s || !c) return;
+  if (gl.isContextLost && gl.isContextLost()) { genuiModelRelease(v, true); return; }
+  var dpr = Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1);
+  var w = Math.max(160, Math.round((v.box.clientWidth || 480) * dpr)), h = Math.round(w * 0.75);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0.08, 0.08, 0.09, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  var cp = Math.cos(s.pitch);
+  var dir = [cp * Math.cos(s.yaw), cp * Math.sin(s.yaw), Math.sin(s.pitch)];   // from the part towards the eye
+  var eye = [s.center[0] + dir[0] * s.dist, s.center[1] + dir[1] * s.dist, s.center[2] + dir[2] * s.dist];
+  var mvp = genuiMat4Mul(genuiMat4Persp(GENUI_MODEL_FOV, w / h, s.dist / 100, s.dist + s.radius * 4), genuiMat4Look(eye, s.center, [0, 0, 1]));
+  gl.useProgram(s.prog);
+  gl.uniformMatrix4fv(s.uMvp, false, mvp);
+  gl.uniform3f(s.uEye, dir[0], dir[1], dir[2]);
+  var k = [0.4, -0.3, 1], kl = Math.sqrt(0.4 * 0.4 + 0.3 * 0.3 + 1);
+  gl.uniform3f(s.uKey, k[0] / kl, k[1] / kl, k[2] / kl);
+  // The grid: flat grey lines.
+  gl.uniform1f(s.uFlat, 1);
+  gl.uniform3f(s.uColor, 0.27, 0.29, 0.33);
+  gl.bindBuffer(gl.ARRAY_BUFFER, s.lineBuf);
+  gl.enableVertexAttribArray(s.aPos);
+  gl.vertexAttribPointer(s.aPos, 3, gl.FLOAT, false, 0, 0);
+  if (s.aNorm >= 0) { gl.disableVertexAttribArray(s.aNorm); gl.vertexAttrib3f(s.aNorm, 0, 0, 1); }
+  gl.drawArrays(gl.LINES, 0, s.lineCount);
+  // The part, lit from the eye; a face seen from behind is red, as in the picture.
+  gl.uniform1f(s.uFlat, 0);
+  gl.uniform3f(s.uColor, 0.29, 0.525, 0.8);
+  gl.bindBuffer(gl.ARRAY_BUFFER, s.posBuf);
+  gl.vertexAttribPointer(s.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, s.normBuf);
+  gl.enableVertexAttribArray(s.aNorm);
+  gl.vertexAttribPointer(s.aNorm, 3, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, v.mesh.count * 3);
+}
+
+// Column-major 4×4 matrices, as WebGL takes them.
+function genuiMat4Mul(a, b) {
+  var o = new Float32Array(16);
+  for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) {
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return o;
+}
+function genuiMat4Persp(fov, aspect, near, far) {
+  var f = 1 / Math.tan(fov / 2), o = new Float32Array(16);
+  o[0] = f / aspect; o[5] = f; o[10] = (far + near) / (near - far); o[11] = -1; o[14] = 2 * far * near / (near - far);
+  return o;
+}
+function genuiMat4Look(eye, at, up) {
+  var z = [eye[0] - at[0], eye[1] - at[1], eye[2] - at[2]];
+  var zl = Math.sqrt(z[0] * z[0] + z[1] * z[1] + z[2] * z[2]) || 1;
+  z = [z[0] / zl, z[1] / zl, z[2] / zl];
+  var x = [up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]];
+  var xl = Math.sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) || 1;
+  x = [x[0] / xl, x[1] / xl, x[2] / xl];
+  var y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+  var o = new Float32Array(16);
+  o[0] = x[0]; o[4] = x[1]; o[8] = x[2];
+  o[1] = y[0]; o[5] = y[1]; o[9] = y[2];
+  o[2] = z[0]; o[6] = z[1]; o[10] = z[2];
+  o[12] = -(x[0] * eye[0] + x[1] * eye[1] + x[2] * eye[2]);
+  o[13] = -(y[0] * eye[0] + y[1] * eye[1] + y[2] * eye[2]);
+  o[14] = -(z[0] * eye[0] + z[1] * eye[1] + z[2] * eye[2]);
+  o[15] = 1;
+  return o;
+}
+
 var GENUI_RENDERERS = {
   // ── Layout ──
   Card: function(el, ctx, id, inh, depth) {
@@ -6387,6 +6763,7 @@ var GENUI_RENDERERS = {
     caption();
     return fig;
   },
+  Model3D: function(el, ctx) { return genuiModel3D(el, ctx); },
 
   // ── Data display ──
   Table: function(el) {

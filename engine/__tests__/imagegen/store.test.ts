@@ -378,7 +378,7 @@ describe('file Images: which Images show a project file, and their annotation', 
 
   it('annotateFileImages in a project: the file state with the slug and path, the src taken out of props; outside one: off with the reason', () => {
     const s = spec()
-    expect(annotateFileImages(s, 'aliens')).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg' }, { id: 'e', path: 'sketches/front.png' }])
+    expect(annotateFileImages(s, 'aliens')).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg', kind: 'image' }, { id: 'e', path: 'sketches/front.png', kind: 'image' }])
     expect(s.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'file', slug: 'aliens', path: 'tower/templates/tower_v1.svg' } })
     expect(s.elements.e).toEqual({ type: 'Image', props: { alt: 'Front', caption: 'Front view' }, image: { status: 'file', slug: 'aliens', path: 'sketches/front.png' } })
     expect(s.elements.b).toEqual({ type: 'Image', props: { prompt: 'a tall alien', alt: 'Alien' } })
@@ -386,7 +386,7 @@ describe('file Images: which Images show a project file, and their annotation', 
     expect(s.elements.d).toEqual({ type: 'Image', props: { src: '../secret.png', alt: 'Bad' } })
     expect(s.elements.f.image).toBeUndefined()
     const t = spec()
-    expect(annotateFileImages(t, null)).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg' }, { id: 'e', path: 'sketches/front.png' }])
+    expect(annotateFileImages(t, null)).toEqual([{ id: 'a', path: 'tower/templates/tower_v1.svg', kind: 'image' }, { id: 'e', path: 'sketches/front.png', kind: 'image' }])
     expect(t.elements.a).toEqual({ type: 'Image', props: { alt: 'Tower' }, image: { status: 'off', reason: FILES_ONLY_REASON } })
     expect(t.elements.e.image).toEqual({ status: 'off', reason: FILES_ONLY_REASON })
     expect(FILES_ONLY_REASON).toBe('files are shown in project chats only')

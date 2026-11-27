@@ -139,9 +139,17 @@ const PICTURES: Record<GenuiPromptMode, { shapes: string; ideas: string; url: st
   },
 }
 
+/**
+ * Components a coding session is not shown: a Model3D draws a model MakeModel
+ * built, and MakeModel and the model files exist in project chats only
+ * (engine/print3d); outside one the engine marks it off, so naming it there
+ * would offer a view that never draws.
+ */
+const PROJECT_ONLY = new Set(['Model3D'])
+
 function build(mode: GenuiPromptMode): string {
   const groups = GENUI_GROUPS.map(g => {
-    const names = Object.keys(GENUI_CATALOG).filter(n => GENUI_CATALOG[n].group === g)
+    const names = Object.keys(GENUI_CATALOG).filter(n => GENUI_CATALOG[n].group === g && (mode === 'project' || !PROJECT_ONLY.has(n)))
     return `### ${GROUP_TITLES[g] ?? g}\n${names.map(signature).join('\n')}`
   }).join('\n')
   return `<RENDER_UI>
