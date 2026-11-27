@@ -253,7 +253,7 @@ def jsonl_recorder(path: str, max_lines: int = 20000) -> Callable[[dict], None]:
     return record
 
 
-def _make_handler(d: Doorman, page_html: str):
+def _make_handler(d: Doorman, page_html: str, knocks_only: bool = False):
     class Handler(BaseHTTPRequestHandler):
         server_version = "doorman/1"
 
@@ -294,8 +294,18 @@ def _make_handler(d: Doorman, page_html: str):
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
+            # The listener behind the HTTPS name (tailscale serve) is for the phone's knocks: any https
+            # page a tailnet browser opens can send to it, so it takes no writes. The daemon posts to the
+            # Tailscale address, and always as application/json, which no page can send without a CORS
+            # preflight this server never answers.
+            if knocks_only:
+                self._json(403, {"error": "the https name takes knocks only"})
+                return
             if url.path != "/schedule":
                 self._json(404, {"error": "not found"})
+                return
+            if self.headers.get_content_type() != "application/json":
+                self._json(415, {"error": "a schedule is application/json"})
                 return
             n = int(self.headers.get("Content-Length") or 0)
             try:
@@ -323,18 +333,22 @@ def who_asked(peer: str, headers) -> str:
     127.0.0.1 and names the tailnet client in X-Forwarded-For, the last entry being the one serve
     added. The header is read only from a loopback peer (anyone else could write it) and only when it
     is an address. `journal_bursts.py` finds `GET /wake` anywhere in the line, so the prefix may grow."""
-    if peer in ("127.0.0.1", "::1") and headers is not None:
+    if peer in LOOPBACK and headers is not None:
         last = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
         if _FORWARDED_ADDR.match(last):
             return "%s via %s" % (last, peer)
     return peer
 
 
-def serve(bind_ip: str, port: int, d: Doorman, page_html: Optional[str] = None) -> ThreadingHTTPServer:
+def serve(bind_ip: str, port: int, d: Doorman, page_html: Optional[str] = None, knocks_only: bool = False) -> ThreadingHTTPServer:
+    """`knocks_only`: the listener `tailscale serve` forwards the HTTPS name to; it refuses every POST."""
     if page_html is None:
         with open(os.path.join(_HERE, "index.html"), "r", encoding="utf-8") as f:
             page_html = f.read()
-    return ThreadingHTTPServer((bind_ip, port), _make_handler(d, page_html))
+    return ThreadingHTTPServer((bind_ip, port), _make_handler(d, page_html, knocks_only))
+
+
+LOOPBACK = ("127.0.0.1", "::1")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -367,11 +381,12 @@ def serve_all(binds: List[str], port: int, d: Doorman, page_html: Optional[str] 
     address is the doorman's own: it must bind (the unit restarts the service until it does), and the
     caller serves it. A further one that cannot be bound is said in the log and left out, so a busy
     loopback port costs the HTTPS name only, never the wake on the Tailscale address. Every further
-    listener serves from a thread of its own."""
-    servers = [(binds[0], serve(binds[0], port, d, page_html))]
+    listener serves from a thread of its own. A loopback address is the HTTPS name's (tailscale serve
+    proxies to 127.0.0.1 only) and is knocks-only."""
+    servers = [(binds[0], serve(binds[0], port, d, page_html, knocks_only=binds[0] in LOOPBACK))]
     for b in binds[1:]:
         try:
-            s = serve(b, port, d, page_html)
+            s = serve(b, port, d, page_html, knocks_only=b in LOOPBACK)
         except OSError as e:
             print("doorman: cannot listen on %s:%d (%s); the other addresses still serve" % (b, port, e), file=sys.stderr)
             continue

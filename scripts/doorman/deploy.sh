@@ -38,7 +38,7 @@ $SSH '
   # restarts; running it again changes nothing. Off: sudo tailscale serve --https=443 off
   sudo tailscale serve --bg --https=443 http://127.0.0.1:9170 >/dev/null
   sleep 2
-  echo "--- doorman:  $(systemctl is-active doorman) ($(systemctl is-enabled doorman)); https: $(sudo tailscale serve status 2>/dev/null | head -1)"
+  echo "--- doorman:  $(systemctl is-active doorman) ($(systemctl is-enabled doorman)); loopback for serve: HTTP $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://127.0.0.1:9170/status?target=main"); https: $(sudo tailscale serve status 2>/dev/null | head -1)"
   echo "--- naswatch: $(systemctl is-active naswatch) ($(systemctl is-enabled naswatch))"
   echo "--- watcher:  $(systemctl is-active watcher) ($(systemctl is-enabled watcher)) - the note: http://$TS_IP:9171/"
   echo "--- ntfy:     $(docker inspect -f "{{.State.Status}} restart={{.HostConfig.RestartPolicy.Name}}" ntfy 2>/dev/null || echo not-running) on $TS_IP:8090"

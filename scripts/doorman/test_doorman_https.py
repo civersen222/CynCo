@@ -68,10 +68,10 @@ def test_a_further_address_that_will_not_bind_costs_only_itself(monkeypatch, cap
     """A busy 127.0.0.1:9170 must not take the wake on the Tailscale address down with it."""
     real = doorman.serve
 
-    def serve(bind, port, d, page_html=None):
+    def serve(bind, port, d, page_html=None, knocks_only=False):
         if bind == "127.0.0.2":
             raise OSError(98, "Address already in use")
-        return real(bind, port, d, page_html)
+        return real(bind, port, d, page_html, knocks_only)
 
     monkeypatch.setattr(doorman, "serve", serve)
     h = Harness()
@@ -90,7 +90,7 @@ def test_a_further_address_that_will_not_bind_costs_only_itself(monkeypatch, cap
 
 
 def test_the_first_address_must_bind(monkeypatch):
-    def serve(bind, port, d, page_html=None):
+    def serve(bind, port, d, page_html=None, knocks_only=False):
         raise OSError(99, "Cannot assign requested address")
 
     monkeypatch.setattr(doorman, "serve", serve)
@@ -127,8 +127,8 @@ def test_main_binds_every_address_it_is_given(tmp_path, monkeypatch):
         def serve_forever(self):
             return None
 
-    def fake_serve(bind, port, d, page_html=None):
-        bound.append((bind, port))
+    def fake_serve(bind, port, d, page_html=None, knocks_only=False):
+        bound.append((bind, port, knocks_only))
         return S()
 
     monkeypatch.setattr(doorman, "serve", fake_serve)
@@ -137,7 +137,42 @@ def test_main_binds_every_address_it_is_given(tmp_path, monkeypatch):
         "--schedule-file", str(tmp_path / "s" / "schedule.json"), "--bursts-file", str(tmp_path / "s" / "bursts.jsonl"),
     ])
     assert rc == 0
-    assert bound == [("100.110.117.10", 9170), ("127.0.0.1", 9170)]
+    # the Tailscale address takes the daemon's schedule; the HTTPS name's listener takes knocks only
+    assert bound == [("100.110.117.10", 9170, False), ("127.0.0.1", 9170, True)]
+
+
+def post(host, port, path, body, content_type):
+    c = http.client.HTTPConnection(host, port, timeout=5)
+    c.request("POST", path, body=body, headers={"Content-Type": content_type} if content_type else {})
+    r = c.getresponse()
+    data = r.read().decode()
+    c.close()
+    return r.status, data
+
+
+SCHEDULE = json.dumps({"target": "main", "times": ["2026-11-28T20:00:00Z"]})
+
+
+def test_the_https_names_listener_takes_knocks_and_no_writes():
+    """Any https page a tailnet browser opens can send to the HTTPS name (F256's review), so it cannot
+    change the wake schedule there; it can still knock, which any tailnet device could already do."""
+    with TwoListeners() as t:  # 127.0.0.1 is the HTTPS name's listener, 127.0.0.2 stands for the Tailscale address
+        assert post("127.0.0.1", t.port, "/schedule", SCHEDULE, "application/json")[0] == 403
+        assert t.h.timers == []
+        assert get("127.0.0.1", t.port, "/wake?target=main")[0] == 200
+        assert get("127.0.0.1", t.port, "/status?target=main")[0] == 200
+        code, body = post("127.0.0.2", t.port, "/schedule", SCHEDULE, "application/json")
+        assert code == 200 and json.loads(body) == {"ok": True, "count": 1}
+
+
+def test_a_schedule_must_be_application_json():
+    """text/plain, a form or no type: what a page may send cross-site with no CORS preflight."""
+    with TwoListeners() as t:
+        for ctype in ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x", None):
+            code, _ = post("127.0.0.2", t.port, "/schedule", SCHEDULE, ctype)
+            assert code == 415, ctype
+        assert t.h.timers == []
+        assert post("127.0.0.2", t.port, "/schedule", SCHEDULE, "application/json; charset=utf-8")[0] == 200
 
 
 def test_a_request_serve_forwards_is_logged_under_the_tailnet_client():
