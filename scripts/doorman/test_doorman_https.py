@@ -5,9 +5,13 @@ beside the Tailscale address, with one Doorman behind both (engine/dashboard/wak
 import http.client
 import json
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 import doorman  # noqa: E402
@@ -223,3 +227,19 @@ def test_deploy_serves_the_https_name_on_the_tailnet_only():
         script = f.read()
     assert "tailscale serve --bg --https=443 http://127.0.0.1:9170" in script
     assert "tailscale funnel" not in script.lower()  # Funnel would put the name on the internet
+
+
+def test_deploy_parses_and_its_remote_block_holds_no_apostrophe():
+    """The remote part of deploy.sh is one single-quoted argument of ssh: an apostrophe in a comment
+    there (it happened: "doorman's") ends the quote, and bash refuses the whole script."""
+    path = os.path.join(HERE, "deploy.sh")
+    with open(path, encoding="utf-8") as f:
+        text = f.read().replace("\r\n", "\n")
+    start = text.index("$SSH '\n")
+    end = text.index("\n'\n", start)
+    assert "'" not in text[start + len("$SSH '\n"):end]
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash on PATH to parse deploy.sh")
+    r = subprocess.run([bash, "-n"], input=text, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr

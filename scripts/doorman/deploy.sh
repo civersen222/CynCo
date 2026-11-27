@@ -32,10 +32,11 @@ $SSH '
   sudo systemctl daemon-reload
   sudo systemctl enable --now doorman naswatch watcher >/dev/null 2>&1
   sudo systemctl restart doorman naswatch watcher
-  # The doorman's HTTPS name on the tailnet (never Funnel): the phone app knocks here when the PC does
-  # not answer (engine/dashboard/wake.ts), and an https page may not fetch http. `serve` proxies to
+  # An HTTPS name for the doorman on the tailnet (never Funnel): the phone app knocks here when the PC
+  # does not answer (engine/dashboard/wake.ts), and an https page may not fetch http. serve proxies to
   # 127.0.0.1 only, which doorman.service binds beside the Tailscale address. Kept by tailscaled across
   # restarts; running it again changes nothing. Off: sudo tailscale serve --https=443 off
+  # (No apostrophe anywhere in this block: it is one single-quoted argument of ssh.)
   sudo tailscale serve --bg --https=443 http://127.0.0.1:9170 >/dev/null
   sleep 2
   echo "--- doorman:  $(systemctl is-active doorman) ($(systemctl is-enabled doorman)); loopback for serve: HTTP $(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "http://127.0.0.1:9170/status?target=main"); https: $(sudo tailscale serve status 2>/dev/null | head -1)"
