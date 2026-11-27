@@ -166,8 +166,11 @@ class Doorman:
 
 
 # ---------------------------------------------------------------------------
-# HTTP service (Task 2). Bound to the Tailscale address only; no auth beyond
-# the tailnet — the dashboard it hands off to still requires pairing.
+# HTTP service (Task 2). Bound to the Tailscale address, and to 127.0.0.1 for
+# `tailscale serve`: the doorman's HTTPS name, which the phone app's waking page
+# knocks on (engine/dashboard/wake.ts; an https page may not fetch http). Never
+# a wildcard. No auth beyond the tailnet — the dashboard it hands off to still
+# requires pairing.
 #   GET  /                 waking page for the default target ("main")
 #   GET  /status?target=   {"up","burstActive","lastWakeAt"}
 #   GET  /wake?target=     start a burst (idempotent while one runs); returns status
@@ -176,6 +179,7 @@ class Doorman:
 import argparse  # noqa: E402
 import datetime as _dt  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
@@ -305,9 +309,25 @@ def _make_handler(d: Doorman, page_html: str):
                 self._json(400, {"error": "bad schedule: %s" % e})
 
         def log_message(self, fmt, *args) -> None:  # journald gets one line per request
-            sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+            # No headers yet on a request refused while its first line was read (send_error before parse).
+            sys.stderr.write("%s %s\n" % (who_asked(self.client_address[0], getattr(self, "headers", None)), fmt % args))
 
     return Handler
+
+
+_FORWARDED_ADDR = re.compile(r"^[0-9A-Fa-f:.]{2,45}$")
+
+
+def who_asked(peer: str, headers) -> str:
+    """The address a request line is logged under. A request `tailscale serve` forwards arrives from
+    127.0.0.1 and names the tailnet client in X-Forwarded-For, the last entry being the one serve
+    added. The header is read only from a loopback peer (anyone else could write it) and only when it
+    is an address. `journal_bursts.py` finds `GET /wake` anywhere in the line, so the prefix may grow."""
+    if peer in ("127.0.0.1", "::1") and headers is not None:
+        last = (headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+        if _FORWARDED_ADDR.match(last):
+            return "%s via %s" % (last, peer)
+    return peer
 
 
 def serve(bind_ip: str, port: int, d: Doorman, page_html: Optional[str] = None) -> ThreadingHTTPServer:
@@ -320,12 +340,13 @@ def serve(bind_ip: str, port: int, d: Doorman, page_html: Optional[str] = None) 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(description="CynCo doorman: wake GPU boxes over the switch, hand the phone to the dashboard")
     p.add_argument("--targets", default="/etc/doorman/targets.json")
-    p.add_argument("--bind", required=True, help="Tailscale address to bind (never 0.0.0.0)")
+    p.add_argument("--bind", required=True, action="append",
+                   help="an address to listen on, once per address: the Tailscale address, and 127.0.0.1 for `tailscale serve` (never 0.0.0.0 or ::)")
     p.add_argument("--port", type=int, default=9170)
     p.add_argument("--schedule-file", default="/var/lib/doorman/schedule.json", help="the daemon's wake times survive a restart here")
     p.add_argument("--bursts-file", default="/var/lib/doorman/bursts.jsonl", help="one line per wake burst, read by the watcher")
     a = p.parse_args(argv)
-    if a.bind in ("0.0.0.0", "::"):
+    if any(b in ("0.0.0.0", "::") for b in a.bind):
         print("refusing to bind a wildcard address", file=sys.stderr)
         return 2
     d = Doorman(load_targets(a.targets), real_send_wake, real_probe_up, time.time, real_schedule_later)
@@ -334,10 +355,29 @@ def main(argv: Optional[List[str]] = None) -> int:
     os.makedirs(os.path.dirname(a.bursts_file), exist_ok=True)
     d.record = jsonl_recorder(a.bursts_file)  # before load_schedule: a missed time fires at once and is a burst too
     d.load_schedule()
-    srv = serve(a.bind, a.port, d)
-    print("doorman listening on %s:%d targets=%s" % (a.bind, a.port, list(d.targets)), file=sys.stderr)
-    srv.serve_forever()
+    servers = serve_all(a.bind, a.port, d)
+    print("doorman listening on %s, port %d, targets=%s" % (", ".join(b for b, _ in servers), a.port, list(d.targets)), file=sys.stderr)
+    servers[0][1].serve_forever()
     return 0
+
+
+def serve_all(binds: List[str], port: int, d: Doorman, page_html: Optional[str] = None) -> List[tuple]:
+    """(address, server) per address that bound, all on `port` with one Doorman, so a knock through
+    `tailscale serve` and a knock on the Tailscale address start the same burst (never two). The first
+    address is the doorman's own: it must bind (the unit restarts the service until it does), and the
+    caller serves it. A further one that cannot be bound is said in the log and left out, so a busy
+    loopback port costs the HTTPS name only, never the wake on the Tailscale address. Every further
+    listener serves from a thread of its own."""
+    servers = [(binds[0], serve(binds[0], port, d, page_html))]
+    for b in binds[1:]:
+        try:
+            s = serve(b, port, d, page_html)
+        except OSError as e:
+            print("doorman: cannot listen on %s:%d (%s); the other addresses still serve" % (b, port, e), file=sys.stderr)
+            continue
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+        servers.append((b, s))
+    return servers
 
 
 if __name__ == "__main__":
