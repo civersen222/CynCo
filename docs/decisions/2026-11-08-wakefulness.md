@@ -46,15 +46,22 @@ Doorman service answers `/status`, `/wake`, `/schedule`, `/` on the tailnet; `et
 **Problem.** Since the HTTPS install (2026-11-11) the phone opens CynCo at the PC's own tailnet name, so a
 PC asleep answers nothing and the doorman, which wakes only on a knock, never hears from the phone.
 **Decision.** The app knocks by itself. A service worker on the HTTPS name answers a page load the PC does
-not answer with a cached waking page and knocks; the waking page asks the PC's manifest and reloads when it
-answers; an open page wakes the PC before it trusts a quiet socket and sends the held message afterwards
-(`engine/dashboard/wake.ts`, `LOCALCODE_DASHBOARD_WAKE_URL`). The knock goes to the doorman's own HTTPS name
-(`tailscale serve` → 127.0.0.1:9170, `deploy.sh`), because an https page may not fetch http. It is
+not answer in 6 s with a cached waking page and knocks; the waking page asks the PC's manifest, knocks only
+while nothing answers, and opens CynCo past the worker's cut-off once the PC answers; an open page wakes
+the PC before it trusts a quiet socket and sends the held message afterwards, into the chat it was typed in
+only (`engine/dashboard/wake.ts`, `LOCALCODE_DASHBOARD_WAKE_URL`). The knock goes to the doorman's own HTTPS
+name (`tailscale serve` → 127.0.0.1:9170, `deploy.sh`), because an https page may not fetch http. It is
 `mode: 'no-cors'` and never read, so the doorman gets no CORS rule. Rejected: sending the phone through the
 doorman's page first (a second icon, and the PC still sleeps under an open page); turning off the PIN on
 wake (it would not have helped: the locked session runs CynCo); "Sleep after: Never" (gives up goal 3).
+**After review (the same day).** Any answer but a 200 means the PC is awake, so an engine restarting is
+waited for and never knocked about; a wake that gives up starts no other until the owner acts; the HTTPS
+name's listener takes no writes and a schedule must be `application/json`, because once the doorman has an
+https name any https page a tailnet browser opens can send to it; unsetting the variable removes the worker
+from the phone at its next open.
 **Costs.** A service worker on the phone, scoped to page loads, that stores one static page; two more
 token-free static routes, only while the variable is set; a loopback listener and a tailnet HTTPS name on
-the doorman (the audience is the tailnet, as for its address). Every page load the PC answers late (over
-2.5 s) also sends a knock, which is harmless. **Guards.** `engine/__tests__/dashboard/phoneWake.test.ts`,
-`scripts/doorman/test_doorman_https.py`. Live check owed: `docs/NOW.md`.
+the doorman (the audience is the tailnet, as for its address). Any https page a tailnet browser opens can
+still knock, which wakes the PC and the image box and does nothing else; any tailnet device could already.
+**Guards.** `engine/__tests__/dashboard/phoneWake.test.ts`, `scripts/doorman/test_doorman_https.py`. Live
+check owed: `docs/NOW.md`.
