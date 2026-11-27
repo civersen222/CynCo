@@ -60,7 +60,7 @@ def test_load_targets_reads_mac_dashboard_iface():
 
 
 def test_knock_starts_burst_and_sends_every_15s_for_60s():
-    h = Harness()
+    h = Harness(probe_up=True)  # the box answers: the burst ends at BURST_DURATION_S
     h.d.knock("main")
     h.run_until(h.clock.t + 120)
     times = [t - 1000.0 for t, mac in h.sent if mac == "6C:6E:07:2D:AA:00"]
@@ -69,7 +69,7 @@ def test_knock_starts_burst_and_sends_every_15s_for_60s():
 
 
 def test_second_knock_during_burst_does_not_double():
-    h = Harness()
+    h = Harness(probe_up=True)  # the box answers: the burst ends at BURST_DURATION_S
     h.d.knock("main")
     h.run_until(h.clock.t + 20)
     h.d.knock("main")
@@ -90,7 +90,7 @@ def test_status_reports_probe_and_burst():
 
 
 def test_set_schedule_replaces_and_bursts_180s_early():
-    h = Harness()
+    h = Harness(probe_up=True)  # the box answers: the burst ends at BURST_DURATION_S
     h.d.set_schedule("main", [1000.0 + 600, 1000.0 + 1200])
     h.d.set_schedule("main", [1000.0 + 900])  # replaces: the 600/1200 bursts must not fire
     h.run_until(1000.0 + 2000)
@@ -185,7 +185,7 @@ def test_load_targets_reads_with_and_health():
 
 
 def test_knock_main_bursts_main_and_image_together_never_doubled():
-    h = Harness()
+    h = Harness(probe_up=True)  # the box answers: the burst ends at BURST_DURATION_S
     h.d.knock("main")
     h.run_until(h.clock.t + 1)
     assert sorted(m for _, m in h.sent) == sorted([MAINMAC, IMAGE])
@@ -235,3 +235,38 @@ def test_real_probe_uses_health_when_set(monkeypatch):
     doorman.real_probe_up(doorman.Target(name="image", mac=IMAGE, dashboard="", iface="e", health="http://h/api/version"))
     doorman.real_probe_up(doorman.Target(name="main", mac=MAINMAC, dashboard="http://d/", iface="e"))
     assert seen == ["http://h/api/version", "http://d/"]
+
+
+# A box that fell asleep a moment ago ignores the packets for a while (2026-11-27, F256): a burst goes on past
+# BURST_DURATION_S while the box does not answer, up to BURST_UNTIL_UP_S, and stops at the first tick it does.
+def test_a_box_that_does_not_answer_gets_packets_until_it_does():
+    h = Harness(probe_up=False)
+    h.d.knock("main")
+    h.run_until(h.clock.t + 200)
+    assert h.d.status("main")["burstActive"] is True
+    h.up = True  # the PC answers at last: the next tick is the burst's last
+    h.run_until(h.clock.t + 120)
+    times = [t - 1000.0 for t, mac in h.sent if mac == MAINMAC]
+    assert times == [15.0 * i for i in range(len(times))]
+    assert 200 <= times[-1] <= 215
+    assert h.d.status("main")["burstActive"] is False
+
+
+def test_a_box_that_never_answers_gets_packets_for_burst_until_up_s_and_no_longer():
+    h = Harness(probe_up=False)
+    h.d.knock("main")
+    h.run_until(h.clock.t + doorman.BURST_UNTIL_UP_S + 300)
+    times = [t - 1000.0 for t, mac in h.sent if mac == MAINMAC]
+    assert times[-1] >= doorman.BURST_UNTIL_UP_S - doorman.BURST_INTERVAL_S
+    assert times[-1] < doorman.BURST_UNTIL_UP_S + doorman.BURST_INTERVAL_S
+    assert h.d.status("main")["burstActive"] is False
+    h.d.knock("main")  # a later knock starts a new burst
+    assert h.d.status("main")["burstActive"] is True
+
+
+def test_the_first_minute_is_sent_whatever_the_probe_says():
+    """A box that still answers in the seconds it takes to fall asleep gets the whole first minute."""
+    h = Harness(probe_up=True)
+    h.d.knock("main")
+    h.run_until(h.clock.t + 300)
+    assert [t - 1000.0 for t, mac in h.sent if mac == MAINMAC] == [0, 15, 30, 45, 60]

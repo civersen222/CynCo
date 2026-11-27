@@ -10,11 +10,11 @@ from test_doorman import Harness  # noqa: E402
 
 def test_schedule_persists_across_restart(tmp_path):
     path = str(tmp_path / "schedule.json")
-    h = Harness()
+    h = Harness(probe_up=True)
     h.d.schedule_path = path
     h.d.set_schedule("main", [1000.0 + 600])
     assert json.load(open(path))["main"] == [1600.0]
-    h2 = Harness()
+    h2 = Harness(probe_up=True)
     h2.timers.clear()
     h2.d.schedule_path = path
     h2.d.load_schedule()
@@ -32,7 +32,7 @@ def test_set_schedule_cancels_the_previous_timers():
 
 
 def test_knock_under_concurrent_calls_sends_one_burst():
-    h = Harness()
+    h = Harness(probe_up=True)
     threads = [threading.Thread(target=lambda: h.d.knock("main")) for _ in range(8)]
     for t in threads:
         t.start()

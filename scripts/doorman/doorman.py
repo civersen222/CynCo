@@ -19,6 +19,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 BURST_INTERVAL_S = 15.0
 BURST_DURATION_S = 60.0
+# A box that fell asleep a moment ago ignores the packets for a while: on 2026-11-27 the main PC ignored
+# all five of a burst sent 0 to 46 s after it entered S3 (the phone knocked 12 s after the sleep began),
+# while packets sent 15 minutes or more into its sleep woke it at the first or second. So past
+# BURST_DURATION_S a burst goes on, every BURST_INTERVAL_S, while the box does not answer its probe,
+# up to this long. The watcher's WAKE_MATCH_BEFORE_S covers it.
+BURST_UNTIL_UP_S = 600.0
 LEAD_S = 180.0
 
 
@@ -159,7 +165,8 @@ class Doorman:
         t = self._target(name)
         self._send_wake(t)
         self._last_wake[name] = self._now()
-        if self._now() - started < BURST_DURATION_S:
+        elapsed = self._now() - started
+        if elapsed < BURST_DURATION_S or (elapsed < BURST_UNTIL_UP_S and not self._probe_up(t)):
             self._schedule_later(self._now() + BURST_INTERVAL_S, lambda: self._burst_tick(name))
         else:
             self._burst[name] = None

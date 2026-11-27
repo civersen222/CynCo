@@ -84,7 +84,7 @@ def test_the_night_of_f221_is_one_finding_with_its_eight_wakes_and_the_scheduled
 
 
 def test_a_burst_for_another_target_or_too_early_explains_nothing():
-    events = night_events(REAL_NIGHT[1:2]) + [burst("2026-11-11T10:46:40Z", target="image"), burst("2026-11-11T10:40:00Z")]
+    events = night_events(REAL_NIGHT[1:2]) + [burst("2026-11-11T10:46:40Z", target="image"), burst("2026-11-11T10:30:00Z")]  # 16 min before: past a whole burst
     assert kinds(construct([], events)) == ["wake.unexplained"]
 
 

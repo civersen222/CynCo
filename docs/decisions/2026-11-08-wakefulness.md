@@ -65,3 +65,15 @@ the doorman (the audience is the tailnet, as for its address). Any https page a 
 still knock, which wakes the PC and the image box and does nothing else; any tailnet device could already.
 **Guards.** `engine/__tests__/dashboard/phoneWake.test.ts`, `scripts/doorman/test_doorman_https.py`. Live
 check owed: `docs/NOW.md`.
+**The first live try (2026-11-27 12:19).** The phone's knock reached the doorman through its HTTPS name 12 s after the PC
+was put to sleep, and the doorman sent its one-minute burst; the PC entered S3 at 12:20:05 and ignored all five
+packets, the last 46 s into its sleep, and the owner woke it with the power button. A burst now goes on while the
+box does not answer, every 15 s up to 10 minutes (`BURST_UNTIL_UP_S` in `scripts/doorman/doorman.py`), and the
+watcher matches a wake to a burst that started up to 615 s before it. How long the PC ignores packets after it
+falls asleep is not yet measured.
+**The second live try (12:37).** With that doorman deployed and the PC put to sleep the same way (a program's
+`SetSuspendState` call), the doorman knocked as the PC went down and sent a packet every 15 to 17 s for 10 minutes;
+the PC ignored them all and woke only by its power button 14 minutes in. After Windows' own idle sleep the same
+packets woke it at once that morning, 15 to 40 minutes into its sleep; a packet early in an idle sleep is not measured.
+The owner set "Sleep after" to Never the same day: the PC stays awake (locked, CynCo running), and the phone wake is
+the fallback for a PC that sleeps. Goal 3 (sleep on its own) is off by the owner's choice.

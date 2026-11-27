@@ -26,7 +26,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from watchstore import iso, parse_iso
 
 # ---- constants: every sensitivity of the watch loop is here, in one place ---------------------
-WAKE_MATCH_BEFORE_S = 120.0  # a burst that started this long before a wake is behind it
+# A burst that started this long before a wake is behind it. A burst goes on until its box answers, up to
+# the doorman's BURST_UNTIL_UP_S (600 s), so a wake late in one is still that burst's (2026-11-27, F256).
+WAKE_MATCH_BEFORE_S = 615.0
 WAKE_MATCH_AFTER_S = 5.0  # clock difference between the box and the doorman
 OWNER_WOKE_WITHIN_S = 120.0  # a sample this soon after a wake can show the owner's own input
 SERVICE_DOWN_MIN_S = 180.0  # shorter than this is a restart, not an outage
