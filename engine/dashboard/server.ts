@@ -403,7 +403,7 @@ function imageResponse(r: { status: number; bytes?: Uint8Array; json?: unknown }
  * CSP covers a direct open, there is no ACAO, and it is never cached — the
  * model may rewrite the file and show it again.
  */
-function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; json?: unknown }): Response {
+function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; json?: unknown; download?: string }): Response {
   if (r.status === 200 && r.bytes && r.type) {
     return new Response(new Uint8Array(r.bytes), {
       status: 200,
@@ -411,7 +411,8 @@ function fileResponse(r: { status: number; bytes?: Uint8Array; type?: string; js
         'Content-Type': r.type,
         'X-Content-Type-Options': 'nosniff',
         'Content-Security-Policy': "default-src 'none'; sandbox",
-        'Content-Disposition': 'inline',
+        // A model file (engine/print3d) is saved under its own name; its name passed the path rule, so it holds no quote.
+        'Content-Disposition': r.download ? `attachment; filename="${r.download}"` : 'inline',
         'Cache-Control': 'no-store',
       },
     })

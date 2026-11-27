@@ -11,7 +11,7 @@ LocalCode is the engine (Bun + TypeScript in `engine/`, a Textual TUI in `tui/`)
 ## What CynCo does
 
 **Writes and changes code.** A full tool-calling agent loop on your hardware: it reads, edits, runs commands, tests and commits.
-- 34 built-in tools, with extended ones loaded on demand ([Tools](#tools-34-built-in)).
+- 35 built-in tools, with extended ones loaded on demand ([Tools](#tools-35-built-in)).
 - A symbol-first code index: AST symbol lookup, then BM25 + vector hybrid search, plus a repo map ([Semantic Code Index](#semantic-code-index)).
 - A Definition-of-Done contract on each coding request, which the model must satisfy before it may stop ([Contract Enforcement](#contract-enforcement)).
 - Sub-agents, phase-gated workflows (`/tdd`, `/debug`, `/plan`, `/review` …) and installable skills ([Workflows](#workflows), [Skills](#skills)).
@@ -20,6 +20,7 @@ LocalCode is the engine (Bun + TypeScript in `engine/`, a Textual TUI in `tui/`)
 **Works on things that are not code.** [Projects](#projects) are a folder each: a build, a plan, a recipe book, a piece of research.
 - Each has its own knowledge, cited chats, artifacts, a journal and an invisible git history.
 - The chat draws tables, plans, charts and forms ([Generative UI](#governance-dashboard--chat-ui)).
+- It designs parts for a 3D printer: an OpenSCAD design built on your PC, checked against a Bambu Lab P2S, shown from four sides and in a 3D view you turn, and sliced with Bambu Studio into a file ready to print; you start the print ([Projects](#projects)).
 - *Optional, on a second machine:* pictures painted on your ComfyUI server, photos looked at by a vision model, and photos varied, edited or turned into tracing sheets ([The image box](#the-image-box-vision-and-pictures)).
 - Research across six search engines, with each saved report indexed for later search ([Deep Research](#deep-research-research)).
 
@@ -324,7 +325,7 @@ Neither is needed, and each feature that uses one says so when it is not configu
 │  TypeScript Engine (Bun)         │◄──────►│  Python TUI   │
 │                                  │  9160  │  (Textual)    │
 │  Conversation Loop               │        │               │
-│  ├── Tool Executor (34 tools)    │        │  Workspace    │
+│  ├── Tool Executor (35 tools)    │        │  Workspace    │
 │  ├── Contracts (Definition of    │        │  Vibe Loop    │
 │  │   Done)                       │        │  Settings     │
 │  ├── VSM S1-S4: variety,         │        │  Context Bar  │
@@ -477,6 +478,8 @@ An Image on a surface can show three kinds of picture:
 - An image file the model wrote into the project (a png, jpg, gif, webp or svg), named in `src` by its path relative to the project folder. The page fetches it through the engine (`GET /api/projects/:slug/files/<path>`), so a template or sketch the model drew as a file appears in its card (F175).
 - A transformed project photo.
 
+A `Model3D` shows a model the chat built with `MakeModel` (below, [Projects](#projects)) in a 3D view drawn by the page itself (WebGL, no library): drag to turn it, scroll or pinch to zoom, and save its print-ready `.3mf` or its `.stl` from the buttons under it.
+
 **[Governance]**: real-time VSM monitoring.
 - **Tool Activity**: a stacked bar chart and a live feed with latency.
 - **Governance Health**: S3/S4 balance, variety ratio, stuck turns, algedonic alerts, and action-fingerprint repetition alarms. The alarms flag loops of 3 identical or 6 alternating tool calls.
@@ -529,12 +532,14 @@ Each project is one plain folder:
 - `plan.md` and `journal.md`: the project's plan, and an append-only record of what happened.
 - An invisible git history underneath the whole folder; no git command is ever shown to you.
 - `images/`: the pictures a chat's cards asked for, each beside a JSON record of how it was made. The records are in the git history, the pictures are not.
+- `models/`: parts to 3D-print. Each design is an OpenSCAD file, `models/<name>.scad`, and builds into `models/<name>/`: the mesh, a picture from four sides, the print-ready `.3mf` after a slice, and a `report.json` of what was built. The designs and reports are in the git history, the built files are not.
 
-A project chat has four tools of its own:
+A project chat has five tools of its own:
 - `ProjectSearch`: search one project, or all of them.
 - `SaveArtifact`.
 - `AddToKnowledge`: add a source by path or by URL.
-- `LookAt`: ask the vision model one aimed question about a photo.
+- `LookAt`: ask the vision model one aimed question about a photo, or about a model's picture.
+- `MakeModel`: build a part from its OpenSCAD design under `models/` with the OpenSCAD on this PC, check it against the Bambu Lab P2S (size, closed, one piece, overhangs, plate contact) and draw it from four sides; with `slice`, slice it with Bambu Studio's own P2S presets for a material and get the print time, the grams and a print-ready `.3mf`. It never starts a print: you open the file in Bambu Studio and press Print. It needs OpenSCAD (`winget install --id OpenSCAD.OpenSCAD.Nightly`) and, to slice, Bambu Studio, and says so when either is missing. A design may read only files of its own project. See `engine/print3d/CLAUDE.md`.
 
 Tool calls inside a project chat are graded, not approved by tier:
 - A file write or read stays inside the project folder, or it is refused outright.
@@ -791,7 +796,7 @@ CynCo's proving ground is the unattended mission: one long-horizon brief, no use
 
 **The box, one layer at a time:**
 - **A throwaway home and a low-integrity token.** Every process that runs workspace code gets its own home, temp and scratch folder under `C:\cynco-sandbox\<run id>` and, on Windows, a low-integrity token: on NTFS the kernel refuses its writes to any folder not labelled low. Only the sandbox, the mission folder and folders the starter hands in are labelled low, for the run. Off Windows there is no kernel layer, and the engine says `contained-overlay`.
-- **The path check.** Every path a tool call names is judged before the call runs: exactly for the file tools, by reading the text for a shell command. A write, delete or move that lands outside the run's folders is refused, and so is a delete or move whose target the text does not show ([what a refused call looks like](#tools-34-built-in)).
+- **The path check.** Every path a tool call names is judged before the call runs: exactly for the file tools, by reading the text for a shell command. A write, delete or move that lands outside the run's folders is refused, and so is a delete or move whose target the text does not show ([what a refused call looks like](#tools-35-built-in)).
 - **The tool-call audit.** Each call's full input is written to disk in `C:\cynco-audit` before it runs, and kept 90 days. A call that cannot be recorded is refused and ends the run.
 - **The integrity manifest and the latch.** The starter of a mission or a daemon task records the protected folders before the run and compares them after it (a grader gets no baseline of its own): the home folder's top level, the folders of `OneDrive`, the application folders of `AppData`, and CynCo's own folders. A folder there renamed, deleted or emptied writes the integrity latch (one or two application folders of one `AppData` root are only a note; a new folder is no change), and the latch pages you when `CYNCO_NTFY_URL` is set. A protected folder lost during the run (the tripwire) ends it within about eleven seconds (a look every 10 s, counted when a second look one second later agrees), and before its next tool call. Your own changes count too: while a run is open, do not clear `Downloads`, remove a folder at the top of your home folder, let a `OneDrive` deletion sync from another device, or uninstall a program, which can take three application folders ([docs/containment-setup.md](docs/containment-setup.md), section 13).
 - **The frozen folders.** The models folder is compared with its hash record before every run ([Where the models live](#where-the-models-live)). While a run is open the models folder, `~/.cynco/profiles`, `~/.cynco/heldout` and `~/.ssh` (except `known_hosts`) are frozen: no profile edit and no new model file. `~/.ollama/models` may gain a model during a run but must not lose one.
@@ -925,13 +930,13 @@ Install and remove both write to disk on the strength of a name someone else cho
   - The zip's own subdirectory is resolved through `assertInside`, so a `../` in an archive path cannot escape the extraction root.
 - **Remove takes only a lower-kebab-case name**, then resolves it inside the workspace skills folder. `/skill remove ../../..` gets a refusal, not a recursive delete.
 
-### Tools (34 built-in)
-Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus, RenderUI, ProjectSearch, SaveArtifact, AddToKnowledge, LookAt, load_tools, run_skill, list_skills
+### Tools (35 built-in)
+Read, Write, Edit, MultiEdit, ApplyPatch, ReplaceFunction, Bash, Git, Glob, Grep, Ls, CodeIndex, WebSearch, WebFetch, ImageView, NotebookEdit, SaveLearning, SubAgent, CollectAgent, AskUser, IndexResearch, Mfl, ContractCreate, ContractAssertPass, ContractAssertFail, ContractStatus, RenderUI, ProjectSearch, SaveArtifact, AddToKnowledge, LookAt, MakeModel, load_tools, run_skill, list_skills
 
 **On-demand loading.** Tools are split into a **core** set, offered to the model every turn, and an **extended** set, loaded on demand.
 - `load_tools`, `run_skill` and `list_skills` are themselves core: they are the loading mechanism. When the model needs an extended tool it calls `load_tools` with the tool names, or a skill it runs declares them. They are then callable for the rest of the session.
 - This keeps the default prompt small, and the append-only prompt-cache prefix intact, without losing any capability.
-- The four project tools are offered in project chats.
+- The five project tools are offered in project chats.
 - Set `LOCALCODE_ALL_TOOLS=true` to surface every tool up front and skip on-demand loading. That is best for cache-sensitive batch runs.
 
 Every tool call passes the safety checks and the sealed-path guard in `engine/tools/`. A mission's gate files are immutable to the agent (`LOCALCODE_IMMUTABLE_PATHS`), and a doom-loop detector watches for repetition.

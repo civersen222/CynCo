@@ -14,7 +14,8 @@
  * trimmed to what a chat pane can draw with vanilla DOM and inline SVG
  * (docs: scratchpad design §3; survey evidence in CREDITS.md). Overlays
  * (modals, drawers, popovers), carousels and video/audio are left out on
- * purpose; 3D is left for imagegen's later image→3D step.
+ * purpose. 3D is one component, `Model3D`: a view of a model MakeModel built
+ * (engine/print3d); image→3D is still left for imagegen's later step.
  */
 
 export type PropType =
@@ -180,6 +181,16 @@ export const GENUI_CATALOG: Record<string, ComponentDef> = {
       fix: str('redoing an edit or outline that came out wrong: everything wrong so far, as the user put it'),
     },
     example: { prompt: 'river table of two dark walnut slabs with a clear blue resin river, studio photo, soft light', alt: 'River table', caption: 'Reference piece' },
+  },
+  Model3D: {
+    group: 'Content', children: 'none',
+    description: 'A 3D view the user turns, of a model MakeModel built: "src" is its .stl (models/<name>/<name>.stl); "download" a file to save (its .3mf after a slice).',
+    props: {
+      src: str('the project path of the model\'s .stl', { required: true }),
+      download: str('the project path of a .3mf or .stl the user may save'),
+      alt: str('what the model is', { required: true }), caption: str('text under the view'),
+    },
+    example: { src: 'models/wall-hook/wall-hook.stl', download: 'models/wall-hook/wall-hook.3mf', alt: 'Wall hook', caption: '60 × 30 × 45 mm, PLA, about 40 min' },
   },
 
   // ── Data display ───────────────────────────────────────────

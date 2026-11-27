@@ -9,14 +9,15 @@ import { GENUI_CATALOG, GENUI_COMPONENT_NAMES, GENUI_GROUPS, isComponentName, re
 import { validateSpec, isContainer } from '../../genui/spec.js'
 
 describe('genui catalog', () => {
-  it('has the parity set: 42 components across the seven groups', () => {
-    expect(GENUI_COMPONENT_NAMES).toHaveLength(42)
+  it('has the parity set (42 components) plus Model3D (engine/print3d) across the seven groups', () => {
+    expect(GENUI_COMPONENT_NAMES).toHaveLength(43)
+    expect(GENUI_COMPONENT_NAMES).toContain('Model3D')
     for (const g of GENUI_GROUPS) {
       expect(GENUI_COMPONENT_NAMES.some(n => GENUI_CATALOG[n].group === g), `group ${g} is empty`).toBe(true)
     }
     const expected = [
       'Card', 'Stack', 'Grid', 'Section', 'Tabs', 'Separator', 'Spacer',
-      'Heading', 'Text', 'Markdown', 'Code', 'Callout', 'Badge', 'Tags', 'Link', 'Image',
+      'Heading', 'Text', 'Markdown', 'Code', 'Callout', 'Badge', 'Tags', 'Link', 'Image', 'Model3D',
       'Table', 'List', 'KeyValue', 'Metric', 'Progress', 'Timeline', 'Steps',
       'BarChart', 'LineChart', 'PieChart', 'Sparkline',
       'FileChange', 'Terminal', 'TestResults',

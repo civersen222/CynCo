@@ -292,6 +292,7 @@ export const TOOL_PATH_TABLE: Record<string, ToolPathRow> = {
   ApplyPatch: { special: 'applyPatch' },
   AddToKnowledge: { fields: [{ key: 'path', op: 'read' }] },
   LookAt: { spellings: ['file'] },
+  MakeModel: { fields: [{ key: 'file', op: 'read' }] },
   Bash: { special: 'bash' },
   Git: { special: 'git' },
   WebFetch: {}, WebSearch: {}, CodeIndex: {}, SaveLearning: {}, SubAgent: {}, CollectAgent: {}, Mfl: {},

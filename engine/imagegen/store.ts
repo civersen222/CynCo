@@ -30,7 +30,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, open
 import { join } from 'node:path'
 import type { UiElement, UiImageState, UiSpec } from '../bridge/protocol.js'
 import { projectDir, readProject, realInside, SLUG_RE, writeJsonAtomic } from '../projects/layout.js'
-import { projectImagePath } from '../genui/spec.js'
+import { projectImagePath, projectModelPath } from '../genui/spec.js'
 import { DOWNLOAD_CAP_BYTES } from './config.js'
 
 /** This engine process. A queued/running record under another runId was left by an engine that stopped. */
@@ -48,8 +48,12 @@ export const SVG_CAP_BYTES = 2 * 1024 * 1024
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 /** The file route's types and names, by the checked extension; the type is never sniffed. */
-const FILE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
-const FILE_NAMES: Record<string, string> = { png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WEBP', svg: 'SVG' }
+const FILE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', stl: 'model/stl', '3mf': 'model/3mf' }
+const FILE_NAMES: Record<string, string> = { png: 'PNG', jpg: 'JPEG', jpeg: 'JPEG', gif: 'GIF', webp: 'WEBP', svg: 'SVG', stl: 'STL', '3mf': '3MF' }
+/** The cap on a model file the route serves (engine/print3d): an STL of about 1.3 million triangles. */
+export const MODEL_CAP_BYTES = 64 * 1024 * 1024
+/** A Model3D outside a project chat: there is no project folder to show it from. */
+export const MODELS_ONLY_REASON = '3D models are shown in project chats only'
 /** Read caps. A sidecar holds the filled graph, so it allows for a 1 MB workflow pretty-printed; the index for ORIGINS_CAP long origins. */
 const SIDECAR_CAP = 8 * 1024 * 1024
 const INDEX_CAP = 4 * 1024 * 1024
@@ -173,6 +177,10 @@ function hasSignature(ext: string, b: Uint8Array): boolean {
     case 'gif': return bytesAt(b, 0, [0x47, 0x49, 0x46, 0x38]) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61
     case 'webp': return bytesAt(b, 0, [0x52, 0x49, 0x46, 0x46]) && bytesAt(b, 8, [0x57, 0x45, 0x42, 0x50])
     case 'svg': return isSvg(b)
+    // A binary STL has no magic: its size is 84 bytes plus 50 per triangle the header counts; an ASCII one starts "solid".
+    case 'stl': return (b.length >= 84 && 84 + new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(80, true) * 50 === b.length) || /^\s*solid[\s\S]*facet/i.test(new TextDecoder('latin1').decode(b.subarray(0, 4096)))
+    // A 3MF is a zip (its first local file header).
+    case '3mf': return bytesAt(b, 0, [0x50, 0x4b, 0x03, 0x04])
     default: return false
   }
 }
@@ -521,12 +529,35 @@ export function fileImages(spec: UiSpec): Array<{ id: string; el: UiElement; pat
  * `withValidatedSurfaces` on a reload, whether or not the file is there —
  * the route and the page say when it is not. Returns what was annotated.
  */
-export function annotateFileImages(spec: UiSpec, slug: string | null): Array<{ id: string; path: string }> {
-  const out: Array<{ id: string; path: string }> = []
+export function annotateFileImages(spec: UiSpec, slug: string | null): Array<{ id: string; path: string; kind: 'image' | 'model' }> {
+  const out: Array<{ id: string; path: string; kind: 'image' | 'model' }> = []
   for (const im of fileImages(spec)) {
     im.el.image = slug === null ? { status: 'off', reason: FILES_ONLY_REASON } : { status: 'file', slug, path: im.path }
     if (isObj(im.el.props)) delete im.el.props.src
-    out.push({ id: im.id, path: im.path })
+    out.push({ id: im.id, path: im.path, kind: 'image' })
+  }
+  // A Model3D shows the project's model files the same way (engine/print3d): the paths leave its props for the engine-only state.
+  for (const m of fileModels(spec)) {
+    m.el.model = slug === null ? { status: 'off', reason: MODELS_ONLY_REASON } : { status: 'file', slug, path: m.path, ...(m.download ? { download: m.download } : {}) }
+    if (isObj(m.el.props)) { delete m.el.props.src; delete m.el.props.download }
+    out.push({ id: m.id, path: m.path, kind: 'model' })
+    if (m.download && m.download !== m.path) out.push({ id: m.id, path: m.download, kind: 'model' })
+  }
+  return out
+}
+
+/**
+ * Every Model3D whose src is the .stl of a model in the project, in draw
+ * order, with the file it offers to download when that passes the rule too:
+ * the paths are checked again here, so no unchecked path reaches an annotation.
+ */
+export function fileModels(spec: UiSpec): Array<{ id: string; el: UiElement; path: string; download: string | null }> {
+  const out: Array<{ id: string; el: UiElement; path: string; download: string | null }> = []
+  for (const { id, el, props } of reachableElements(spec)) {
+    if (el.type !== 'Model3D' || !props) continue
+    const path = projectModelPath(props.src)
+    if (path === null || !path.toLowerCase().endsWith('.stl')) continue
+    out.push({ id, el, path, download: projectModelPath(props.download) })
   }
   return out
 }
@@ -615,24 +646,27 @@ export function isProjectFile(dir: string, rel: string): boolean {
  * 2 MB; 413), and carry its format's signature (415) — an SVG must start
  * with <svg after the optional BOM, XML declaration, DOCTYPE and comments.
  */
-export function servedProjectFile(home: string, slug: string, path: string): { status: number; bytes?: Uint8Array; type?: string; json?: unknown } {
+export function servedProjectFile(home: string, slug: string, path: string): { status: number; bytes?: Uint8Array; type?: string; json?: unknown; download?: string } {
   if (!SLUG_RE.test(slug)) return { status: 400, json: { error: 'bad slug' } }
-  const rel = projectImagePath(path)
+  // A picture the chat shows, or a model file (engine/print3d) a Model3D shows or offers to save.
+  const image = projectImagePath(path)
+  const rel = image ?? projectModelPath(path)
   if (rel === null) return { status: 400, json: { error: 'bad file path' } }
   if (!readProject(home, slug)) return { status: 404, json: { error: 'no such project' } }
   const dir = projectDir(home, slug)
   const ext = rel.slice(rel.lastIndexOf('.') + 1).toLowerCase()
   const svg = ext === 'svg'
-  const cap = svg ? SVG_CAP_BYTES : DOWNLOAD_CAP_BYTES
+  const cap = image === null ? MODEL_CAP_BYTES : svg ? SVG_CAP_BYTES : DOWNLOAD_CAP_BYTES
   const missing = { status: 404, json: { error: 'no such file' } }
   const found = regularFileInside(dir, rel, `${rel} in ${slug}`)
   if (!found) return missing
-  if (found.size > cap) return { status: 413, json: { error: `${rel} is larger than ${svg ? 2 : 32} MB; refused` } }
+  if (found.size > cap) return { status: 413, json: { error: `${rel} is larger than ${Math.round(cap / 1024 / 1024)} MB; refused` } }
   // Re-checked on the open file: a FIFO swapped in since the stat must not hang the route.
   const bytes = readSmallFile(found.file, cap, `${rel} in ${slug}`)
   if (bytes === null) return missing
   if (!hasSignature(ext, bytes)) return { status: 415, json: { error: `${rel} is not a ${FILE_NAMES[ext]} file; refused` } }
-  return { status: 200, bytes, type: FILE_TYPES[ext] }
+  // A model file is saved, never shown by the browser itself: it goes out as an attachment under its own name.
+  return image === null ? { status: 200, bytes, type: FILE_TYPES[ext], download: rel.slice(rel.lastIndexOf('/') + 1) } : { status: 200, bytes, type: FILE_TYPES[ext] }
 }
 
 /**

@@ -438,6 +438,31 @@ function shapeProps(type: string, props: Record<string, unknown>, ctx: Ctx, at: 
       else p.fix = fix
     }
   }
+  if (type === 'Model3D') {
+    // A model MakeModel built (engine/print3d): "src" is the project path of
+    // its .stl, the one format the page's viewer reads; "download" a model
+    // file of the project the owner may save (its print-ready .3mf). Each is
+    // the file rule (`projectModelPath`) or dropped with the rule; whether the
+    // model is shown is the loop's annotator's call (a project chat) and
+    // whether the file exists the file route's.
+    for (const k of Object.keys(p)) {
+      const canon = k.toLowerCase()
+      if ((canon !== 'src' && canon !== 'download') || k === canon) continue
+      if (p[canon] === undefined || p[canon] === null) p[canon] = p[k]
+      delete p[k]
+    }
+    if (p.src !== undefined && p.src !== null) {
+      const path = projectModelPath(p.src)
+      const shown = (toStr(p.src) ?? JSON.stringify(p.src) ?? '').slice(0, 60)
+      if (path !== null && path.toLowerCase().endsWith('.stl')) p.src = path
+      else { delete p.src; report(ctx, `${at}.src: "${shown}" ${MODEL_SRC_HINT}`) }
+    } else delete p.src
+    if (p.download !== undefined && p.download !== null) {
+      const path = projectModelPath(p.download)
+      if (path !== null) p.download = path
+      else { report(ctx, `${at}.download: "${(toStr(p.download) ?? '').slice(0, 60)}" ${MODEL_PATH_HINT} — dropped`); delete p.download }
+    } else delete p.download
+  }
   return p
 }
 
@@ -472,6 +497,24 @@ const URL_SCHEME = /^[a-z][a-z0-9+.-]+:/i
 const IMAGE_HTTP_URL = /^https?:\/\/[^\s<>"']+$/i
 const IMAGE_DATA_URL = /^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]+$/
 
+/**
+ * The path of a model file in the project (an .stl or a .3mf MakeModel
+ * wrote, engine/print3d), by the same character rule as an image path: the
+ * page keeps a verbatim copy (GENUI_MODEL_PATH_RE) and the file route checks
+ * the decoded path against it before any join.
+ */
+export function projectModelPath(src: unknown): string | null {
+  if (typeof src !== 'string') return null
+  let s = src.trim()
+  if (s.startsWith('./')) s = s.slice(2)
+  if (s.length === 0 || s.length > PROJECT_IMAGE_PATH_MAX || s.includes('..') || !PROJECT_MODEL_PATH_RE.test(s)) return null
+  return s
+}
+
+export const PROJECT_MODEL_PATH_RE = /^[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*(?:\/[A-Za-z0-9_-][A-Za-z0-9_.()-]*(?: [A-Za-z0-9_.()-]+)*)*\.(?:stl|3mf)$/i
+const MODEL_PATH_HINT = `is not a model file in the project — a path is "/"-separated ASCII letters, digits, _ - . ( ) and single spaces, no segment starting with a dot, no leading "/" or drive letter, no "..", at most ${PROJECT_IMAGE_PATH_MAX} characters, ending in .stl or .3mf`
+const MODEL_SRC_HINT = 'is not the .stl of a model in the project (MakeModel writes models/<name>/<name>.stl; build the model first) — dropped'
+
 /** Props the renderer cannot do without; an element missing one is dropped rather than drawn empty. */
 const MUST_HAVE: Record<string, string[]> = {
   Table: ['columns'],
@@ -480,6 +523,7 @@ const MUST_HAVE: Record<string, string[]> = {
   PieChart: ['labels', 'values'],
   Sparkline: ['values'],
   Link: ['href'],
+  Model3D: ['src'],
 }
 /** At least one of these props, or the element is dropped; `needs` says what to give. */
 const EITHER: Record<string, { props: string[]; needs: string }> = {
