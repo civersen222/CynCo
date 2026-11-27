@@ -45,6 +45,7 @@ import { readAppsView, setAppManagedApi } from './appsApi.js'
 import { MissionHistory, missionHistoryQuery } from './missionHistory.js'
 import { ReplayBuffer, parseCursor, type ReplayCursor } from './replay.js'
 import { webManifest, appIconPng, isAppIconSize } from './installable.js'
+import { parseWakeUrl, wakeAssets, scriptLiteral, SERVICE_WORKER_PATH, WAKING_PAGE_PATH, type WakeConfig, type WakeAsset } from './wake.js'
 import { DEVICE_PREFIX, DEVICE_IDLE_EXPIRY_MS, type TokenSet, type TokenScope } from '../security/localToken.js'
 import {
   classifyClient, hostRefusal, originMismatch, pageOrigin, phoneListenerOrigin, parseListenHosts, parseProxyPort, isWildcardHost,
@@ -590,6 +591,13 @@ export class DashboardServer {
   private proxyServer: Server<DashboardSocketData> | null = null
   private proxyPortRefused = false
   private proxyServeOptions: Record<string, unknown> | null = null
+  /**
+   * The doorman's https wake address (LOCALCODE_DASHBOARD_WAKE_URL), and the
+   * service worker and waking page built from it once (wake.ts). Null: no wake,
+   * neither route answers before the token check, and no page registers a worker.
+   */
+  private readonly wake: WakeConfig | null
+  private readonly wakeFiles: { worker: WakeAsset; page: WakeAsset } | null
   /** The single-use code a new phone types; printed by main.ts, rotated on use. */
   private readonly pairing = new PairingGate(Date.now, undefined, (code, why) => {
     const because = why === 'used' ? 'the last one was used' : why === 'locked' ? 'pairing locked after too many wrong codes' : 'a new one was asked for'
@@ -615,7 +623,11 @@ export class DashboardServer {
    */
   private tokens: TokenSet
 
-  constructor({ port = 9161, deps = {}, tokens, proxyPort }: { port?: number; deps?: DashboardDeps; tokens: TokenSet; /** Overrides LOCALCODE_DASHBOARD_PROXY_PORT (tests pass 0 for an OS-assigned port, null for none). */ proxyPort?: number | null }) {
+  constructor({ port = 9161, deps = {}, tokens, proxyPort, wakeUrl }: {
+    port?: number; deps?: DashboardDeps; tokens: TokenSet
+    /** Overrides LOCALCODE_DASHBOARD_PROXY_PORT (tests pass 0 for an OS-assigned port, null for none). */ proxyPort?: number | null
+    /** Overrides LOCALCODE_DASHBOARD_WAKE_URL (tests pass an address, or null for none). */ wakeUrl?: string | null
+  }) {
     this.deps = deps
     this.tokens = tokens
     this._port = port
@@ -624,6 +636,15 @@ export class DashboardServer {
     this.proxyPort = proxyPort !== undefined ? proxyPort : parseProxyPort(rawProxyPort)
     if (proxyPort === undefined && rawProxyPort && this.proxyPort === null) {
       console.warn(`[dashboard] LOCALCODE_DASHBOARD_PROXY_PORT=${JSON.stringify(rawProxyPort)} is not a port (1-65535): no HTTPS proxy listener.`)
+    }
+    // Opt-in too: unset, the phone app never knocks on the doorman (wake.ts, F256).
+    const rawWake = wakeUrl !== undefined ? wakeUrl : process.env.LOCALCODE_DASHBOARD_WAKE_URL
+    this.wake = parseWakeUrl(rawWake)
+    this.wakeFiles = this.wake ? wakeAssets(this.wake) : null
+    if (rawWake && rawWake.trim() && !this.wake) {
+      console.warn(`[dashboard] LOCALCODE_DASHBOARD_WAKE_URL=${JSON.stringify(rawWake)} is not an https address: the phone app will not wake this PC.`)
+    } else if (this.wake && wakeUrl === undefined) {
+      console.log(`[dashboard] phone wake: a page load this PC does not answer knocks on ${this.wake.url}`)
     }
     // One address, or a comma-separated list whose first entry is the primary
     // listener (the scanner behind README's inventory reads the default off
@@ -734,6 +755,15 @@ export class DashboardServer {
           if (isAppIconSize(size)) {
             return new Response(new Uint8Array(appIconPng(size)), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' } })
           }
+        }
+        // The phone app's wake (wake.ts, F256): the service worker and the waking
+        // page it keeps. Static, nothing about the engine in them, and fetched by
+        // the browser with no Authorization header, so they answer without a
+        // token too, and only while a wake address is set: without one they meet
+        // the token check below like any unknown path.
+        if (method === 'GET' && this.wakeFiles && (pathname === SERVICE_WORKER_PATH || pathname === WAKING_PAGE_PATH)) {
+          const file = pathname === SERVICE_WORKER_PATH ? this.wakeFiles.worker : this.wakeFiles.page
+          return new Response(file.body, { headers: file.headers })
         }
 
         // GET / is the one ungated route: on the desk it is how the inference
@@ -1618,6 +1648,7 @@ export class DashboardServer {
     const inject = `<script>
 window.__CYNCO_TOKEN = ${JSON.stringify(token)};
 window.__CYNCO_REMOTE = ${remote ? 'true' : 'false'};
+window.__CYNCO_WAKE_URL = ${scriptLiteral(remote && this.wake ? this.wake.url : null)};
 (function () {
   // Off this machine the page carries no secret: the device token the browser
   // stored when it paired is read here, and a browser that holds none is sent

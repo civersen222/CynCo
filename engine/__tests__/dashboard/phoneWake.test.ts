@@ -1,0 +1,575 @@
+/**
+ * The phone app wakes this PC when it does not answer (engine/dashboard/wake.ts, F256).
+ *
+ * From 2026-11-11 the phone opened CynCo at this PC's own HTTPS name. A PC asleep answered nothing
+ * there, and nothing knocked on the doorman, so nothing woke it. Pinned here: the wake address is
+ * https or nothing; `/sw.js` and `/waking` answer without a token only while it is set; the remote
+ * page carries it and the desk page does not; the service worker answers a page load the PC does not
+ * answer with the waking page and knocks; the waking page knocks, asks and reloads; the open page
+ * holds a message while it wakes the PC; and a knock never carries the page's token.
+ */
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
+import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+import { createHash } from 'crypto'
+import { DashboardServer } from '../../dashboard/server.js'
+import { loadOrCreateTokens } from '../../security/localToken.js'
+import {
+  parseWakeUrl, wakeAssets, scriptLiteral, SERVICE_WORKER_PATH, WAKING_PAGE_PATH,
+  NAV_KNOCK_AFTER_MS, NAV_TIMEOUT_MS, POLL_EVERY_MS, KNOCK_EVERY_MS, GIVE_UP_MS, RELOADS_MAX,
+} from '../../dashboard/wake.js'
+
+const WAKE = 'https://doorman.tail05397a.ts.net/wake?target=main'
+const APP = 'https://longdongsilver.tail05397a.ts.net'
+const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../../dashboard/index.html'), 'utf-8')
+
+function scripts(): string {
+  const out: string[] = []
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script\b[^>]*>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html)) !== null) out.push(m[1]!)
+  return out.join('\n')
+}
+function fnSource(name: string): string {
+  const js = scripts()
+  const start = js.indexOf(`function ${name}(`)
+  expect(start, `function ${name} not found`).toBeGreaterThan(-1)
+  const close = /\r?\n\}\r?\n/.exec(js.slice(start))
+  expect(close).not.toBeNull()
+  return js.slice(start, start + close!.index + close![0].length)
+}
+/** The page's "Waking the PC" section, whole: its constants, its state and its functions. */
+function wakeSection(): string {
+  const js = scripts()
+  const start = js.indexOf('// ── Waking the PC')
+  const end = js.indexOf('// ── What this page missed')
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+  return js.slice(start, end)
+}
+const flush = async (n = 6) => { for (let i = 0; i < n; i++) await Promise.resolve() }
+
+// ---------------------------------------------------------------------------
+
+describe('parseWakeUrl: the doorman\'s https wake address, or nothing', () => {
+  it('takes an https address and names its origin', () => {
+    expect(parseWakeUrl(WAKE)).toEqual({ url: WAKE, origin: 'https://doorman.tail05397a.ts.net' })
+    expect(parseWakeUrl(`  ${WAKE}  `)?.url).toBe(WAKE)
+  })
+  it('refuses anything a page on https could not fetch, or should not', () => {
+    for (const bad of [undefined, null, '', '   ', 'http://100.110.117.10:9170/wake', 'javascript:alert(1)', 'ftp://doorman/wake',
+      'https://user:secret@doorman.tail05397a.ts.net/wake', 'https://doorman.tail05397a.ts.net/wake#x', 'not an address']) {
+      expect(parseWakeUrl(bad as string | undefined), String(bad)).toBeNull()
+    }
+  })
+  it('the address it keeps cannot close a script tag', () => {
+    expect(parseWakeUrl('https://doorman.example/</script><script>alert(1)')?.url).not.toMatch(/</)
+  })
+})
+
+describe('scriptLiteral', () => {
+  it('reads back as the same value and has no < in it', () => {
+    for (const v of ['</script><b>', 'a b c', null, WAKE]) {
+      const lit = scriptLiteral(v)
+      expect(lit).not.toMatch(/</)
+      expect(new Function(`return ${lit}`)()).toBe(v)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+const dirs: string[] = []
+const servers: DashboardServer[] = []
+afterEach(() => { for (const s of servers.splice(0)) s.stop(); vi.useRealTimers() })
+afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }) })
+
+async function start(peer: string, wakeUrl: string | null) {
+  const dir = mkdtempSync(join(tmpdir(), 'cynco-wake-'))
+  dirs.push(dir)
+  const tokens = loadOrCreateTokens(dir)
+  const server = new DashboardServer({ port: 0, tokens, deps: { remoteAddress: () => peer }, proxyPort: null, wakeUrl })
+  servers.push(server)
+  await new Promise(r => setTimeout(r, 50))
+  return { tokens, base: `http://127.0.0.1:${server.getPort()}` }
+}
+const PHONE = '100.119.113.27'
+const DESK = '127.0.0.1'
+
+describe('the two routes, with a wake address', () => {
+  it('/sw.js and /waking answer without a token, on the desk and off it, and carry no secret', async () => {
+    for (const peer of [DESK, PHONE]) {
+      const { tokens, base } = await start(peer, WAKE)
+      const secrets = ['inference', 'dashboard', 'admin'].map(s => tokens.tokenFor(s as never)).filter(Boolean) as string[]
+      const sw = await fetch(base + SERVICE_WORKER_PATH)
+      expect(sw.status, peer).toBe(200)
+      expect(sw.headers.get('content-type')).toMatch(/^text\/javascript/)
+      expect(sw.headers.get('cache-control')).toBe('no-cache')
+      const swText = await sw.text()
+      expect(swText).toContain(JSON.stringify(WAKE))
+      const page = await fetch(base + WAKING_PAGE_PATH)
+      expect(page.status, peer).toBe(200)
+      expect(page.headers.get('content-type')).toMatch(/^text\/html/)
+      const pageText = await page.text()
+      for (const s of secrets) { expect(swText).not.toContain(s); expect(pageText).not.toContain(s) }
+    }
+  })
+
+  it('the waking page may run its own script and reach only this origin and the doorman', async () => {
+    const { base } = await start(PHONE, WAKE)
+    const res = await fetch(base + WAKING_PAGE_PATH)
+    const csp = res.headers.get('content-security-policy') ?? ''
+    const body = await res.text()
+    const script = /<script>([\s\S]*?)<\/script>/.exec(body)![1]!
+    const style = /<style>([\s\S]*?)<\/style>/.exec(body)![1]!
+    const hash = (t: string) => `'sha256-${createHash('sha256').update(t, 'utf8').digest('base64')}'`
+    expect(csp).toContain("default-src 'none'")
+    expect(csp).toContain(`script-src ${hash(script)}`)
+    expect(csp).toContain(`style-src ${hash(style)}`)
+    expect(csp).toContain("connect-src 'self' https://doorman.tail05397a.ts.net")
+    expect(csp).toContain("frame-ancestors 'none'")
+    expect(res.headers.get('x-frame-options')).toBe('DENY')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+  })
+
+  it('the Host check still stands in front of them', async () => {
+    const { base } = await start(PHONE, WAKE)
+    const http = await import('http')
+    const status = await new Promise<number>((resolve, reject) => {
+      const u = new URL(base + SERVICE_WORKER_PATH)
+      const req = http.request({ host: u.hostname, port: u.port, path: u.pathname, headers: { Host: 'evil.example' } }, res => { res.resume(); resolve(res.statusCode ?? 0) })
+      req.on('error', reject)
+      req.end()
+    })
+    expect(status).toBe(421)
+  })
+})
+
+describe('without a wake address', () => {
+  it('neither route answers before the token check, like any unknown path', async () => {
+    for (const peer of [DESK, PHONE]) {
+      const { base } = await start(peer, null)
+      for (const path of [SERVICE_WORKER_PATH, WAKING_PAGE_PATH]) expect((await fetch(base + path)).status, `${peer} ${path}`).toBe(401)
+    }
+  })
+  it('a malformed or http address is no address', async () => {
+    const { base } = await start(PHONE, 'http://100.110.117.10:9170/wake')
+    expect((await fetch(base + SERVICE_WORKER_PATH)).status).toBe(401)
+    expect(await (await fetch(base + '/')).text()).toContain('window.__CYNCO_WAKE_URL = null;')
+  })
+})
+
+describe('the page says where to knock to a phone only', () => {
+  it('remote: the address; the desk: null', async () => {
+    const phone = await start(PHONE, WAKE)
+    expect(await (await fetch(phone.base + '/')).text()).toContain(`window.__CYNCO_WAKE_URL = ${JSON.stringify(WAKE)};`)
+    const desk = await start(DESK, WAKE)
+    expect(await (await fetch(desk.base + '/')).text()).toContain('window.__CYNCO_WAKE_URL = null;')
+    const none = await start(PHONE, null)
+    expect(await (await fetch(none.base + '/')).text()).toContain('window.__CYNCO_WAKE_URL = null;')
+  })
+
+  it('a knock through the injected fetch never carries the device token; a same-origin ask does', async () => {
+    const phone = await start(PHONE, WAKE)
+    const page = await (await fetch(phone.base + '/')).text()
+    const prelude = /<head><script>([\s\S]*?)<\/script>/.exec(page)![1]!
+    const seen: Array<{ url: string; auth: string | null }> = []
+    const win: Record<string, any> = {
+      fetch: (input: string, init?: { headers?: HeadersInit }) => { seen.push({ url: input, auth: new Headers(init?.headers).get('Authorization') }); return Promise.resolve({ status: 200 }) },
+    }
+    const storage = { getItem: () => 'device-secret-for-test', removeItem: () => {} }
+    new Function('window', 'localStorage', 'sessionStorage', 'location', 'Headers', prelude)(win, storage, storage, { origin: APP, replace: () => {} }, Headers)
+    await win.fetch(WAKE, { mode: 'no-cors' })
+    await win.fetch('/manifest.webmanifest', { cache: 'no-store' })
+    expect(seen).toEqual([{ url: WAKE, auth: null }, { url: '/manifest.webmanifest', auth: 'Bearer device-secret-for-test' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+type Listener = (event: any) => void
+
+/** The service worker in a fake worker scope: its listeners, a cache, and a fetch the test controls. */
+function worker(wakeUrl = WAKE) {
+  const body = wakeAssets(parseWakeUrl(wakeUrl)!).worker.body
+  const listeners: Record<string, Listener> = {}
+  const stores = new Map<string, Map<string, unknown>>([['cynco-wake-old', new Map()], ['someone-elses', new Map()]])
+  const caches = {
+    open: async (name: string) => {
+      if (!stores.has(name)) stores.set(name, new Map())
+      const s = stores.get(name)!
+      return { add: async (req: { url: string; cache?: string }) => { s.set(req.url, { page: true, cache: req.cache }) }, match: async (path: string) => s.get(path) }
+    },
+    keys: async () => [...stores.keys()],
+    delete: async (name: string) => stores.delete(name),
+  }
+  const fetches: Array<{ url: string; init?: Record<string, unknown> }> = []
+  let answer: (req: any) => Promise<unknown> = () => new Promise(() => {})
+  const fakeFetch = (input: any, init?: Record<string, unknown>) => { fetches.push({ url: typeof input === 'string' ? input : input.url, init }); return typeof input === 'string' ? Promise.resolve({ opaque: true }) : answer(input) }
+  class FakeRequest { url: string; cache?: string; constructor(url: string, init?: { cache?: string }) { this.url = url; this.cache = init?.cache } }
+  const self = { addEventListener: (type: string, fn: Listener) => { listeners[type] = fn }, location: { origin: APP }, skipWaiting: vi.fn(async () => {}), clients: { claim: vi.fn(async () => {}) } }
+  new Function('self', 'caches', 'fetch', 'Request', 'URL', 'console', 'setTimeout', 'clearTimeout', body)(
+    self, caches, fakeFetch, FakeRequest, URL, { log: () => {} }, globalThis.setTimeout, globalThis.clearTimeout)
+  const navigate = (path: string, opts: { mode?: string; method?: string; origin?: string } = {}) => {
+    let responded: Promise<unknown> | null = null
+    listeners.fetch!({ request: { url: (opts.origin ?? APP) + path, mode: opts.mode ?? 'navigate', method: opts.method ?? 'GET' }, respondWith: (p: Promise<unknown>) => { responded = p } })
+    return responded as Promise<unknown> | null
+  }
+  return { self, listeners, stores, fetches, navigate, setAnswer: (fn: typeof answer) => { answer = fn }, knocks: () => fetches.filter(f => f.url === wakeUrl) }
+}
+
+describe('the service worker', () => {
+  it('install keeps the waking page, fetched fresh; activate drops its own old copies only', async () => {
+    const w = worker()
+    let installed: Promise<unknown> = Promise.resolve()
+    w.listeners.install!({ waitUntil: (p: Promise<unknown>) => { installed = p } })
+    await installed
+    const mine = [...w.stores.keys()].find(k => k.startsWith('cynco-wake-') && k !== 'cynco-wake-old')!
+    expect(w.stores.get(mine)!.get(WAKING_PAGE_PATH)).toEqual({ page: true, cache: 'no-store' })
+    expect(w.self.skipWaiting).toHaveBeenCalled()
+    let activated: Promise<unknown> = Promise.resolve()
+    w.listeners.activate!({ waitUntil: (p: Promise<unknown>) => { activated = p } })
+    await activated
+    expect([...w.stores.keys()].sort()).toEqual([mine, 'someone-elses'].sort())
+    expect(w.self.clients.claim).toHaveBeenCalled()
+  })
+
+  it('leaves alone what is not a GET page load of this origin, and the waking page itself', () => {
+    const w = worker()
+    expect(w.navigate('/api/session', { mode: 'cors' })).toBeNull()
+    expect(w.navigate('/manifest.webmanifest', { mode: 'no-cors' })).toBeNull()
+    expect(w.navigate('/', { method: 'POST' })).toBeNull()
+    expect(w.navigate('/', { origin: 'https://elsewhere.example' })).toBeNull()
+    expect(w.navigate(WAKING_PAGE_PATH)).toBeNull()
+    expect(w.fetches).toEqual([])
+  })
+
+  it('a PC that answers in time is the answer, and nobody is knocked on', async () => {
+    vi.useFakeTimers()
+    const w = worker()
+    w.setAnswer(() => Promise.resolve({ the: 'dashboard' }))
+    const res = w.navigate('/')!
+    await vi.advanceTimersByTimeAsync(NAV_TIMEOUT_MS + 1000)
+    expect(await res).toEqual({ the: 'dashboard' })
+    expect(w.knocks()).toEqual([])
+  })
+
+  it('a PC that does not answer: a knock after NAV_KNOCK_AFTER_MS, the waking page after NAV_TIMEOUT_MS', async () => {
+    vi.useFakeTimers()
+    const w = worker()
+    let installed: Promise<unknown> = Promise.resolve()
+    w.listeners.install!({ waitUntil: (p: Promise<unknown>) => { installed = p } })
+    await installed
+    const res = w.navigate('/#projects')!
+    await vi.advanceTimersByTimeAsync(NAV_KNOCK_AFTER_MS - 100)
+    expect(w.knocks()).toEqual([])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(w.knocks()).toEqual([{ url: WAKE, init: { mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' } }])
+    await vi.advanceTimersByTimeAsync(NAV_TIMEOUT_MS)
+    expect(await res).toEqual({ page: true, cache: 'no-store' })
+    expect(w.knocks()).toHaveLength(1)
+  })
+
+  it('a network error is answered with the waking page at once, with one knock', async () => {
+    const w = worker()
+    let installed: Promise<unknown> = Promise.resolve()
+    w.listeners.install!({ waitUntil: (p: Promise<unknown>) => { installed = p } })
+    await installed
+    w.setAnswer(() => Promise.reject(new TypeError('NetworkError')))
+    expect(await w.navigate('/')!).toEqual({ page: true, cache: 'no-store' })
+    expect(w.knocks()).toHaveLength(1)
+  })
+
+  it('with no stored page (the browser cleared it) it waits for the network, as if it were not there', async () => {
+    const w = worker()
+    let fail!: (e: unknown) => void
+    w.setAnswer(() => new Promise((_, reject) => { fail = reject }))
+    const res = w.navigate('/')!
+    await flush()
+    fail(new TypeError('NetworkError'))
+    await expect(res).rejects.toThrow('NetworkError')
+  })
+
+  it('a new wake address is a new worker, so a phone picks it up', () => {
+    const a = wakeAssets(parseWakeUrl(WAKE)!)
+    const b = wakeAssets(parseWakeUrl('https://doorman2.tail05397a.ts.net/wake?target=main')!)
+    expect(a.worker.body).not.toBe(b.worker.body)
+    expect(wakeAssets(parseWakeUrl(WAKE)!).worker.body).toBe(a.worker.body)
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+/** The waking page's script against a fake document, location and fetch. */
+function wakingPage(manifestAnswers: () => Promise<{ ok: boolean }>, storage: Record<string, string> = {}) {
+  const body = wakeAssets(parseWakeUrl(WAKE)!).page.body
+  const script = /<script>([\s\S]*?)<\/script>/.exec(body)![1]!
+  const els: Record<string, any> = { title: { textContent: '' }, msg: { textContent: '' }, t: { textContent: '' }, retry: { hidden: true, textContent: 'Try again', onclick: null } }
+  const location = { reload: vi.fn() }
+  const asked: Array<{ url: string; init: Record<string, unknown> }> = []
+  const fakeFetch = (url: string, init: Record<string, unknown>) => {
+    asked.push({ url, init })
+    return url === WAKE ? Promise.resolve({ type: 'opaque' }) : manifestAnswers()
+  }
+  const sessionStorage = { getItem: (k: string) => storage[k] ?? null, setItem: (k: string, v: string) => { storage[k] = v }, removeItem: (k: string) => { delete storage[k] } }
+  new Function('document', 'location', 'fetch', 'sessionStorage', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'AbortController', 'console', script)(
+    { getElementById: (id: string) => els[id] }, location, fakeFetch, sessionStorage,
+    globalThis.setInterval, globalThis.clearInterval, globalThis.setTimeout, globalThis.clearTimeout, AbortController, { log: () => {} })
+  return { els, location, asked, storage, knocks: () => asked.filter(a => a.url === WAKE), asks: () => asked.filter(a => a.url === '/manifest.webmanifest') }
+}
+
+describe('the waking page', () => {
+  it('knocks at once, without credentials or a referrer, and asks the manifest with no cache', async () => {
+    vi.useFakeTimers()
+    const p = wakingPage(() => new Promise(() => {}))
+    await flush()
+    expect(p.knocks()).toEqual([{ url: WAKE, init: { mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' } }])
+    expect(p.asks()).toHaveLength(1)
+    expect(p.asks()[0]!.init.cache).toBe('no-store')
+    expect(p.els.title.textContent).toMatch(/Waking CynCo's PC/)
+  })
+
+  it('reloads once the PC answers, and only then', async () => {
+    vi.useFakeTimers()
+    let up = false
+    const p = wakingPage(() => Promise.resolve({ ok: up }))
+    await vi.advanceTimersByTimeAsync(POLL_EVERY_MS * 3)
+    expect(p.location.reload).not.toHaveBeenCalled()
+    up = true
+    await vi.advanceTimersByTimeAsync(POLL_EVERY_MS)
+    expect(p.location.reload).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(POLL_EVERY_MS * 4)
+    expect(p.location.reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('knocks again every KNOCK_EVERY_MS while it waits, and gives up after GIVE_UP_MS with a button', async () => {
+    vi.useFakeTimers()
+    const p = wakingPage(() => Promise.resolve({ ok: false }))
+    await vi.advanceTimersByTimeAsync(KNOCK_EVERY_MS * 2 + POLL_EVERY_MS)
+    expect(p.knocks().length).toBe(3)
+    await vi.advanceTimersByTimeAsync(GIVE_UP_MS)
+    expect(p.els.title.textContent).toBe('Still asleep')
+    expect(p.els.retry.hidden).toBe(false)
+    const asksAtGiveUp = p.asks().length
+    await vi.advanceTimersByTimeAsync(POLL_EVERY_MS * 4)
+    expect(p.asks().length).toBe(asksAtGiveUp)
+    p.els.retry.onclick()
+    await flush()
+    expect(p.asks().length).toBe(asksAtGiveUp + 1)
+    expect(p.els.retry.hidden).toBe(true)
+  })
+
+  it(`after ${RELOADS_MAX} reloads in two minutes it stops reloading and offers a button (a slow link, not sleep)`, async () => {
+    vi.useFakeTimers()
+    const now = Date.now()
+    const storage = { 'cynco-wake-reloads': JSON.stringify(Array.from({ length: RELOADS_MAX }, (_, i) => now - 1000 * (i + 1))) }
+    const p = wakingPage(() => Promise.resolve({ ok: true }), storage)
+    await flush()
+    expect(p.location.reload).not.toHaveBeenCalled()
+    expect(p.els.retry.textContent).toBe('Open CynCo')
+    expect(p.els.retry.hidden).toBe(false)
+    p.els.retry.onclick()
+    expect(p.location.reload).toHaveBeenCalledTimes(1)
+    expect(storage['cynco-wake-reloads']).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+
+describe('the open page: registerWakeWorker and wakeNeedsAsk', () => {
+  const registerWakeWorker = new Function(`${fnSource('registerWakeWorker')}; return registerWakeWorker;`)() as (nav: any, loc: any, remote: boolean, wake: string | null) => boolean
+  const wakeNeedsAsk = new Function(`var WAKE_QUIET_MS = 45000; ${fnSource('wakeNeedsAsk')}; return wakeNeedsAsk;`)() as (now: number, last: number, readyState: number) => boolean
+
+  it('registers /sw.js at the root on a phone\'s https page with a wake address, and nowhere else', () => {
+    const nav = () => ({ serviceWorker: { register: vi.fn(() => Promise.resolve({})) } })
+    const https = { protocol: 'https:' }
+    const yes = nav()
+    expect(registerWakeWorker(yes, https, true, WAKE)).toBe(true)
+    expect(yes.serviceWorker.register).toHaveBeenCalledWith('/sw.js', { scope: '/' })
+    for (const [n, loc, remote, wake] of [[nav(), https, false, WAKE], [nav(), { protocol: 'http:' }, true, WAKE], [nav(), https, true, null]] as const) {
+      expect(registerWakeWorker(n, loc, remote, wake)).toBe(false)
+      expect(n.serviceWorker.register).not.toHaveBeenCalled()
+    }
+    expect(registerWakeWorker({}, https, true, WAKE)).toBe(false)
+  })
+
+  it('a socket that is not open, or quiet for 45 s, is asked about first', () => {
+    expect(wakeNeedsAsk(100_000, 99_000, 1)).toBe(false)
+    expect(wakeNeedsAsk(100_000, 55_000, 1)).toBe(true)
+    for (const state of [0, 2, 3]) expect(wakeNeedsAsk(100_000, 99_999, state)).toBe(true)
+  })
+})
+
+/** The whole "Waking the PC" section with a socket, a fetch and the page's other parts stubbed. */
+function openPage(opts: { configured?: boolean } = {}) {
+  const banner = { textContent: 'Reconnecting to engine...', classList: { add: vi.fn(), remove: vi.fn() } }
+  const input = { value: '' }
+  const env: Record<string, any> = {
+    ws: null as any, reconnectTimer: null, reconnectDelay: 8000, connects: 0, sends: [] as string[], fetched: [] as Array<{ url: string; init: any }>,
+    pcUp: true, unsettled: false,
+  }
+  const makeSocket = (readyState: number) => ({ readyState, close: vi.fn(), onopen: () => {}, onmessage: () => {}, onclose: () => {}, onerror: () => {} })
+  const window = { __CYNCO_REMOTE: opts.configured !== false, __CYNCO_WAKE_URL: opts.configured !== false ? WAKE : null }
+  const fetch = (url: string, init: any) => {
+    env.fetched.push({ url, init })
+    if (url === WAKE) return Promise.resolve({ type: 'opaque' })
+    return env.pcUp ? Promise.resolve({ ok: true }) : Promise.reject(new TypeError('NetworkError'))
+  }
+  const api = new Function('env', 'window', 'document', 'fetch', 'state', 'render', 'console', 'makeSocket',
+    `var ws = null, reconnectTimer = null, reconnectDelay = 8000;
+     function connectWS() { env.connects++; if (env.connectThrows) throw new Error('no socket for you'); ws = makeSocket(0); }
+     function sendChatMessage() { env.sends.push(document.getElementById('chatInput').value); }
+     function projectChatUnsettled() { return env.unsettled; }
+     ${wakeSection()}
+     return {
+       setSocket: function (s) { ws = s; }, socket: function () { return ws; }, delay: function () { return reconnectDelay; },
+       wakeHoldsSend: wakeHoldsSend, wakeIfAsleep: wakeIfAsleep, wakeOnOpen: wakeOnOpen, wakeState: wakeState,
+     };`)(env, window, { getElementById: (id: string) => (id === 'chatInput' ? input : banner) }, fetch, { connected: true }, () => {}, { log: () => {} }, makeSocket)
+  return { api, env, input, banner, makeSocket, knocks: () => env.fetched.filter((f: any) => f.url === WAKE) }
+}
+
+describe('the open page wakes the PC before it trusts a quiet socket', () => {
+  it('not configured (the desk, or no doorman): nothing is held and nothing is asked', () => {
+    const p = openPage({ configured: false })
+    p.api.setSocket(p.makeSocket(3))
+    expect(p.api.wakeHoldsSend('hello')).toBe(false)
+    expect(p.env.fetched).toEqual([])
+  })
+
+  it('an open socket that carried a frame lately: sent at once', () => {
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(1))
+    p.api.wakeState.lastFrameAt = Date.now()
+    expect(p.api.wakeHoldsSend('hello')).toBe(false)
+    expect(p.env.fetched).toEqual([])
+  })
+
+  it('a quiet socket to a PC that answers: held for one ask, then sent, and no knock', async () => {
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(1))
+    p.api.wakeState.lastFrameAt = Date.now() - 60_000
+    p.input.value = 'hello'
+    expect(p.api.wakeHoldsSend('hello')).toBe(true)
+    await flush(12)
+    expect(p.knocks()).toEqual([])
+    expect(p.env.sends).toEqual(['hello'])
+    expect(p.api.wakeState.pendingText).toBeNull()
+  })
+
+  it('a PC asleep: the socket is let go, the doorman knocked, a new socket opened when it answers, the text sent then', async () => {
+    vi.useFakeTimers()
+    const p = openPage()
+    const dead = p.makeSocket(1)
+    p.api.setSocket(dead)
+    p.api.wakeState.lastFrameAt = Date.now() - 20 * 60_000
+    p.env.pcUp = false
+    p.input.value = 'are you there'
+    expect(p.api.wakeHoldsSend('are you there')).toBe(true)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(dead.close).toHaveBeenCalled()
+    expect(dead.onclose).toBeNull()
+    expect(p.knocks()).toHaveLength(1)
+    expect(p.knocks()[0]!.init).toEqual({ mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' })
+    expect(p.banner.textContent).toMatch(/asleep\. Waking it/)
+    expect(p.banner.textContent).toMatch(/Your message goes when it answers/)
+    expect(p.env.sends).toEqual([])
+    // A second press while it wakes is held too, and sends nothing twice.
+    expect(p.api.wakeHoldsSend('are you there')).toBe(true)
+    p.env.pcUp = true
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(p.env.connects).toBe(1)
+    expect(p.api.delay()).toBe(1000)
+    p.api.socket().readyState = 1
+    p.api.wakeOnOpen()
+    expect(p.banner.textContent).toBe('Reconnecting to engine...')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(p.env.sends).toEqual(['are you there'])
+  })
+
+  it('text edited while the PC woke is left in the box for the owner to send', async () => {
+    vi.useFakeTimers()
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(3))
+    p.env.pcUp = false
+    p.input.value = 'first'
+    p.api.wakeHoldsSend('first')
+    await vi.advanceTimersByTimeAsync(100)
+    p.input.value = 'first, and more'
+    p.env.pcUp = true
+    await vi.advanceTimersByTimeAsync(3000)
+    p.api.socket().readyState = 1
+    await vi.advanceTimersByTimeAsync(500)
+    expect(p.env.sends).toEqual([])
+    expect(p.api.wakeState.pendingText).toBeNull()
+  })
+
+  it('a socket that closed while the page is in view and the PC is awake keeps its backoff (no reconnect storm)', async () => {
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(3))
+    await p.api.wakeIfAsleep(false)
+    expect(p.env.connects).toBe(0)
+    expect(p.knocks()).toEqual([])
+    await p.api.wakeIfAsleep(true)
+    expect(p.env.connects).toBe(1)
+  })
+
+  it('two asks at once (the page came into view, and Send) open one socket, not two', async () => {
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(3))
+    await Promise.all([p.api.wakeIfAsleep(true), p.api.wakeIfAsleep(true)])
+    expect(p.env.connects).toBe(1)
+  })
+
+  it('a wake that fails before a send does not hold every later send', async () => {
+    vi.useFakeTimers()
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(3))
+    p.env.pcUp = false
+    p.input.value = 'hello'
+    expect(p.api.wakeHoldsSend('hello')).toBe(true)
+    await vi.advanceTimersByTimeAsync(100)
+    p.env.connectThrows = true
+    p.env.pcUp = true
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(p.api.wakeState.pendingText).toBeNull()
+    expect(p.env.sends).toEqual([])
+    expect(p.input.value).toBe('hello')
+  })
+
+  it('gives up after GIVE_UP_MS and says so', async () => {
+    vi.useFakeTimers()
+    const p = openPage()
+    p.api.setSocket(p.makeSocket(3))
+    p.env.pcUp = false
+    const done = p.api.wakeIfAsleep(true)
+    await vi.advanceTimersByTimeAsync(GIVE_UP_MS + 5000)
+    expect(await done).toBe(false)
+    expect(p.banner.textContent).toMatch(/did not wake/)
+    expect(p.knocks().length).toBeGreaterThanOrEqual(Math.floor(GIVE_UP_MS / KNOCK_EVERY_MS))
+  })
+})
+
+describe('the wiring, as text', () => {
+  it('the socket stamps its frames, the open resets the wake, and a close waits for a wake in progress', () => {
+    const connect = fnSource('connectWS')
+    const onopen = connect.slice(connect.indexOf('ws.onopen = function()'), connect.indexOf('ws.onclose'))
+    expect(onopen).toContain("if (typeof wakeOnOpen === 'function') wakeOnOpen();")
+    const onclose = connect.slice(connect.indexOf('ws.onclose = function()'), connect.indexOf('ws.onerror'))
+    expect(onclose.indexOf('wakeState.waking) return;')).toBeGreaterThan(-1)
+    expect(onclose.indexOf('wakeState.waking) return;')).toBeLessThan(onclose.indexOf('setTimeout(connectWS'))
+    expect(onclose).toContain('wakeIfAsleep(false)')
+    expect(connect.slice(connect.indexOf('ws.onmessage'))).toContain('wakeState.lastFrameAt = Date.now()')
+  })
+  it('a message is held before the box is cleared', () => {
+    const send = fnSource('sendChatMessage')
+    expect(send.indexOf('wakeHoldsSend(text)')).toBeGreaterThan(-1)
+    expect(send.indexOf('wakeHoldsSend(text)')).toBeLessThan(send.indexOf("input.value = '';"))
+  })
+  it('coming into view asks first on a phone with a doorman, and the worker is registered at start', () => {
+    const js = scripts()
+    expect(js).toMatch(/if \(wakeConfigured\(\)\) \{ wakeIfAsleep\(true\); return; \}/)
+    expect(js).toContain('registerWakeWorker(navigator, location, window.__CYNCO_REMOTE, window.__CYNCO_WAKE_URL);')
+  })
+})
